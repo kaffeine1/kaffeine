@@ -24,6 +24,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <deque>
 #include <initializer_list>
 #include <map>
@@ -33,6 +34,7 @@
 #include <exec/memory.h>
 #include <graphics/rastport.h>
 #include <intuition/intuition.h>
+#include <intuition/screens.h>
 #include <proto/exec.h>
 #include <proto/gadtools.h>
 #include <proto/intuition.h>
@@ -723,6 +725,62 @@ static void test_window_create()
            Kaffeine_ScreenGuest(&f.ctx, reinterpret_cast<Screen *>(&screen)) == mscreen &&
            Kaffeine_ScreenGuest(&f.ctx, reinterpret_cast<Screen *>(&unknown)) == 0 &&
            Kaffeine_ScreenGuest(&f.ctx, nullptr) == 0);
+}
+
+/* The public RastPort.BitMap at classic offset 4 names the same typed
+   bitmap as its live owned screen. Neither an opaque shadow alone nor
+   a mismatched native bitmap is authority to publish that handle. */
+static void test_window_bitmap_handle()
+{
+    for (unsigned scenario = 0; scenario < 6; ++scenario)
+    {
+        Fixture f;
+        Screen screen{};
+        BitMap backing{}, different{};
+        RastPort rp{};
+        Window window{};
+        backing.BytesPerRow = 40; backing.Rows = 200; backing.Depth = 3;
+        screen.RastPort.BitMap = &backing;
+        rp.BitMap = scenario == 1 ? &different : &backing;
+        window.WScreen = &screen;
+        window.RPort = &rp;
+        const ULONG gs = Kaffeine_MirrorAlloc(&f.ctx, M68K_SIZEOF_SCREEN);
+        assert(gs);
+        const UWORD type = scenario == 2 || scenario == 4
+                         ? KAFFEINE_SHADOW_PUBSCREEN : KAFFEINE_SHADOW_SCREEN;
+        assert(Kaffeine_ShadowAdd(&f.ctx, gs, &screen, type));
+        // The real screen bridge supplies these readable scalar fields.
+        m68k_write16(&f.ctx, gs + 184, 40);
+        m68k_write16(&f.ctx, gs + 186, 200);
+        f.memory[gs + 189] = 3;
+        if (scenario != 3)
+        {
+            f.ctx.pubscreens[0].native = scenario == 5
+                ? reinterpret_cast<Screen *>(static_cast<std::uintptr_t>(0xDEAD0000)) : &screen;
+            f.ctx.pubscreens[0].guest = gs;
+            f.ctx.pubscreens[0].owned = scenario != 2;
+        }
+        const ULONG guest = Kaffeine_WindowCreate(&f.ctx, &window);
+        assert(guest && f.lng(guest + M68K_WIN_WSCREEN) == gs);
+        const ULONG port = f.lng(guest + M68K_WIN_RPORT);
+        const ULONG bitmap = scenario == 0 ? gs + 184 : 0;
+        assert(port && f.lng(port + 4) == bitmap);
+        if (bitmap)
+            assert(f.memory[bitmap + 5] == 3 && f.word(bitmap) == 40);
+        // Drawing's refresh preserves the initial handle and guest edits.
+        rp.FgPen = 3;
+        Kaffeine_RastPortOut(&f.ctx, port, &rp);
+        assert(f.lng(port + 4) == bitmap);
+        m68k_write32(&f.ctx, port + 4, Fixture::raw);
+        Kaffeine_RastPortOut(&f.ctx, port, &rp);
+        assert(f.lng(port + 4) == Fixture::raw);
+        Kaffeine_WindowDelete(&f.ctx, guest);
+        assert(f.is(gs, type, &screen) && f.memory[gs + 189] == 3);
+        f.ctx.pubscreens[0] = {};
+        Kaffeine_ShadowForget(&f.ctx, gs, type);
+        Kaffeine_MirrorRelease(&f.ctx, gs);
+        assert(f.ctx.num_shadows == 3 && Kaffeine_HeapAvail(&f.ctx, 0) == f.heap_avail);
+    }
 }
 
 static void test_screen_release_order()
@@ -2232,6 +2290,7 @@ int main()
         { "Layer bridge notifications: whole-or-nothing open, pending backdrop flags, close order", test_window_layer_hooks },
         { "Exec, Intuition and GadTools tables use their ABI slots", test_registration },
         { "A 68k Window comes whole or not at all", test_window_create },
+        { "Window RastPorts share only live owned screen BitMaps and preserve their handles", test_window_bitmap_handle },
         { "WindowDelete() and CloseWindow() release WScreen once after the Window shadow", test_screen_release_order },
         { "An IDCMP port is a signalling 68k MsgPort", test_user_port },
         { "GetMsg() gives a 68k IntuiMessage and an up-to-date window", test_getmsg_fields },

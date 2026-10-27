@@ -9,7 +9,9 @@
     the fields that programs read come back, among them the font as a 68k
     TextFont with the metrics of the native one. Pointers to native layers,
     bitmaps and area buffers are not shown to 68k code: those fields stay
-    as the program left them. 68k TextFonts live in a table of their own.
+    as the program left them. The screen and window bridges may publish
+    a typed screen BitMap handle there; drawing preserves that identity.
+    68k TextFonts live in a table of their own.
     The font that a window or a screen comes with stays for the whole
     program, because programs keep rp->Font to set it back later; a font
     that the program opened goes once it is closed and no 68k RastPort

@@ -45,7 +45,9 @@ void Kaffeine_WindowSync(struct KaffeineContext *ctx, ULONG guest, struct Window
 /* A cleared 68k Window for a native one: its fields, its RastPort as a 68k
    RastPort, its IDCMP port as a 68k MsgPort, its title when it lies in guest
    memory, and WScreen for a screen of the program, as Kaffeine_ScreenGuest()
-   gives it. 0 without memory, also for the RastPort or the port. */
+   gives it. Its RastPort shares the typed screen BitMap handle when the
+   live owned screen and the native bitmap agree. 0 without memory, also
+   for the RastPort or the port. */
 ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w);
 /* Free the 68k Window of a native window, with its RastPort, its IDCMP port
    and its 68k messages; the messages that the program has not replied go
