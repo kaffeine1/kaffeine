@@ -2993,7 +2993,10 @@ Screen of.
     prevents LayerInfo disposal or screen closure during the blit. The native
     LONG result is preserved; the AROS planar-driver path currently returns 8
     even for fewer selected planes. Independent ARM and 68k probes check actual
-    pixels and return values in both transfer directions. The ten other graphics
+    pixels and return values in both transfer directions. `GetBitMapAttr()`
+    (-960) reads scalar attributes through the same typed identities, preserving
+    ordinary planar flags and querying actual native screen metadata. Unknown
+    attributes return zero. The nine other graphics
     vectors that consume, allocate or initialize BitMaps are explicitly refused
     until their conversion is implemented; no generated fallback receives these
     classic bitmap objects or screen handles. The five cybergraphics bitmap

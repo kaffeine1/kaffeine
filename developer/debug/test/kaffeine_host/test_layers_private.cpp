@@ -438,6 +438,7 @@ extern "C" IPTR GetBitMapAttr(struct BitMap *bm, ULONG attribute)
     case BMA_WIDTH: return s->width;
     case BMA_HEIGHT: return s->bm.Rows;
     case BMA_DEPTH: return s->bm.Depth;
+    case BMA_FLAGS: return s->bm.Flags & (BMF_DISPLAYABLE | BMF_INTERLEAVED | BMF_STANDARD);
     }
     assert(false);
     return 0;
@@ -2558,6 +2559,52 @@ static void test_cleanup()
     }
 }
 
+static void test_bitmap_attributes()
+{
+    Fixture f;
+    const ULONG bm = f.bitmap(4, 8, 2);
+    auto query = [&](ULONG bitmap, ULONG attribute) {
+        return f.call(Fixture::graphics_base, 960, { bitmap }, { 0x11223344u, attribute });
+    };
+    const auto heap = f.heap();
+    assert(query(bm, BMA_WIDTH) == 32 && query(bm, BMA_HEIGHT) == 8);
+    assert(query(bm, BMA_DEPTH) == 2 && query(bm, BMA_FLAGS) == 0);
+    assert(query(bm, 0x10004u) == 0 && f.ctx.running && f.heap_is(heap));
+    assert(init_bitmaps == 0 && bitmap_attrs == 0 && blits.empty());
+    f.memory[bm + M68K_BM_FLAGS] = BMF_STANDARD;
+    assert(query(bm, BMA_FLAGS) == BMF_STANDARD);
+    const ULONG li = f.new_info(), layer = f.create(li, bm, 0, 0, 31, 7, LAYERSIMPLE);
+    assert(layer && query(bm, BMA_DEPTH) == 2 && f.ctx.running);
+    const unsigned made = init_bitmaps;
+    f.memory[bm + M68K_BM_FLAGS] = 0;
+    assert(query(bm, BMA_FLAGS) == 20 && f.stopped() && init_bitmaps == made && !bitmap_attrs);
+    f.memory[bm + M68K_BM_FLAGS] = BMF_STANDARD;
+    assert(query(bm, BMA_FLAGS) == BMF_STANDARD && f.ctx.running);
+
+    NativeScreenBitMap own, other;
+    const ULONG sg = f.open_screen(own, 6, 12, 3, 40);
+    const ULONG pg = f.open_screen(other, 6, 12, 3, 40, false);
+    const ULONG handle = sg + M68K_SCR_BITMAP;
+    own.bm.Flags = 0x8F;
+    m68k_write16(&f.ctx, handle + M68K_BM_BYTESPERROW, 0xFFFF);
+    m68k_write16(&f.ctx, handle + M68K_BM_ROWS, 1);
+    f.memory[handle + M68K_BM_DEPTH] = 7;
+    assert(query(handle, BMA_WIDTH) == 40 && query(handle, BMA_HEIGHT) == 12);
+    assert(query(handle, BMA_DEPTH) == 3 && query(handle, BMA_FLAGS) == 14);
+    const unsigned attrs = bitmap_attrs;
+    assert(query(handle, 0x10004u) == 0 && bitmap_attrs == attrs && f.ctx.running);
+    assert(query(pg + M68K_SCR_BITMAP, BMA_DEPTH) == 20 && f.stopped());
+    assert(bitmap_attrs == attrs);
+    f.close_screen(own, sg);
+    assert(query(handle, BMA_WIDTH) == 20 && f.stopped() && bitmap_attrs == attrs);
+    f.close_screen(other, pg);
+    for (ULONG bad : { 0u, bm + 2, 0xFFFFFFF0u })
+        assert(query(bad, BMA_WIDTH) == 20 && f.stopped());
+    assert(bitmap_attrs == attrs && init_bitmaps == made && blits.empty());
+    Kaffeine_LayersCleanup(&f.ctx);
+    assert(query(bm, BMA_WIDTH) == 32 && f.ctx.running);
+}
+
 static void test_bitmap_vector_guards()
 {
     Fixture f;
@@ -2565,7 +2612,7 @@ static void test_bitmap_vector_guards()
     const auto heap = f.heap();
     const auto before = events;
     const unsigned made = init_bitmaps, attrs = bitmap_attrs;
-    for (ULONG lvo : { 390u, 606u, 636u, 678u, 918u, 924u, 942u, 960u, 1020u, 1206u })
+    for (ULONG lvo : { 390u, 606u, 636u, 678u, 918u, 924u, 942u, 1020u, 1206u })
     {
         assert(f.call(Fixture::graphics_base, lvo, { bm, bm, bm, bm }, { 1, 2, 3, 4, 5, 6, 7, 8 }) == 20);
         assert(f.stopped() && f.heap_is(heap) && events == before);
@@ -2605,6 +2652,7 @@ int main()
         { "A blit keeps every LayerInfo until WaitBlit(); a disposed common's 68k BitMap gets a new call-local BitMap", test_blit_lifetime },
         { "BltBitMap() from an ordinary planar BitMap to an opened screen's BitMap and back, by identity", test_blit_screen_transfer },
         { "BltBitMap() refuses borrowed, foreign, stale and NULL screen BitMaps and native-size overruns", test_blit_screen_refusals },
+        { "GetBitMapAttr() uses typed bitmap identity and preserves classic scalar flags", test_bitmap_attributes },
         { "Unconverted graphics and cybergraphics bitmap vectors stop before native code and guest writes", test_bitmap_vector_guards },
         { "Teardown deletes private layers before their LayerInfos, once, without 68k code", test_cleanup }
     };

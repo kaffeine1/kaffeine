@@ -185,6 +185,8 @@ IPTR Kaffeine_AttemptLockLayerRom(struct KaffeineContext *ctx, void *cpu);
    BitMaps of screens that it opened and its ordinary planar BitMaps; also
    without the layer bridge. While it runs, ctx->bitmap_blits is not 0. */
 IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu);
+/* graphics -960: scalar attributes of the same typed bitmap classes. */
+IPTR Kaffeine_GetBitMapAttr(struct KaffeineContext *ctx, void *cpu);
 /* Every other layer call: stops the program (20) before any native call */
 IPTR kaffeine_layers_Unsupported(struct KaffeineContext *ctx, void *cpu);
 /* Unconverted graphics BitMap operations: never pass a classic mirror native. */
@@ -219,7 +221,7 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     { 918, kaffeine_bitmaps_Unsupported },    /* AllocBitMap */ \
     { 924, kaffeine_bitmaps_Unsupported },    /* FreeBitMap */ \
     { 942, kaffeine_bitmaps_Unsupported },    /* ChangeVPBitMap */ \
-    { 960, kaffeine_bitmaps_Unsupported },    /* GetBitMapAttr */ \
+    { 960, Kaffeine_GetBitMapAttr }, \
     {1020, kaffeine_bitmaps_Unsupported },    /* AllocSpriteDataA */ \
     {1206, kaffeine_bitmaps_Unsupported }     /* UpdateBitMap */
 

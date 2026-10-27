@@ -45,6 +45,10 @@ int main(void)
         bm.Planes[p]=AllocMem(bytes,MEMF_PUBLIC|MEMF_CLEAR);
         if(!check(bm.Planes[p]!=NULL,"allocate independent planar storage"))goto done;
     }
+    check_long("standalone bitmap width attribute",GetBitMapAttr(&bm,BMA_WIDTH),128);
+    check_long("standalone bitmap height attribute",GetBitMapAttr(&bm,BMA_HEIGHT),96);
+    check_long("standalone bitmap depth attribute",GetBitMapAttr(&bm,BMA_DEPTH),3);
+    check_long("standalone bitmap flags attribute",GetBitMapAttr(&bm,BMA_FLAGS),bm.Flags & BMF_STANDARD);
     for(pass=0;pass<2;pass++) {
         struct BitMap *display;
         for(p=0;p<3;p++)memset(bm.Planes[p],p<2?0xFF:0,bytes);
@@ -54,6 +58,13 @@ int main(void)
         display=screen->RastPort.BitMap;
         if(!check(display!=NULL,"owned Screen RastPort exposes a usable bitmap identity"))goto done;
         check(display->Rows>=120 && display->Depth>=3,"screen bitmap reports native dimensions and depth");
+        check(GetBitMapAttr(display,BMA_WIDTH)>=160,"screen bitmap width comes from native graphics");
+        check(GetBitMapAttr(display,BMA_HEIGHT)>=120,"screen bitmap height comes from native graphics");
+        check(GetBitMapAttr(display,BMA_DEPTH)>=3,"screen bitmap depth comes from native graphics");
+        check_long("screen bitmap flags preserve documented native bits",GetBitMapAttr(display,BMA_FLAGS),
+                   display->Flags & (BMF_DISPLAYABLE|BMF_INTERLEAVED|BMF_STANDARD));
+        Printf("OBS screen bitmap flags: attribute=%ld snapshot=%ld\n",
+               (LONG)GetBitMapAttr(display,BMA_FLAGS),(LONG)display->Flags);
         check_long("AROS planar to indexed native return",BltBitMap(&bm,4,5,display,20,30,16,12,0xC0,0xFF,NULL),8);
         WaitBlit();
         check_long("planar source remains intact",pixel(&bm,4,5),3);
