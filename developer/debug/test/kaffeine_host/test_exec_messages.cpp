@@ -232,9 +232,114 @@ static void inspection_ignores_other_arrival_metadata()
         check(f.exec(384,f.port)==20 && f.exec(372,f.port)==20 && f.bytes()==before,"changed arrival metadata never bypasses corrupt active-queue protection");
     }
 }
+static void released_manual_port_storage()
+{
+    {
+        Fixture f;
+        ULONG block=Kaffeine_HeapAlloc(&f.ctx,256,MEMF_CLEAR), p=block+16;
+        check(block!=0,"manual port containing allocation succeeds");
+        f.manual_port(p);f.message(f.msg);
+        f.exec(366,p,f.msg);
+        check(f.exec(384,p)==f.msg,"manual port WaitPort retains the queued message");
+        /* Guest inline Remove(), without notifying the message bridge. */
+        ULONG next=f.r(f.msg),prev=f.r(f.msg+4);
+        f.w(prev,next);f.w(next+4,prev);
+        check(f.r(p+20)==p+24 && f.r(p+24)==0 && f.r(p+28)==p+20,
+              "inline dequeue leaves a canonical empty manual port");
+        check(std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),p)==1,
+              "inline removal still has a tracked port before storage release");
+        f.message(f.msg+0x100);f.exec(366,f.port,f.msg+0x100);
+        auto before=f.bytes();
+        std::array<ULONG,KAFFEINE_MAX_MESSAGE_PORTS> saved;
+        std::copy(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),saved.begin());
+        Kaffeine_HeapFree(&f.ctx,block+8,256);
+        check(f.bytes()==before && std::equal(saved.begin(),saved.end(),std::begin(f.ctx.message_ports)),
+              "interior free preserves guest bytes and active port registrations");
+        Kaffeine_HeapFree(&f.ctx,block,0xFFFFFFFF);
+        check(std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),p)==0,
+              "successful containing free retires an inline-drained manual port using the real allocation size");
+        check(std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),f.port)==1,
+              "freeing one allocation retains an unrelated live queue");
+        ULONG reused=Kaffeine_HeapAlloc(&f.ctx,256,0);
+        check(reused==block,"the released storage is reacquired before reuse");
+        std::memset(f.ctx.mem+reused,0xD4,256);
+        f.message(f.msg+0x200);
+        check(f.exec(366,f.reply,f.msg+0x200)==0xD0000000 && f.ctx.running,
+              "reusing freed manual-port bytes does not block an unrelated PutMsg");
+        check(f.exec(372,f.reply)==f.msg+0x200 && f.exec(372,f.port)==f.msg+0x100,
+              "both unrelated queues retain message identity and FIFO links");
+        check(std::all_of(f.ctx.mem+reused,f.ctx.mem+reused+256,[](UBYTE b){return b==0xD4;}),
+              "later queue operations preserve all bytes in the reused allocation");
+        Kaffeine_HeapFree(&f.ctx,reused,256);
+    }
+    for(unsigned malformed=0;malformed<4;++malformed)
+    {
+        Fixture f;ULONG block=Kaffeine_HeapAlloc(&f.ctx,256,MEMF_CLEAR),p=block+16;
+        f.manual_port(p);f.exec(366,p,f.msg);
+        if(malformed)
+        {
+            f.w(p+20,p+24);f.w(p+28,p+20);
+            if(malformed==1)f.w(p+24,2);
+            if(malformed==2)f.w(p+28,p+22);
+            if(malformed==3)f.ctx.mem[p+8]=0;
+        }
+        Kaffeine_HeapFree(&f.ctx,block,256);
+        check(std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),p)==1,
+              "free never silently drops a nonempty or malformed tracked queue");
+        ULONG reused=Kaffeine_HeapAlloc(&f.ctx,256,0);
+        check(reused==block,"negative-control storage is reacquired before overwriting");
+        std::memset(f.ctx.mem+reused,0xD4,256);
+        f.message(f.msg+0x100);f.rejected(f.reply,f.msg+0x100);
+        Kaffeine_HeapFree(&f.ctx,reused,256);
+    }
+    {
+        Fixture f;ULONG block=Kaffeine_HeapAlloc(&f.ctx,256,MEMF_CLEAR),p=block+16;
+        f.manual_port(p);f.exec(366,p,f.msg);f.w(p+20,p+24);f.w(p+28,p+20);
+        ULONG mirror=f.ctx.heap_free, size=f.r(mirror);
+        f.w(mirror,size+8);auto before=f.bytes();
+        Kaffeine_HeapFree(&f.ctx,block,256);
+        check(f.bytes()==before && std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),p)==1,
+              "failed free with a corrupt free mirror does not retire an empty port");
+        f.w(mirror,size);Kaffeine_HeapFree(&f.ctx,block,256);
+    }
+    for(ULONG requested:{32U,33U})
+    {
+        Fixture f;ULONG block=Kaffeine_HeapAlloc(&f.ctx,requested,MEMF_CLEAR);
+        f.manual_port(block);f.exec(366,block,f.msg);
+        f.w(block+20,block+24);f.w(block+28,block+20);
+        Kaffeine_HeapFree(&f.ctx,block,requested);
+        check(std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),block)==1,
+              "a header extending beyond the requested payload is not silently retired");
+    }
+    for(unsigned delete_pool=0;delete_pool<2;++delete_pool)
+    {
+        Fixture f;ULONG pool=Kaffeine_PoolCreate(&f.ctx,MEMF_CLEAR,1024,512);
+        ULONG block=Kaffeine_PoolAlloc(&f.ctx,pool,256),p=block+16;
+        f.manual_port(p);f.exec(366,p,f.msg);f.w(p+20,p+24);f.w(p+28,p+20);
+        auto before=f.bytes();
+        Kaffeine_HeapFree(&f.ctx,block,256);
+        Kaffeine_PoolFree(&f.ctx,pool,block,255);
+        check(f.bytes()==before && std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),p)==1,
+              "wrong-kind and wrong-size pool frees preserve the port registration and storage");
+        if(delete_pool)Kaffeine_PoolDelete(&f.ctx,pool);
+        else Kaffeine_PoolFree(&f.ctx,pool,block,256);
+        check(std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),p)==0,
+              "successful pool release retires its contained empty manual port");
+        if(!delete_pool)Kaffeine_PoolDelete(&f.ctx,pool);
+    }
+    {
+        Fixture f;ULONG p=f.exec(666);
+        f.exec(366,p,f.msg);f.w(p+20,p+24);f.w(p+28,p+20);
+        Kaffeine_HeapFree(&f.ctx,p,0);
+        check(std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),p)==1,
+              "direct storage free does not discard a CreateMsgPort signal owner's queue registration");
+    }
+}
+
 int main()
 {
     fifo();ignore_and_null_reply();invalid();allocation_failures();real_shadows_and_port_lifetimes();queue_capacity_and_membership();manual_port_identity_and_owned_signal();read_after_arrival_metadata_change();inspection_ignores_other_arrival_metadata();
+    released_manual_port_storage();
     check(allocated_signals==0,"all owned native signals are released");
     check(native_blocks.empty(),"all native heap records and allocations are released");
     std::printf("Guest Exec message boundary: %u/%u checks passed\n",checks-failures,checks);
