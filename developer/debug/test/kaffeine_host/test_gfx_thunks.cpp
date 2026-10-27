@@ -6,8 +6,8 @@
     CloseFont() with 68k TextFonts, the 68k RastPort of a window, which gets
     the native fields back after every call, also after a generated thunk,
     and gives the native one the fields that the program wrote, the text
-    calls with their 68k TextExtents, and the refusal of every other
-    RastPort. The native graphics.library below acts as AROS does and
+    calls with their 68k TextExtents, bounded guest planar ReadPixel and
+    the refusal of unsupported RastPorts. The native graphics.library acts as AROS does and
     records every call.
 */
 
@@ -809,6 +809,82 @@ static void test_refusals()
     assert(!gfx.any);
 }
 
+static void test_guest_planar_read()
+{
+    constexpr ULONG rp=Fixture::raw,bm=0x2400,first_plane=0x2808;
+    const std::array<UBYTE,32> colors={
+        1,2,4,8,16,32,64,128,255,0,128,1,170,85,240,15,
+        17,34,51,68,90,102,119,136,153,165,187,204,221,238,254,127};
+    auto color=[&](unsigned x,unsigned y)->ULONG {
+        return y==0?colors[x]:y==1?255-colors[x]:(x*37+11)&255;
+    };
+    auto setup=[&](Fixture &f,unsigned depth) {
+        std::memset(f.memory.data()+rp,0,100);
+        std::memset(f.memory.data()+bm,0,40);
+        m68k_write32(&f.ctx,rp+4,bm);
+        m68k_write16(&f.ctx,bm,4);m68k_write16(&f.ctx,bm+2,3);
+        f.memory[bm+4]=depth==2?8:0;f.memory[bm+5]=depth;
+        for(unsigned p=0;p<depth;++p)
+        {
+            ULONG plane=first_plane+p*32;
+            std::memset(f.memory.data()+plane,0,12);
+            m68k_write32(&f.ctx,bm+8+p*4,plane);
+            for(unsigned y=0;y<3;++y)for(unsigned x=0;x<32;++x)
+                if(color(x,y)&(1U<<p))f.memory[plane+y*4+(x>>3)]|=0x80>>(x&7);
+        }
+    };
+    for(unsigned depth:{1U,2U,8U})
+    {
+        Fixture f;setup(f,depth);
+        if(depth<8)m68k_write32(&f.ctx,bm+36,0xFFFFFFFE);
+        auto before=f.memory;ULONG mask=(1U<<depth)-1;
+        for(unsigned y=0;y<3;++y)for(unsigned x=0;x<32;++x)
+        {
+            assert(f.call(318,{0xDEADBEEF,rp},{x,y})==(color(x,y)&mask));
+            assert(f.ctx.running && !f.ctx.exit_code && f.memory==before && !gfx.any);
+        }
+        for(auto xy:{std::array<ULONG,2>{0xFFFFFFFF,0},{0,0xFFFFFFFF},
+                     {0x8000,0},{0,0x8000},{32,0},{0,3},{32767,0},{0,32767}})
+            assert(f.call(318,{0,rp},{xy[0],xy[1]})==20 && f.stopped() && f.memory==before && !gfx.any);
+        assert(f.call(318,{0,rp},{0x10007,0xFFFF0001})==(color(7,1)&mask));
+        assert(f.call(318,{0,rp},{0x1FFFF,0})==20 && f.stopped() && f.memory==before && !gfx.any);
+    }
+    for(unsigned bad=0;bad<22;++bad)
+    {
+        Fixture f;setup(f,8);ULONG address=rp;int foreign;
+        switch(bad)
+        {
+            case 0:address=0;break;
+            case 1:address=rp+1;break;
+            case 2:address=f.ctx.mem_size-98;break;
+            case 3:m68k_write32(&f.ctx,rp,0x12345678);break;
+            case 4:m68k_write32(&f.ctx,rp+4,0);break;
+            case 5:m68k_write32(&f.ctx,rp+4,bm+1);break;
+            case 6:m68k_write32(&f.ctx,rp+4,f.ctx.mem_size-38);break;
+            case 7:m68k_write16(&f.ctx,bm,0);break;
+            case 8:m68k_write16(&f.ctx,bm,1);break;
+            case 9:m68k_write16(&f.ctx,bm+2,0);break;
+            case 10:f.memory[bm+5]=0;break;
+            case 11:f.memory[bm+5]=9;break;
+            case 12:f.memory[bm+4]=4;break;
+            case 13:f.memory[bm+4]=0x80;break;
+            case 14:m68k_write16(&f.ctx,bm+6,1);break;
+            case 15:m68k_write32(&f.ctx,bm+36,f.ctx.mem_size-8);break;
+            case 16:m68k_write32(&f.ctx,bm+8,0xFFFFFFFE);break;
+            case 17:m68k_write16(&f.ctx,bm,65534);m68k_write16(&f.ctx,bm+2,65535);break;
+            case 18:f.ctx.shadow_map[f.ctx.num_shadows++]={rp,&foreign,KAFFEINE_SHADOW_WINDOW};break;
+            case 19:f.ctx.shadow_map[f.ctx.num_shadows++]={bm,&foreign,KAFFEINE_SHADOW_WINDOW};break;
+            case 20:m68k_write32(&f.ctx,bm+8,0);break;
+            case 21:m68k_write32(&f.ctx,bm+8,0xFFFFFFFF);break;
+        }
+        const auto before=f.memory;
+        assert(f.call(318,{0,address},{0,0})==20 && f.stopped() && f.memory==before && !gfx.any);
+    }
+    Fixture f;setup(f,8);auto before=f.memory;
+    assert(f.call(324,{0,rp},{0,0})==20 && f.stopped() && f.memory==before && !gfx.any);
+    assert(f.call(306,{0,rp},{0,0,1,1})==20 && f.stopped() && f.memory==before && !gfx.any);
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
@@ -823,7 +899,8 @@ int main()
         { "TextLength(), Text() and TextExtent() with 68k text and TextExtent", test_text },
         { "TextFit() both ways and with a 68k constraint", test_textfit },
         { "SetFont() takes a 68k TextFont", test_setfont },
-        { "Every other RastPort stops the program before graphics.library", test_refusals }
+        { "Unsupported RastPorts stop before native graphics.library", test_refusals },
+        { "ReadPixel reads bounded guest planar bytes without native calls or mutation", test_guest_planar_read }
     };
     for (const Test &test : tests)
     {

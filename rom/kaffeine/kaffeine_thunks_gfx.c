@@ -3,9 +3,9 @@
 
     Intuition and graphics manual thunks shared by kaffeine.library and the
     host dispatch tests. The graphics calls here take the 68k RastPort of a
-    window or a screen (kaffeine_rastport.c). Any other RastPort, such as one
-    that the program set up itself, stops the program with return code 20
-    instead of reaching native graphics.library.
+    window or a screen (kaffeine_rastport.c). ReadPixel also reads bounded,
+    unlayered guest planar bitmaps directly. Other guest-built RastPorts
+    stop with return code 20 instead of reaching native graphics.library.
 */
 
 #include <aros/debug.h>
@@ -265,12 +265,55 @@ IPTR thunk_gfx_RectFill(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
+/* Read-only classic planar access. No guest structure or plane pointer is
+   converted into a native RastPort, BitMap or graphics driver object. */
+static IPTR guest_read_pixel(struct KaffeineContext *ctx, ULONG guest, WORD x, WORD y)
+{
+    ULONG bitmap, row, rows, depth, bytes, offset, pen = 0, planes[8];
+    unsigned i;
+    UBYTE mask;
+
+    if ((guest & 1) || !guest_range(ctx, guest, 100) || shadow_lookup(ctx, guest) ||
+        m68k_read32(ctx, guest) != 0)
+        return refuse(ctx, "ReadPixel: unsupported guest RastPort");
+    bitmap = m68k_read32(ctx, guest + 4);
+    if ((bitmap & 1) || !guest_range(ctx, bitmap, 40) || shadow_lookup(ctx, bitmap))
+        return refuse(ctx, "ReadPixel: invalid guest BitMap");
+    row = m68k_read16(ctx, bitmap);
+    rows = m68k_read16(ctx, bitmap + 2);
+    depth = ctx->mem[bitmap + 5];
+    /* Support the plain classic layout (Flags 0 or BMF_STANDARD). Extended
+       formats, layers and driver-owned bitmaps require their own adapters. */
+    if (!row || (row & 1) || !rows || !depth || depth > 8 ||
+        (ctx->mem[bitmap + 4] & ~8U) || m68k_read16(ctx, bitmap + 6))
+        return refuse(ctx, "ReadPixel: unsupported guest planar BitMap");
+    /* Both factors are UWORDs, so this product cannot overflow ULONG. */
+    bytes = row * rows;
+    for (i = 0; i < depth; ++i)
+    {
+        planes[i] = m68k_read32(ctx, bitmap + 8 + 4 * i);
+        if (!guest_range(ctx, planes[i], bytes))
+            return refuse(ctx, "ReadPixel: guest bitplane outside arena");
+    }
+    if (x < 0 || y < 0 || (ULONG)y >= rows || ((ULONG)x >> 3) >= row)
+        return refuse(ctx, "ReadPixel: coordinate outside guest planar BitMap");
+    offset = (ULONG)y * row + ((ULONG)x >> 3);
+    mask = 0x80U >> (x & 7);
+    for (i = 0; i < depth; ++i)
+        if (ctx->mem[planes[i] + offset] & mask)
+            pen |= 1UL << i;
+    return pen;
+}
+
 /* graphics -318: ReadPixel(A1=rp, D0=x, D1=y) -> D0 */
 IPTR thunk_gfx_ReadPixel(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(1), "ReadPixel");
+    ULONG guest = THUNK_A(1);
+    struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
 
-    return rp ? (IPTR)ReadPixel(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1)) : (IPTR)ctx->exit_code;
+    if (rp)
+        return (IPTR)ReadPixel(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
+    return guest_read_pixel(ctx, guest, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
 }
 
 /* graphics -324: WritePixel(A1=rp, D0=x, D1=y) -> D0 */

@@ -64,6 +64,7 @@ at the end.
 | `exec_messages.c` | FIFO messages, signals, replies and nonempty WaitPort. |
 | `exec_message_lifetime.c` | Manual ports drained by RemHead, RemTail, Remove and inline Node links, followed by FreeVec or FreeMem. Reacquires the freed bytes with AllocAbs before reusing them, then checks an unrelated message roundtrip, payload guards and the reused buffer. |
 | `exec_packets.c` | Read-only ACTION_READ packets and shared DOS file position. |
+| `gfx_planar_read.c` | Original 32 by 3 planar images at depths 1, 2 and 8. Manually initialized public RastPort/BitMap structures, all 288 in-range pixel values, Flags 0/BMF_STANDARD, and byte-for-byte preservation of both structures, planes and guards. |
 
 ## Building the test programs
 
