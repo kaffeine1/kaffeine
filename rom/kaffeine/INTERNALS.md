@@ -3192,7 +3192,10 @@ The synthetic handler of a FileHandle answers at once. `ACTION_READ` and
 `ACTION_SEEK` to `Seek()`, and `ACTION_IS_FILESYSTEM`, `ACTION_SCREEN_MODE`
 and `ACTION_WAIT_CHAR` to the native handler with their integer argument.
 `ACTION_DISK_INFO` fills the guest InfoData as `Info()` does, with no
-volume node or window pointer. Every other action, `ACTION_END` included,
+volume node or window pointer; for a console (`CON\0` or `RAW\0`) also
+`id_InUse` is 0, since there it holds the native read IORequest that
+classic programs follow to find the console unit, and the bridge has no
+guest IORequest for it yet. Every other action, `ACTION_END` included,
 gets 0 and `ERROR_ACTION_NOT_KNOWN`, as a handler answers an action it does
 not know. The packet must be a StandardPacket, the message right before
 the DosPacket.

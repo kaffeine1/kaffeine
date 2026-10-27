@@ -469,6 +469,17 @@ static void packet_disk_info()
               !packet_args[1] && !packet_args[2] && !packet_args[3] && !packet_args[4],
               "ACTION_DISK_INFO uses a private native InfoData and preserves both guest buffer guards");
     }
+    for(LONG type:{0x434F4E00,0x52415700,0x434F4E01,0x444F5300})
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+        const bool console=type==0x434F4E00 || type==0x52415700;
+        packet_info={0,0,0,0,0,0,type,reinterpret_cast<BPTR>(0x12345678),0x13579BDF};
+        action_packet(f,token,ACTION_DISK_INFO,out/4);
+        packet_result=-1;action_reply(f,handler,packet_result,37);
+        check(f.r(out+24)==static_cast<ULONG>(type) && !f.r(out+28) &&
+              f.r(out+32)==(console?0:0x13579BDFU),
+              "ACTION_DISK_INFO gives 0 for the native IORequest of a CON: or RAW: console in id_InUse, and copies it for other handlers");
+    }
     for(unsigned which=0;which<11;++which)
     {
         Fixture f;ULONG token=f.open(),handler=f.r(token*4+8),addr=out;

@@ -446,7 +446,10 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
             res2 = (LONG)IoErr();
             break;
         /* The InfoData of the handler, as Info() gives it: no native volume
-           node or window pointer reaches the program. */
+           node or window pointer reaches the program. A console handler
+           ('CON\0' or 'RAW\0') puts its native read IORequest in id_InUse,
+           which classic programs follow to find the console unit; there is
+           no guest IORequest for it yet, so the program gets 0. */
         case ACTION_DISK_INFO:
         {
             struct InfoData info;
@@ -471,7 +474,8 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
                 m68k_write32(ctx, out + 20, (ULONG)info.id_BytesPerBlock);
                 m68k_write32(ctx, out + 24, (ULONG)info.id_DiskType);
                 m68k_write32(ctx, out + 28, 0);
-                m68k_write32(ctx, out + 32, (ULONG)info.id_InUse);
+                m68k_write32(ctx, out + 32, (info.id_DiskType == 0x434F4E00 ||
+                    info.id_DiskType == 0x52415700) ? 0 : (ULONG)info.id_InUse);
             }
             break;
         }
