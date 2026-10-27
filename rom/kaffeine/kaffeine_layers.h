@@ -64,17 +64,41 @@ struct Screen;
 #define M68K_SCR_LAYERINFO        224
 #define M68K_SCR_BARLAYER         334
 #define M68K_RP_LAYER             0
+#define M68K_RP_BITMAP            4
+
+/* struct BitMap of graphics/gfx.h */
+#define M68K_BM_BYTESPERROW       0
+#define M68K_BM_ROWS              2
+#define M68K_BM_FLAGS             4
+#define M68K_BM_DEPTH             5
+#define M68K_BM_PAD               6
+#define M68K_BM_PLANES            8
+#define M68K_SIZEOF_BITMAP        40
+
+/* struct BackFillMessage of graphics/layers.h */
+#define M68K_BFM_LAYER            0
+#define M68K_BFM_BOUNDS           4
+#define M68K_BFM_OFFSETX          12
+#define M68K_BFM_OFFSETY          16
+#define M68K_SIZEOF_BFM           20
 
 /* Bounds: 68k Layers alive at once, layers of one screen that a snapshot
    takes, screens with snapshots, opaque handles of native backfill hooks,
-   nested program locks of one layer, and LayerInfos of NewLayerInfo()
-   alive at once. */
+   nested program locks of one layer, LayerInfos of NewLayerInfo() alive
+   at once, and layers of CreateUpfrontHookLayer() alive at once. */
 #define KAFFEINE_LAYER_MAX_RECORDS 64
 #define KAFFEINE_LAYER_MAX_DEPTH   48
 #define KAFFEINE_LAYER_MAX_GRAPHS  16
 #define KAFFEINE_LAYER_MAX_HOOKS   32
 #define KAFFEINE_LAYER_MAX_LOCKS   255
 #define KAFFEINE_LAYER_MAX_INFOS   16
+#define KAFFEINE_LAYER_MAX_PRIVATE 16
+/* The largest classic BitMap of a private layer. layers.library makes the
+   internal root layer of a LayerInfo over the whole BitMap, with signed
+   WORD bounds: (0, 0) to (BytesPerRow * 8 - 1, Rows - 1) must stay at
+   most 32767 each. */
+#define KAFFEINE_LAYER_MAX_BPR     4094
+#define KAFFEINE_LAYER_MAX_ROWS    32767
 
 /* Canonical classic semaphore, initialized exactly once by the owner of
    its containing guest object, independently of native snapshot timing. */
@@ -100,7 +124,7 @@ struct KaffeineLayerOps
        its WLayer and the Layer of its RastPort get the 68k Layer of the
        native one. FALSE without memory or room, and then nothing stays. */
     BOOL  (*window_opened)(struct KaffeineContext *ctx, ULONG guest, struct Window *w);
-    /* Before the native window closes (Kaffeine_WindowDelete()): the
+    /* Before native menu/gadget teardown (Kaffeine_WindowPrepareClose()): the
        program's locks of its layer go back and its 68k Layer goes. */
     void  (*window_closing)(struct KaffeineContext *ctx, ULONG guest, struct Window *w);
     /* The Flags that Kaffeine_WindowSync() writes: the native ones, with
@@ -129,25 +153,44 @@ BOOL Kaffeine_LayersSetup(struct KaffeineContext *ctx);
 void Kaffeine_LayersRefresh(struct KaffeineContext *ctx);
 /* At the end of the program, after the windows and screens: the program's
    layer locks go back, every 68k Layer, LayerInfo and hook handle goes,
-   each LayerInfo of NewLayerInfo() that the program kept is disposed of
-   once, and the bridge leaves the context. Safe to call again. */
+   the layers of CreateUpfrontHookLayer() that the program kept are
+   deleted without running 68k code, then each LayerInfo of NewLayerInfo()
+   that the program kept is disposed of once, and the bridge leaves the
+   context. Clip Regions leave their native layers before those go; the
+   Regions themselves go later, in Kaffeine_RegionsCleanup(). Safe to call
+   again. */
 void Kaffeine_LayersCleanup(struct KaffeineContext *ctx);
+/* Whether native layers code runs on behalf of the program, with the gate
+   of a private layer open or a 68k backfill hook running: then no Region
+   of the program may change (kaffeine_regions.c). */
+BOOL Kaffeine_LayersNativeBusy(struct KaffeineContext *ctx);
 
 /* intuition -306, -312 */
 IPTR Kaffeine_WindowToBack(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_WindowToFront(struct KaffeineContext *ctx, void *cpu);
-/* layers -96, -102, -144, -150, -198 */
+/* layers -90, -96, -102, -144, -150, -174, -186, -198 */
+IPTR Kaffeine_DeleteLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_LockLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_UnlockLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_NewLayerInfo(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_DisposeLayerInfo(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_InstallClipRegion(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_CreateUpfrontHookLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_InstallLayerHook(struct KaffeineContext *ctx, void *cpu);
 /* graphics -432, -438, -654 */
 IPTR Kaffeine_LockLayerRom(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_UnlockLayerRom(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_AttemptLockLayerRom(struct KaffeineContext *ctx, void *cpu);
+/* graphics -30: between common BitMaps of LayerInfos of the program, the
+   BitMaps of screens that it opened and its ordinary planar BitMaps; also
+   without the layer bridge. While it runs, ctx->bitmap_blits is not 0. */
+IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu);
+/* graphics -960: scalar attributes of the same typed bitmap classes. */
+IPTR Kaffeine_GetBitMapAttr(struct KaffeineContext *ctx, void *cpu);
 /* Every other layer call: stops the program (20) before any native call */
 IPTR kaffeine_layers_Unsupported(struct KaffeineContext *ctx, void *cpu);
+/* Unconverted graphics BitMap operations: never pass a classic mirror native. */
+IPTR kaffeine_bitmaps_Unsupported(struct KaffeineContext *ctx, void *cpu);
 
 extern const struct M68KThunkEntry kaffeine_thunks_layers_manual[];
 extern const ULONG kaffeine_thunks_layers_manual_count;
@@ -161,14 +204,34 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     { 306, Kaffeine_WindowToBack }, \
     { 312, Kaffeine_WindowToFront }
 
-/* Graphics calls that take a Layer: the generated thunks would hand guest
-   memory to native code as a native Layer. */
+/* Graphics calls that take a Layer, or a BitMap that a LayerInfo or a
+   screen of the program has: the generated thunks would hand guest memory
+   to native code as a native Layer or BitMap. */
 #define KAFFEINE_GRAPHICS_LAYER_THUNKS \
     { 432, Kaffeine_LockLayerRom }, \
     { 438, Kaffeine_UnlockLayerRom }, \
     { 444, kaffeine_layers_Unsupported },     /* SyncSBitMap */ \
     { 450, kaffeine_layers_Unsupported },     /* CopySBitMap */ \
-    { 654, Kaffeine_AttemptLockLayerRom }
+    { 654, Kaffeine_AttemptLockLayerRom }, \
+    {  30, Kaffeine_BltBitMap }, \
+    { 390, kaffeine_bitmaps_Unsupported },    /* InitBitMap */ \
+    { 606, kaffeine_bitmaps_Unsupported },    /* BltBitMapRastPort */ \
+    { 636, kaffeine_bitmaps_Unsupported },    /* BltMaskBitMapRastPort */ \
+    { 678, kaffeine_bitmaps_Unsupported },    /* BitMapScale */ \
+    { 918, kaffeine_bitmaps_Unsupported },    /* AllocBitMap */ \
+    { 924, kaffeine_bitmaps_Unsupported },    /* FreeBitMap */ \
+    { 942, kaffeine_bitmaps_Unsupported },    /* ChangeVPBitMap */ \
+    { 960, Kaffeine_GetBitMapAttr }, \
+    {1020, kaffeine_bitmaps_Unsupported },    /* AllocSpriteDataA */ \
+    {1206, kaffeine_bitmaps_Unsupported }     /* UpdateBitMap */
+
+/* cybergraphics also consumes bitmap objects or native lock handles. */
+#define KAFFEINE_CYBERGRAPHICS_BITMAP_THUNKS \
+    {  96, kaffeine_bitmaps_Unsupported },    /* GetCyberMapAttr */ \
+    { 168, kaffeine_bitmaps_Unsupported },    /* LockBitMapTagList */ \
+    { 174, kaffeine_bitmaps_Unsupported },    /* UnLockBitMap */ \
+    { 180, kaffeine_bitmaps_Unsupported },    /* UnLockBitMapTagList */ \
+    { 186, kaffeine_bitmaps_Unsupported }     /* ExtractColor */
 
 /* Every layers.library LVO of the generated table, so that no generated
    layer thunk is ever reached: none of them can tell a 68k Layer, Region,
@@ -184,7 +247,7 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     {  72, kaffeine_layers_Unsupported },     /* ScrollLayer */ \
     {  78, kaffeine_layers_Unsupported },     /* BeginUpdate */ \
     {  84, kaffeine_layers_Unsupported },     /* EndUpdate */ \
-    {  90, kaffeine_layers_Unsupported },     /* DeleteLayer */ \
+    {  90, Kaffeine_DeleteLayer }, \
     {  96, Kaffeine_LockLayer }, \
     { 102, Kaffeine_UnlockLayer }, \
     { 108, kaffeine_layers_Unsupported },     /* LockLayers */ \
@@ -198,9 +261,9 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     { 156, kaffeine_layers_Unsupported },     /* FattenLayerInfo */ \
     { 162, kaffeine_layers_Unsupported },     /* ThinLayerInfo */ \
     { 168, kaffeine_layers_Unsupported },     /* MoveLayerInFrontOf */ \
-    { 174, kaffeine_layers_Unsupported },     /* InstallClipRegion */ \
+    { 174, Kaffeine_InstallClipRegion },      /* private layers, owned Regions */ \
     { 180, kaffeine_layers_Unsupported },     /* MoveSizeLayer */ \
-    { 186, kaffeine_layers_Unsupported },     /* CreateUpfrontHookLayer */ \
+    { 186, Kaffeine_CreateUpfrontHookLayer }, \
     { 192, kaffeine_layers_Unsupported },     /* CreateBehindHookLayer */ \
     { 198, Kaffeine_InstallLayerHook }, \
     { 204, kaffeine_layers_Unsupported },     /* InstallLayerInfoHook */ \

@@ -266,6 +266,14 @@ struct KaffeineContext
        module. */
     struct KaffeineLayers *layers;
     const struct KaffeineLayerOps *layer_ops;
+    /* BltBitMap() calls of the program in progress (kaffeine_layers.c),
+       also without the layer bridge: while any runs, no LayerInfo of the
+       program is disposed of and no screen of the program closes, so that
+       every native BitMap that a blit got outlives it. */
+    UWORD bitmap_blits;
+    /* Regions of NewRegion() of the program (kaffeine_regions.c), made
+       with the first one; NULL before. */
+    struct KaffeineRegions *regions;
 
     /* Screens of the program (kaffeine_screens.c): one 68k Screen for each
        native screen, with its 68k TextAttr, kept while the program holds a

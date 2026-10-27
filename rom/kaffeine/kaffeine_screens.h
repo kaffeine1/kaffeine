@@ -9,6 +9,51 @@
 #define KAFFEINE_SCREENS_H
 
 #include "kaffeine_thunks.h"
+#include "kaffeine_intern.h"
+#include "kaffeine_rastport.h"
+
+/* The 68k BitMap embedded in a 68k Screen (intuition/screens.h), which
+   Screen.RastPort.BitMap names: a snapshot of the scalars of the BitMap
+   that the native screen draws into, without planes, and the typed handle
+   of that native BitMap. */
+#define M68K_SCR_BITMAP 184
+
+/* What a 68k BitMap is as the BitMap of a 68k Screen of the program */
+enum
+{
+    KAFFEINE_SCREEN_BITMAP_NONE,     /* no 68k Screen's BitMap */
+    KAFFEINE_SCREEN_BITMAP_OWNED,    /* that of an open screen that the program opened */
+    KAFFEINE_SCREEN_BITMAP_BORROWED  /* that of a screen that the program only uses */
+};
+
+/* Whether bm is exactly the BitMap inside a 68k Screen that the program
+   has now, and of which screen: *screen is the native screen for one that
+   the program opened and has not closed, else NULL. Only the table of
+   screens and the shadow map count, never guest bytes, so the program
+   cannot make another address a screen's BitMap, nor a screen's BitMap
+   something else; a 68k Screen that has gone names nothing. Here rather
+   than in kaffeine_screens.c, so that the layer bridge resolves screens
+   without linking the screen bridge. */
+static inline int Kaffeine_ScreenBitMapOf(struct KaffeineContext *ctx, ULONG bm,
+                                          struct Screen **screen)
+{
+    int i;
+
+    *screen = NULL;
+    for (i = 0; bm && i < KAFFEINE_MAX_PUBSCREENS; i++)
+    {
+        ULONG guest = ctx->pubscreens[i].guest;
+
+        if (!guest || !ctx->pubscreens[i].native || bm != guest + M68K_SCR_BITMAP)
+            continue;
+        if (!ctx->pubscreens[i].owned ||
+            Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_SCREEN) != ctx->pubscreens[i].native)
+            return KAFFEINE_SCREEN_BITMAP_BORROWED;
+        *screen = ctx->pubscreens[i].native;
+        return KAFFEINE_SCREEN_BITMAP_OWNED;
+    }
+    return KAFFEINE_SCREEN_BITMAP_NONE;
+}
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,6 +67,8 @@ IPTR Kaffeine_NextPubScreen(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_GetDefaultPubScreen(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_OpenScreen(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_OpenScreenTagList(struct KaffeineContext *ctx, void *cpu);
+/* CloseScreen() stops the program while a BltBitMap() of it runs
+   (ctx->bitmap_blits), before Intuition gets the screen. */
 IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu);
 
 /* At the end of the program, in the task that ran it: the screen locks

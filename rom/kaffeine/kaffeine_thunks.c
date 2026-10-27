@@ -48,6 +48,7 @@
 #include "kaffeine_workbench.h"
 #include "kaffeine_icon.h"
 #include "kaffeine_layers.h"
+#include "kaffeine_regions.h"
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -55,6 +56,8 @@ extern const struct M68KThunkEntry kaffeine_thunks_gadtools_manual[];
 extern const ULONG kaffeine_thunks_gadtools_manual_count;
 extern const struct M68KThunkEntry kaffeine_thunks_graphics_manual[];
 extern const ULONG kaffeine_thunks_graphics_manual_count;
+extern const struct M68KThunkEntry kaffeine_thunks_cybergraphics_manual[];
+extern const ULONG kaffeine_thunks_cybergraphics_manual_count;
 
 const struct M68KThunkEntry kaffeine_thunks_mathffp[] = {
     KAFFEINE_MATHFFP_THUNKS,
@@ -94,6 +97,9 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
             } else if (strcmp(name, "graphics.library") == 0) {
                 manual = kaffeine_thunks_graphics_manual;
                 manual_count = kaffeine_thunks_graphics_manual_count;
+            } else if (strcmp(name, "cybergraphics.library") == 0) {
+                manual = kaffeine_thunks_cybergraphics_manual;
+                manual_count = kaffeine_thunks_cybergraphics_manual_count;
             } else if (strcmp(name, "diskfont.library") == 0) {
                 manual = kaffeine_thunks_diskfont_manual;
                 manual_count = kaffeine_thunks_diskfont_manual_count;
@@ -618,6 +624,7 @@ const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
     KAFFEINE_GRAPHICS_RASTPORT_THUNKS,
     KAFFEINE_GRAPHICS_DISPLAY_THUNKS,
     KAFFEINE_GRAPHICS_LAYER_THUNKS,
+    KAFFEINE_GRAPHICS_REGION_THUNKS,
     { 192, thunk_gfx_LoadRGB4 },
     { 0, NULL }
 };
@@ -625,3 +632,10 @@ const ULONG kaffeine_thunks_graphics_manual_count =
     sizeof(kaffeine_thunks_graphics_manual) / sizeof(kaffeine_thunks_graphics_manual[0]) - 1;
 
 
+/* Bitmap and native-lock-handle calls without a classic converter. */
+const struct M68KThunkEntry kaffeine_thunks_cybergraphics_manual[] = {
+    KAFFEINE_CYBERGRAPHICS_BITMAP_THUNKS,
+    { 0, NULL }
+};
+const ULONG kaffeine_thunks_cybergraphics_manual_count =
+    sizeof(kaffeine_thunks_cybergraphics_manual) / sizeof(kaffeine_thunks_cybergraphics_manual[0]) - 1;

@@ -635,16 +635,20 @@ static void test_registration()
     {
         const M68KThunkEntry &e = kaffeine_thunks_layers_manual[i];
         assert(e.lvo == lvos[i] && e.thunk);
-        if (e.lvo == 96) assert(e.thunk == Kaffeine_LockLayer);
+        if (e.lvo == 90) assert(e.thunk == Kaffeine_DeleteLayer);
+        else if (e.lvo == 186) assert(e.thunk == Kaffeine_CreateUpfrontHookLayer);
+        else if (e.lvo == 96) assert(e.thunk == Kaffeine_LockLayer);
         else if (e.lvo == 102) assert(e.thunk == Kaffeine_UnlockLayer);
         else if (e.lvo == 144) assert(e.thunk == Kaffeine_NewLayerInfo);
         else if (e.lvo == 150) assert(e.thunk == Kaffeine_DisposeLayerInfo);
+        else if (e.lvo == 174) assert(e.thunk == Kaffeine_InstallClipRegion);
         else if (e.lvo == 198) assert(e.thunk == Kaffeine_InstallLayerHook);
         else assert(e.thunk == kaffeine_layers_Unsupported);
     }
     assert(!kaffeine_thunks_layers_manual[std::size(lvos)].lvo &&
            !kaffeine_thunks_layers_manual[std::size(lvos)].thunk);
-    assert(std::size(graphics_manual) == 5 && graphics_manual[0].lvo == 432 &&
+    assert(std::size(graphics_manual) == 16 && graphics_manual[5].lvo == 30 &&
+           graphics_manual[5].thunk == Kaffeine_BltBitMap && graphics_manual[0].lvo == 432 &&
            graphics_manual[0].thunk == Kaffeine_LockLayerRom && graphics_manual[1].lvo == 438 &&
            graphics_manual[1].thunk == Kaffeine_UnlockLayerRom && graphics_manual[2].lvo == 444 &&
            graphics_manual[3].lvo == 450 && graphics_manual[2].thunk == kaffeine_layers_Unsupported &&
@@ -1194,13 +1198,23 @@ static void test_guest_lock_owner()
     assert(owner && f.call(Fixture::layers_base, 96, { 0, layer }) == 0);
     const Counters before = counters();
     m68k_write32(&f.ctx, task_addr, owner + 0x100);
+    /* the blocking locks cannot wait for the other guest task */
     assert(f.call(Fixture::layers_base, 96, { 0, layer }) == 20 && f.stopped());
+    assert(f.call(Fixture::graphics_base, 432, { 0, 0, 0, 0, 0, layer }) == 20 && f.stopped());
     assert(f.call(Fixture::layers_base, 102, { layer }) == 20 && f.stopped());
-    assert(f.call(Fixture::graphics_base, 654, { 0, 0, 0, 0, 0, layer }) == 20 && f.stopped());
+    assert(f.call(Fixture::graphics_base, 438, { 0, 0, 0, 0, 0, layer }) == 20 && f.stopped());
+    /* AttemptLockLayerRom() never blocks: the lock is busy, FALSE, the
+       program runs on, and the native one is never asked */
+    assert(f.call(Fixture::graphics_base, 654, { 0, 0, 0, 0, 0, layer }) == FALSE && f.ctx.running);
+    assert(counters() == before && layer_locks[&a.layer] == 1);
     assert(f.call(Fixture::layers_base, 198, { layer, 0 }) == 20 && f.stopped());
     assert(f.call(Fixture::intuition_base, 312, { mw }) == 20 && f.stopped());
     assert(counters() == before && held_locks == 1);
     m68k_write32(&f.ctx, task_addr, owner);
+    /* the owner itself still nests, also through the attempt */
+    assert(f.call(Fixture::graphics_base, 654, { 0, 0, 0, 0, 0, layer }) == TRUE && f.ctx.running);
+    assert(attempts == before.attempts + 1 && layer_locks[&a.layer] == 2);
+    assert(f.call(Fixture::graphics_base, 438, { 0, 0, 0, 0, 0, layer }) == 0 && held_locks == 1);
     assert(f.call(Fixture::layers_base, 102, { layer }) == 0 && held_locks == 0);
     f.close(mw);
     assert(f.avail() == f.heap_initial);

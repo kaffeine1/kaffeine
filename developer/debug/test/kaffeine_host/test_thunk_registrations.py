@@ -3,10 +3,10 @@
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-The C preprocessor expands the production header macros for all seventeen manual
+The C preprocessor expands the production header macros for all eighteen manual
 thunk tables (exec, dos, intuition, graphics, utility, locale, mathieeedoubbas,
 mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, diskfont, gadtools, icon,
-workbench and layers). Expected
+workbench, cybergraphics and layers). Expected
 vector numbers come independently from the native AROS entry points and from
 the NDK 3.2 fd files (or AROS fd / .conf files for
 AROS-only AVL functions). Each manual handler and the helpers it delegates to
@@ -33,6 +33,7 @@ TABLES = (
     ("exec", "kaffeine_thunks.c", "kaffeine_thunks_exec"),
     ("intuition", "kaffeine_thunks.c", "kaffeine_thunks_intuition_manual"),
     ("graphics", "kaffeine_thunks.c", "kaffeine_thunks_graphics_manual"),
+    ("cybergraphics", "kaffeine_thunks.c", "kaffeine_thunks_cybergraphics_manual"),
     ("diskfont", "kaffeine_thunks_diskfont.c", "kaffeine_thunks_diskfont_manual"),
     ("icon", "kaffeine_icon.c", "kaffeine_thunks_icon_manual"),
     ("utility", "kaffeine_thunks_utility.c", "kaffeine_thunks_utility_manual"),
@@ -73,16 +74,23 @@ DEVICES = ("timer", "console")
 # These device slots deliberately stop the guest; they claim no native API.
 CONSOLE_REFUSED = frozenset((6, 12, 18, 24, 30, 36, 42, 54, 60, 66, 72))
 ICON_REFUSED = frozenset((54, 72, 84, 108, 126, 138, 150, 156, 162, 168, 180, 186, 192, 198))
-# Every generated layers.library slot but LockLayer, UnlockLayer,
-# NewLayerInfo, DisposeLayerInfo and InstallLayerHook, and the graphics calls
-# SyncSBitMap and CopySBitMap: they stop the guest before any native call
-# (InstallLayerInfoHook, DoHookClipRects, ChangeLayerShape, CollectPixelsLayer
-# and the hook layer constructors would otherwise run guest Hooks from native
-# code).
-LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 108, 114, 120,
-                            126, 132, 138, 156, 162, 168, 174, 180, 186, 192,
+# Every generated layers.library slot but DeleteLayer, LockLayer, UnlockLayer,
+# NewLayerInfo, DisposeLayerInfo, CreateUpfrontHookLayer and InstallLayerHook,
+# and the graphics calls SyncSBitMap and CopySBitMap: they stop the guest
+# before any native call (InstallLayerInfoHook, DoHookClipRects,
+# ChangeLayerShape, CollectPixelsLayer and the other hook layer constructors
+# would otherwise run guest Hooks from native code).
+LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114, 120,
+                            126, 132, 138, 156, 162, 168, 180, 192,
                             204, 210, 216, 222, 228, 234, 240, 246, 258, 264, 270))
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
+CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
+GRAPHICS_BITMAP_REFUSED = frozenset((390, 606, 636, 678, 918, 924, 942, 1020, 1206))
+# Every graphics.conf vector that takes a Region but NewRegion, OrRectRegion
+# and DisposeRegion: the generated thunks would read a 68k Region as native.
+GRAPHICS_REGION_REFUSED = frozenset((504, 522, 528, 558, 612, 618, 624,
+                                     1086, 1092, 1098, 1104, 1110, 1116, 1122,
+                                     1128, 1134, 1140, 1146, 1152, 1158))
 
 
 def module_name(library):
@@ -402,6 +410,17 @@ CASES = (
     ("layers", "installlayerhook.c", "InstallLayerHook", "Kaffeine_InstallLayerHook"),
     ("layers", "newlayerinfo.c", "NewLayerInfo", "Kaffeine_NewLayerInfo"),
     ("layers", "disposelayerinfo.c", "DisposeLayerInfo", "Kaffeine_DisposeLayerInfo"),
+    ("layers", "createupfronthooklayer.c", "CreateUpfrontHookLayer",
+     "Kaffeine_CreateUpfrontHookLayer"),
+    ("layers", "deletelayer.c", "DeleteLayer", "Kaffeine_DeleteLayer"),
+    ("layers", "installclipregion.c", "InstallClipRegion", "Kaffeine_InstallClipRegion"),
+    ("graphics", "newregion.c", "NewRegion", "Kaffeine_NewRegion"),
+    ("graphics", "orrectregion.c", "OrRectRegion", "Kaffeine_OrRectRegion"),
+    ("graphics", "disposeregion.c", "DisposeRegion", "Kaffeine_DisposeRegion"),
+
+    # Reads every fd register, A2 only to refuse a TempA: no ignored ones.
+    ("graphics", "bltbitmap.c", "BltBitMap", "Kaffeine_BltBitMap"),
+    ("graphics", "getbitmapattr.c", "GetBitMapAttr", "Kaffeine_GetBitMapAttr"),
 )
 
 # Explicit table of manual handlers that intentionally ignore one or more
@@ -541,6 +560,10 @@ ALLOWED_IGNORED_REGS = {
         frozenset({"A0"}),
         "LockLayer() ignores its dummy argument, as layers.library does",
     ),
+    "Kaffeine_DeleteLayer": (
+        frozenset({"A0"}),
+        "DeleteLayer() ignores its dummy argument, as layers.library does",
+    ),
 }
 
 HANDLER_PREFIX_RE = re.compile(
@@ -659,6 +682,8 @@ def parse_conf_file(path):
 
 
 def library_source_dir(root, library):
+    if library == "cybergraphics":
+        return root / "workbench" / "libs" / "cgfx"
     # layers.library of AROS is built from rom/hyperlayers
     if library == "layers":
         return root / "rom/hyperlayers"
@@ -926,6 +951,23 @@ def main():
     seen_icon_refusals = set()
     seen_layers_refusals = set()
     seen_graphics_layer_refusals = set()
+    seen_graphics_region_refusals = set()
+    seen_graphics_bitmap_refusals = set()
+    seen_cybergraphics_bitmap_refusals = set()
+    bitmap_refused = re.findall(
+        r"IPTR kaffeine_bitmaps_Unsupported\([^\n]*\n\{(.*?)\n\}",
+        sources["kaffeine_layers.c"], re.DOTALL)
+    if len(bitmap_refused) != 1 or not re.fullmatch(
+            r'\s*\(void\)cpu;\s*return layers_refuse\(ctx,\s*"unsupported graphics BitMap call"\);\s*',
+            bitmap_refused[0]):
+        raise ValueError("Bitmap refusal slots must only stop the guest")
+    regions_refused = re.findall(
+        r"IPTR kaffeine_regions_Unsupported\([^\n]*\n\{(.*?)\n\}",
+        (core / "kaffeine_regions.c").read_text(encoding="latin-1"), re.DOTALL)
+    if len(regions_refused) != 1 or not re.fullmatch(
+            r'\s*\(void\)cpu;\s*return regions_refuse\(ctx,\s*"unsupported Region call"\);\s*',
+            regions_refused[0]):
+        raise ValueError("Region refusal slots must only stop the guest")
     layers_refused = re.findall(r"IPTR kaffeine_layers_Unsupported\([^\n]*\n\{(.*?)\n\}",
                                 sources["kaffeine_layers.c"], re.DOTALL)
     if len(layers_refused) != 1 or not re.fullmatch(
@@ -967,6 +1009,23 @@ def main():
                     print("FAIL", module_name(library), -vector, "unexpected layer refusal slot")
                 else:
                     allowed[1].add(vector)
+                continue
+            if handler == "kaffeine_bitmaps_Unsupported":
+                allowed = {"graphics": (GRAPHICS_BITMAP_REFUSED, seen_graphics_bitmap_refusals),
+                           "cybergraphics": (CYBERGRAPHICS_BITMAP_REFUSED,
+                                             seen_cybergraphics_bitmap_refusals)}.get(library)
+                if not allowed or vector not in allowed[0]:
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, "unexpected bitmap refusal slot")
+                else:
+                    allowed[1].add(vector)
+                continue
+            if handler == "kaffeine_regions_Unsupported":
+                if library != "graphics" or vector not in GRAPHICS_REGION_REFUSED:
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, "unexpected Region refusal slot")
+                else:
+                    seen_graphics_region_refusals.add(vector)
                 continue
             want_func = expected_function_name(handler)
             entry = ndk_spec.get(vector)
@@ -1039,6 +1098,15 @@ def main():
     if seen_graphics_layer_refusals != GRAPHICS_LAYER_REFUSED:
         failures += 1
         print("FAIL graphics.library layer refusal slots changed")
+    if seen_graphics_region_refusals != GRAPHICS_REGION_REFUSED:
+        failures += 1
+        print("FAIL graphics.library Region refusal slots changed")
+    if seen_graphics_bitmap_refusals != GRAPHICS_BITMAP_REFUSED:
+        failures += 1
+        print("FAIL graphics.library bitmap refusal slots changed")
+    if seen_cybergraphics_bitmap_refusals != CYBERGRAPHICS_BITMAP_REFUSED:
+        failures += 1
+        print("FAIL cybergraphics.library bitmap refusal slots changed")
     unused_exceptions = sorted(set(ALLOWED_IGNORED_REGS) - seen_ignored)
     for handler in unused_exceptions:
         failures += 1

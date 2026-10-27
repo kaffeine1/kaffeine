@@ -36,6 +36,21 @@ void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy,
                   WORD xMin, WORD yMin, WORD xMax, WORD yMax);
 struct Layer;
 BOOL AttemptLockLayerRom(struct Layer *layer);
+struct BitMap;
+void InitBitMap(struct BitMap *bm, BYTE depth, UWORD width, UWORD height);
+/* The native Region calls of the Region bridge (graphics.conf) */
+struct Region;
+struct Rectangle;
+struct Region *NewRegion(void);
+void DisposeRegion(struct Region *region);
+BOOL OrRectRegion(struct Region *region, struct Rectangle *rect);
+BOOL OrRegionRegion(struct Region *r1, struct Region *r2);
+
+LONG BltBitMap(struct BitMap *srcBitMap, WORD xSrc, WORD ySrc, struct BitMap *destBitMap,
+               WORD xDest, WORD yDest, WORD xSize, WORD ySize, UBYTE minterm, UBYTE mask,
+               UBYTE *tempA);
+void WaitBlit(void);
+IPTR GetBitMapAttr(struct BitMap *bitmap, ULONG attribute);
 
 #ifdef __cplusplus
 }

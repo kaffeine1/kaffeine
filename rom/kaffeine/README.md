@@ -447,7 +447,7 @@ The bridge provides generated or manual thunks for the following libraries:
 | dos.library | 112 | 47 | 159 | File I/O, locks, CLI, pattern matching, ReadArgs, packets |
 | intuition.library | 130 | 8 | 138 | Windows, screens, gadgets, menus, IDCMP, requesters |
 | graphics.library | 172 | 26 | 198 | Rendering, text, blitting, layers, fonts, colors, display metadata |
-| layers.library | 40 | 40 | 40 | Live 68k Layer snapshots; owned screen-bar drawing contexts, window layer locks/hooks and owned NewLayerInfo/DisposeLayerInfo; remaining slots stop with 20 |
+| layers.library | 40 | 40 | 40 | Live Layer snapshots, owned screen-bar drawing, layer locks/hooks, owned LayerInfos, private offscreen layers and clip Regions; remaining slots stop with 20 |
 | utility.library | 42 | — | 42 | TagItem processing, hooks, date functions |
 | gadtools.library | 18 | — | 18 | GadTools gadget toolkit |
 | asl.library | 8 | — | 8 | File/font/screenmode requesters |

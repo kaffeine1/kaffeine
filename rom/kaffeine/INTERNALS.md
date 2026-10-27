@@ -2890,7 +2890,8 @@ Screen of.
    `Screen.LayerInfo.top_layer` (224) name them. A screen without a 68k
    Screen gets a 102-byte 68k Layer_Info of the bridge. Only bounds,
    priority, Flags, scroll, Width/Height and guest pointers are written;
-   ClipRects, regions, bitmaps and native pointers stay 0, the Lock is an
+   In these window/screen snapshots, ClipRects, regions, bitmaps and native
+   pointers stay 0, the Lock is an
    initialized guest semaphore, and BackFill is 0, 1 (`LAYERS_NOBACKFILL`)
    or an opaque 20-byte handle of a native hook of an owned layer.
 2. 68k Layers are not shadow-map entries; generated thunks therefore never
@@ -2906,7 +2907,8 @@ Screen of.
    screen gets a 68k Screen, and in `ctx->gui_poll`, which the outermost
    `Kaffeine_RunCPU()` calls every `KAFFEINE_GUI_POLL_SLICES` (4096) completed
    slices, with or without guest tasks. None is taken while the program holds
-   a layer lock.
+   a window/screen layer lock. Private offscreen locks have their own counter
+   and do not freeze unrelated screen snapshots.
 4. Owned 68k Layers belong to windows of the program; all others are
    borrowed (bar, GZZ borders, requesters, other programs): readable, never
    locked or changed through the bridge. `WindowToBack()`/`WindowToFront()`
@@ -2918,13 +2920,14 @@ Screen of.
    `UnlockLayer()`, `LockLayerRom()`, `UnlockLayerRom()` and
    `AttemptLockLayerRom()` lock owned layers, nested and counted. Lock ownership
    distinguishes guest tasks: a different guest task cannot recurse through the
-   single native executor; contention through these layer calls stops with 20.
+   single native executor; blocking contention stops with 20, while
+   `AttemptLockLayerRom()` returns FALSE without a native call.
    Applying pending backdrop bits while any layer lock is held also stops
    with 20 before an IBase or another layer lock could invert the order.
    Native AROS currently preserves its priority class when the public backdrop
-   bits are cleared; the bridge publishes that real order. Except for the owned
-   LayerInfo calls below, every other
-   layers.library slot, `SyncSBitMap()` and `CopySBitMap()` stop with 20.
+   bits are cleared; the bridge publishes that real order. The owned LayerInfo
+   and private-layer operations below are also supported. Other layers.library
+   slots, `SyncSBitMap()` and `CopySBitMap()` stop with 20.
 5. A screen opened by the program exposes its bar's internal RastPort
    through `Screen.BarLayer.rp`, with a reverse `RastPort.Layer` identity.
    Only this custom-screen owner gains drawing access: bars on borrowed
@@ -2946,9 +2949,58 @@ Screen of.
    102-byte classic mirror, with its guest semaphore and public creation flag.
    A separate table holds at most 16 pairs; these handles never enter the
    generic shadow map. Allocation failures roll back fully. `DisposeLayerInfo()`
-   (-150) accepts only a live owned handle with an empty native list; borrowed
-   screen LayerInfos, stale or foreign handles and nonempty lists stop with 20
-   before native disposal. Teardown releases each remaining empty pair once.
+   (-150) accepts only a live owned handle with no user layers; an internal
+   root created by this bridge may remain until native disposal. Borrowed
+   screen LayerInfos, stale or foreign handles and user layers stop with 20
+   before native disposal. Teardown releases each remaining disposable pair once.
+8. `CreateUpfrontHookLayer()` (-186) and `DeleteLayer()` (-90) own private
+   offscreen layers on these independent LayerInfos. A classic planar BitMap
+   has even bytes per row up to 4094, at most 32767 rows, depth 1..8,
+   flags 0 or BMF_STANDARD, zero pad and word-aligned planes wholly inside
+   the guest heap. A real native `InitBitMap()` adapter points at those planes;
+   its descriptor stays fixed while the LayerInfo and its internal root use it.
+   The native root is omitted from the guest user-layer list. Each private
+   layer has a protected classic Layer, typed RastPort and 20-byte backfill
+   message. A synchronous 68k hook sees those identities even during the
+   constructor, before it returns. It runs on the current guest CPU and native
+   executor only; recursion, foreign-task callbacks and teardown never run
+   guest code. Creation/deletion cannot bypass another guest task's sibling
+   layer lock. Native failure rolls back allocations and keeps any objects
+   still referenced by a surviving native root. Cleanup deletes layers before
+   LayerInfos, then releases their persistent bitmap adapters.
+9. `kaffeine_regions.c` owns up to 16 native graphics Regions. `NewRegion()`
+   (-516) returns a stable protected 12-byte classic Region; its bounded list
+   has up to 64 big-endian 16-byte RegionRectangles linked only by guest
+   addresses, with the native relative bounds. `OrRectRegion()` (-510)
+   clones the native Region, applies the union and prepares a complete new
+   snapshot before publishing. Native failure, missing guest memory or excess
+   rectangles leaves both previous states intact. `InstallClipRegion()` (-174)
+   accepts a private layer and NULL or an owned Region, returns the previous
+   guest identity and publishes `Layer.ClipRegion`. Each installed Region is
+   leased; mutation or disposal while leased is refused. `DisposeRegion()`
+   (-534) accepts only a live unleased Region. Other Region-taking graphics
+   vectors stop with 20 before generated code can reinterpret the structures.
+   Clip Regions detach before layer deletion and are freed after layer cleanup.
+10. `BltBitMap()` (-30) accepts unchanged common BitMaps, validated ordinary
+    planar BitMaps and typed handles for screens opened by the program.
+    `Screen.RastPort.BitMap` names the protected embedded classic BitMap;
+    its scalar snapshot comes from the actual native RastPort bitmap and
+    its planes stay opaque. Only the live screen table resolves that identity,
+    and borrowed screens are refused. Standalone planar descriptors get
+    call-local native `InitBitMap()` adapters over their checked guest planes;
+    both rectangles must fit, with native screen dimensions queried directly.
+    `WaitBlit()` completes before adapters go, and a context-wide counter
+    prevents LayerInfo disposal or screen closure during the blit. The native
+    LONG result is preserved; the AROS planar-driver path currently returns 8
+    even for fewer selected planes. Independent ARM and 68k probes check actual
+    pixels and return values in both transfer directions. `GetBitMapAttr()`
+    (-960) reads scalar attributes through the same typed identities, preserving
+    ordinary planar flags and querying actual native screen metadata. Unknown
+    attributes return zero. The nine other graphics
+    vectors that consume, allocate or initialize BitMaps are explicitly refused
+    until their conversion is implemented; no generated fallback receives these
+    classic bitmap objects or screen handles. The five cybergraphics bitmap
+    query/lock/transfer vectors have the same explicit refusal boundary.
 
 ## Custom Chip Emulation
 
