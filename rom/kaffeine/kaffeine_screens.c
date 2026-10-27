@@ -37,12 +37,30 @@
     has none of; the NDK warns that a copy's screen pointer cannot be used
     safely anyway. NextPubScreen() and GetDefaultPubScreen() write names
     into guest memory, where the name and its NUL must fit.
+
+    OpenScreen() and OpenScreenTagList() give Intuition a native NewScreen
+    and one flat native tag list, the tags of A1, else the Extension of an
+    ExtNewScreen, as AROS takes them, with only tags whose data the bridge
+    knows: scalars, the title and the TextAttr as native copies that stay
+    while the screen is open, since Intuition keeps both, the pens as native
+    UWORDs and SA_ErrorCode as a native ULONG, written to the program's one
+    afterwards. Anything else, a NewScreen with Gadgets or a CustomBitMap,
+    and input outside guest memory stop the program before Intuition is
+    called. An opened screen gets a 68k Screen as a locked one does, of its
+    own shadow type, and its entry in the table of screens, which LockPubScreen()
+    of the same screen finds, so that the program sees one 68k Screen of it.
+    That 68k Screen stays until CloseScreen() of the program closes the
+    screen; when Intuition refuses, everything stays as it was. Screens that
+    the program leaves open close at its end, unless a window of the program
+    is still on them.
 */
 
 #include "kaffeine_intern.h"
+#include "kaffeine_fontattr.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_screens.h"
+#include "kaffeine_taglist.h"
 
 #include <aros/debug.h>
 #include <exec/lists.h>
@@ -53,14 +71,18 @@
 #include <graphics/view.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
+#include <proto/exec.h>
 #include <proto/graphics.h>
 #include <proto/intuition.h>
+#include <utility/tagitem.h>
 #include <string.h>
 
-/* The 68k Screen, ViewPort, BitMap, RastPort, TextAttr, List and
-   PubScreenNode of the NDK */
+/* The 68k NewScreen, ExtNewScreen, Screen, ViewPort, BitMap, RastPort,
+   TextAttr, List and PubScreenNode of the NDK */
 enum
 {
+    G_NS_FONT = 16, G_NS_GADGETS = 24, G_NS_CUSTOMBITMAP = 28, G_NS_EXTENSION = 32,
+    G_EXTNEWSCREEN_SIZE = 36, G_SCR_DEFAULTTITLE = 26,
     G_SCR_MOUSEY = 16, G_SCR_MOUSEX = 18, G_SCR_BARHEIGHT = 30, G_SCR_BARVBORDER = 31,
     G_SCR_BARHBORDER = 32, G_SCR_MENUVBORDER = 33, G_SCR_MENUHBORDER = 34,
     G_SCR_WBORTOP = 35, G_SCR_WBORLEFT = 36, G_SCR_WBORRIGHT = 37, G_SCR_WBORBOTTOM = 38,
@@ -85,6 +107,24 @@ enum
 #define MAX_LISTED 256
 /* A font name is copied up to this length. */
 #define MAX_FONT_NAME 255
+/* The longest title of a screen that the program opens */
+#define MAX_TITLE 255
+/* SA_Pens: at most this many pens before the ~0 that ends them; Intuition
+   reads no more than NUMDRIPENS of them. */
+#define MAX_PENS 64
+/* The most user tags of one OpenScreenTagList() */
+#define MAX_SCREEN_TAGS 256
+
+/* What Intuition points to while a screen that the program opened is open:
+   SA_Font or the Font of the NewScreen, with its name and tags, and the
+   title */
+struct KaffeineScreenKeep
+{
+    struct TTextAttr font;
+    struct TagItem font_tags[KAFFEINE_FONTATTR_TAGS + 1];
+    char font_name[MAX_FONT_NAME + 1];
+    char title[MAX_TITLE + 1];
+};
 
 static BOOL guest_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)
 {
@@ -276,8 +316,10 @@ static void font_unhold(struct KaffeineContext *ctx, int taken)
    of the RastPort, the ViewPort and the RastPort registered, the 68k
    TextFont of the RastPort, and its native font held; 0 without memory or
    room in the shadow table or the font tables, and when the font cannot be
-   held. */
-static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULONG *font)
+   held. type is the shadow type of the 68k Screen: KAFFEINE_SHADOW_SCREEN
+   for a screen that the program opened, else KAFFEINE_SHADOW_PUBSCREEN. */
+static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULONG *font,
+                           UWORD type)
 {
     const char *name = scr->Font ? (const char *)scr->Font->ta_Name : NULL;
     /* AskFont() points the name into the TextFont of the RastPort */
@@ -305,7 +347,7 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
         return 0;
     }
     rp = guest + M68K_SCR_RASTPORT;
-    if (!Kaffeine_ShadowAdd(ctx, guest, scr, KAFFEINE_SHADOW_PUBSCREEN) ||
+    if (!Kaffeine_ShadowAdd(ctx, guest, scr, type) ||
         !Kaffeine_ShadowAdd(ctx, guest + M68K_SCR_VIEWPORT, &scr->ViewPort, KAFFEINE_SHADOW_VIEWPORT) ||
         !Kaffeine_RastPortAttach(ctx, rp, &scr->RastPort) ||
         /* a RastPort without the 68k TextFont of its font would show NULL */
@@ -313,7 +355,7 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
     {
         Kaffeine_RastPortDetach(ctx, rp);
         Kaffeine_ShadowForget(ctx, guest + M68K_SCR_VIEWPORT, KAFFEINE_SHADOW_VIEWPORT);
-        Kaffeine_ShadowForget(ctx, guest, KAFFEINE_SHADOW_PUBSCREEN);
+        Kaffeine_ShadowForget(ctx, guest, type);
         Kaffeine_MirrorRelease(ctx, guest);
         font_unhold(ctx, held);
         return 0;
@@ -334,39 +376,77 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
     return guest;
 }
 
-/* A native screen is the program's while it holds a lock on it or has a
-   window there; while the program holds the list of public screens, under
-   which Intuition closes no public screen, every 68k Screen stays, also
-   when there was no memory for the copy. */
-static BOOL screen_used(struct KaffeineContext *ctx, int i)
+/* Whether a 68k Window of the program lies on that native screen */
+static BOOL screen_windows(struct KaffeineContext *ctx, const struct Screen *scr)
 {
     UWORD s;
 
-    if (ctx->pubscreens[i].locks || ctx->pubscreen_list_locks)
-        return TRUE;
     for (s = 0; s < ctx->num_shadows; s++)
         if (ctx->shadow_map[s].type == KAFFEINE_SHADOW_WINDOW &&
-            ((struct Window *)ctx->shadow_map[s].native_ptr)->WScreen == ctx->pubscreens[i].native)
+            ((struct Window *)ctx->shadow_map[s].native_ptr)->WScreen == scr)
             return TRUE;
     return FALSE;
 }
 
-/* The entry goes, with the 68k Screen that the bridge made for it */
+/* A native screen is the program's while it is open from OpenScreen() of
+   the program, while the program holds a lock on it or has a window there;
+   while the program holds the list of public screens, under which
+   Intuition closes no public screen, every 68k Screen stays, also when
+   there was no memory for the copy. */
+static BOOL screen_visuals(struct KaffeineContext *ctx, struct Screen *screen)
+{
+    int i;
+    for (i = 0; i < KAFFEINE_MAX_VISUALINFOS; i++)
+        if (ctx->visualinfos[i].native && ctx->visualinfos[i].screen == screen)
+            return TRUE;
+    return FALSE;
+}
+
+static BOOL screen_used(struct KaffeineContext *ctx, int i)
+{
+    return ctx->pubscreens[i].owned || ctx->pubscreens[i].locks || ctx->pubscreen_list_locks ||
+           screen_windows(ctx, ctx->pubscreens[i].native) ||
+           screen_visuals(ctx, ctx->pubscreens[i].native);
+}
+
+/* Whether the 68k Screen of the entry is one that the bridge made, and
+   fills in again */
+static BOOL screen_mirrored(struct KaffeineContext *ctx, int i)
+{
+    return ctx->pubscreens[i].owned ||
+           Kaffeine_ShadowNative(ctx, ctx->pubscreens[i].guest, KAFFEINE_SHADOW_PUBSCREEN);
+}
+
+/* The entry goes, with the 68k Screen that the bridge made for it; for a
+   screen that the program opened, only once Intuition has closed it */
 static void screen_forget(struct KaffeineContext *ctx, int i)
 {
     ULONG guest = ctx->pubscreens[i].guest;
+    UWORD type = ctx->pubscreens[i].owned ? KAFFEINE_SHADOW_SCREEN : KAFFEINE_SHADOW_PUBSCREEN;
 
-    if (Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_PUBSCREEN))
+    if (Kaffeine_ShadowNative(ctx, guest, type))
     {
         Kaffeine_RastPortDetach(ctx, guest + M68K_SCR_RASTPORT);
         Kaffeine_ShadowForget(ctx, guest + M68K_SCR_VIEWPORT, KAFFEINE_SHADOW_VIEWPORT);
-        Kaffeine_ShadowForget(ctx, guest, KAFFEINE_SHADOW_PUBSCREEN);
+        Kaffeine_ShadowForget(ctx, guest, type);
         Kaffeine_MirrorRelease(ctx, guest);
     }
     ctx->pubscreens[i].native = NULL;
     ctx->pubscreens[i].guest = 0;
     ctx->pubscreens[i].font = 0;
     ctx->pubscreens[i].locks = 0;
+    ctx->pubscreens[i].owned = FALSE;
+    ctx->pubscreens[i].keep = NULL;
+}
+
+/* A screen that the program opened has closed: its entry and 68k Screen
+   go, and what Intuition pointed to */
+static void screen_closed(struct KaffeineContext *ctx, int i)
+{
+    struct KaffeineScreenKeep *keep = ctx->pubscreens[i].keep;
+
+    screen_forget(ctx, i);
+    FreeVec(keep);
 }
 
 /* ctx->screen_release: a 68k Window of the program on that screen has
@@ -379,9 +459,22 @@ static void screen_release(struct KaffeineContext *ctx, struct Screen *scr)
         screen_forget(ctx, i);
 }
 
+/* A free entry of the table, or -1 */
+static int screen_free_entry(struct KaffeineContext *ctx)
+{
+    int i;
+
+    for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
+        if (!ctx->pubscreens[i].guest)
+            return i;
+    return -1;
+}
+
 /* The entry of a screen that the program has just locked: the one it has,
-   else a new one with a 68k Screen of its own, or with the 68k Screen of a
-   screen that the program opened; -1 without memory or room. */
+   also that of a screen that the program opened, else a new one with a 68k
+   Screen of its own, or with a 68k Screen of type KAFFEINE_SHADOW_SCREEN
+   that the bridge did not make here, which stays as it is; -1 without
+   memory or room. */
 static int screen_entry(struct KaffeineContext *ctx, struct Screen *scr)
 {
     int i = screen_index(ctx, scr, 0);
@@ -389,20 +482,20 @@ static int screen_entry(struct KaffeineContext *ctx, struct Screen *scr)
 
     if (i >= 0)
         return i;
-    for (i = 0; i < KAFFEINE_MAX_PUBSCREENS && ctx->pubscreens[i].guest; i++)
-        ;
-    if (i == KAFFEINE_MAX_PUBSCREENS)
+    if ((i = screen_free_entry(ctx)) < 0)
     {
         bug("[kaffeine] public screen table full, no 68k Screen for %p\n", scr);
         return -1;
     }
     guest = Kaffeine_ShadowGuest(ctx, scr, KAFFEINE_SHADOW_SCREEN);
-    if (!guest && !(guest = screen_create(ctx, scr, &font)))
+    if (!guest && !(guest = screen_create(ctx, scr, &font, KAFFEINE_SHADOW_PUBSCREEN)))
         return -1;
     ctx->pubscreens[i].native = scr;
     ctx->pubscreens[i].guest = guest;
     ctx->pubscreens[i].font = font;
     ctx->pubscreens[i].locks = 0;
+    ctx->pubscreens[i].owned = FALSE;
+    ctx->pubscreens[i].keep = NULL;
     ctx->screen_release = screen_release;
     return i;
 }
@@ -448,8 +541,8 @@ IPTR Kaffeine_LockPubScreen(struct KaffeineContext *ctx, void *cpu)
         return 0;
     }
     ctx->pubscreens[i].locks++;
-    /* the 68k Screen of a screen that the program opened stays as it is */
-    if (Kaffeine_ShadowNative(ctx, ctx->pubscreens[i].guest, KAFFEINE_SHADOW_PUBSCREEN))
+    /* a 68k Screen that the bridge did not make stays as it is */
+    if (screen_mirrored(ctx, i))
         screen_fill(ctx, ctx->pubscreens[i].guest, ctx->pubscreens[i].font, scr);
     return ctx->pubscreens[i].guest;
 }
@@ -660,6 +753,409 @@ IPTR Kaffeine_GetDefaultPubScreen(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
+/* ── Screens that the program opens ──────────────────────────────── */
+
+/* How the bridge takes each tag of OpenScreenTagList(): a LONG, sign
+   extended to the native IPTR as Intuition compares SA_Width with ~0; an
+   ULONG, BOOL or pen; SA_Type, which must not ask for a CustomBitMap; the
+   tags with data that the bridge converts; and the others, refused. */
+enum
+{
+    ST_REFUSED, ST_SIGNED, ST_UNSIGNED, ST_TYPE, ST_BITMAP, ST_FONT, ST_TITLE, ST_PENS,
+    ST_ERROR, ST_PUBNAME, ST_DCLIP
+};
+
+static int screen_tag(ULONG tag)
+{
+    switch (tag)
+    {
+    case SA_Left: case SA_Top: case SA_Width: case SA_Height: case SA_Depth:
+    case SA_SysFont: case SA_Overscan: case SA_ColorMapEntries:
+        return ST_SIGNED;
+    case SA_DetailPen: case SA_BlockPen: case SA_DisplayID: case SA_ShowTitle:
+    case SA_Behind: case SA_Quiet: case SA_AutoScroll: case SA_FullPalette:
+    case SA_Draggable: case SA_Exclusive: case SA_SharePens: case SA_Interleaved:
+    case SA_LikeWorkbench: case SA_MinimizeISG:
+        return ST_UNSIGNED;
+    case SA_Type:
+        return ST_TYPE;
+    case SA_BitMap:
+        return ST_BITMAP;
+    case SA_Font:
+        return ST_FONT;
+    case SA_Title:
+        return ST_TITLE;
+    case SA_Pens:
+        return ST_PENS;
+    case SA_ErrorCode:
+        return ST_ERROR;
+    case SA_PubName:
+        return ST_PUBNAME;
+    case SA_DClip:
+        return ST_DCLIP;
+    default:
+        /* SA_Colors, SA_Colors32, SA_PubTask, SA_PubSig, SA_BackFill,
+           SA_VideoControl, SA_Parent, SA_FrontChild, SA_BackChild and
+           anything unknown */
+        return ST_REFUSED;
+    }
+}
+
+/* One OpenScreen() or OpenScreenTagList(): the guest values that count,
+   as Intuition takes them (the last SA_Font, SA_Title and SA_Pens over the
+   NewScreen, the first SA_ErrorCode and SA_PubName), and their native
+   copies for the call */
+struct ScreenOpen
+{
+    ULONG list, items;
+    ULONG font, title, pens, error, pubname, dclip;
+    BOOL error_tag, pubname_tag;
+    ULONG error_value;
+    UWORD pen_array[MAX_PENS + 1];
+    struct KaffeineFontAttr font_in;
+    struct Rectangle clip;
+};
+
+/* Stop the program for input of OpenScreen() or OpenScreenTagList() that
+   the bridge does not take */
+static IPTR open_refuse(struct KaffeineContext *ctx, const char *call, const char *why)
+{
+    bug("[kaffeine] %s: %s, stopping (20)\n", call, why);
+    ctx->running = FALSE;
+    ctx->exit_code = 20;
+    return 20;
+}
+
+/* No screen: the error goes to SA_ErrorCode of the program */
+static IPTR open_failed(struct KaffeineContext *ctx, struct ScreenOpen *o, ULONG error)
+{
+    if (o->error)
+        m68k_write32(ctx, o->error, error);
+    return 0;
+}
+
+/* A string that ends inside guest memory within max characters */
+static BOOL bounded_string(struct KaffeineContext *ctx, ULONG addr, ULONG max)
+{
+    ULONG room;
+
+    if (!guest_range(ctx, addr, 1))
+        return FALSE;
+    room = ctx->mem_size - addr;
+    return memchr(ctx->mem + addr, 0, room < max + 1 ? room : max + 1) != NULL;
+}
+
+/* The tags, walked once without writing anything: what they hold, and why
+   the bridge refuses them */
+static const char *open_tags(struct KaffeineContext *ctx, struct ScreenOpen *o)
+{
+    struct KaffeineTagWalk walk;
+    ULONG item, tag, data;
+    int step;
+
+    Kaffeine_TagWalkInit(&walk, o->list);
+    while ((step = Kaffeine_TagWalkNext(ctx, &walk, &item)) == KAFFEINE_TAG_ITEM)
+    {
+        if (o->items == MAX_SCREEN_TAGS)
+            return "more tags than the bridge takes";
+        o->items++;
+        tag = m68k_read32(ctx, item);
+        data = m68k_read32(ctx, item + 4);
+        switch (screen_tag(tag))
+        {
+        case ST_REFUSED:
+            bug("[kaffeine] screen tag %08lx refused\n", (unsigned long)tag);
+            return "a tag that the bridge does not convert";
+        case ST_TYPE:
+            if (data & CUSTOMBITMAP)
+                return "SA_Type with CUSTOMBITMAP";
+            break;
+        case ST_BITMAP:
+            if (data)
+                return "SA_BitMap";
+            break;
+        case ST_FONT:
+            o->font = data;
+            break;
+        case ST_TITLE:
+            o->title = data;
+            break;
+        case ST_PENS:
+            o->pens = data;
+            break;
+        case ST_DCLIP:
+            o->dclip = data;
+            break;
+        case ST_ERROR:
+            if (!o->error_tag)
+                o->error = data;
+            o->error_tag = TRUE;
+            break;
+        case ST_PUBNAME:
+            if (!o->pubname_tag)
+                o->pubname = data;
+            o->pubname_tag = TRUE;
+            break;
+        }
+    }
+    return step == KAFFEINE_TAG_END ? NULL : "a tag list outside guest memory or without an end";
+}
+
+/* The guest values that count, checked and read into native storage */
+static const char *open_values(struct KaffeineContext *ctx, struct ScreenOpen *o)
+{
+    ULONG i;
+
+    if (o->font && (!Kaffeine_FontAttrIn(ctx, o->font, &o->font_in) ||
+                    !bounded_string(ctx, m68k_read32(ctx, o->font), MAX_FONT_NAME)))
+        return "a TextAttr that the bridge does not take";
+    if (o->title && !bounded_string(ctx, o->title, MAX_TITLE))
+        return "a title outside guest memory or longer than 255 characters";
+    if (o->pubname && !bounded_string(ctx, o->pubname, MAXPUBSCREENNAME))
+        return "SA_PubName outside guest memory or longer than MAXPUBSCREENNAME";
+    if (o->error && !guest_range(ctx, o->error, 4))
+        return "SA_ErrorCode outside guest memory";
+    if (o->dclip)
+    {
+        if (!guest_range(ctx, o->dclip, 8))
+            return "SA_DClip outside guest memory";
+        o->clip.MinX = (WORD)m68k_read16(ctx, o->dclip);
+        o->clip.MinY = (WORD)m68k_read16(ctx, o->dclip + 2);
+        o->clip.MaxX = (WORD)m68k_read16(ctx, o->dclip + 4);
+        o->clip.MaxY = (WORD)m68k_read16(ctx, o->dclip + 6);
+    }
+    if (o->pens)
+    {
+        for (i = 0; i <= MAX_PENS; i++)
+        {
+            if (!guest_range(ctx, o->pens + 2 * i, 2))
+                return "SA_Pens outside guest memory";
+            if ((o->pen_array[i] = m68k_read16(ctx, o->pens + 2 * i)) == (UWORD)~0)
+                break;
+        }
+        if (i > MAX_PENS)
+            return "SA_Pens without ~0 within 64 pens";
+    }
+    if (o->error)
+        o->error_value = m68k_read32(ctx, o->error);
+    return NULL;
+}
+
+/* The native copies that Intuition keeps while the screen is open */
+static void open_keep(struct KaffeineContext *ctx, struct ScreenOpen *o,
+                      struct KaffeineScreenKeep *keep)
+{
+    if (o->font)
+    {
+        keep->font = o->font_in.attr;
+        strcpy(keep->font_name, (const char *)o->font_in.attr.tta_Name);
+        keep->font.tta_Name = (STRPTR)keep->font_name;
+        if (o->font_in.attr.tta_Tags)
+        {
+            memcpy(keep->font_tags, o->font_in.tags, sizeof(keep->font_tags));
+            keep->font.tta_Tags = keep->font_tags;
+        }
+    }
+    if (o->title)
+        strcpy(keep->title, (const char *)ctx->mem + o->title);
+}
+
+/* The native tag list of the checked guest one: the same user tags in the
+   same order, each with the native data of the value that counts */
+static void open_native_tags(struct KaffeineContext *ctx, struct ScreenOpen *o,
+                             struct KaffeineScreenKeep *keep, struct TagItem *tags)
+{
+    struct KaffeineTagWalk walk;
+    ULONG item, data, n;
+
+    Kaffeine_TagWalkInit(&walk, o->list);
+    for (n = 0; n < o->items && Kaffeine_TagWalkNext(ctx, &walk, &item) == KAFFEINE_TAG_ITEM; n++)
+    {
+        tags[n].ti_Tag = m68k_read32(ctx, item);
+        data = m68k_read32(ctx, item + 4);
+        switch (screen_tag(tags[n].ti_Tag))
+        {
+        case ST_SIGNED:
+            tags[n].ti_Data = (IPTR)(LONG)data;
+            break;
+        case ST_FONT:
+            tags[n].ti_Data = o->font ? (IPTR)&keep->font : 0;
+            break;
+        case ST_TITLE:
+            tags[n].ti_Data = o->title ? (IPTR)keep->title : 0;
+            break;
+        case ST_PENS:
+            tags[n].ti_Data = o->pens ? (IPTR)o->pen_array : 0;
+            break;
+        case ST_DCLIP:
+            /* OpenScreen copies the rectangle into its ViewPort extra. */
+            tags[n].ti_Data = o->dclip ? (IPTR)&o->clip : 0;
+            break;
+        case ST_ERROR:
+            tags[n].ti_Data = o->error ? (IPTR)&o->error_value : 0;
+            break;
+        case ST_PUBNAME:
+            /* Intuition copies the name */
+            tags[n].ti_Data = o->pubname ? (IPTR)(ctx->mem + o->pubname) : 0;
+            break;
+        default:
+            tags[n].ti_Data = data;
+            break;
+        }
+    }
+    tags[n].ti_Tag = TAG_DONE;
+}
+
+/* OpenScreen() and OpenScreenTagList() of the program: ns is the 68k
+   NewScreen or 0, list the 68k tags of OpenScreenTagList() or 0. */
+static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const char *call)
+{
+    struct ScreenOpen o;
+    struct NewScreen native_ns;
+    struct KaffeineScreenKeep *keep;
+    struct TagItem *tags = NULL;
+    struct Screen *scr;
+    const char *why;
+    UWORD type = 0;
+    ULONG guest, font;
+    int i;
+
+    memset(&o, 0, sizeof(o));
+    if (ns)
+    {
+        if (!guest_range(ctx, ns, M68K_SIZEOF_NEWSCREEN))
+            return open_refuse(ctx, call, "a NewScreen outside guest memory");
+        type = m68k_read16(ctx, ns + M68K_NS_TYPE);
+        /* AROS copies an ExtNewScreen whole, also when A1 has the tags */
+        if ((type & NS_EXTENDED) && !guest_range(ctx, ns, G_EXTNEWSCREEN_SIZE))
+            return open_refuse(ctx, call, "an ExtNewScreen outside guest memory");
+        if (m68k_read32(ctx, ns + G_NS_GADGETS))
+            return open_refuse(ctx, call, "Gadgets in the NewScreen");
+        if ((type & CUSTOMBITMAP) || m68k_read32(ctx, ns + G_NS_CUSTOMBITMAP))
+            return open_refuse(ctx, call, "a CustomBitMap");
+        o.font = m68k_read32(ctx, ns + G_NS_FONT);
+        o.title = m68k_read32(ctx, ns + M68K_NS_DEFAULTTITLE);
+        /* the tags of A1 go before the Extension */
+        if (!list && (type & NS_EXTENDED))
+            list = m68k_read32(ctx, ns + G_NS_EXTENSION);
+    }
+    o.list = list;
+    if ((why = open_tags(ctx, &o)) || (why = open_values(ctx, &o)))
+        return open_refuse(ctx, call, why);
+
+    /* room for the 68k Screen before Intuition opens anything */
+    if (screen_free_entry(ctx) < 0 || ctx->num_shadows > KAFFEINE_MAX_SHADOWS - 3)
+    {
+        bug("[kaffeine] %s: screen or shadow table full\n", call);
+        return open_failed(ctx, &o, OSERR_NOMEM);
+    }
+    keep = AllocVec(sizeof(*keep), MEMF_ANY | MEMF_CLEAR);
+    if (keep && o.items)
+        tags = AllocVec((o.items + 1) * sizeof(*tags), MEMF_ANY | MEMF_CLEAR);
+    if (!keep || (o.items && !tags))
+    {
+        FreeVec(tags);
+        FreeVec(keep);
+        return open_failed(ctx, &o, OSERR_NOMEM);
+    }
+    open_keep(ctx, &o, keep);
+    if (tags)
+        open_native_tags(ctx, &o, keep, tags);
+    if (ns)
+    {
+        memset(&native_ns, 0, sizeof(native_ns));
+        native_ns.LeftEdge = (WORD)m68k_read16(ctx, ns + M68K_NS_LEFTEDGE);
+        native_ns.TopEdge = (WORD)m68k_read16(ctx, ns + M68K_NS_TOPEDGE);
+        native_ns.Width = (WORD)m68k_read16(ctx, ns + M68K_NS_WIDTH);
+        native_ns.Height = (WORD)m68k_read16(ctx, ns + M68K_NS_HEIGHT);
+        native_ns.Depth = (WORD)m68k_read16(ctx, ns + M68K_NS_DEPTH);
+        native_ns.DetailPen = ctx->mem[ns + M68K_NS_DETAILPEN];
+        native_ns.BlockPen = ctx->mem[ns + M68K_NS_BLOCKPEN];
+        native_ns.ViewModes = m68k_read16(ctx, ns + M68K_NS_VIEWMODES);
+        /* the tags go to Intuition as its own argument */
+        native_ns.Type = type & ~NS_EXTENDED;
+        native_ns.Font = o.font ? (struct TextAttr *)&keep->font : NULL;
+        native_ns.DefaultTitle = o.title ? (UBYTE *)keep->title : NULL;
+    }
+    scr = OpenScreenTagList(ns ? &native_ns : NULL, tags);
+    FreeVec(tags);
+    if (!scr)
+    {
+        FreeVec(keep);
+        /* the error of Intuition, or what the program had there */
+        return open_failed(ctx, &o, o.error_value);
+    }
+    if (!(guest = screen_create(ctx, scr, &font, KAFFEINE_SHADOW_SCREEN)))
+    {
+        bug("[kaffeine] %s: no 68k Screen for %p, closed again\n", call, scr);
+        if (CloseScreen(scr))
+            FreeVec(keep);
+        else
+            bug("[kaffeine] %s: Intuition did not close %p again\n", call, scr);
+        return open_failed(ctx, &o, OSERR_NOMEM);
+    }
+    screen_fill(ctx, guest, font, scr);
+    /* the program's own text, as Intuition keeps the pointer it got */
+    m68k_write32(ctx, guest + M68K_SCR_TITLE, o.title);
+    m68k_write32(ctx, guest + G_SCR_DEFAULTTITLE, o.title);
+    i = screen_free_entry(ctx);
+    ctx->pubscreens[i].native = scr;
+    ctx->pubscreens[i].guest = guest;
+    ctx->pubscreens[i].font = font;
+    ctx->pubscreens[i].locks = 0;
+    ctx->pubscreens[i].owned = TRUE;
+    ctx->pubscreens[i].keep = keep;
+    ctx->screen_release = screen_release;
+    return guest;
+}
+
+/* intuition -198: OpenScreen(A0=newScreen) -> D0: the 68k Screen of the
+   screen that Intuition opened, or 0; 0 for NULL, which Intuition would
+   read. As OpenScreenTagList() with the tags of an ExtNewScreen. */
+IPTR Kaffeine_OpenScreen(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG ns = THUNK_A(0);
+
+    return ns ? screen_open(ctx, ns, 0, "OpenScreen()") : 0;
+}
+
+/* intuition -612: OpenScreenTagList(A0=newScreen, A1=tagList) -> D0: the
+   68k Screen of the screen that Intuition opened, or 0. Intuition takes
+   the defaults of a NULL NewScreen, the tags of A1 over the Extension of
+   an ExtNewScreen, and each tag over the NewScreen. 0 also when the bridge
+   has no memory or room for the 68k Screen; then the screen closes again
+   and SA_ErrorCode gets OSERR_NOMEM. */
+IPTR Kaffeine_OpenScreenTagList(struct KaffeineContext *ctx, void *cpu)
+{
+    return screen_open(ctx, THUNK_A(0), THUNK_A(1), "OpenScreenTagList()");
+}
+
+/* intuition -66: CloseScreen(A0=screen) -> D0: TRUE when the screen closed,
+   and for NULL, as from Intuition; FALSE when Intuition refuses, as with
+   windows or visitors on it, and then the 68k Screen stays as it was.
+   Intuition gets only a screen that the program opened and has not closed;
+   anything else gives FALSE. */
+IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG screen = THUNK_A(0);
+    int i;
+
+    if (!screen)
+        return TRUE;
+    i = screen_index(ctx, NULL, screen);
+    if (i < 0 || !ctx->pubscreens[i].owned)
+    {
+        bug("[kaffeine] CloseScreen(%08lx): not a screen that the program opened\n",
+            (unsigned long)screen);
+        return FALSE;
+    }
+    if (screen_visuals(ctx, ctx->pubscreens[i].native) ||
+        !CloseScreen(ctx->pubscreens[i].native))
+        return FALSE;
+    screen_closed(ctx, i);
+    return TRUE;
+}
+
 /* ── The end of the program ──────────────────────────────────────── */
 
 void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
@@ -677,6 +1173,23 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
         bug("[kaffeine] the list of public screens that the program left locked, released\n");
     for (; ctx->pubscreen_list_locks; ctx->pubscreen_list_locks--)
         UnlockPubScreenList();
+    /* after the locks, which make the program a visitor; a screen with a
+       window of the program stays open, as the window does */
+    for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
+        if (ctx->pubscreens[i].owned)
+        {
+            if (screen_windows(ctx, ctx->pubscreens[i].native))
+                bug("[kaffeine] screen %p that the program left has its windows, left open\n",
+                    ctx->pubscreens[i].native);
+            else if (CloseScreen(ctx->pubscreens[i].native))
+            {
+                bug("[kaffeine] screen %p that the program left, closed\n", ctx->pubscreens[i].native);
+                screen_closed(ctx, i);
+            }
+            else
+                bug("[kaffeine] screen %p that the program left, Intuition did not close it\n",
+                    ctx->pubscreens[i].native);
+        }
     for (i = 0; i < KAFFEINE_MAX_FONTS; i++)
         if (ctx->pubscreen_fonts[i])
         {

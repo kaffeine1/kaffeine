@@ -49,6 +49,7 @@
 #include <exec/memory.h>
 #include <graphics/text.h>
 #include <intuition/intuition.h>
+#include <intuition/screens.h>
 #include <libraries/gadtools.h>
 #include <proto/exec.h>
 #include <proto/gadtools.h>
@@ -160,6 +161,55 @@ APTR Kaffeine_VisualInfoNative(struct KaffeineContext *ctx, ULONG guest)
     return Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_VISUALINFO);
 }
 
+/* Keep the borrowed screen alive independently of the guest's locks. */
+static BOOL visual_public_hold(struct Screen *screen)
+{
+    struct List *list = LockPubScreenList();
+    struct Node *node;
+    struct Screen *held = NULL;
+    ULONG count = 0;
+    for (node = list ? list->lh_Head : NULL; node && node->ln_Succ && count++ < 256;
+         node = node->ln_Succ)
+    {
+        struct PubScreenNode *pub = (struct PubScreenNode *)node;
+        if (pub->psn_Screen == screen && node->ln_Name)
+        {
+            held = LockPubScreen((CONST_STRPTR)node->ln_Name);
+            break;
+        }
+    }
+    UnlockPubScreenList();
+    if (held && held != screen)
+        UnlockPubScreen(NULL, held);
+    return held == screen;
+}
+
+static void visual_release(struct KaffeineContext *ctx, int i)
+{
+    APTR native = ctx->visualinfos[i].native;
+    struct Screen *screen = ctx->visualinfos[i].screen;
+    ULONG guest = ctx->visualinfos[i].guest;
+    BOOL locked = ctx->visualinfos[i].public_lock;
+
+    FreeVisualInfo(native);
+    Kaffeine_ShadowForget(ctx, guest, KAFFEINE_SHADOW_VISUALINFO);
+    Kaffeine_MirrorRelease(ctx, guest);
+    memset(&ctx->visualinfos[i], 0, sizeof(ctx->visualinfos[i]));
+    /* Forget guest snapshots while the native visitor lock still holds. */
+    if (ctx->screen_release)
+        ctx->screen_release(ctx, screen);
+    if (locked)
+        UnlockPubScreen(NULL, screen);
+}
+
+void Kaffeine_VisualInfosCleanup(struct KaffeineContext *ctx)
+{
+    int i;
+    for (i = 0; i < KAFFEINE_MAX_VISUALINFOS; i++)
+        if (ctx->visualinfos[i].native)
+            visual_release(ctx, i);
+}
+
 /* gadtools -126: GetVisualInfoA(A0=screen, A1=tagList) -> D0: a 68k handle.
    GadTools takes no tags here. */
 IPTR Kaffeine_GetVisualInfoA(struct KaffeineContext *ctx, void *cpu)
@@ -167,21 +217,40 @@ IPTR Kaffeine_GetVisualInfoA(struct KaffeineContext *ctx, void *cpu)
     struct Screen *scr = Kaffeine_ScreenNative(ctx, THUNK_A(0));
     APTR vi;
     ULONG guest;
+    int slot;
+    BOOL locked;
 
     if (!THUNK_A(0))
         return 0;   /* as GadTools for a screen that could not be locked */
     if (!scr)
         return refuse(ctx, "GetVisualInfoA(): not a screen of the program");
+    for (slot = 0; slot < KAFFEINE_MAX_VISUALINFOS && ctx->visualinfos[slot].native; slot++)
+        ;
+    if (slot == KAFFEINE_MAX_VISUALINFOS)
+        return 0;
+    locked = !Kaffeine_ShadowNative(ctx, THUNK_A(0), KAFFEINE_SHADOW_SCREEN);
+    if (locked && !visual_public_hold(scr))
+        return 0;
     vi = GetVisualInfoA(scr, NULL);
     if (!vi)
+    {
+        if (locked) UnlockPubScreen(NULL, scr);
         return 0;
+    }
     guest = Kaffeine_MirrorAlloc(ctx, G_VISUALINFO_SIZE);
     if (guest && Kaffeine_ShadowAdd(ctx, guest, vi, KAFFEINE_SHADOW_VISUALINFO))
+    {
+        ctx->visualinfos[slot].native = vi;
+        ctx->visualinfos[slot].screen = scr;
+        ctx->visualinfos[slot].guest = guest;
+        ctx->visualinfos[slot].public_lock = locked;
         return guest;
+    }
     bug("[kaffeine] GetVisualInfoA(): no guest memory for the handle\n");
     if (guest)
         Kaffeine_MirrorRelease(ctx, guest);
     FreeVisualInfo(vi);
+    if (locked) UnlockPubScreen(NULL, scr);
     return 0;
 }
 
@@ -189,17 +258,15 @@ IPTR Kaffeine_GetVisualInfoA(struct KaffeineContext *ctx, void *cpu)
 IPTR Kaffeine_FreeVisualInfo(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG guest = THUNK_A(0);
-    APTR vi = Kaffeine_VisualInfoNative(ctx, guest);
-
-    if (!vi)
-    {
-        if (guest)
-            bug("[kaffeine] FreeVisualInfo(%08lx): not a VisualInfo, ignored\n", (unsigned long)guest);
-        return 0;
-    }
-    FreeVisualInfo(vi);
-    Kaffeine_ShadowForget(ctx, guest, KAFFEINE_SHADOW_VISUALINFO);
-    Kaffeine_MirrorRelease(ctx, guest);
+    int i;
+    for (i = 0; i < KAFFEINE_MAX_VISUALINFOS; i++)
+        if (ctx->visualinfos[i].native && ctx->visualinfos[i].guest == guest)
+        {
+            visual_release(ctx, i);
+            return 0;
+        }
+    if (guest)
+        bug("[kaffeine] FreeVisualInfo(%08lx): not an owned VisualInfo, ignored\n", (unsigned long)guest);
     return 0;
 }
 

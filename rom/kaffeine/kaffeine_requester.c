@@ -11,6 +11,7 @@
 */
 
 #include "kaffeine_intern.h"
+#include "kaffeine_gadgets.h"
 #include "kaffeine_format.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_window.h"
@@ -97,6 +98,17 @@ static BOOL native_window(struct KaffeineContext *ctx, ULONG guest, struct Windo
         return TRUE;
     }
     *w = Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_WINDOW);
+    return *w != NULL;
+}
+
+static BOOL native_requester(struct KaffeineContext *ctx, ULONG guest, struct Window **w)
+{
+    if (guest <= 1)
+    {
+        *w = (struct Window *)(IPTR)guest;
+        return TRUE;
+    }
+    *w = Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_REQUESTER_WINDOW);
     return *w != NULL;
 }
 
@@ -191,6 +203,11 @@ IPTR Kaffeine_BuildEasyRequestArgs(struct KaffeineContext *ctx, void *cpu)
     if (!req || req == (struct Window *)1)
         return (IPTR)req;
     guest = Kaffeine_WindowCreate(ctx, req);
+    if (guest && !Kaffeine_ShadowAdd(ctx, guest, req, KAFFEINE_SHADOW_REQUESTER_WINDOW))
+    {
+        Kaffeine_WindowDelete(ctx, guest);
+        guest = 0;
+    }
     if (!guest)
         FreeSysRequest(req);
     return guest;
@@ -203,7 +220,7 @@ IPTR Kaffeine_SysReqHandler(struct KaffeineContext *ctx, void *cpu)
     struct Window *req;
     LONG result;
 
-    if (!native_window(ctx, THUNK_A(0), &req))
+    if (!native_requester(ctx, THUNK_A(0), &req))
         return refuse(ctx, "SysReqHandler(): not a requester of the program");
     if (ptr && !guest_range(ctx, ptr, 4))
         return refuse(ctx, "SysReqHandler(): the IDCMP flags are not in guest memory");
@@ -222,7 +239,7 @@ IPTR Kaffeine_FreeSysRequest(struct KaffeineContext *ctx, void *cpu)
     ULONG guest = THUNK_A(0);
     struct Window *req;
 
-    if (!native_window(ctx, guest, &req))
+    if (!native_requester(ctx, guest, &req))
     {
         bug("[kaffeine] FreeSysRequest(%08lx): not a requester of the program\n",
             (unsigned long)guest);
@@ -232,6 +249,8 @@ IPTR Kaffeine_FreeSysRequest(struct KaffeineContext *ctx, void *cpu)
     {
         if (ctx->menu_closing)
             ctx->menu_closing(ctx, req);
+        if (ctx->window_gadgets)
+            ctx->window_gadgets->closing(ctx, req);
         Kaffeine_WindowDelete(ctx, guest);
     }
     FreeSysRequest(req);

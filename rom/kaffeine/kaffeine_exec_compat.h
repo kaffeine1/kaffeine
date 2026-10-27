@@ -13,6 +13,8 @@ extern "C" {
 #endif
 
 IPTR Kaffeine_DeletePool(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_AddTask(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_RemTask(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_AddPort(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_RemPort(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_FindPort(struct KaffeineContext *ctx, void *cpu);
@@ -47,6 +49,8 @@ IPTR thunk_exec_AVL_FindNode(struct KaffeineContext *ctx, void *cpu);
 /* Shared by the production manual table and the host dispatch tests. */
 #define KAFFEINE_EXEC_COMPAT_THUNKS \
     { 96, Kaffeine_FindResident }, \
+    { 282, Kaffeine_AddTask }, \
+    { 288, Kaffeine_RemTask }, \
     { 354, Kaffeine_AddPort }, \
     { 360, Kaffeine_RemPort }, \
     { 366, Kaffeine_PutMsg }, \

@@ -685,6 +685,7 @@ void Kaffeine_WindowDelete(struct KaffeineContext *ctx, ULONG mw)
     window_reply_messages(ctx, mw);
     Kaffeine_RastPortDelete(ctx, Kaffeine_ShadowGuest(ctx, w->RPort, KAFFEINE_SHADOW_RASTPORT));
     Kaffeine_UserPortDelete(ctx, Kaffeine_ShadowGuest(ctx, w->UserPort, KAFFEINE_SHADOW_USERPORT));
+    Kaffeine_ShadowForget(ctx, mw, KAFFEINE_SHADOW_REQUESTER_WINDOW);
     Kaffeine_ShadowForget(ctx, mw, KAFFEINE_SHADOW_WINDOW);
     Kaffeine_HeapFree(ctx, mw, M68K_SIZEOF_WINDOW);
     /* the 68k Screen of a public screen that the program has unlocked may
@@ -696,20 +697,46 @@ void Kaffeine_WindowDelete(struct KaffeineContext *ctx, ULONG mw)
 /* intuition -72: CloseWindow(A0=window). The messages that the program has
    not replied go back, and the 68k Window, its RastPort, its IDCMP port and
    the 68k messages go, while the native window still names them. */
-IPTR Kaffeine_CloseWindow(struct KaffeineContext *ctx, void *cpu)
+static void close_window(struct KaffeineContext *ctx, ULONG mw)
 {
-    ULONG mw = THUNK_A(0);
     struct Window *w = Kaffeine_ShadowNative(ctx, mw, KAFFEINE_SHADOW_WINDOW);
+    BOOL requester = Kaffeine_ShadowNative(ctx, mw, KAFFEINE_SHADOW_REQUESTER_WINDOW) != NULL;
 
     if (!w)
-        return 0;
+        return;
     if (ctx->menu_closing)
         ctx->menu_closing(ctx, w);
     if (ctx->window_gadgets)
         ctx->window_gadgets->closing(ctx, w);
     Kaffeine_WindowDelete(ctx, mw);
-    CloseWindow(w);
+    if (requester)
+        FreeSysRequest(w);
+    else
+        CloseWindow(w);
+}
+
+IPTR Kaffeine_CloseWindow(struct KaffeineContext *ctx, void *cpu)
+{
+    close_window(ctx, THUNK_A(0));
     return 0;
+}
+
+void Kaffeine_WindowsCleanup(struct KaffeineContext *ctx)
+{
+    UWORD i = 0;
+
+    /* Removing a shadow moves another entry into its slot. Restart after
+       each close because messages, ports and RastPorts are removed too. */
+    while (i < ctx->num_shadows)
+    {
+        if (ctx->shadow_map[i].type == KAFFEINE_SHADOW_WINDOW)
+        {
+            close_window(ctx, ctx->shadow_map[i].m68k_addr);
+            i = 0;
+        }
+        else
+            i++;
+    }
 }
 
 /* intuition -150: ModifyIDCMP(A0=window, D0=flags) -> D0=success. A window

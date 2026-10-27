@@ -53,6 +53,7 @@ struct KaffeineMenuStrip;
 struct KaffeineGadgetBatch;
 struct KaffeineWindowGadgets;
 struct KaffeineClassic;
+struct KaffeineScreenKeep;
 
 #define KAFFEINE_MAX_ICONS 32
 #define KAFFEINE_MAX_MONITORS 128
@@ -238,14 +239,26 @@ struct KaffeineContext
     const struct KaffeineWindowGadgets *window_gadgets;
     struct KaffeineClassic *classic;
 
-    /* Public screens that the program locked (kaffeine_screens.c): one 68k
-       Screen for each native screen, with its 68k TextAttr, kept while the
-       program holds a lock on it, has a window there or holds the list of
-       public screens. screen_release, set with the first one, lets the
-       window bridge say that a 68k Window on that screen has gone. */
+    /* Screens of the program (kaffeine_screens.c): one 68k Screen for each
+       native screen, with its 68k TextAttr, kept while the program holds a
+       lock on it, has a window there or holds the list of public screens,
+       and for a screen that it opened (owned) until CloseScreen() closes
+       it; keep is the native copy of the title and the font that Intuition
+       points to while such a screen is open. screen_release, set with the
+       first one, lets the window bridge say that a 68k Window on that
+       screen has gone. */
     #define KAFFEINE_MAX_PUBSCREENS 16
-    struct { struct Screen *native; ULONG guest; ULONG font; UWORD locks; } pubscreens[KAFFEINE_MAX_PUBSCREENS];
+    struct {
+        struct Screen *native; ULONG guest; ULONG font; UWORD locks;
+        BOOL owned; struct KaffeineScreenKeep *keep;
+    } pubscreens[KAFFEINE_MAX_PUBSCREENS];
     void (*screen_release)(struct KaffeineContext *ctx, struct Screen *screen);
+    /* VisualInfo keeps DrawInfo/Screen alive. Borrowed screens also hold
+       a native visitor lock until their VisualInfo references are freed. */
+    #define KAFFEINE_MAX_VISUALINFOS 32
+    struct {
+        APTR native; struct Screen *screen; ULONG guest; BOOL public_lock;
+    } visualinfos[KAFFEINE_MAX_VISUALINFOS];
     /* the native fonts of those screens, held open for the program, whose
        68k TextFonts stay, as many as there are 68k TextFonts; closed at
        its end */

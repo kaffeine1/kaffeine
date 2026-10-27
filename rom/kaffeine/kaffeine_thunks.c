@@ -475,74 +475,6 @@ const ULONG kaffeine_thunks_dos_count =
 
 
 
-/* intuition -198: OpenScreen(A0=newScreen) -> D0=screen */
-static IPTR thunk_intuition_OpenScreen(struct KaffeineContext *ctx, void *cpu)
-{
-    ULONG ns = THUNK_A(0);
-    if (!ns) return 0;
-
-    /* Read m68k NewScreen fields */
-    WORD left   = (WORD)m68k_read16(ctx, ns + M68K_NS_LEFTEDGE);
-    WORD top    = (WORD)m68k_read16(ctx, ns + M68K_NS_TOPEDGE);
-    WORD width  = (WORD)m68k_read16(ctx, ns + M68K_NS_WIDTH);
-    WORD height = (WORD)m68k_read16(ctx, ns + M68K_NS_HEIGHT);
-    WORD depth  = (WORD)m68k_read16(ctx, ns + M68K_NS_DEPTH);
-    UBYTE dpen  = ctx->mem[ns + M68K_NS_DETAILPEN];
-    UBYTE bpen  = ctx->mem[ns + M68K_NS_BLOCKPEN];
-    UWORD type  = m68k_read16(ctx, ns + M68K_NS_TYPE);
-    ULONG m68k_title = m68k_read32(ctx, ns + M68K_NS_DEFAULTTITLE);
-    CONST_STRPTR title = m68k_title ? (CONST_STRPTR)m68k_to_host(ctx, m68k_title) : NULL;
-
-    struct Screen *scr = OpenScreenTags(NULL,
-        SA_Left, (IPTR)left, SA_Top, (IPTR)top,
-        SA_Width, (IPTR)width, SA_Height, (IPTR)height,
-        SA_Depth, (IPTR)depth,
-        SA_DetailPen, (IPTR)dpen, SA_BlockPen, (IPTR)bpen,
-        SA_Title, (IPTR)title,
-        SA_Type, (IPTR)(type & 0x000F),
-        SA_ShowTitle, TRUE,
-        TAG_DONE);
-
-    if (!scr) return 0;
-
-    /* Allocate full m68k Screen (346 bytes) */
-    ULONG ms = Kaffeine_HeapAlloc(ctx, M68K_SIZEOF_SCREEN, MEMF_PUBLIC | MEMF_CLEAR);
-    if (!ms) { CloseScreen(scr); return 0; }
-    shadow_register(ctx, ms, scr, KAFFEINE_SHADOW_SCREEN);
-
-    /* Sync scalar fields at correct m68k offsets */
-    m68k_write16(ctx, ms + M68K_SCR_LEFTEDGE, (UWORD)scr->LeftEdge);
-    m68k_write16(ctx, ms + M68K_SCR_TOPEDGE,  (UWORD)scr->TopEdge);
-    m68k_write16(ctx, ms + M68K_SCR_WIDTH,    (UWORD)scr->Width);
-    m68k_write16(ctx, ms + M68K_SCR_HEIGHT,   (UWORD)scr->Height);
-    m68k_write16(ctx, ms + M68K_SCR_FLAGS,    scr->Flags);
-    if (scr->Title)
-        m68k_write32(ctx, ms + M68K_SCR_TITLE, host_to_m68k(ctx, (void *)scr->Title));
-
-    /* Embedded ViewPort — register as shadow */
-    shadow_register(ctx, ms + M68K_SCR_VIEWPORT, &scr->ViewPort, KAFFEINE_SHADOW_VIEWPORT);
-
-    /* Embedded RastPort, as a 68k RastPort */
-    Kaffeine_RastPortAttach(ctx, ms + M68K_SCR_RASTPORT, &scr->RastPort);
-
-    return (IPTR)ms;
-}
-
-/* intuition -66: CloseScreen(A0=screen). The embedded ViewPort and RastPort
-   shadows go with the screen. */
-static IPTR thunk_intuition_CloseScreen(struct KaffeineContext *ctx, void *cpu)
-{
-    ULONG ms = THUNK_A(0);
-    struct Screen *scr = Kaffeine_ShadowNative(ctx, ms, KAFFEINE_SHADOW_SCREEN);
-    if (!scr) return 0;
-    if (!CloseScreen(scr)) return FALSE;
-    Kaffeine_RastPortDetach(ctx, ms + M68K_SCR_RASTPORT);
-    Kaffeine_ShadowForget(ctx, ms + M68K_SCR_VIEWPORT, KAFFEINE_SHADOW_VIEWPORT);
-    Kaffeine_ShadowForget(ctx, ms, KAFFEINE_SHADOW_SCREEN);
-    Kaffeine_HeapFree(ctx, ms, M68K_SIZEOF_SCREEN);
-    return TRUE;
-}
-
 /* ── IntuiText m68k→native translation ── */
 static void translate_intuitext(struct KaffeineContext *ctx, ULONG m68k_it,
                                 struct IntuiText *native, int max_chain)
@@ -594,8 +526,7 @@ const struct M68KThunkEntry kaffeine_thunks_intuition_manual[] = {
     KAFFEINE_INTUITION_MENU_THUNKS,
     KAFFEINE_INTUITION_GADGET_THUNKS,
     KAFFEINE_INTUITION_PUBSCREEN_THUNKS,
-    { 198, thunk_intuition_OpenScreen },
-    { 66, thunk_intuition_CloseScreen },
+    KAFFEINE_INTUITION_SCREEN_THUNKS,
     { 0, NULL }
 };
 const ULONG kaffeine_thunks_intuition_manual_count =

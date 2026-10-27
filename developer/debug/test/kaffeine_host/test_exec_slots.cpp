@@ -138,7 +138,7 @@ struct Fixture
 
 static void test_registration()
 {
-    assert(sizeof(manual_table) / sizeof(manual_table[0]) == 27);
+    assert(sizeof(manual_table) / sizeof(manual_table[0]) == 29);
     const M68KThunkEntry *delete_pool = nullptr, *attempt_shared = nullptr;
     const M68KThunkEntry *avl_add = nullptr, *avl_rem_addr = nullptr, *avl_find = nullptr;
     for (const auto &entry : manual_table)

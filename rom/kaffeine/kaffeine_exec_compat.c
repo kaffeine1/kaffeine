@@ -570,6 +570,31 @@ IPTR Kaffeine_CacheClearE(struct KaffeineContext *ctx, void *cpu)
     return size;
 }
 
+/* Classic tasks contain BE32 links, stack and code addresses. They must
+   never be installed in native Exec's ready/wait lists. A guest task
+   scheduler is required before these entry points can be supported. */
+static IPTR task_unsupported(struct KaffeineContext *ctx, const char *operation)
+{
+    bug("[kaffeine] %s: guest task scheduling is not implemented, stopping (20)\n", operation);
+    ctx->running = FALSE;
+    ctx->exit_code = 20;
+    return 20;
+}
+
+/* -282: AddTask(A1=task, A2=initialPC, A3=finalPC). */
+IPTR Kaffeine_AddTask(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return task_unsupported(ctx, "AddTask");
+}
+
+/* -288: RemTask(A1=task), including NULL for the current task. */
+IPTR Kaffeine_RemTask(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return task_unsupported(ctx, "RemTask");
+}
+
 /* -540: Procure(A0=semaphore, A1=bidMsg). No guest message/reply protocol yet. */
 IPTR Kaffeine_Procure(struct KaffeineContext *ctx, void *cpu)
 {

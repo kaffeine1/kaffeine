@@ -23,6 +23,7 @@
 #include "kaffeine_gadgets.h"
 #include "kaffeine_menus.h"
 #include "kaffeine_screens.h"
+#include "kaffeine_window.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_icon.h"
 
@@ -35,6 +36,10 @@ static LONG execute_owned(struct KaffeineContext *ctx)
 
     ctx->exec_task = FindTask(NULL);
     result = Kaffeine_Execute(ctx);
+    Kaffeine_WindowsCleanup(ctx);
+    Kaffeine_MenusCleanup(ctx);
+    Kaffeine_GadgetsCleanup(ctx);
+    Kaffeine_VisualInfosCleanup(ctx);
     Kaffeine_FileCleanup(ctx);
     Kaffeine_IOCleanup(ctx);
     Kaffeine_ScreensCleanup(ctx);

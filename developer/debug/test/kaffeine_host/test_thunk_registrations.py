@@ -313,6 +313,11 @@ CASES = (
     ("intuition", "unlockpubscreenlist.c", "UnlockPubScreenList", "Kaffeine_UnlockPubScreenList"),
     ("intuition", "nextpubscreen.c", "NextPubScreen", "Kaffeine_NextPubScreen"),
     ("intuition", "getdefaultpubscreen.c", "GetDefaultPubScreen", "Kaffeine_GetDefaultPubScreen"),
+    ("intuition", "openscreen.c", "OpenScreen", "Kaffeine_OpenScreen"),
+    ("intuition", "openscreentaglist.c", "OpenScreenTagList", "Kaffeine_OpenScreenTagList"),
+    ("intuition", "closescreen.c", "CloseScreen", "Kaffeine_CloseScreen"),
+    ("exec", "addtask.c", "AddTask", "Kaffeine_AddTask"),
+    ("exec", "remtask.c", "RemTask", "Kaffeine_RemTask"),
     ("utility", "callhookpkt.c", "CallHookPkt", "kaffeine_utility_CallHookPkt"),
     ("utility", "vsnprintf.c", "VSNPrintf", "kaffeine_utility_VSNPrintf"),
     ("utility", "findtagitem.c", "FindTagItem", "kaffeine_utility_FindTagItem"),
@@ -385,6 +390,14 @@ CASES = (
 # Explicit table of manual handlers that intentionally ignore one or more
 # fd arguments, with the exact ignored register set and the reason.
 ALLOWED_IGNORED_REGS = {
+    "Kaffeine_AddTask": (
+        {"A1", "A2", "A3"},
+        "AddTask() stops with rc20 until guest task scheduling has a bridge",
+    ),
+    "Kaffeine_RemTask": (
+        {"A1"},
+        "RemTask() stops with rc20; native Exec must not remove a guest task record",
+    ),
     "thunk_gfx_OpenMonitor": (frozenset({"A1", "D0"}), "owned native monitors are unsupported"),
     "thunk_gfx_CloseMonitor": (frozenset({"A0"}), "borrowed snapshots cannot close native monitors"),
     "thunk_gfx_FindDisplayInfo": (

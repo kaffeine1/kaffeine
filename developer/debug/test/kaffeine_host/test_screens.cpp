@@ -1,10 +1,13 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    Public screens through literal Intuition LVOs, the real dispatcher,
-    heap and RastPort bridge. Native Intuition below follows the list,
-    name, private-screen and visitor-count rules of rom/intuition, and
-    records every call, including nested native list locks.
+    Public and opened screens through literal Intuition LVOs, the real
+    dispatcher, heap, tag walker, TextAttr bridge and RastPort bridge.
+    Native Intuition below follows the list, name, private-screen and
+    visitor-count rules of rom/intuition, the tag precedence and SA_Width
+    check of rom/intuition/openscreen.c, the window and visitor refusals of
+    closescreen.c, and records every call, including nested native list
+    locks.
 */
 #ifdef NDEBUG
 #undef NDEBUG
@@ -16,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <map>
 #include <string>
@@ -49,12 +53,37 @@ struct NativeScreen
     PubScreenNode node{};
     std::array<char, 256> name{};
 };
-enum Kind { LOCK, UNLOCK, LIST_LOCK, LIST_UNLOCK, DEFAULT, NEXT, FONT_OPEN, FONT_CLOSE };
+enum Kind { LOCK, UNLOCK, LIST_LOCK, LIST_UNLOCK, DEFAULT, NEXT, FONT_OPEN, FONT_CLOSE, OPEN, CLOSE };
 struct Call
 {
     Kind kind;
     const void *pointer;
     Screen *screen;
+};
+/* One OpenScreenTagList() as native Intuition got it: the NewScreen and
+   tags, the values that count after the tags, and copies of what each
+   native pointer showed during the call. */
+struct Opened
+{
+    bool had_ns = false, had_tags = false, closed = false;
+    NewScreen ns{};
+    std::vector<TagItem> tags;
+    WORD left = 0, top = 0, width = -1, height = -1, depth = 1;
+    UBYTE detail = 0, block = 1;
+    UWORD type = CUSTOMSCREEN | SHOWTITLE;
+    TextAttr *font = nullptr;
+    TextAttr font_copy{};
+    std::string font_name;
+    std::vector<TagItem> font_tags;
+    UBYTE *title = nullptr;
+    std::string title_text;
+    std::vector<UWORD> pens;
+    Rectangle clip{};
+    bool had_clip = false;
+    ULONG *error = nullptr;
+    bool error_seen = false, pubname_seen = false;
+    std::string pubname;
+    Screen *result = nullptr;
 };
 struct NativeIntuition
 {
@@ -65,6 +94,11 @@ struct NativeIntuition
     std::vector<const TagItem *> opened_tags;
     std::map<TextFont *, unsigned> font_opens;
     TextFont *font_result = nullptr;
+    /* OpenScreenTagList() and CloseScreen() */
+    std::deque<Opened> opened;
+    TextFont *screen_font = nullptr;
+    bool open_fail = false, close_refuse = false;
+    ULONG open_error = 0;
     Screen *default_screen = nullptr, *workbench = nullptr;
     unsigned list_depth = 0;
     KaffeineContext *ctx = nullptr;
@@ -228,6 +262,143 @@ extern "C" UBYTE *NextPubScreen(struct Screen *, UBYTE *)
     assert(false);
     return nullptr;
 }
+static bool in_guest(const void *p)
+{
+    auto a = reinterpret_cast<std::uintptr_t>(p), g = reinterpret_cast<std::uintptr_t>(native->ctx->mem);
+    return p && a >= g && a - g < native->ctx->mem_size;
+}
+/* Intuition keeps Font and DefaultTitle; it reads the pens, the TextAttr
+   tags and writes the error during the call. None of these, nor the
+   NewScreen or the tags, may be guest memory; SA_PubName is copied. */
+extern "C" struct Screen *OpenScreenTagList(struct NewScreen *ns, struct TagItem *tags)
+{
+    native->calls.push_back({ OPEN, ns, nullptr });
+    assert(!in_guest(ns) && !in_guest(tags));
+    Opened o;
+    bool bad = false;
+    if (ns)
+    {
+        o.had_ns = true; o.ns = *ns;
+        assert(!(ns->Type & NS_EXTENDED) && !(ns->Type & CUSTOMBITMAP) && !ns->Gadgets && !ns->CustomBitMap);
+        o.left = ns->LeftEdge; o.top = ns->TopEdge; o.width = ns->Width; o.height = ns->Height;
+        o.depth = ns->Depth; o.detail = ns->DetailPen; o.block = ns->BlockPen; o.type = ns->Type;
+        o.font = ns->Font; o.title = ns->DefaultTitle;
+    }
+    const UWORD *pens = nullptr;
+    for (TagItem *t = tags; t && t->ti_Tag != TAG_DONE; ++t)
+    {
+        o.had_tags = true;
+        // The bridge flattens the control tags.
+        assert(t->ti_Tag != TAG_MORE && t->ti_Tag != TAG_SKIP && t->ti_Tag != TAG_IGNORE);
+        o.tags.push_back(*t);
+        switch (t->ti_Tag)
+        {
+        case SA_Left: o.left = (WORD)t->ti_Data; break;
+        case SA_Top: o.top = (WORD)t->ti_Data; break;
+        case SA_Width:
+        case SA_Height:
+            if (t->ti_Data != ~static_cast<IPTR>(0) && t->ti_Data > 32767) bad = true;
+            (t->ti_Tag == SA_Width ? o.width : o.height) = (WORD)t->ti_Data;
+            break;
+        case SA_Depth: o.depth = (WORD)t->ti_Data; break;
+        case SA_DetailPen: o.detail = (UBYTE)t->ti_Data; break;
+        case SA_BlockPen: o.block = (UBYTE)t->ti_Data; break;
+        case SA_Type: o.type = (o.type & ~SCREENTYPE) | (UWORD)t->ti_Data; break;
+        case SA_Title: o.title = reinterpret_cast<UBYTE *>(t->ti_Data); break;
+        case SA_Font: o.font = reinterpret_cast<TextAttr *>(t->ti_Data); break;
+        case SA_Pens: pens = reinterpret_cast<const UWORD *>(t->ti_Data); break;
+        case SA_DClip:
+            o.had_clip = t->ti_Data != 0;
+            if (o.had_clip)
+            {
+                auto *clip = reinterpret_cast<const Rectangle *>(t->ti_Data);
+                assert(!in_guest(clip));
+                o.clip = *clip;
+            }
+            break;
+        case SA_ErrorCode:
+            if (!o.error_seen) o.error = reinterpret_cast<ULONG *>(t->ti_Data);
+            o.error_seen = true;
+            break;
+        case SA_PubName:
+            if (!o.pubname_seen && t->ti_Data) o.pubname = reinterpret_cast<const char *>(t->ti_Data);
+            o.pubname_seen = true;
+            break;
+        }
+    }
+    assert(!in_guest(o.font) && !in_guest(o.title) && !in_guest(pens) && !in_guest(o.error));
+    if (o.font)
+    {
+        assert(o.font->ta_Name && !in_guest(o.font->ta_Name));
+        o.font_copy = *o.font; o.font_name = o.font->ta_Name;
+        const TagItem *ft = (o.font->ta_Style & FSF_TAGGED)
+                            ? reinterpret_cast<const TTextAttr *>(o.font)->tta_Tags : nullptr;
+        assert(!in_guest(ft));
+        for (; ft && ft->ti_Tag != TAG_DONE; ++ft) o.font_tags.push_back(*ft);
+    }
+    if (o.title) o.title_text = reinterpret_cast<const char *>(o.title);
+    for (unsigned i = 0; pens && i < 65; ++i)
+    {
+        o.pens.push_back(pens[i]);
+        if (pens[i] == (UWORD)~0) break;
+    }
+    if (native->open_fail || bad)
+    {
+        if (o.error && native->open_error) *o.error = native->open_error;
+        native->opened.push_back(o);
+        return nullptr;
+    }
+    auto &n = native->screens.emplace_back();
+    Screen &s = n.screen;
+    s.LeftEdge = o.left; s.TopEdge = o.top;
+    s.Width = o.width == -1 ? 640 : o.width; s.Height = o.height == -1 ? 480 : o.height;
+    s.Flags = o.type; s.Font = o.font; s.Title = s.DefaultTitle = o.title;
+    s.MouseX = 17; s.MouseY = -9;
+    s.BarHeight = 10; s.BarVBorder = 1; s.BarHBorder = 5; s.MenuVBorder = 2; s.MenuHBorder = 4;
+    s.WBorTop = 6; s.WBorLeft = 4; s.WBorRight = 4; s.WBorBottom = 4;
+    s.ViewPort.DWidth = s.Width; s.ViewPort.DHeight = s.Height;
+    s.ViewPort.Modes = o.had_ns ? o.ns.ViewModes : 0x8004;
+    s.BitMap_OBSOLETE.BytesPerRow = s.Width / 8; s.BitMap_OBSOLETE.Rows = s.Height;
+    s.BitMap_OBSOLETE.Depth = (UBYTE)o.depth;
+    s.DetailPen = o.detail; s.BlockPen = o.block; s.SaveColor0 = 0x0AAA;
+    s.RastPort.Font = native->screen_font;
+    // native pointers that never reach the guest
+    s.ViewPort.ColorMap = reinterpret_cast<ColorMap *>(&s);
+    s.RastPort.BitMap = &s.BitMap_OBSOLETE;
+    std::memset(s.BitMap_OBSOLETE.Planes, 0x77, sizeof(s.BitMap_OBSOLETE.Planes));
+    s.NextScreen = &s; s.ExtData = s.UserData = reinterpret_cast<UBYTE *>(&s);
+    if (!o.pubname.empty())
+    {
+        assert(o.pubname.size() <= MAXPUBSCREENNAME);
+        std::memcpy(n.name.data(), o.pubname.c_str(), o.pubname.size() + 1);
+        n.node.psn_Node.ln_Name = n.name.data();
+        n.node.psn_Screen = &s;
+        // as if PubScreenStatus() had made it public
+        native->append(&n.node.psn_Node);
+    }
+    o.result = &s;
+    native->opened.push_back(o);
+    return &s;
+}
+extern "C" BOOL CloseScreen(struct Screen *screen)
+{
+    native->calls.push_back({ CLOSE, nullptr, screen });
+    if (!screen) return TRUE;
+    auto at = std::find_if(native->opened.begin(), native->opened.end(),
+                           [screen](const Opened &o) { return o.result == screen; });
+    assert(at != native->opened.end() && !at->closed); // only screens that were opened, once
+    if (screen->FirstWindow || native->close_refuse) return FALSE;
+    auto *n = native->node(screen);
+    if (n->psn_Node.ln_Succ)
+    {
+        if (n->psn_VisitorCount) return FALSE;
+        native->remove(&n->psn_Node);
+    }
+    at->closed = true;
+    // whatever still reads it reads garbage
+    std::memset(static_cast<void *>(screen), 0xEE, sizeof(*screen));
+    return TRUE;
+}
 extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *, const char *)
 {
     assert(false);
@@ -253,9 +424,10 @@ static const KaffeineCPUOps ops =
     { get_d, get_a, set_d, set_a, get_sr, set_sr, get_pc, set_pc, nullptr, nullptr };
 static unsigned generated_calls;
 static IPTR poison(KaffeineContext *, void *) { ++generated_calls; return 0xBAD0F00D; }
-static const M68KThunkEntry manual[] = { KAFFEINE_INTUITION_PUBSCREEN_THUNKS };
+static const M68KThunkEntry manual[] = { KAFFEINE_INTUITION_PUBSCREEN_THUNKS, KAFFEINE_INTUITION_SCREEN_THUNKS };
 static const M68KThunkEntry generated[] =
-    { { 510, poison }, { 516, poison }, { 522, poison }, { 528, poison }, { 534, poison }, { 582, poison } };
+    { { 510, poison }, { 516, poison }, { 522, poison }, { 528, poison }, { 534, poison }, { 582, poison },
+      { 66, poison }, { 198, poison }, { 612, poison } };
 
 /* Literal NDK offsets, independent of the bridge's private enums. */
 enum
@@ -307,6 +479,7 @@ struct Fixture
         font.tf_Accessors = 3; font.tf_LoChar = 32; font.tf_HiChar = 255;
         font.tf_Modulo = 160;
         native->font_result = &font;
+        native->screen_font = &font;
     }
     ~Fixture()
     {
@@ -397,6 +570,60 @@ struct Fixture
             { assert(!c.pointer); if (c.screen == s) ++found; }
         assert(found == count);
     }
+
+    /* Guest input of OpenScreen() and OpenScreenTagList(), at literal NDK
+       offsets, between the name buffers and the stack */
+    static constexpr ULONG ns_at = 0x3300, attr_at = 0x3340, fname_at = 0x3360, title_at = 0x3380,
+        title2_at = 0x33A0, error_at = 0x33C0, error2_at = 0x33C4, pens_at = 0x33D0,
+        tags_at = 0x3400, more_at = 0x3C00, ftags_at = 0x3D00, long_at = 0x3D40;
+    void put(ULONG at, const std::string &s)
+    {
+        assert(at + s.size() + 1 <= memory.size());
+        std::memcpy(memory.data() + at, s.c_str(), s.size() + 1);
+    }
+    void put_tags(ULONG at, std::initializer_list<std::pair<ULONG, ULONG>> items, bool done = true)
+    {
+        for (const auto &t : items) { m68k_write32(&ctx, at, t.first); m68k_write32(&ctx, at + 4, t.second); at += 8; }
+        if (done) { m68k_write32(&ctx, at, TAG_DONE); m68k_write32(&ctx, at + 4, 0); }
+    }
+    void put_attr(ULONG at, ULONG name, UWORD ysize, UBYTE style, UBYTE flags, ULONG tags = 0)
+    {
+        m68k_write32(&ctx, at, name); m68k_write16(&ctx, at + 4, ysize);
+        memory[at + 6] = style; memory[at + 7] = flags;
+        if (style & FSF_TAGGED) m68k_write32(&ctx, at + 8, tags);
+    }
+    void put_ns(ULONG at, WORD l, WORD t, WORD w, WORD h, WORD d, UBYTE dp, UBYTE bp, UWORD modes,
+                UWORD type, ULONG font, ULONG title, ULONG gadgets = 0, ULONG bitmap = 0, ULONG ext = 0)
+    {
+        m68k_write16(&ctx, at, l); m68k_write16(&ctx, at + 2, t); m68k_write16(&ctx, at + 4, w);
+        m68k_write16(&ctx, at + 6, h); m68k_write16(&ctx, at + 8, d);
+        memory[at + 10] = dp; memory[at + 11] = bp;
+        m68k_write16(&ctx, at + 12, modes); m68k_write16(&ctx, at + 14, type);
+        m68k_write32(&ctx, at + 16, font); m68k_write32(&ctx, at + 20, title);
+        m68k_write32(&ctx, at + 24, gadgets); m68k_write32(&ctx, at + 28, bitmap);
+        if (type & NS_EXTENDED) m68k_write32(&ctx, at + 32, ext);
+    }
+    ULONG open(ULONG ns, ULONG tags) { return call(612, { ns, tags }); }
+    ULONG open_ns(ULONG ns) { return call(198, { ns }); }
+    ULONG close(ULONG screen) { return call(66, { screen }); }
+    int entry(ULONG g) const
+    {
+        for (int i = 0; i < KAFFEINE_MAX_PUBSCREENS; ++i)
+            if (g && ctx.pubscreens[i].guest == g) return i;
+        return -1;
+    }
+    unsigned owned() const
+    {
+        return std::count_if(std::begin(ctx.pubscreens), std::end(ctx.pubscreens),
+                             [](const auto &s) { return s.guest != 0 && s.owned; });
+    }
+    /* Nothing reached Intuition or guest memory, and the program stopped */
+    void refused(const std::array<UBYTE, 0x10000> &before) const
+    {
+        assert(!ctx.running && ctx.exit_code == 20 && state.d[0] == 20);
+        assert(native->calls.empty() && before == memory);
+        assert(ctx.num_shadows == 0 && !entries() && !ctx.screen_release);
+    }
 };
 
 static void fill_fields(Screen &s, int delta)
@@ -420,13 +647,14 @@ static void fill_fields(Screen &s, int delta)
 
 /* Compare the entire NDK Screen, including every unsupported pointer and
    padding byte, against a zero-based wire image built at literal offsets. */
-static void screen_image(Fixture &f, ULONG g, Screen &s, ULONG ta, ULONG tf)
+static void screen_image(Fixture &f, ULONG g, Screen &s, ULONG ta, ULONG tf, ULONG title = 0)
 {
     std::array<UBYTE, SCREEN_SIZE> want{};
     auto w = [&](unsigned at, UWORD v) { want[at] = v >> 8; want[at + 1] = v; };
     auto l = [&](unsigned at, ULONG v) { w(at, v >> 16); w(at + 2, v); };
     w(8, s.LeftEdge); w(10, s.TopEdge); w(12, s.Width); w(14, s.Height);
     w(16, s.MouseY); w(18, s.MouseX); w(20, s.Flags);
+    l(22, title); l(26, title); // an opened screen's Title and DefaultTitle: the program's text
     want[30] = s.BarHeight; want[31] = s.BarVBorder; want[32] = s.BarHBorder;
     want[33] = s.MenuVBorder; want[34] = s.MenuHBorder; want[35] = s.WBorTop;
     want[36] = s.WBorLeft; want[37] = s.WBorRight; want[38] = s.WBorBottom;
@@ -455,10 +683,10 @@ static void screen_image(Fixture &f, ULONG g, Screen &s, ULONG ta, ULONG tf)
 static void test_registrations()
 {
     static_assert(KAFFEINE_SHADOW_SCREEN == 5 && KAFFEINE_SHADOW_PUBSCREEN == 13);
-    const ULONG slots[] = { 510, 516, 522, 528, 534, 582 };
+    const ULONG slots[] = { 510, 516, 522, 528, 534, 582, 66, 198, 612 };
     IPTR (*const functions[])(KaffeineContext *, void *) = { Kaffeine_LockPubScreen, Kaffeine_UnlockPubScreen,
         Kaffeine_LockPubScreenList, Kaffeine_UnlockPubScreenList, Kaffeine_NextPubScreen,
-        Kaffeine_GetDefaultPubScreen };
+        Kaffeine_GetDefaultPubScreen, Kaffeine_CloseScreen, Kaffeine_OpenScreen, Kaffeine_OpenScreenTagList };
     assert(std::size(manual) == std::size(slots));
     for (size_t i = 0; i < std::size(slots); ++i)
     { assert(manual[i].lvo == slots[i] && manual[i].thunk == functions[i]); }
@@ -470,6 +698,12 @@ static void test_registrations()
     assert(f.call(534, { 0, f.buffer }) == f.buffer && f.string(f.buffer) == "Workbench");
     assert(f.call(582, { f.buffer }) == 0 && f.string(f.buffer) == "Workbench");
     f.native_unlocks(&n.screen, 1);
+    // OpenScreenTagList(NULL, NULL), CloseScreen() and OpenScreen() through 612, 66 and 198
+    const ULONG opened = f.open(0, 0); assert(opened && native->count(OPEN) == 1);
+    assert(f.close(opened) == 1 && native->count(CLOSE) == 1);
+    f.put_ns(f.ns_at, 0, 0, 320, 200, 2, 0, 1, 0, CUSTOMSCREEN, 0, 0);
+    const ULONG old = f.open_ns(f.ns_at); assert(old && native->count(OPEN) == 2);
+    assert(f.close(old) == 1 && native->count(CLOSE) == 2);
     // Prove that every fallback is reachable when its manual registration is absent.
     f.ctx.libs[0].num_thunks = 0;
     for (ULONG lvo : slots)
@@ -1399,11 +1633,576 @@ static void test_list_without_copy_retains_screen()
     assert(f.avail() == f.initial_heap && f.ctx.num_shadows == 0 && f.entries() == 0);
 }
 
+/* ── Screens that the program opens ──────────────────────────────── */
+
+static void be32(std::array<UBYTE, 0x10000> &m, ULONG at, ULONG v)
+{
+    m[at] = v >> 24; m[at + 1] = v >> 16; m[at + 2] = v >> 8; m[at + 3] = v;
+}
+
+/* OpenScreen(): every NewScreen byte field reaches Intuition, which keeps
+   native copies of the font and the title; the 68k Screen is the complete
+   classic image, of type 5, and goes with a successful CloseScreen(). */
+static void test_open_newscreen()
+{
+    Fixture f;
+    f.put(f.fname_at, "topaz.font");
+    f.put_attr(f.attr_at, f.fname_at, 8, 0x05, 0x42);
+    f.put(f.title_at, "My Screen");
+    f.put_ns(f.ns_at, -5, 7, 320, 200, 3, 2, 1, 0x8004, CUSTOMSCREEN | SHOWTITLE, f.attr_at, f.title_at);
+    const ULONG g = f.open_ns(f.ns_at);
+    assert(g && !f.stopped() && native->count(OPEN) == 1 && native->opened.size() == 1);
+    const Opened &o = native->opened.back();
+    assert(o.had_ns && !o.had_tags);
+    assert(o.ns.LeftEdge == -5 && o.ns.TopEdge == 7 && o.ns.Width == 320 && o.ns.Height == 200);
+    assert(o.ns.Depth == 3 && o.ns.DetailPen == 2 && o.ns.BlockPen == 1 && o.ns.ViewModes == 0x8004);
+    assert(o.ns.Type == (CUSTOMSCREEN | SHOWTITLE) && !o.ns.Gadgets && !o.ns.CustomBitMap);
+    assert(o.font_name == "topaz.font" && o.font_copy.ta_YSize == 8 && o.font_copy.ta_Style == 0x05 &&
+           o.font_copy.ta_Flags == 0x42 && o.font_tags.empty());
+    assert(o.title_text == "My Screen");
+    Screen *s = o.result;
+    assert(Kaffeine_ShadowNative(&f.ctx, g, KAFFEINE_SHADOW_SCREEN) == s);
+    assert(!Kaffeine_ShadowNative(&f.ctx, g, KAFFEINE_SHADOW_PUBSCREEN));
+    assert(Kaffeine_ShadowNative(&f.ctx, g + VP, KAFFEINE_SHADOW_VIEWPORT) == &s->ViewPort);
+    assert(Kaffeine_ShadowNative(&f.ctx, g + RP, KAFFEINE_SHADOW_RASTPORT) == &s->RastPort);
+    assert(Kaffeine_ScreenNative(&f.ctx, g) == s && Kaffeine_ScreenGuest(&f.ctx, s) == g);
+    assert(f.ctx.num_shadows == 3 && f.entries() == 1 && f.owned() == 1 && f.ctx.screen_release);
+    const ULONG ta = g + SCREEN_SIZE, tf = f.lng(g + RP + RP_FONT);
+    assert(tf && Kaffeine_FontNative(&f.ctx, tf) == &f.font && f.held_fonts() == 1);
+    // all 346 bytes: scalars, ViewPort, RastPort, BitMap and pens; no native pointer
+    screen_image(f, g, *s, ta, tf, f.title_at);
+    assert(f.lng(ta) == ta + TA_SIZE && f.string(ta + TA_SIZE) == "topaz.font");
+    assert(f.word(ta + 4) == 8 && f.memory[ta + 6] == 0x05 && f.memory[ta + 7] == 0x42);
+    // Intuition's pointers are native copies that outlive the program's text.
+    f.put(f.fname_at, "other.font"); f.put(f.title_at, "Changed!!");
+    std::fill_n(f.memory.begin() + f.ns_at, 32, 0x5A);
+    assert(std::string(s->Font->ta_Name) == "topaz.font" &&
+           std::string(reinterpret_cast<char *>(s->Title)) == "My Screen");
+    // guest FreeMem cannot give back the mirror
+    const ULONG used = f.avail();
+    Kaffeine_HeapFree(&f.ctx, g, SCREEN_SIZE); assert(f.avail() == used);
+    assert(f.close(g) == 1 && native->count(CLOSE) == 1 && native->calls.back().screen == s);
+    assert(native->opened.back().closed);
+    f.absent(g, s);
+    assert(f.entries() == 0 && f.ctx.num_shadows == 0 && f.held_fonts() == 1);
+    // the TextFont stays pinned; the second open and close leaves the heap where the first did
+    const ULONG after = f.avail();
+    auto calls = native->calls.size();
+    assert(f.close(g) == 0 && f.close(0) == 1 && native->calls.size() == calls);
+    assert(f.open_ns(0) == 0 && !f.stopped() && native->calls.size() == calls);
+    f.put(f.fname_at, "topaz.font"); f.put(f.title_at, "My Screen");
+    f.put_ns(f.ns_at, -5, 7, 320, 200, 3, 2, 1, 0x8004, CUSTOMSCREEN | SHOWTITLE, f.attr_at, f.title_at);
+    const ULONG again = f.open_ns(f.ns_at); assert(again && f.close(again) == 1);
+    assert(f.avail() == after && f.ctx.num_shadows == 0);
+}
+
+/* OpenScreenTagList(NULL, tags): the walker's flattening, scalars at
+   native width, data that becomes native copies, and the display ID as it
+   is, for a truecolor and an indexed mode */
+static void test_open_tags()
+{
+    for (ULONG id : { 0x50031000u, 0x00029004u })
+    {
+        Fixture f;
+        f.put(f.title_at, "Tags");
+        f.put(f.fname_at, "tag.font");
+        f.put_attr(f.attr_at, f.fname_at, 11, 0x02, 0x01);
+        m68k_write16(&f.ctx, f.pens_at, 3); m68k_write16(&f.ctx, f.pens_at + 2, 0x0102);
+        m68k_write16(&f.ctx, f.pens_at + 4, 0xFFFF);
+        m68k_write32(&f.ctx, f.error_at, 0xA5A55A5A);
+        f.put_tags(f.more_at, { { SA_Type, CUSTOMSCREEN }, { SA_ShowTitle, FALSE } });
+        f.put_tags(f.tags_at, {
+            { SA_Left, (ULONG)-3 }, { SA_Top, 4 }, { SA_Width, 0xFFFFFFFF }, { SA_Height, 0xFFFFFFFF },
+            { SA_Depth, id == 0x50031000u ? 24u : 8u }, { SA_DisplayID, id },
+            { TAG_IGNORE, 0xDEADBEEF }, { TAG_SKIP, 1 }, { SA_Colors32, 0x1234 },
+            { SA_Title, f.title_at }, { SA_Font, f.attr_at }, { SA_Pens, f.pens_at },
+            { SA_ErrorCode, f.error_at }, { SA_DetailPen, 0x1FF }, { SA_Behind, 0x10000 },
+            { TAG_MORE, f.more_at } }, false);
+        const ULONG g = f.open(0, f.tags_at);
+        assert(g && !f.stopped() && native->count(OPEN) == 1);
+        const Opened &o = native->opened.back();
+        assert(!o.had_ns && o.had_tags);
+        const ULONG order[] = { SA_Left, SA_Top, SA_Width, SA_Height, SA_Depth, SA_DisplayID, SA_Title,
+                                SA_Font, SA_Pens, SA_ErrorCode, SA_DetailPen, SA_Behind, SA_Type, SA_ShowTitle };
+        assert(o.tags.size() == std::size(order));
+        for (size_t i = 0; i < std::size(order); ++i) assert(o.tags[i].ti_Tag == order[i]);
+        // LONGs sign extended: Intuition compares SA_Width with a native ~0
+        assert(o.tags[0].ti_Data == static_cast<IPTR>(static_cast<LONG>(-3)));
+        assert(o.tags[2].ti_Data == ~static_cast<IPTR>(0) && o.tags[3].ti_Data == ~static_cast<IPTR>(0));
+        // ULONGs, BOOLs and pens zero extended
+        assert(o.tags[5].ti_Data == id && o.tags[10].ti_Data == 0x1FF && o.tags[11].ti_Data == 0x10000);
+        assert(o.tags[12].ti_Data == CUSTOMSCREEN && o.tags[13].ti_Data == FALSE);
+        // pointers are native, at native width, to what the program gave
+        assert(reinterpret_cast<TextAttr *>(o.tags[7].ti_Data) == o.font && !in_guest(o.font));
+        assert(reinterpret_cast<UBYTE *>(o.tags[6].ti_Data) == o.title && o.title_text == "Tags");
+        assert(o.font_name == "tag.font" && o.font_copy.ta_YSize == 11 && o.font_copy.ta_Style == 2);
+        assert((o.pens == std::vector<UWORD>{ 3, 0x0102, 0xFFFF }));
+        assert(o.error && !in_guest(o.error));
+        // success writes no error
+        assert(f.lng(f.error_at) == 0xA5A55A5A);
+        Screen *s = o.result;
+        assert(s->LeftEdge == -3 && s->TopEdge == 4 && s->Width == 640 && s->Height == 480);
+        assert(Kaffeine_ScreenNative(&f.ctx, g) == s && f.owned() == 1);
+        screen_image(f, g, *s, g + SCREEN_SIZE, f.lng(g + RP + RP_FONT), f.title_at);
+        assert(f.string(f.lng(g + SCREEN_SIZE)) == "tag.font");
+        // left open: the end of the program closes it
+    }
+}
+
+/* Intuition fails: no 68k Screen, and SA_ErrorCode gets Intuition's error
+   as a big-endian ULONG, or keeps what the program had there */
+static void test_screen_visualinfo_reference()
+{
+    Fixture f;
+    ULONG g = f.open(0, 0);
+    assert(g);
+    auto *screen = Kaffeine_ScreenNative(&f.ctx, g);
+    f.ctx.visualinfos[0].native = reinterpret_cast<APTR>(0x12345678);
+    f.ctx.visualinfos[0].screen = screen;
+    auto calls = native->count(CLOSE);
+    assert(!f.close(g) && native->count(CLOSE) == calls && Kaffeine_ScreenNative(&f.ctx, g) == screen);
+    f.ctx.visualinfos[0] = {};
+    assert(f.close(g));
+}
+
+static void test_open_clip()
+{
+    for (bool null_clip : { false, true })
+    {
+        Fixture f;
+        const ULONG clip = f.long_at;
+        m68k_write16(&f.ctx, clip, (UWORD)-31);
+        m68k_write16(&f.ctx, clip + 2, (UWORD)-17);
+        m68k_write16(&f.ctx, clip + 4, 1023);
+        m68k_write16(&f.ctx, clip + 6, 767);
+        const auto before = f.memory;
+        // Only the final effective pointer is read, as native Intuition does.
+        f.put_tags(f.tags_at, { { SA_DClip, 0xFFFFFFFF },
+                               { SA_DClip, null_clip ? 0u : clip } });
+        ULONG g = f.open(0, f.tags_at);
+        assert(g && !f.stopped());
+        const auto &o = native->opened.back();
+        assert(o.had_clip == !null_clip);
+        if (!null_clip)
+            assert(o.clip.MinX == -31 && o.clip.MinY == -17 &&
+                   o.clip.MaxX == 1023 && o.clip.MaxY == 767);
+        assert(std::equal(before.begin() + clip, before.begin() + clip + 8,
+                          f.memory.begin() + clip));
+        assert(f.close(g));
+    }
+}
+
+static void test_open_native_failure()
+{
+    for (ULONG code : { (ULONG)OSERR_UNKNOWNMODE, (ULONG)OSERR_NOMONITOR, 0u })
+    {
+        Fixture f;
+        m68k_write32(&f.ctx, f.error_at, 0x11223344);
+        f.put_tags(f.tags_at, { { SA_DisplayID, 0xDEAD0000 }, { SA_ErrorCode, f.error_at } });
+        native->open_fail = true; native->open_error = code;
+        const ULONG heap = f.avail();
+        auto expected = f.memory;
+        be32(expected, f.error_at, code ? code : 0x11223344);
+        assert(f.open(0, f.tags_at) == 0 && !f.stopped());
+        assert(native->count(OPEN) == 1 && native->count(CLOSE) == 0 && f.memory == expected);
+        assert(f.avail() == heap && f.ctx.num_shadows == 0 && !f.entries() && !f.ctx.screen_release);
+        assert(native->count(FONT_OPEN) == 0);
+    }
+    {
+        // No SA_ErrorCode: nothing is written.
+        Fixture f;
+        native->open_fail = true; native->open_error = OSERR_NOMEM;
+        const auto before = f.memory;
+        assert(f.open(0, 0) == 0 && f.memory == before && native->count(OPEN) == 1);
+    }
+    {
+        // Intuition refuses a width that, zero extended, would exceed 32767.
+        Fixture f;
+        m68k_write32(&f.ctx, f.error_at, 0);
+        f.put_tags(f.tags_at, { { SA_Width, 40000 }, { SA_ErrorCode, f.error_at } });
+        assert(f.open(0, f.tags_at) == 0 && native->count(OPEN) == 1 && f.lng(f.error_at) == 0);
+    }
+}
+
+/* Input that the bridge does not take stops the program before Intuition,
+   without a write to guest memory, also SA_ErrorCode. */
+static void test_open_refusals()
+{
+    struct Case { const char *what; ULONG lvo; std::function<std::pair<ULONG, ULONG>(Fixture &)> setup; };
+    const Case cases[] =
+    {
+        { "NewScreen outside", 612, [](Fixture &) { return std::pair<ULONG, ULONG>{ 0xFFF0, 0 }; } },
+        { "NewScreen outside, 198", 198, [](Fixture &) { return std::pair<ULONG, ULONG>{ 0xFFFFFFF0, 0 }; } },
+        { "Gadgets", 198, [](Fixture &f) {
+            f.put_ns(f.ns_at, 0, 0, 320, 200, 2, 0, 1, 0, CUSTOMSCREEN, 0, 0, 0x3000);
+            return std::pair<ULONG, ULONG>{ f.ns_at, 0 }; } },
+        { "CustomBitMap", 612, [](Fixture &f) {
+            f.put_ns(f.ns_at, 0, 0, 320, 200, 2, 0, 1, 0, CUSTOMSCREEN, 0, 0, 0, 0x3000);
+            return std::pair<ULONG, ULONG>{ f.ns_at, 0 }; } },
+        { "CUSTOMBITMAP type", 612, [](Fixture &f) {
+            f.put_ns(f.ns_at, 0, 0, 320, 200, 2, 0, 1, 0, CUSTOMSCREEN | CUSTOMBITMAP, 0, 0);
+            return std::pair<ULONG, ULONG>{ f.ns_at, 0 }; } },
+        { "ExtNewScreen cut by the end of memory", 198, [](Fixture &f) {
+            f.put_ns(0x10000 - 32, 0, 0, 320, 200, 2, 0, 1, 0, CUSTOMSCREEN, 0, 0);
+            m68k_write16(&f.ctx, 0x10000 - 32 + 14, CUSTOMSCREEN | NS_EXTENDED);
+            return std::pair<ULONG, ULONG>{ 0x10000 - 32, 0 }; } },
+        { "Extension with SA_Colors32", 198, [](Fixture &f) {
+            f.put_tags(f.more_at, { { SA_Colors32, 0x3000 } });
+            f.put_ns(f.ns_at, 0, 0, 320, 200, 2, 0, 1, 0, CUSTOMSCREEN | NS_EXTENDED, 0, 0, 0, 0, f.more_at);
+            return std::pair<ULONG, ULONG>{ f.ns_at, 0 }; } },
+        { "NewScreen font outside", 198, [](Fixture &f) {
+            f.put_ns(f.ns_at, 0, 0, 320, 200, 2, 0, 1, 0, CUSTOMSCREEN, 0xFFFC, 0);
+            return std::pair<ULONG, ULONG>{ f.ns_at, 0 }; } },
+        { "NewScreen title without NUL", 198, [](Fixture &f) {
+            std::fill_n(f.memory.begin() + 0xFF00, 0x100, 'T');
+            f.put_ns(f.ns_at, 0, 0, 320, 200, 2, 0, 1, 0, CUSTOMSCREEN, 0, 0xFF00);
+            return std::pair<ULONG, ULONG>{ f.ns_at, 0 }; } },
+        { "tags outside", 612, [](Fixture &) { return std::pair<ULONG, ULONG>{ 0, 0xFFFC }; } },
+        { "tag cycle", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { SA_ErrorCode, f.error_at }, { TAG_MORE, f.tags_at } }, false);
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "unknown pointer tag after SA_ErrorCode", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { SA_ErrorCode, f.error_at }, { SA_Colors32, 0x3000 } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "unknown scalar tag", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { TAG_USER + 0x1234, 1 } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "SA_DClip truncated", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { SA_DClip, 0xFFFC } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "SA_PubTask", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { SA_PubTask, 0 } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "SA_BitMap", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { SA_BitMap, 0x3000 } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "SA_Type CUSTOMBITMAP", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { SA_Type, CUSTOMSCREEN | CUSTOMBITMAP } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "title of 256 characters", 612, [](Fixture &f) {
+            f.put(f.long_at, std::string(256, 'L'));
+            f.put_tags(f.tags_at, { { SA_Title, f.long_at } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "title outside", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { SA_Title, 0x10000 } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "TextAttr outside", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { SA_Font, 0xFFFC } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "font name of 256 characters", 612, [](Fixture &f) {
+            f.put(f.long_at, std::string(256, 'F'));
+            f.put_attr(f.attr_at, f.long_at, 8, 0, 0);
+            f.put_tags(f.tags_at, { { SA_Font, f.attr_at } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "TTextAttr with a pointer tag", 612, [](Fixture &f) {
+            f.put(f.fname_at, "x.font");
+            f.put_tags(f.ftags_at, { { TAG_USER + 7, 0x3000 } });
+            f.put_attr(f.attr_at, f.fname_at, 8, FSF_TAGGED, 0, f.ftags_at);
+            f.put_tags(f.tags_at, { { SA_Font, f.attr_at } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "65 pens without ~0", 612, [](Fixture &f) {
+            for (unsigned i = 0; i < 65; ++i) m68k_write16(&f.ctx, f.long_at + 2 * i, 1);
+            m68k_write16(&f.ctx, f.long_at + 130, 0xFFFF);
+            f.put_tags(f.tags_at, { { SA_Pens, f.long_at } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "pens outside", 612, [](Fixture &f) {
+            m68k_write16(&f.ctx, 0xFFFE, 1);
+            f.put_tags(f.tags_at, { { SA_Pens, 0xFFFE } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "SA_ErrorCode cut by the end of memory", 612, [](Fixture &f) {
+            f.put_tags(f.tags_at, { { SA_ErrorCode, 0xFFFE } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "SA_PubName of 140 characters", 612, [](Fixture &f) {
+            f.put(f.long_at, std::string(140, 'P'));
+            f.put_tags(f.tags_at, { { SA_PubName, f.long_at } });
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+        { "257 tags", 612, [](Fixture &f) {
+            for (ULONG i = 0; i < 257; ++i)
+            { m68k_write32(&f.ctx, f.tags_at + 8 * i, SA_Left); m68k_write32(&f.ctx, f.tags_at + 8 * i + 4, i); }
+            m68k_write32(&f.ctx, f.tags_at + 8 * 257, TAG_DONE);
+            return std::pair<ULONG, ULONG>{ 0, f.tags_at }; } },
+    };
+    for (const auto &c : cases)
+    {
+        Fixture f;
+        m68k_write32(&f.ctx, f.error_at, 0x01020304);
+        const auto args = c.setup(f);
+        const auto before = f.memory;
+        const ULONG result = c.lvo == 198 ? f.open_ns(args.first) : f.open(args.first, args.second);
+        if (result != 20) std::printf("not refused: %s\n", c.what);
+        assert(result == 20);
+        f.refused(before);
+        assert(f.avail() == f.initial_heap);
+    }
+    // Exactly 256 tags, a 255-character title and font name, 64 pens and
+    // a 139-character public name are taken.
+    Fixture f;
+    f.put(f.long_at, std::string(255, 'L'));
+    f.put(f.fname_at - 0x40, std::string(139, 'P')); // 0x3320, before the tags
+    const ULONG pens = 0x3E40; // after the title, before the stack
+    for (ULONG i = 0; i < 64; ++i) m68k_write16(&f.ctx, pens + 2 * i, (UWORD)i);
+    m68k_write16(&f.ctx, pens + 128, 0xFFFF);
+    f.put_tags(f.tags_at + 8 * 253, { { SA_Title, f.long_at }, { SA_Pens, pens },
+                                      { SA_PubName, f.fname_at - 0x40 } });
+    for (ULONG i = 0; i < 253; ++i)
+    { m68k_write32(&f.ctx, f.tags_at + 8 * i, SA_Top); m68k_write32(&f.ctx, f.tags_at + 8 * i + 4, i); }
+    const ULONG g = f.open(0, f.tags_at);
+    assert(g && native->opened.back().tags.size() == 256);
+    assert(native->opened.back().title_text == std::string(255, 'L') && native->opened.back().pens.size() == 65);
+    assert(native->opened.back().pubname == std::string(139, 'P'));
+}
+
+/* rom/intuition/openscreentaglist.c: A1 replaces the Extension of an
+   ExtNewScreen, which is used without A1; tags win over the NewScreen,
+   the last SA_Font/SA_Title, the first SA_ErrorCode. Only the values that
+   count are read. */
+static void test_open_precedence()
+{
+    {
+        Fixture f;
+        f.put_tags(f.more_at, { { SA_Colors32, 0x3000 } }); // never read
+        f.put_ns(f.ns_at, 0, 0, 640, 480, 2, 0, 1, 0, CUSTOMSCREEN | NS_EXTENDED, 0, 0, 0, 0, f.more_at);
+        f.put_tags(f.tags_at, { { SA_Width, 800 } });
+        const ULONG g = f.open(f.ns_at, f.tags_at);
+        const Opened &o = native->opened.back();
+        assert(g && o.had_ns && o.ns.Type == CUSTOMSCREEN && o.tags.size() == 1);
+        assert(o.tags[0].ti_Tag == SA_Width && o.tags[0].ti_Data == 800 && o.result->Width == 800);
+    }
+    for (ULONG lvo : { 612u, 198u })
+    {
+        Fixture f;
+        f.put_tags(f.more_at, { { SA_Height, 300 } });
+        f.put_ns(f.ns_at, 0, 0, 640, 480, 2, 0, 1, 0, CUSTOMSCREEN | SHOWTITLE | NS_EXTENDED, 0, 0, 0, 0, f.more_at);
+        const ULONG g = lvo == 612 ? f.open(f.ns_at, 0) : f.open_ns(f.ns_at);
+        const Opened &o = native->opened.back();
+        assert(g && o.ns.Type == (CUSTOMSCREEN | SHOWTITLE) && o.tags.size() == 1);
+        assert(o.tags[0].ti_Data == 300 && o.result->Height == 300 && o.result->Width == 640);
+        // an Extension of NULL is no tags
+        m68k_write32(&f.ctx, f.ns_at + 32, 0);
+        assert(f.open_ns(f.ns_at) && !native->opened.back().had_tags);
+    }
+    {
+        Fixture f;
+        f.put(f.title_at, "First"); f.put(f.title2_at, "Second");
+        f.put(f.fname_at, "tag.font"); f.put_attr(f.attr_at, f.fname_at, 9, 0, 0);
+        m68k_write32(&f.ctx, f.error_at, 0); m68k_write32(&f.ctx, f.error2_at, 0);
+        // a NewScreen font that a tag replaces is never read
+        f.put_ns(f.ns_at, 0, 0, 640, 480, 2, 0, 1, 0, CUSTOMSCREEN, 0xFFFFFFF0, f.title_at);
+        f.put_tags(f.tags_at, { { SA_Title, f.title_at }, { SA_Font, f.attr_at }, { SA_Title, f.title2_at },
+                                { SA_ErrorCode, f.error_at }, { SA_ErrorCode, f.error2_at } });
+        const ULONG g = f.open(f.ns_at, f.tags_at);
+        const Opened &o = native->opened.back();
+        assert(g && o.title_text == "Second" && o.font_name == "tag.font" && o.font_copy.ta_YSize == 9);
+        assert(o.ns.Font == o.font && o.ns.DefaultTitle == o.title); // one native copy of each
+        assert(o.tags[0].ti_Data == o.tags[2].ti_Data && o.tags[3].ti_Data == o.tags[4].ti_Data);
+        assert(f.lng(g + 22) == f.title2_at && f.lng(g + 26) == f.title2_at);
+        // the first SA_ErrorCode gets the error
+        native->open_fail = true; native->open_error = OSERR_PUBNOTUNIQUE;
+        assert(f.open(f.ns_at, f.tags_at) == 0);
+        assert(f.lng(f.error_at) == OSERR_PUBNOTUNIQUE && f.lng(f.error2_at) == 0);
+        native->open_fail = false;
+        // SA_Font 0 over the NewScreen's font, SA_Title 0 over its title
+        f.put_attr(f.attr_at, f.fname_at, 9, 0, 0);
+        f.put_ns(f.ns_at, 0, 0, 640, 480, 2, 0, 1, 0, CUSTOMSCREEN, f.attr_at, f.title_at);
+        f.put_tags(f.tags_at, { { SA_Font, 0 }, { SA_Title, 0 } });
+        const ULONG plain = f.open(f.ns_at, f.tags_at);
+        const Opened &p = native->opened.back();
+        assert(plain && !p.font && !p.title && !p.ns.Font && !p.ns.DefaultTitle);
+        assert(f.lng(plain + 40) == 0 && f.lng(plain + 22) == 0);
+    }
+}
+
+/* SA_Font: the style and flags as they are, FSF_TAGGED with its TA_DeviceDPI
+   tags copied natively; the 68k TextAttr shows the style without FSF_TAGGED. */
+static void test_open_font_flags()
+{
+    for (bool with_tags : { false, true })
+    {
+        Fixture f;
+        f.put(f.fname_at, "dpi.font");
+        f.put_tags(f.ftags_at, { { TA_DeviceDPI, 0x00480048 } });
+        f.put_attr(f.attr_at, f.fname_at, 13, FSF_TAGGED | 0x03, 0x62, with_tags ? f.ftags_at : 0);
+        f.put_tags(f.tags_at, { { SA_Font, f.attr_at } });
+        const ULONG g = f.open(0, f.tags_at); assert(g);
+        const Opened &o = native->opened.back();
+        assert(o.font_copy.ta_Style == (FSF_TAGGED | 0x03) && o.font_copy.ta_Flags == 0x62);
+        assert(o.font_tags.size() == (with_tags ? 1u : 0u));
+        if (with_tags)
+            assert(o.font_tags[0].ti_Tag == TA_DeviceDPI && o.font_tags[0].ti_Data == 0x00480048);
+        const ULONG ta = f.lng(g + 40);
+        assert(ta == g + SCREEN_SIZE && f.string(f.lng(ta)) == "dpi.font" && f.word(ta + 4) == 13);
+        assert(f.memory[ta + 6] == 0x03 && f.memory[ta + 7] == 0x62);
+        // the native tags stay with the screen, not with the guest list
+        std::fill_n(f.memory.begin() + f.ftags_at, 16, 0);
+        if (with_tags)
+            assert(reinterpret_cast<const TTextAttr *>(o.result->Font)->tta_Tags[0].ti_Data == 0x00480048);
+        assert(f.close(g) == 1);
+    }
+}
+
+/* CloseScreen() closes only a screen that the program opened; a refusal
+   of Intuition leaves everything; one 68k Screen across LockPubScreen(),
+   the list and windows; no identity outlives the screen. */
+static void test_close_ownership()
+{
+    Fixture f;
+    f.add();
+    const ULONG pub = f.lock(); assert(pub);
+    f.put(f.title2_at, "MyPub");
+    f.put_tags(f.tags_at, { { SA_PubName, f.title2_at } });
+    const ULONG g = f.open(0, f.tags_at); assert(g && g != pub);
+    Screen *s = native->opened.back().result;
+    auto calls = native->calls.size();
+    // A borrowed screen, another address, an address inside the 68k Screen
+    assert(f.close(pub) == 0 && f.close(f.text) == 0 && f.close(g + 4) == 0 && f.close(g + VP) == 0);
+    assert(f.close(0) == 1 && native->calls.size() == calls && Kaffeine_ScreenNative(&f.ctx, pub));
+    // LockPubScreen() of the opened screen gives the same 68k Screen.
+    assert(f.lock(f.name("mypub")) == g && f.ctx.pubscreens[f.entry(g)].locks == 1);
+    assert(f.ctx.pubscreens[f.entry(g)].owned && f.entries() == 2 && f.ctx.num_shadows == 6);
+    const ULONG list = f.locklist(); assert(list);
+    assert(f.lng(list + LIST_ROOM + PSN_SCREEN) == pub && f.lng(list + LIST_ROOM + NODE_SIZE + PSN_SCREEN) == g);
+    f.unlocklist();
+    // Visitors: Intuition refuses and the 68k Screen stays as it was.
+    std::vector<UBYTE> mirror(f.memory.begin() + g, f.memory.begin() + g + SCREEN_SIZE);
+    ULONG heap = f.avail(); auto shadows = f.ctx.num_shadows;
+    assert(f.close(g) == 0 && native->count(CLOSE) == 1 && native->calls.back().screen == s);
+    assert(std::equal(mirror.begin(), mirror.end(), f.memory.begin() + g));
+    assert(f.avail() == heap && f.ctx.num_shadows == shadows && Kaffeine_ScreenNative(&f.ctx, g) == s);
+    // the last lock: an opened screen is not pruned
+    f.unlock(g);
+    assert(Kaffeine_ScreenNative(&f.ctx, g) == s && f.owned() == 1 && f.ctx.pubscreens[f.entry(g)].locks == 0);
+    // A window there: refused again, and its going does not prune the screen.
+    Window w{}; w.WScreen = s; s->FirstWindow = &w;
+    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &w, KAFFEINE_SHADOW_WINDOW));
+    assert(f.close(g) == 0 && Kaffeine_ScreenNative(&f.ctx, g) == s && f.avail() == heap);
+    s->FirstWindow = nullptr; Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
+    f.ctx.screen_release(&f.ctx, s);
+    assert(Kaffeine_ScreenNative(&f.ctx, g) == s && Kaffeine_ScreenGuest(&f.ctx, s) == g);
+    native->close_refuse = true;
+    assert(f.close(g) == 0 && Kaffeine_ScreenNative(&f.ctx, g) == s);
+    native->close_refuse = false;
+    assert(native->count(CLOSE) == 3);
+    assert(f.close(g) == 1 && native->count(CLOSE) == 4);
+    f.absent(g, s);
+    assert(f.entries() == 1 && f.owned() == 0 && f.ctx.num_shadows == 3);
+    // Nothing of the closed screen comes back.
+    const auto unlocks = native->count(UNLOCK);
+    assert(!f.lock(f.name("MyPub")));
+    f.unlock(g);
+    assert(f.close(g) == 0 && native->count(CLOSE) == 4 && native->count(UNLOCK) == unlocks);
+    // A new screen is a new identity, even where the old 68k Screen was.
+    const ULONG next = f.open(0, 0); assert(next);
+    assert(Kaffeine_ScreenNative(&f.ctx, next) == native->opened.back().result);
+    assert(next != g || Kaffeine_ScreenGuest(&f.ctx, s) == 0);
+    f.unlock(pub);
+}
+
+/* No room for the 68k Screen: before Intuition when the table of screens
+   or the shadows are full, else Intuition's screen closes again. Either way
+   SA_ErrorCode gets OSERR_NOMEM and nothing stays. */
+static void test_open_bridge_failures()
+{
+    for (bool full_table : { true, false })
+    {
+        Fixture f;
+        std::vector<ULONG> locked;
+        if (full_table)
+            for (unsigned i = 0; i < KAFFEINE_MAX_PUBSCREENS; ++i)
+            {
+                auto &s = f.add("Screen" + std::to_string(i));
+                locked.push_back(f.lock(f.name(s.name.data()))); assert(locked.back());
+            }
+        else
+            f.leave_shadows(2);
+        m68k_write32(&f.ctx, f.error_at, 0);
+        f.put_tags(f.tags_at, { { SA_ErrorCode, f.error_at } });
+        const ULONG heap = f.avail(); const auto shadows = f.ctx.num_shadows;
+        assert(f.open(0, f.tags_at) == 0 && !f.stopped() && native->count(OPEN) == 0);
+        assert(f.lng(f.error_at) == OSERR_NOMEM && f.avail() == heap && f.ctx.num_shadows == shadows);
+        if (full_table) f.unlock(locked[0]);
+        else { f.free_shadows(); f.leave_shadows(3); }
+        const ULONG g = f.open(0, f.tags_at); assert(g && f.owned() == 1);
+        assert(f.close(g) == 1);
+        for (size_t i = 1; i < locked.size(); ++i) f.unlock(locked[i]);
+        f.free_shadows();
+    }
+    for (bool no_memory : { true, false })
+    {
+        Fixture f;
+        ULONG taken = 0, size = 0;
+        if (no_memory)
+        { size = Kaffeine_HeapAvail(&f.ctx, MEMF_LARGEST); taken = Kaffeine_HeapAlloc(&f.ctx, size, MEMF_ANY); assert(taken); }
+        else
+            native->font_result = nullptr; // the screen font cannot be held
+        m68k_write32(&f.ctx, f.error_at, 0);
+        f.put(f.title_at, "Rolled back");
+        f.put_tags(f.tags_at, { { SA_ErrorCode, f.error_at }, { SA_Title, f.title_at } });
+        const ULONG heap = f.avail();
+        assert(f.open(0, f.tags_at) == 0 && !f.stopped());
+        assert(native->count(OPEN) == 1 && native->count(CLOSE) == 1);
+        assert(native->calls.back().kind == CLOSE && native->calls.back().screen == native->opened.back().result);
+        assert(native->opened.back().closed && f.lng(f.error_at) == OSERR_NOMEM);
+        assert(f.avail() == heap && f.ctx.num_shadows == 0 && !f.entries() && !f.held_fonts());
+        assert(native->font_opens.empty() && !Kaffeine_FontFind(&f.ctx, &f.font));
+        if (taken) Kaffeine_HeapFree(&f.ctx, taken, size);
+        native->font_result = &f.font;
+        const ULONG g = f.open(0, f.tags_at); assert(g && f.close(g) == 1);
+    }
+}
+
+/* The end of the program: the locks first, then the screens that the
+   program left open, except one with its window, then the fonts. */
+static void test_teardown()
+{
+    Window w{};
+    Fixture f;
+    auto &wb = f.add("Workbench", true);
+    const ULONG pub = f.lock(); assert(pub);
+    f.put(f.title2_at, "Shared");
+    f.put_tags(f.tags_at, { { SA_PubName, f.title2_at } });
+    const ULONG shared = f.open(0, f.tags_at); assert(shared);
+    Screen *ss = native->opened.back().result;
+    assert(f.lock(f.name("shared")) == shared);
+    const ULONG plain = f.open(0, 0); assert(plain);
+    Screen *sp = native->opened.back().result;
+    const ULONG busy = f.open(0, 0); assert(busy);
+    Screen *sb = native->opened.back().result;
+    w.WScreen = sb; sb->FirstWindow = &w;
+    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &w, KAFFEINE_SHADOW_WINDOW));
+    assert(f.locklist() && f.locklist());
+    assert(f.held_fonts() == 1 && f.owned() == 3);
+    const size_t mark = native->calls.size();
+    Kaffeine_ScreensCleanup(&f.ctx);
+    size_t last_unlock = 0, first_close = SIZE_MAX, last_close = 0, first_font = SIZE_MAX;
+    std::vector<Screen *> closed;
+    for (size_t i = mark; i < native->calls.size(); ++i)
+    {
+        const auto &c = native->calls[i];
+        // UnlockPubScreen() locks the list itself; all of it comes first.
+        if (c.kind == UNLOCK || c.kind == LIST_LOCK || c.kind == LIST_UNLOCK) last_unlock = i;
+        if (c.kind == CLOSE) { first_close = std::min(first_close, i); last_close = i; closed.push_back(c.screen); }
+        if (c.kind == FONT_CLOSE) first_font = std::min(first_font, i);
+    }
+    assert(native->count(UNLOCK) >= 2 && last_unlock > mark);
+    assert(last_unlock < first_close && last_close < first_font && first_font != SIZE_MAX);
+    assert((closed == std::vector<Screen *>{ ss, sp }));
+    assert(wb.node.psn_VisitorCount == 0 && native->node(ss)->psn_VisitorCount == 0 && native->list_depth == 0);
+    f.absent(shared, ss); f.absent(plain, sp);
+    assert(Kaffeine_ScreenNative(&f.ctx, busy) == sb && f.owned() == 1 && native->font_opens.empty());
+    // again: nothing more for Intuition while the window stays
+    const auto calls = native->calls.size();
+    Kaffeine_ScreensCleanup(&f.ctx); assert(native->calls.size() == calls);
+    // without the window, the cleanup of the fixture closes the last one
+    sb->FirstWindow = nullptr; Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
+    Kaffeine_ScreensCleanup(&f.ctx);
+    assert(native->count(CLOSE) == 3 && native->calls.back().screen == sb && !f.owned());
+}
+
 int main()
 {
     const struct Test { const char *name; void (*run)(); } tests[] =
     {
-        { "Six ABI registrations override poisoned generated fallbacks", test_registrations },
+        { "Nine ABI registrations override poisoned generated fallbacks", test_registrations },
         { "NULL and named locks expose the NDK fields, font and three shadows; relocks refill in place", test_screen_fields_and_relock },
         { "The last unlock returns the mirror and shadows; the font stays pinned; a later lock allocates anew", test_release_and_recreate },
         { "TextAttr names share the pinned TextFont or use an inline copy; a saved AskFont TextAttr survives reuse", test_textattr_names },
@@ -1428,7 +2227,18 @@ int main()
         { "GetDefaultPubScreen uses native storage, copies a bounded name and returns VOID", test_default_screen },
         { "Name buffers need the name and NUL only, with atomic refusals after the native lookup", test_name_buffers },
         { "Cleanup returns two screens' locks and nested list locks, once", test_cleanup },
-        { "A native list lock without a copy still retains the Screen", test_list_without_copy_retains_screen }
+        { "A native list lock without a copy still retains the Screen", test_list_without_copy_retains_screen },
+        { "OpenScreen passes every NewScreen field; native font/title copies; a full type-5 image; CloseScreen releases it", test_open_newscreen },
+        { "OpenScreenTagList flattens tags, sign-extends LONGs, copies pointer data natively, truecolor and indexed IDs", test_open_tags },
+        { "SA_DClip converts a bounded classic Rectangle and keeps signed coordinates", test_open_clip },
+        { "An owned screen remains open while a VisualInfo refers to it", test_screen_visualinfo_reference },
+        { "Native open failure: no 68k Screen, Intuition's error as a BE ULONG, or the program's value kept", test_open_native_failure },
+        { "Malformed or unsupported input stops the program before Intuition, writing nothing", test_open_refusals },
+        { "A1 over the Extension, the Extension without A1, tags over the NewScreen, first SA_ErrorCode", test_open_precedence },
+        { "SA_Font keeps style, flags and TA_DeviceDPI tags natively; the 68k TextAttr drops FSF_TAGGED", test_open_font_flags },
+        { "CloseScreen only of opened screens; refusals keep everything; one identity across locks, list and windows", test_close_ownership },
+        { "Full tables refuse before Intuition; missing memory or font closes Intuition's screen again", test_open_bridge_failures },
+        { "Teardown releases locks, then closes window-free opened screens, then fonts", test_teardown }
     };
     for (const auto &test : tests)
     {

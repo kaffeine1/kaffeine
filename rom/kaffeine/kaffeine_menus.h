@@ -36,6 +36,8 @@ IPTR Kaffeine_ResetMenuStrip(struct KaffeineContext *ctx, void *cpu);
 /* At the end of the program: the strips come off the windows that it left
    open, and every strip of the program goes. */
 void Kaffeine_MenusCleanup(struct KaffeineContext *ctx);
+/* After menus/gadgets, before releasing native screens. */
+void Kaffeine_VisualInfosCleanup(struct KaffeineContext *ctx);
 
 #ifdef __cplusplus
 }
