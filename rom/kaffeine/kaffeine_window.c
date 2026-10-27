@@ -30,6 +30,7 @@
 #include "kaffeine_layers.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
+#include "kaffeine_screens.h"
 #include "kaffeine_taglist.h"
 #include "kaffeine_window.h"
 #include "kaffeine_workbench.h"
@@ -40,6 +41,7 @@
 #include <exec/nodes.h>
 #include <exec/ports.h>
 #include <intuition/intuition.h>
+#include <intuition/screens.h>
 #include <proto/exec.h>
 #include <proto/gadtools.h>
 #include <proto/intuition.h>
@@ -664,7 +666,8 @@ IPTR Kaffeine_ReplyMsg(struct KaffeineContext *ctx, void *cpu)
 ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w)
 {
     ULONG mw = Kaffeine_HeapAlloc(ctx, M68K_SIZEOF_WINDOW, MEMF_PUBLIC | MEMF_CLEAR);
-    ULONG rp = 0, port = 0;
+    ULONG rp = 0, port = 0, screen_guest;
+    struct Screen *bitmap_screen = NULL;
 
     if (!mw)
         return 0;
@@ -688,7 +691,17 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w)
     m68k_write32(ctx, mw + M68K_WIN_USERPORT, port);
     /* a screen that the program opened or locked; 0 for a screen that it
        has no 68k Screen of */
-    m68k_write32(ctx, mw + M68K_WIN_WSCREEN, Kaffeine_ScreenGuest(ctx, w->WScreen));
+    screen_guest = Kaffeine_ScreenGuest(ctx, w->WScreen);
+    m68k_write32(ctx, mw + M68K_WIN_WSCREEN, screen_guest);
+    /* Share the existing typed screen BitMap handle, only when the live
+       owned screen table and the actual native RastPort agree. This
+       exposes its metadata without publishing any native plane pointer.
+       RastPortOut() preserves this field across later drawing calls. */
+    if (rp && screen_guest &&
+        Kaffeine_ScreenBitMapOf(ctx, screen_guest + M68K_SCR_BITMAP, &bitmap_screen) ==
+            KAFFEINE_SCREEN_BITMAP_OWNED && bitmap_screen == w->WScreen &&
+        w->RPort->BitMap && w->RPort->BitMap == bitmap_screen->RastPort.BitMap)
+        m68k_write32(ctx, rp + M68K_RP_BITMAP, screen_guest + M68K_SCR_BITMAP);
     m68k_write32(ctx, mw + M68K_WIN_TITLE, guest_address(ctx, w->Title));
     /* WLayer and the Layer of the RastPort: the 68k Layer of the window's
        layer, without which the window does not come either */
