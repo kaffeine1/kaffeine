@@ -71,6 +71,28 @@ register preservation and resource lifetimes are checked. The message and
 packet tests use the actual queue and FileHandle adapters; guest addresses
 are never treated as native pointers.
 
+### ExAll bridge
+
+`test_dos_thunks --exall-only` runs nine ExAll groups: every NDK entry type
+and comment layout, small-buffer scans, overflow and zero sizes, restarts,
+invalid pointers and tokens, native errors, patterns and hooks, hook stops
+and nested DOS calls, and control ownership and cleanup. The directory fake
+advances each native FIB's disk key. The guest heap returns distinct addresses
+and records frees, and native FIB allocations must balance after cleanup.
+Hooks use the production callback runner with a controlled CPU execute step.
+
+```sh
+make -C developer/debug/test/kaffeine_host BUILD_DIR=/tmp/exall-host test
+/tmp/exall-host/test_dos_thunks --exall-only
+make -C developer/debug/test/kaffeine_host BUILD_DIR=/tmp/exall-asan \
+    CFLAGS="-g -fsanitize=address,undefined -fno-sanitize-recover=all" \
+    CXXFLAGS="-g -fsanitize=address,undefined -fno-sanitize-recover=all" \
+    test_dos_thunks
+ASAN_OPTIONS=detect_leaks=0 /tmp/exall-asan/test_dos_thunks
+```
+
+Use fresh build directories.
+
 ## Registration audit
 
 `make test` also runs `test_thunk_registrations.py`. Its default inputs are

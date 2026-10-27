@@ -322,6 +322,13 @@ struct KaffeineContext
     #define KAFFEINE_MAX_ANCHORS 16
     struct { ULONG guest; void *native; ULONG base; ULONG current; UWORD capacity; } anchor_map[KAFFEINE_MAX_ANCHORS];
 
+    /* ExAll() scans: a native FileInfoBlock for each guest ExAllControl,
+       which holds the scan position and an entry that did not fit yet.
+       owned: the control came from AllocDosObject(); active: its
+       MatchFunc is running */
+    #define KAFFEINE_MAX_EXALL 8
+    struct { ULONG guest; struct FileInfoBlock *fib; BOOL owned, started, pending, ended, active; } exall_map[KAFFEINE_MAX_EXALL];
+
     /* Exec I/O of the guest: the native task that runs it, which owns the
        native signal bits the guest allocated, its ports and requests, and
        guest Device identities and the native TimerBase behind timer.device */
