@@ -1007,9 +1007,9 @@ validation work.
 
 | LVO | Function | Handling |
 |-----|----------|----------|
-| -66 | CloseScreen | Shadow-resolves screen; when native Intuition closes it, forgets the embedded ViewPort and 68k RastPort and frees the 68k Screen |
+| -66 | CloseScreen | Accepts only an owned screen, preserves all mirrors on native refusal, releases the protected Screen/ViewPort/RastPort snapshot and native retained inputs after successful close |
 | -72 | CloseWindow | Takes the window's menu strip off it, takes the gadgets of the program off it, GadTools ones and those that it built itself, whose copies go, gives Intuition and GadTools back the messages of the window that the program has not replied, frees its 68k Window, RastPort, IDCMP port and messages, then closes the native window (`kaffeine_window.c`) |
-| -198 | OpenScreen | Reads m68k NewScreen fields, creates a cleared Screen shadow with a ViewPort sub-shadow and its RastPort as a 68k RastPort (`kaffeine_rastport.c`) |
+| -198 | OpenScreen | Bounded NewScreen/ExtNewScreen conversion with owned native inputs and protected classic screen snapshots (`kaffeine_screens.c`) |
 | -204 | OpenWindow | Reads m68k NewWindow fields after checking that the NewWindow lies in guest memory (else rc 20) and passes them as tags; Type picks the screen as Intuition does: WBENCHSCREEN the Workbench without reading Screen, PUBLICSCREEN `WA_PubScreen` with the native screen in Screen or NULL for the default public screen, any other type `WA_CustomScreen` with the native screen in Screen, or the Workbench for NULL, as before. A Screen that is not a screen of the program (one that it opened, or one from `LockPubScreen()`) stops it with rc 20 before Intuition. Creates a cleared 68k Window with size, limits, flags, borders, IDCMP flags, pens and title, its RastPort as a 68k RastPort, its IDCMP port as a 68k MsgPort, and `WScreen` for a screen of the program: the 68k screen that it named when the window lies there, else its 68k screen of that native screen (one that it opened first), else 0; without guest memory for any of them it closes the native window again and returns 0. A FirstGadget list goes on the window as for AddGList with -1: a GadTools list of the program as the native list, a list of Boolean gadgets that the program built itself as their native copies; a list of the program's own with other gadgets stays out of the window, as before (`kaffeine_window.c`) |
 | -348 | AutoRequest | Translates IntuiText chains (up to 8 deep), calls native |
 | -432 | RefreshGList | Native for gadgets of the program on that window, GadTools ones or its own, with the native gadget and numGad; what the program changed of `GFLG_SELECTED` and `GFLG_DISABLED` in its own gadgets there, and of BufferPos, DispPos and LongInt of its own string gadgets that Intuition does not edit, reaches their copies first, and what rendering set goes back after; nothing for other gadgets (`kaffeine_gadgets.c`) |
@@ -1019,6 +1019,7 @@ validation work.
 | -444 | RemoveGList | `(UWORD)~0` without a window, a gadget or a number of gadgets, and for gadgets not on that window, as Intuition; whole GadTools batches of the program off the window natively, with the 68k NextGadget of the last one left on the gadget that followed it, as AmigaOS 3.2.3 leaves it where the NDK says that V36 cuts it, and its native one NULL, and the UWORD position; likewise a run of the program's own gadgets, which must all be its own, whose copies stay while a message names them, with the NextGadget of the last one left as it is (`kaffeine_gadgets.c`, `kaffeine_classic.c`) |
 | -228 | RemoveGadget | As RemoveGList of one gadget (`kaffeine_gadgets.c`) |
 | -606 | OpenWindowTagList | TagList translation through `TAG_MORE`, `TAG_SKIP` and `TAG_IGNORE`: WA_Title, WA_ScreenTitle and WA_PubScreenName as strings in guest memory; WA_CustomScreen and WA_PubScreen as the native screen of a screen of the program (one that it opened, or one from `LockPubScreen()`), NULL as NULL (for WA_PubScreen the default public screen), anything else stops the program with rc 20 before Intuition; WA_PubScreenFallBack and the other tags as they are; the last WA_Gadgets as FirstGadget of OpenWindow; a list outside guest memory stops the program with rc 20; the 68k Window as for OpenWindow, its `WScreen` the 68k screen of the last WA_CustomScreen or WA_PubScreen when the window lies there. The NewWindow of A0 is left out, as before (`kaffeine_window.c`) |
+| -612 | OpenScreenTagList | Bounded shared open path; explicit A1 tags replace an ExtNewScreen extension, tags override NewScreen values; converts native-width fonts, titles, pens, SA_DClip and SA_ErrorCode without forwarding guest structures |
 | -510 | LockPubScreen | Native LockPubScreen with the name in guest memory, a name that does not end there stops the program with rc 20; one 68k Screen for each native screen, the same at every lock, its fields filled in again: place, size, mouse, flags, bar and border sizes, Font as a 68k TextAttr named as the 68k TextFont of its RastPort, the display fields of the ViewPort, the sizes and depth of the BitMap, the pens; native pointers 0; the embedded ViewPort registered for the native one and the embedded RastPort as a 68k RastPort, whose native font the bridge holds open for the program. A screen that the program opened keeps its 68k Screen. 0, with the native lock given back, without memory or room, also for the 68k TextFont, when the font cannot be held open, and at 32767 locks of one screen (`kaffeine_screens.c`) |
 | -516 | UnlockPubScreen | Native UnlockPubScreen only for a lock that the program took: of the public screen of that name, found as Intuition finds it, else of its 68k Screen in A1; nothing for anything else. The 68k Screen goes with the last lock, unless a window of the program is still there or the program holds the list of public screens; a name that does not end in guest memory stops the program with rc 20 (`kaffeine_screens.c`) |
 | -522 | LockPubScreenList | Native lock and a 68k copy of the list, the same for nested locks and filled in again at each: names of at most 139 characters, types, priorities, flags, sizes, visitor counts and signal bits, psn_Screen the program's 68k Screen of a screen or 0, psn_SigTask 0; 0 without memory while the lock is held all the same; 32767 nested locks stop the program with rc 20 (`kaffeine_screens.c`) |
@@ -1811,7 +1812,7 @@ and live field synchronization are not tracked. `test_exec_tasks` uses the
 real initialization, layouts and dispatcher to check these identities,
 capacity/failure behavior and guest-pointer bounds.
 
-Type tags: 0=untyped, 1=Window, 3=RastPort, 4=MsgPort (IDCMP port), 5=Screen, 6=ViewPort, 8=IntuiMessage that the program took, 9=GadTools copy of an IntuiMessage, 10=IntuiMessage that WaitPort() showed, still in its port, 11=handle of a GadTools VisualInfo, 12=68k mirror of a gadget of a GadTools list, 13=68k Screen of a public screen that the program locked, 17=List, 20+=auto-generated layout types. The manual Intuition and graphics types are named in `kaffeine_rastport.h`; 68k TextFonts have a table of their own.
+Type tags: 0=untyped, 1=Window, 3=RastPort, 4=MsgPort (IDCMP port), 5=Screen, 6=ViewPort, 8=IntuiMessage that the program took, 9=GadTools copy of an IntuiMessage, 10=IntuiMessage that WaitPort() showed, still in its port, 11=handle of a GadTools VisualInfo, 12=68k mirror of a gadget of a GadTools list, 13=68k Screen of a public screen that the program locked, 15=requester window requiring FreeSysRequest, 17=List, 20+=auto-generated layout types. The manual Intuition and graphics types are named in `kaffeine_rastport.h`; 68k TextFonts have a table of their own.
 
 ### Recursive Sub-Shadows
 
@@ -3048,3 +3049,42 @@ snapshots are refused. Native monitor fields are a snapshot with no writeback.
 OpenMonitor/CloseMonitor explicitly refuse instead of passing guest copies to
 native monitor APIs. Host tests exercise capacity, names, allocation failure,
 free protection, complete byte guards and pointer normalization.
+
+
+### Owned screen input and lifetime boundaries
+
+The screen table distinguishes owned screens from borrowed public screens.
+Both use `screen_create`/`screen_fill`; owned snapshots use shadow type5,
+borrowed snapshots type13. Ownership prevents pruning after the last lock
+or window. Successful close removes the table entry, typed shadows and
+protected allocation together; failed native close changes none of them.
+
+The tag walker validates the effective input before native allocation/calls.
+Supported pointer tags use explicit native temporaries: TextAttr/TTextAttr
+and names, bounded titles, BE16 pen arrays terminated by0xffff, an eight-byte
+classic Rectangle for SA_DClip, and a native ULONG for SA_ErrorCode. Font
+and title copies are retained separately because Intuition stores their
+pointers. Clip and pen data are consumed during open. Native error values
+are written back explicitly big-endian on failure, preserving other bytes.
+
+`execute_owned` calls `Kaffeine_WindowsCleanup` before I/O and screen cleanup.
+It runs the existing message/menu/gadget close path, then uses CloseWindow
+or FreeSysRequest according to the private requester marker. Screen cleanup
+then releases guest-acquired public/list locks, closes owned screens and
+releases retained font references. Native refusal by external visitors is
+logged; native retained inputs are preserved while that screen stays open.
+
+
+Classic AddTask and RemTask currently stop with return code20. Guest task
+records, stack pointers and 68k entry points must never reach native Exec's
+scheduler. Concurrent guest task execution requires a separate adapter.
+
+VisualInfo ownership is recorded in a bounded32-entry private table. A
+borrowed screen gets an independent LockPubScreen visitor reference under
+the native public-screen list lock. FreeVisualInfo runs while that lock
+reference still keeps the Screen alive; the guest identity is released
+before the visitor count is dropped. Owned CloseScreen refuses live
+VisualInfo references. execute_owned frees menus/gadgets and then all
+VisualInfos before releasing screens. FreeSysRequest and SysReqHandler
+validate the requester marker, and requester destruction runs gadget/menu
+close hooks before dropping window/message/port mirrors.

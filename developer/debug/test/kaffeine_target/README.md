@@ -66,6 +66,8 @@ at the end.
 | `exec_packets.c` | Read-only ACTION_READ packets and shared DOS file position. |
 | `gfx_planar_read.c` | Original 32 by 3 planar images at depths 1, 2 and 8. Manually initialized public RastPort/BitMap structures, all 288 in-range pixel values, Flags 0/BMF_STANDARD, and byte-for-byte preservation of both structures, planes and guards. |
 | `gfx_display_info.c` | NULL-handle display queries by native mode ID: classic DISP/DIMS/NAME/MNTR layouts, headers, every requested length0..104 (monitors0..120), partial rectangles, reserved-tail/guard preservation, unavailable modes and stable monitor names/scalars/identities. |
+| `gfx_owned_screen.c` | Owned indexed screens through OpenScreenTagList/OpenScreen, chained tags, classic fonts and clip rectangles, native error output guards, drawing, window/screen identity, refused close and extended NewScreen. Optional `leave` mode leaves a named public screen and a window for context cleanup. |
+| `gfx_screen_cleanup_native.c` | Native AArch64 observer after `gfx_owned_screen leave` in the same boot; the named screen must no longer be lockable. |
 | `gfx_framebuffer_palette_native.c` | Native AArch64 Raspberry driver probe: enumerates truecolor and LUT8 modes, verifies actual eight-bit bitmap storage, pre-renders an indexed screen behind Workbench, checks the physical RGBX pixels after showing it, and changes a live palette entry without rewriting the source indices. Requires kernel framebuffer attributes. |
 | `icon_objects.c` | Owned DiskObject acquisition/free, NULL free, 96 sequential allocation cycles, exact guest FindToolType result pointers, case-insensitive MatchToolValue and preservation of original strings/arrays. The optional `leave` argument is an AROS bridge teardown probe that leaves three objects for context cleanup. Scalar metadata observations may differ between native backends; no icon images are copied or tested. |
 
@@ -230,3 +232,29 @@ with AddressSanitizer and UndefinedBehaviorSanitizer.
 These results establish indexed framebuffer storage and conversion on QEMU.
 Physical Raspberry Pi validation and full application startup remain separate
 gates.
+
+
+## Owned screen validation — 27 October 2026
+
+The original `gfx_owned_screen` HUNK passed **43 checks with zero failures**
+through Moira on AROS AArch64, in both Shell and Run. It selected a genuine
+indexed display mode, opened and drew to owned screens, checked classic font
+and screen fields, exercised TAG_MORE/TAG_SKIP/TAG_IGNORE and SA_DClip,
+verified native errors without changing adjacent words, retained a screen
+while a VisualInfo was live, preserved a live
+screen after a close refused by an open window, and opened an ExtNewScreen
+through the legacy OpenScreen vector. The earlier library failed two of the
+five checks reached before the adapter existed.
+
+The optional `leave` mode leaves a VisualInfo too and checks six conditions in each launch path. In the
+same boot, the native `gfx_screen_cleanup_native` observer then confirmed
+that the named public screen was no longer lockable. This checks that the
+bridge closed the guest's remaining window and screen, rather than relying
+on a fresh boot to discard them. Run the two programs together without
+`--separate`, pass `--args gfx_owned_screen leave`, and allow enough idle
+time for the launch script's waits.
+
+The screen host suite passed37 groups; window lifecycle tests and the screen
+suite also passed with AddressSanitizer and UndefinedBehaviorSanitizer. All41
+host executables passed. AmigaOS comparison for these new owned-screen tests
+and physical hardware validation are not established by these QEMU results.

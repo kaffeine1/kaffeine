@@ -227,6 +227,7 @@ extern "C" void UnLock(BPTR lock)
 }
 extern "C" void RawPutChar(UBYTE) { require(false, "unexpected RawPutChar"); }
 extern "C" Window *OpenWindowTagList(NewWindow *, TagItem *) { require(false, "unexpected OpenWindow"); return nullptr; }
+extern "C" void FreeSysRequest(Window *) { require(false, "unexpected FreeSysRequest"); }
 extern "C" void CloseWindow(Window *) { require(false, "unexpected CloseWindow"); }
 extern "C" BOOL ModifyIDCMP(Window *, ULONG) { require(false, "unexpected ModifyIDCMP"); return FALSE; }
 extern "C" IntuiMessage *GT_FilterIMsg(IntuiMessage *) { require(false, "unexpected IDCMP filter"); return nullptr; }

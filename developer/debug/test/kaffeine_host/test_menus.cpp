@@ -38,6 +38,7 @@
 #include <exec/memory.h>
 #include <graphics/rastport.h>
 #include <intuition/intuition.h>
+#include <intuition/screens.h>
 #include <libraries/gadtools.h>
 #include <proto/exec.h>
 #include <proto/gadtools.h>
@@ -117,6 +118,7 @@ extern "C" void ReplyMsg(struct Message *message)
 
 extern "C" void PutMsg(struct MsgPort *, struct Message *) { assert(false); }
 extern "C" BOOL ModifyIDCMP(struct Window *, ULONG) { assert(false); return FALSE; }
+extern "C" void FreeSysRequest(Window *) { assert(false); }
 extern "C" void CloseWindow(struct Window *) { ++native_calls; }
 extern "C" struct Window *OpenWindowTagList(struct NewWindow *, struct TagItem *) { assert(false); return nullptr; }
 
@@ -153,6 +155,50 @@ extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *, const char *)
 /* VisualInfos */
 struct VisualInfo { struct Screen *screen; };
 static std::set<VisualInfo *> visualinfos;
+
+/* Native public-screen visitor accounting for VisualInfo lifetime. */
+static KaffeineContext *visual_context;
+static std::map<Screen *, unsigned> visual_locks;
+static bool visual_lock_denied;
+static List visual_list{};
+static PubScreenNode visual_nodes[16]{};
+static unsigned visual_node_count, visual_list_depth;
+extern "C" List *LockPubScreenList(void)
+{
+    ++visual_list_depth;
+    visual_node_count = 0;
+    for (UWORD i = 0; i < visual_context->num_shadows && visual_node_count < 16; ++i)
+        if (visual_context->shadow_map[i].type == KAFFEINE_SHADOW_PUBSCREEN)
+        {
+            auto &p = visual_nodes[visual_node_count++];
+            p = PubScreenNode{};
+            p.psn_Screen = static_cast<Screen *>(visual_context->shadow_map[i].native_ptr);
+            p.psn_Node.ln_Name = const_cast<STRPTR>("fixture-public");
+        }
+    visual_list = List{};
+    visual_list.lh_Head = visual_node_count ? &visual_nodes[0].psn_Node : reinterpret_cast<Node *>(&visual_list.lh_Tail);
+    for (unsigned i = 0; i < visual_node_count; ++i)
+        visual_nodes[i].psn_Node.ln_Succ = i + 1 < visual_node_count ? &visual_nodes[i+1].psn_Node : reinterpret_cast<Node *>(&visual_list.lh_Tail);
+    return &visual_list;
+}
+extern "C" void UnlockPubScreenList(void) { assert(visual_list_depth); --visual_list_depth; }
+extern "C" Screen *LockPubScreen(CONST_STRPTR name)
+{
+    assert(visual_list_depth);
+    if (visual_lock_denied) return nullptr;
+    for (unsigned i = 0; i < visual_node_count; ++i)
+        if (name == visual_nodes[i].psn_Node.ln_Name)
+        {
+            ++visual_locks[visual_nodes[i].psn_Screen];
+            return visual_nodes[i].psn_Screen;
+        }
+    return nullptr;
+}
+extern "C" void UnlockPubScreen(UBYTE *name, Screen *screen)
+{
+    assert(!name && visual_locks[screen]);
+    --visual_locks[screen];
+}
 
 extern "C" APTR GetVisualInfoA(struct Screen *screen, struct TagItem *tagList)
 {
@@ -599,6 +645,8 @@ struct Fixture
         made.clear();
         create_fails = layout_fails = false;
         memory.fill(0xA5);
+        visual_context = &ctx;
+        visual_locks.clear(); visual_lock_denied = false; visual_list_depth = 0;
         ctx.mem = memory.data();
         ctx.mem_size = memory.size();
         ctx.heap_start = 0x6000;
@@ -957,6 +1005,28 @@ static void test_visualinfo()
     f.leave_shadows(0);
     assert(f.visualinfo(Fixture::screen) == 0 && visualinfos.empty());
     assert(Kaffeine_HeapAvail(&f.ctx, 0) == f.heap_avail);
+}
+
+static void test_visualinfo_lifetime()
+{
+    Fixture f;
+    auto *screen = reinterpret_cast<Screen *>(&f.native_pubscreen);
+    ULONG owned = f.visualinfo(Fixture::screen), borrowed = f.visualinfo(Fixture::pubscreen);
+    assert(owned && borrowed && visual_locks[screen] == 1);
+    Kaffeine_VisualInfosCleanup(&f.ctx);
+    assert(visualinfos.empty() && visual_locks[screen] == 0 && !visual_list_depth);
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) == f.heap_avail);
+    unsigned calls = native_calls;
+    Kaffeine_VisualInfosCleanup(&f.ctx);
+    assert(native_calls == calls);
+    visual_lock_denied = true;
+    assert(!f.visualinfo(Fixture::pubscreen) && visualinfos.empty() && visual_locks[screen] == 0);
+    visual_lock_denied = false;
+    for (int i = 0; i < KAFFEINE_MAX_VISUALINFOS; ++i) assert(f.visualinfo(Fixture::screen));
+    calls = native_calls;
+    assert(!f.visualinfo(Fixture::screen) && native_calls == calls);
+    Kaffeine_VisualInfosCleanup(&f.ctx);
+    assert(visualinfos.empty() && Kaffeine_HeapAvail(&f.ctx, 0) == f.heap_avail);
 }
 
 static void assert_bevel_tags(const BevelCall &call, std::initializer_list<TagItem> expected)
@@ -2116,6 +2186,7 @@ int main()
     {
         { "GadTools and Intuition menu tables use their ABI slots", test_registration },
         { "A VisualInfo is a 68k handle", test_visualinfo },
+        { "VisualInfo retains borrowed screens, bounds ownership and cleans up before screens", test_visualinfo_lifetime },
         { "DrawBevelBoxA() resolves RastPorts and keeps only the first supported tags", test_bevel_rastports_and_tags },
         { "DrawBevelBoxA() follows TAG_MORE, TAG_SKIP and TAG_IGNORE", test_bevel_tag_controls },
         { "DrawBevelBoxA() takes signed WORD geometry from D0 through D3", test_bevel_geometry },

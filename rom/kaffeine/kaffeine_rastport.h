@@ -33,7 +33,9 @@ enum
        (kaffeine_screens.c) */
     KAFFEINE_SHADOW_PUBSCREEN = 13,
     /* a gadget that the program built, on a window as its native copy */
-    KAFFEINE_SHADOW_CLASSIC = 14
+    KAFFEINE_SHADOW_CLASSIC = 14,
+    /* A requester window needs FreeSysRequest(), including at teardown. */
+    KAFFEINE_SHADOW_REQUESTER_WINDOW = 15
 };
 
 /* The 68k RastPort and TextFont of the NDK */

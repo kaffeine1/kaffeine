@@ -71,7 +71,7 @@ static IPTR poison(KaffeineContext *, void *) { ++generated_calls; return 0xBAD0
 static const M68KThunkEntry manual[] = { KAFFEINE_EXEC_COMPAT_THUNKS };
 static const M68KThunkEntry generated[] =
 {
-    {96, poison}, {354, poison}, {360, poison}, {366, poison}, {390, poison},
+    {96, poison}, {282, poison}, {288, poison}, {354, poison}, {360, poison}, {366, poison}, {390, poison},
     {486, poison}, {492, poison}, {498, poison}, {636, poison}, {642, poison}
 };
 
@@ -485,8 +485,23 @@ static void test_fallbacks()
               "each poisoned generated fallback is reachable without its manual override");
 }
 
+static void test_task_launch_refusal()
+{
+    for (ULONG lvo : { 282u, 288u })
+        for (ULONG address : { 0u, 0x202u, 0xFFFFFFF0u })
+        {
+            Fixture f;
+            auto before = f.memory;
+            check(f.call(lvo, address) == 20 && !f.ctx.running && f.ctx.exit_code == 20,
+                  "unsupported task operation stops before native scheduling");
+            check(f.memory == before && !generated_calls,
+                  "refused task operations preserve task bytes and bypass generated fallback");
+        }
+}
+
 int main()
 {
+    test_task_launch_refusal();
     test_lifecycle(); test_bad_lists(); test_bad_objects_and_names();
     test_list_limit(); test_refused_objects_and_cache(); test_cache_flush(); test_putmsg();
     test_fallbacks();

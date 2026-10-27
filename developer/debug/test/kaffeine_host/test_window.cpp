@@ -1177,7 +1177,7 @@ static void test_build_easy_request()
         assert(f.is(f.waitport(rport), KAFFEINE_SHADOW_WAITMESSAGE, im));
         assert(f.call(Fixture::intuition, 600, { req, 0 }, { 0 }) == 0xFFFFFFFEU);
     }
-    assert(replied.empty() && f.ctx.num_shadows == 6);
+    assert(replied.empty() && f.ctx.num_shadows == 7);
 
     /* FreeSysRequest() takes a menu strip off the window and frees the 68k
        Window first */
@@ -1198,6 +1198,41 @@ static void test_build_easy_request()
     menu_closed = nullptr;
     f.call(Fixture::intuition, 372, { 1 });
     assert(easy.freed_window == (Window *)1 && !f.stopped() && !menu_closed);
+}
+
+static void test_requester_window_type()
+{
+    Fixture f;
+    auto before = f.ctx.num_shadows;
+    auto heap = Kaffeine_HeapAvail(&f.ctx, 0);
+    auto calls = native_calls;
+    f.call(Fixture::intuition, 372, { f.window });
+    assert(native_calls == calls && f.ctx.num_shadows == before &&
+           Kaffeine_HeapAvail(&f.ctx, 0) == heap && !easy.freed);
+    assert(f.call(Fixture::intuition, 600, { f.window, 0 }, { 0 }) == 20 && f.stopped());
+    assert(!easy.handled && f.is(f.window, KAFFEINE_SHADOW_WINDOW, &f.native_window));
+}
+
+static void test_owned_window_cleanup()
+{
+    Fixture f;
+    const ULONG es = 0x3C80, args = 0x3CC0;
+    easy_struct(f, es, args);
+    ULONG req = f.call(Fixture::intuition, 594, { f.window, es, 0, args }, { 0 });
+    assert(req && f.is(req, KAFFEINE_SHADOW_REQUESTER_WINDOW, &requester));
+    IntuiMessage *im = message(&f.native_window, IDCMP_INTUITICKS);
+    f.send(im);
+    assert(f.getmsg(f.port()));
+    f.ctx.window_gadgets = &recording_gadgets;
+    Kaffeine_WindowsCleanup(&f.ctx);
+    assert(closed == std::vector<Window *>{ &f.native_window });
+    assert(easy.freed == 1 && easy.freed_window == &requester);
+    assert(replied == std::vector<IntuiMessage *>{ im });
+    assert(!f.ctx.num_shadows && Kaffeine_HeapAvail(&f.ctx, 0) == f.heap_start);
+    assert(!window_gadget_calls.empty());
+    auto calls = native_calls;
+    Kaffeine_WindowsCleanup(&f.ctx);
+    assert(native_calls == calls);
 }
 
 static void test_easy_request_args()
@@ -2099,6 +2134,8 @@ int main()
         { "GadTools copies and messages of GadTools only", test_gadtools },
         { "CloseWindow() gives back every message of the window", test_close_window },
         { "BuildEasyRequestArgs(), SysReqHandler() and FreeSysRequest()", test_build_easy_request },
+        { "Requester-only calls cannot consume an ordinary window", test_requester_window_type },
+        { "Teardown closes regular windows and requesters through their own native APIs", test_owned_window_cleanup },
         { "EasyRequestArgs() and 68k input the bridge cannot take", test_easy_request_args },
         { "Gadget labels cut as AROS cuts them", test_easy_request_labels },
         { "OpenWindowTagList(): the tags of a new window, its screen and its gadgets", test_window_tags },

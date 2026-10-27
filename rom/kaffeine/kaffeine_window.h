@@ -54,6 +54,9 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w);
    native window is still open. */
 void Kaffeine_WindowDelete(struct KaffeineContext *ctx, ULONG guest);
 
+/* In the task that ran the guest, before screen and I/O cleanup. */
+void Kaffeine_WindowsCleanup(struct KaffeineContext *ctx);
+
 /* The 68k MsgPort that stands for the IDCMP port of a window: signalling,
    with the signal bit of the native port and the current guest task, and an
    empty list. 0 without memory. */

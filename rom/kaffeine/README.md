@@ -137,7 +137,7 @@ and native AROS C functions. There are two kinds:
     `RDArgs` in guest memory),
     `Execute`/`SystemTagList`/`RunCommand`, `VPrintf`/`VFPrintf`,
     `GetProgramName` (from context), `MatchFirst`/`MatchNext`/`MatchEnd`
-  - **intuition**: `OpenScreen`/`CloseScreen` (NewScreen translation + shadow),
+  - **intuition**: `OpenScreen`/`OpenScreenTagList`/`CloseScreen` (bounded inputs and owned screen snapshots),
     `OpenWindow`/`OpenWindowTagList`/`CloseWindow` (NewWindow translation, a
     68k Window with its fields, a 68k RastPort and a 68k IDCMP port, the
     screen of `WA_PubScreen`, `WA_CustomScreen` or the NewWindow as the
@@ -305,11 +305,11 @@ leaf field at its actual offset. The most thoroughly mapped structs include
 GfxBase (65 fields), Screen (62), Process (56), Window (26), ColorMap (19),
 and IOStdReq (16). See [INTERNALS.md](INTERNALS.md) for the complete struct list.
 
-The `OpenScreen`, `LockPubScreen` and `OpenWindow` thunks create cleared
-shadows with properly wired embedded structs: the Screen shadow includes a
-registered ViewPort (offset 44) and a 68k RastPort (offset 84), the one of
-`LockPubScreen` also the sizes, borders and font that programs read, and the
-Window shadow includes its size, limits, borders and pens, a 68k RastPort,
+The `OpenScreen`, `OpenScreenTagList`, `LockPubScreen` and `OpenWindow`
+thunks construct cleared guest structures with registered embedded objects.
+Owned and borrowed Screen snapshots include a ViewPort (offset44), RastPort
+(offset84), sizes, borders and font metadata. The Window snapshot includes
+its size, limits, borders and pens, a 68k RastPort,
 the UserPort (for IDCMP WaitPort/GetMsg), and the WScreen back-pointer for a
 screen of the program: one that it opened, or one from `LockPubScreen()`.
 
@@ -318,6 +318,7 @@ Type tags distinguish shadow kinds: 1=Window, 3=RastPort, 4=MsgPort, 5=Screen,
 6=ViewPort, 8=IntuiMessage, 9=GadTools copy of an IntuiMessage,
 10=IntuiMessage that `WaitPort()` showed, 11=GadTools VisualInfo handle,
 12=68k gadget of a GadTools list, 13=68k Screen of a locked public screen,
+15=requester window requiring `FreeSysRequest`,
 17=List, 20+=auto-generated layouts; 68k TextFonts, GadTools menu strips and
 gadget lists have tables of their own.
 
@@ -878,3 +879,34 @@ name or a full cache returns zero without publishing a new record.
 vector chunks and unknown tags stop with return code 20. Owned monitor opens,
 native monitor mutation and display handles remain unsupported.
 `NextDisplayInfo` remains a scalar mode-ID query.
+
+
+### Owned screens
+
+`OpenScreen` and `OpenScreenTagList` share the protected classic Screen,
+ViewPort, RastPort and font snapshot code used by public screens. An owned
+screen keeps one guest identity through public locks and windows. Bounded
+NewScreen/ExtNewScreen and tag inputs include geometry, display IDs, fonts,
+titles, pen lists, display clip rectangles and error outputs; pointer data
+is translated explicitly. Unsupported tags, custom bitmaps, gadgets and
+malformed inputs stop with return code20 before native Intuition is called.
+
+Native title/font copies live until a successful close. A refused close keeps
+the native screen and guest snapshot valid. Before releasing screen locks
+and screens at guest exit, the running task closes its remaining windows,
+replies to messages and runs menu/gadget close hooks. Known requester windows
+use `FreeSysRequest` so their native gadgets and request data are freed too.
+External visitors can still cause native Intuition to refuse a screen close.
+
+
+Classic AddTask and RemTask currently stop with return code20. Guest task
+records, stack pointers and 68k entry points must never reach native Exec's
+scheduler. Concurrent guest task execution requires a separate adapter.
+
+A VisualInfo owns its native DrawInfo/Screen reference until freed. At most
+32 handles are tracked per context. For a borrowed public screen the bridge
+takes its own native visitor lock; for an owned screen CloseScreen returns
+FALSE while a VisualInfo remains live. Teardown closes windows, frees menus
+and gadgets, then VisualInfos, then screen locks/screens and retained fonts.
+Requester-only operations accept only requester handles, so an ordinary
+window cannot reach native FreeSysRequest or SysReqHandler.
