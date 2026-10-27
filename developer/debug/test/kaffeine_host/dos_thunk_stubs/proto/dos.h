@@ -2,6 +2,7 @@
 #include <exec/libraries.h>
 #include <dos/bptr.h>
 #include <dos/dos.h>
+#include <dos/dosextens.h>
 
 struct InfoData;
 struct DateTime;

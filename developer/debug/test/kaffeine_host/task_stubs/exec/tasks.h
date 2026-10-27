@@ -19,4 +19,6 @@ struct Task
 #define NT_MSGPORT 4
 #define NT_PROCESS 13
 #define NT_SIGNALSEM 15
+#define SIGB_DOS 8
+#define SIGF_DOS (1UL << SIGB_DOS)
 #endif

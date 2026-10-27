@@ -109,6 +109,8 @@ BOOL Kaffeine_FIBToGuest(struct KaffeineContext *ctx, ULONG guest,
 void Kaffeine_MatchCleanup(struct KaffeineContext *ctx);
 ULONG Kaffeine_ExAllAllocControl(struct KaffeineContext *ctx);
 BOOL Kaffeine_ExAllFreeControl(struct KaffeineContext *ctx, ULONG control);
+ULONG Kaffeine_AllocStdPacket(struct KaffeineContext *ctx);
+void Kaffeine_FreeStdPacket(struct KaffeineContext *ctx, ULONG dp);
 void Kaffeine_ExAllCleanup(struct KaffeineContext *ctx);
 
 /* The base calls that used to pass unchecked guest pointers from

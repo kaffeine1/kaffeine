@@ -483,7 +483,14 @@ static int shadow_entry(struct KaffeineContext *ctx, ULONG addr)
    owned DOS handlers use separate adapters. */
 IPTR Kaffeine_PutMsg(struct KaffeineContext *ctx, void *cpu)
 {
-    ULONG gp = THUNK_A(0), gm = THUNK_A(1), i;
+    return Kaffeine_RoutePutMsg(ctx, THUNK_A(0), THUNK_A(1), THUNK_D(0));
+}
+
+/* PutMsg() of the program and of the DOS packet thunks: d0 is what the
+   caller returns when the message went through. */
+IPTR Kaffeine_RoutePutMsg(struct KaffeineContext *ctx, ULONG gp, ULONG gm, ULONG d0)
+{
+    ULONG i;
     int port = shadow_entry(ctx, gp), message = shadow_entry(ctx, gm);
     UWORD type = message >= 0 ? ctx->shadow_map[message].type : 0;
 
@@ -495,7 +502,7 @@ IPTR Kaffeine_PutMsg(struct KaffeineContext *ctx, void *cpu)
                (struct Message *)ctx->shadow_map[message].native_ptr);
         if (type == KAFFEINE_SHADOW_INTUIMESSAGE)
             ctx->shadow_map[message].type = KAFFEINE_SHADOW_WAITMESSAGE;
-        return THUNK_D(0);
+        return d0;
     }
     if (port >= 0 || message >= 0)
         return Kaffeine_MessageFailure(ctx, "mixed PutMsg");
@@ -504,7 +511,7 @@ IPTR Kaffeine_PutMsg(struct KaffeineContext *ctx, void *cpu)
             if (ctx->files[i].guest && ctx->files[i].handler == gp)
             {
                 IPTR result = ctx->file_packet(ctx, gp, gm);
-                return ctx->running ? THUNK_D(0) : result;
+                return ctx->running ? d0 : result;
             }
     if (!gp && guest_range(ctx, gm, 68) && m68k_read16(ctx, gm + 18) == 68 &&
         m68k_read32(ctx, gm + 20) == gm)
@@ -512,7 +519,7 @@ IPTR Kaffeine_PutMsg(struct KaffeineContext *ctx, void *cpu)
             (unsigned long)gm, (unsigned long)m68k_read32(ctx, gm + 24),
             (long)(LONG)m68k_read32(ctx, gm + 28), (unsigned long)m68k_read32(ctx, gm + 40),
             (unsigned long)m68k_read32(ctx, gm + 44), (long)(LONG)m68k_read32(ctx, gm + 48));
-    return Kaffeine_GuestPutMsg(ctx, gp, gm, THUNK_D(0));
+    return Kaffeine_GuestPutMsg(ctx, gp, gm, d0);
 }
 
 /* -96: FindResident(A1=name). Native Residents include native code addresses. */

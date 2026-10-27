@@ -1,1 +1,9 @@
 #pragma once
+
+#define ACTION_READ 82
+#define ACTION_WRITE 87
+#define ACTION_WAIT_CHAR 20
+#define ACTION_DISK_INFO 25
+#define ACTION_SCREEN_MODE 994
+#define ACTION_SEEK 1008
+#define ACTION_IS_FILESYSTEM 1027

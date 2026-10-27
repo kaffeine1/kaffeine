@@ -1,6 +1,8 @@
 #pragma once
 #include <stdlib.h>
 #include <string.h>
+#define SIGB_DOS 8
+#define SIGF_DOS (1UL << SIGB_DOS)
 #define AllocMem(size, flags) calloc(1, size)
 #define FreeMem(ptr, size) free(ptr)
 #define AllocVec(size, flags) calloc(1, size)

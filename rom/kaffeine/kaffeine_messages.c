@@ -90,6 +90,14 @@ BOOL Kaffeine_QueueDisjoint(const struct KaffeineQueue *q, ULONG a, ULONG n)
     return TRUE;
 }
 
+/* pr_MsgPort of the program's Process: the one port inside a shadow (the
+   Process) that the guest queues take, with the SIGB_DOS of the native
+   process, which the bridge neither allocates nor frees. */
+static BOOL process_port(struct KaffeineContext *ctx, ULONG port)
+{
+    return ctx->guest_exec_task && port == ctx->guest_exec_task + M68K_PR_MSGPORT;
+}
+
 /* Arrival permissions are needed only when adding a message. Inspecting or
    removing an existing queue must not consult its action, signal bit or task. */
 static BOOL queue_arrival(struct KaffeineContext *ctx, ULONG port)
@@ -109,7 +117,8 @@ static BOOL queue_arrival(struct KaffeineContext *ctx, ULONG port)
                 ctx->m68k_sysbase + M68K_EXECBASE_THISTASK))) return FALSE;
         if (flags == 2) return !owner || ctx->task_ops->known_task(ctx, owner);
         bit = ctx->mem[port + 15];
-        if (bit > 31 || !ctx->task_ops->owns_signal(ctx, owner, 1UL << bit)) return FALSE;
+        if (bit > 31 || (!(process_port(ctx, port) && bit == SIGB_DOS && owner == ctx->guest_exec_task) &&
+                         !ctx->task_ops->owns_signal(ctx, owner, 1UL << bit))) return FALSE;
         for (i = 0; i < KAFFEINE_MAX_IO_PORTS; ++i)
             if (ctx->io_ports[i].guest == port && ctx->io_ports[i].sigbit != (BYTE)bit)
                 return FALSE;
@@ -127,7 +136,8 @@ static BOOL queue_arrival(struct KaffeineContext *ctx, ULONG port)
             return FALSE;
         task = m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK);
         if ((ctx->guest_exec_task && task != ctx->guest_exec_task) || !task || !arena(ctx, task, 92) ||
-            m68k_read32(ctx, port + 16) != task || bit > 31 || !(ctx->guest_signals & (1UL << bit)))
+            m68k_read32(ctx, port + 16) != task || bit > 31 ||
+            (!(ctx->guest_signals & (1UL << bit)) && !(process_port(ctx, port) && bit == SIGB_DOS)))
             return FALSE;
         for (i = 0; i < KAFFEINE_MAX_IO_PORTS; ++i)
             if (ctx->io_ports[i].guest == port && ctx->io_ports[i].sigbit != (BYTE)bit)
@@ -143,7 +153,8 @@ BOOL Kaffeine_QueueRead(struct KaffeineContext *ctx, ULONG port, struct Kaffeine
     ULONG list = port + 20, node, pred;
     q->port = port;
     q->count = 0;
-    if ((port & 1) || !Kaffeine_GuestBytes(ctx, port, 34) || !ordinary(ctx, port, 34) || ctx->mem[port + 8] != 4)
+    if ((port & 1) || !(process_port(ctx, port) ? arena(ctx, port, 34) : Kaffeine_GuestBytes(ctx, port, 34)) ||
+        !ordinary(ctx, port, 34) || ctx->mem[port + 8] != 4)
         return FALSE;
     if (m68k_read32(ctx, list + 4))
         return FALSE;

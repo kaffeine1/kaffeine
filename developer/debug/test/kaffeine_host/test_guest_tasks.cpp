@@ -731,6 +731,46 @@ static void test_guest_messages()
           "guest message exchange needs no blocking native Wait and returns allocated bits");
 }
 
+static void test_process_dos_signal()
+{
+    constexpr ULONG process_port=ROOT+92, other=0x31000, msg=0x31200;
+    World w;
+    w.child(0,-1);
+    guest_port(w,process_port,ROOT,SIGB_DOS);
+    m68k_write16(&w.ctx,msg+18,20);
+    Program(ROOT_CODE).add_task(TCB(0),CODE)
+        .op([&w](Mock &) {
+            auto *ops=w.ctx.task_ops;
+            /* SIGB_DOS stays the native process's: the guest queues take it on
+               pr_MsgPort alone, and the scheduler neither owns nor waits on it,
+               since a root suspended on it would never be woken. */
+            check(!ops->owns_signal(&w.ctx,ROOT,SIGF_DOS) && !w.ctx.guest_signals,
+                  "the scheduler does not own the root's reserved DOS signal");
+            check(!ops->owns_signal(&w.ctx,TCB(0),SIGF_DOS) &&
+                  !ops->owns_signal(&w.ctx,0xDEADBEEF,SIGF_DOS) &&
+                  !ops->owns_signal(&w.ctx,ROOT,SIGF_DOS|0x10000) &&
+                  !ops->owns_signal(&w.ctx,ROOT,0) && !ops->owns_signal(&w.ctx,ROOT,1U<<9),
+                  "SIGB_DOS ownership applies only to the root and the exact DOS signal mask");
+            check(Kaffeine_GuestPutMsg(&w.ctx,process_port,msg,0xCAFEBABE)==0xCAFEBABE &&
+                  Kaffeine_GuestGetMsg(&w.ctx,process_port,FALSE)==msg,
+                  "queue_arrival accepts and drains the root process's DOS port with a scheduler");
+            check(!w.ctx.guest_signals && native_alloc==0xFFFF,
+                  "the process port neither allocates nor frees SIGB_DOS");
+            guest_port(w,other,TCB(0),SIGB_DOS);
+            KaffeineQueue queue;
+            check(Kaffeine_QueueRead(&w.ctx,other,&queue) &&
+                  !Kaffeine_MessagePreflight(&w.ctx,&queue,msg,20),
+                  "a child cannot borrow the root's reserved DOS signal for a guest port");
+            guest_port(w,other,ROOT,SIGB_DOS);
+            bool scoped=Kaffeine_QueueRead(&w.ctx,other,&queue) &&
+                        !Kaffeine_MessagePreflight(&w.ctx,&queue,msg,20);
+            check(scoped,"scheduler queue_arrival restricts SIGB_DOS to pr_MsgPort");
+        }).d(0,0).rts();
+    Program(CODE).rts();
+    check(w.run()==0 && !w.ctx.sched && native_alloc==0xFFFF,
+          "scheduler teardown leaves the reserved DOS signal allocated to the native process");
+}
+
 static void memlists(World &w, ULONG tcb, bool valid)
 {
     const ULONG list = tcb + 74, one = 0x30000, two = 0x30100;
@@ -1129,6 +1169,7 @@ int main()
     test_forbid();
     test_disable();
     test_guest_messages();
+    test_process_dos_signal();
     test_removal();
     test_faults();
     test_limits();

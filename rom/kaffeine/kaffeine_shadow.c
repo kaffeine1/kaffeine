@@ -292,6 +292,16 @@ ULONG shadow_task(struct KaffeineContext *ctx, void *native_task, BOOL current)
         /* The Shell sets the error stream for *>; libnix takes stderr from
            here and opens the console only when it is zero. */
         m68k_write32(ctx, guest + M68K_PR_CES, Kaffeine_FileImport(ctx, ((struct Process *)task)->pr_CES, FALSE));
+        /* pr_MsgPort is the program's packet port, an empty guest queue with
+           the SIGB_DOS of the native process, which the bridge neither
+           allocates nor frees. */
+        ctx->mem[guest + M68K_PR_MSGPORT + 8] = NT_MSGPORT;
+        ctx->mem[guest + M68K_PR_MSGPORT + 14] = PA_SIGNAL;
+        ctx->mem[guest + M68K_PR_MSGPORT + 15] = SIGB_DOS;
+        m68k_write32(ctx, guest + M68K_PR_MSGPORT + 16, guest);
+        m68k_write32(ctx, guest + M68K_PR_MSGPORT + 20, guest + M68K_PR_MSGPORT + 24);
+        m68k_write32(ctx, guest + M68K_PR_MSGPORT + 24, 0);
+        m68k_write32(ctx, guest + M68K_PR_MSGPORT + 28, guest + M68K_PR_MSGPORT + 20);
     }
     return guest;
 }

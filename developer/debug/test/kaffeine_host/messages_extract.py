@@ -25,6 +25,9 @@ text = '''/* Generated from production. Native IDCMP and App paths are poisoned.
 #include "kaffeine_intern.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_messages.h"
+#include "kaffeine_exec_compat.h"
+#include "kaffeine_thunks_dos.h"
+#include "kaffeine_readargs.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_filehandle.h"
 #include "kaffeine_format.h"
@@ -33,6 +36,7 @@ text = '''/* Generated from production. Native IDCMP and App paths are poisoned.
 #include "kaffeine_rastport.h"
 #include <proto/dos.h>
 #include <dos/stdio.h>
+#include <exec/ports.h>
 #include <proto/exec.h>
 #include <intuition/intuition.h>
 #include <aros/debug.h>
@@ -58,6 +62,17 @@ for name in ['guest_string','bad_dos_buffer','transfer_buffer','kaffeine_dos_Ope
              'kaffeine_dos_FRead','kaffeine_dos_FWrite','fgets_write_size','kaffeine_dos_FGets','kaffeine_dos_FPuts','kaffeine_dos_NameFromFH',
              'Kaffeine_FIBToGuest','kaffeine_dos_ExamineFH','kaffeine_dos_Execute','kaffeine_dos_VFWritef','kaffeine_dos_WriteChars','kaffeine_dos_PutStr']:
     text += function('kaffeine_thunks_dos.c',name) + '\n'
+# Keep the packet constants, private helpers and public bodies together.
+source = (core / 'kaffeine_thunks_dos.c').read_text()
+start = source.index('#define GUEST_MSG_SIZE ')
+end = source.index('/* Walk a guest TagItem chain', start)
+text += source[start:end]
+text += function('kaffeine_thunks.c','thunk_dos_AllocDosObject') + '\n'
+text += function('kaffeine_thunks_dos.c','kaffeine_dos_FreeDosObject') + '\n'
+text += """
+IPTR message_AllocDosObject(struct KaffeineContext *ctx, void *cpu)
+{ return thunk_dos_AllocDosObject(ctx, cpu); }
+"""
 start = (core / 'kaffeine_thunks_dos.c').read_text().index('struct PrintOutput\n')
 source = (core / 'kaffeine_thunks_dos.c').read_text()
 text += source[start:source.index('IPTR kaffeine_dos_VFWritef(', start)]
