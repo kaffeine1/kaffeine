@@ -743,6 +743,7 @@ static unsigned generated_calls;
 static IPTR poison(KaffeineContext *, void *) { ++generated_calls; return 0xBAD0F00D; }
 
 static const M68KThunkEntry graphics_manual[] = { KAFFEINE_GRAPHICS_LAYER_THUNKS };
+static const M68KThunkEntry cybergraphics_manual[] = { KAFFEINE_CYBERGRAPHICS_BITMAP_THUNKS };
 
 static std::vector<M68KThunkEntry> poisoned(const M68KThunkEntry *table, size_t count)
 {
@@ -755,14 +756,14 @@ static std::vector<M68KThunkEntry> poisoned(const M68KThunkEntry *table, size_t 
 
 struct Fixture
 {
-    static constexpr ULONG exec_base = 0x1000, layers_base = 0x3000, graphics_base = 0x3C00;
+    static constexpr ULONG exec_base = 0x1000, layers_base = 0x3000, graphics_base = 0x3C00, cybergraphics_base = 0x2000;
     static constexpr ULONG stack = 0x3F00, stack2 = 0x3E00, task = 0x3800;
     static constexpr ULONG heap_start = 0x4000, heap_end = 0x1F000;
     KaffeineContext ctx = {};
     std::vector<UBYTE> memory = std::vector<UBYTE>(0x20000, 0xA5);
     TestCPU state, state2;
     KaffeineCPU cpu = { &ops, &state }, cpu2 = { &ops, &state2 };
-    std::vector<M68KThunkEntry> layers_gen, graphics_gen;
+    std::vector<M68KThunkEntry> layers_gen, graphics_gen, cybergraphics_gen;
     ULONG heap_initial = 0;
 
     Fixture()
@@ -808,7 +809,10 @@ struct Fixture
             kaffeine_thunks_layers_manual_count, layers_gen);
         lib(1, graphics_base, "graphics.library", graphics_manual, std::size(graphics_manual),
             graphics_gen);
-        ctx.num_libs = 2;
+        cybergraphics_gen = poisoned(cybergraphics_manual, std::size(cybergraphics_manual));
+        lib(2, cybergraphics_base, "cybergraphics.library", cybergraphics_manual,
+            std::size(cybergraphics_manual), cybergraphics_gen);
+        ctx.num_libs = 3;
         heap_initial = avail();
         assert(Kaffeine_LayersSetup(&ctx));
     }
@@ -2567,6 +2571,12 @@ static void test_bitmap_vector_guards()
         assert(f.stopped() && f.heap_is(heap) && events == before);
         assert(init_bitmaps == made && bitmap_attrs == attrs && blits.empty() && !wait_blits);
     }
+    for (ULONG lvo : { 96u, 168u, 174u, 180u, 186u })
+    {
+        assert(f.call(Fixture::cybergraphics_base, lvo, { bm, bm, bm, bm }, { 1, 2, 3, 4, 5, 6, 7, 8 }) == 20);
+        assert(f.stopped() && f.heap_is(heap) && events == before);
+        assert(init_bitmaps == made && bitmap_attrs == attrs && blits.empty() && !wait_blits);
+    }
 }
 
 int main()
@@ -2595,7 +2605,7 @@ int main()
         { "A blit keeps every LayerInfo until WaitBlit(); a disposed common's 68k BitMap gets a new call-local BitMap", test_blit_lifetime },
         { "BltBitMap() from an ordinary planar BitMap to an opened screen's BitMap and back, by identity", test_blit_screen_transfer },
         { "BltBitMap() refuses borrowed, foreign, stale and NULL screen BitMaps and native-size overruns", test_blit_screen_refusals },
-        { "Unconverted graphics BitMap vectors stop before native code and guest writes", test_bitmap_vector_guards },
+        { "Unconverted graphics and cybergraphics bitmap vectors stop before native code and guest writes", test_bitmap_vector_guards },
         { "Teardown deletes private layers before their LayerInfos, once, without 68k code", test_cleanup }
     };
     for (const Test &test : tests)

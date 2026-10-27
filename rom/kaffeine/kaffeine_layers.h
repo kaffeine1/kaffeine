@@ -223,6 +223,14 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     {1020, kaffeine_bitmaps_Unsupported },    /* AllocSpriteDataA */ \
     {1206, kaffeine_bitmaps_Unsupported }     /* UpdateBitMap */
 
+/* cybergraphics also consumes bitmap objects or native lock handles. */
+#define KAFFEINE_CYBERGRAPHICS_BITMAP_THUNKS \
+    {  96, kaffeine_bitmaps_Unsupported },    /* GetCyberMapAttr */ \
+    { 168, kaffeine_bitmaps_Unsupported },    /* LockBitMapTagList */ \
+    { 174, kaffeine_bitmaps_Unsupported },    /* UnLockBitMap */ \
+    { 180, kaffeine_bitmaps_Unsupported },    /* UnLockBitMapTagList */ \
+    { 186, kaffeine_bitmaps_Unsupported }     /* ExtractColor */
+
 /* Every layers.library LVO of the generated table, so that no generated
    layer thunk is ever reached: none of them can tell a 68k Layer, Region,
    BitMap or Hook from a native one, and several would run guest Hooks. */

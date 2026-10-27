@@ -3,10 +3,10 @@
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-The C preprocessor expands the production header macros for all seventeen manual
+The C preprocessor expands the production header macros for all eighteen manual
 thunk tables (exec, dos, intuition, graphics, utility, locale, mathieeedoubbas,
 mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, diskfont, gadtools, icon,
-workbench and layers). Expected
+workbench, cybergraphics and layers). Expected
 vector numbers come independently from the native AROS entry points and from
 the NDK 3.2 fd files (or AROS fd / .conf files for
 AROS-only AVL functions). Each manual handler and the helpers it delegates to
@@ -33,6 +33,7 @@ TABLES = (
     ("exec", "kaffeine_thunks.c", "kaffeine_thunks_exec"),
     ("intuition", "kaffeine_thunks.c", "kaffeine_thunks_intuition_manual"),
     ("graphics", "kaffeine_thunks.c", "kaffeine_thunks_graphics_manual"),
+    ("cybergraphics", "kaffeine_thunks.c", "kaffeine_thunks_cybergraphics_manual"),
     ("diskfont", "kaffeine_thunks_diskfont.c", "kaffeine_thunks_diskfont_manual"),
     ("icon", "kaffeine_icon.c", "kaffeine_thunks_icon_manual"),
     ("utility", "kaffeine_thunks_utility.c", "kaffeine_thunks_utility_manual"),
@@ -83,6 +84,7 @@ LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114, 12
                             126, 132, 138, 156, 162, 168, 180, 192,
                             204, 210, 216, 222, 228, 234, 240, 246, 258, 264, 270))
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
+CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
 GRAPHICS_BITMAP_REFUSED = frozenset((390, 606, 636, 678, 918, 924, 942, 960, 1020, 1206))
 # Every graphics.conf vector that takes a Region but NewRegion, OrRectRegion
 # and DisposeRegion: the generated thunks would read a 68k Region as native.
@@ -679,6 +681,8 @@ def parse_conf_file(path):
 
 
 def library_source_dir(root, library):
+    if library == "cybergraphics":
+        return root / "workbench" / "libs" / "cgfx"
     # layers.library of AROS is built from rom/hyperlayers
     if library == "layers":
         return root / "rom/hyperlayers"
@@ -948,6 +952,7 @@ def main():
     seen_graphics_layer_refusals = set()
     seen_graphics_region_refusals = set()
     seen_graphics_bitmap_refusals = set()
+    seen_cybergraphics_bitmap_refusals = set()
     bitmap_refused = re.findall(
         r"IPTR kaffeine_bitmaps_Unsupported\([^\n]*\n\{(.*?)\n\}",
         sources["kaffeine_layers.c"], re.DOTALL)
@@ -1005,11 +1010,14 @@ def main():
                     allowed[1].add(vector)
                 continue
             if handler == "kaffeine_bitmaps_Unsupported":
-                if library != "graphics" or vector not in GRAPHICS_BITMAP_REFUSED:
+                allowed = {"graphics": (GRAPHICS_BITMAP_REFUSED, seen_graphics_bitmap_refusals),
+                           "cybergraphics": (CYBERGRAPHICS_BITMAP_REFUSED,
+                                             seen_cybergraphics_bitmap_refusals)}.get(library)
+                if not allowed or vector not in allowed[0]:
                     failures += 1
                     print("FAIL", module_name(library), -vector, "unexpected bitmap refusal slot")
                 else:
-                    seen_graphics_bitmap_refusals.add(vector)
+                    allowed[1].add(vector)
                 continue
             if handler == "kaffeine_regions_Unsupported":
                 if library != "graphics" or vector not in GRAPHICS_REGION_REFUSED:
@@ -1095,6 +1103,9 @@ def main():
     if seen_graphics_bitmap_refusals != GRAPHICS_BITMAP_REFUSED:
         failures += 1
         print("FAIL graphics.library bitmap refusal slots changed")
+    if seen_cybergraphics_bitmap_refusals != CYBERGRAPHICS_BITMAP_REFUSED:
+        failures += 1
+        print("FAIL cybergraphics.library bitmap refusal slots changed")
     unused_exceptions = sorted(set(ALLOWED_IGNORED_REGS) - seen_ignored)
     for handler in unused_exceptions:
         failures += 1

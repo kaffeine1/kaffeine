@@ -2170,8 +2170,8 @@ IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu)
         return layers_refuse(ctx, "BltBitMap(): negative coordinates or size");
     if (!w || !h)
         return 0;
-    /* The size of a screen's BitMap is graphics', never the 68k snapshot's
-       nor a guess from BytesPerRow of a HIDD BitMap. */
+    /* Use graphics' native padded bitmap dimensions, as BltBitMap() does,
+       rather than the caller-writable classic snapshot. */
     for (i = 0; i < 2; i++)
         if (side[i]->kind == BLIT_SCREEN)
         {

@@ -2996,7 +2996,8 @@ Screen of.
     pixels and return values in both transfer directions. The ten other graphics
     vectors that consume, allocate or initialize BitMaps are explicitly refused
     until their conversion is implemented; no generated fallback receives these
-    classic bitmap objects or screen handles.
+    classic bitmap objects or screen handles. The five cybergraphics bitmap
+    query/lock/transfer vectors have the same explicit refusal boundary.
 
 ## Custom Chip Emulation
 
