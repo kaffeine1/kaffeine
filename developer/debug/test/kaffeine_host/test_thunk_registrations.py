@@ -3,9 +3,10 @@
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-The C preprocessor expands the production header macros for all sixteen manual
+The C preprocessor expands the production header macros for all seventeen manual
 thunk tables (exec, dos, intuition, graphics, utility, locale, mathieeedoubbas,
-mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, diskfont, gadtools, icon and workbench). Expected
+mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, diskfont, gadtools, icon,
+workbench and layers). Expected
 vector numbers come independently from the native AROS entry points and from
 the NDK 3.2 fd files (or AROS fd / .conf files for
 AROS-only AVL functions). Each manual handler and the helpers it delegates to
@@ -47,6 +48,7 @@ TABLES = (
     ("console", "kaffeine_thunks_console.c", "kaffeine_thunks_console"),
     ("gadtools", "kaffeine_thunks.c", "kaffeine_thunks_gadtools_manual"),
     ("workbench", "kaffeine_workbench.c", "kaffeine_thunks_workbench"),
+    ("layers", "kaffeine_layers.c", "kaffeine_thunks_layers_manual"),
 )
 
 # NDK 3.2 workbench_lib.fd entries implemented by this bridge. Keep a 68k
@@ -71,6 +73,16 @@ DEVICES = ("timer", "console")
 # These device slots deliberately stop the guest; they claim no native API.
 CONSOLE_REFUSED = frozenset((6, 12, 18, 24, 30, 36, 42, 54, 60, 66, 72))
 ICON_REFUSED = frozenset((54, 72, 84, 108, 126, 138, 150, 156, 162, 168, 180, 186, 192, 198))
+# Every generated layers.library slot but LockLayer, UnlockLayer,
+# NewLayerInfo, DisposeLayerInfo and InstallLayerHook, and the graphics calls
+# SyncSBitMap and CopySBitMap: they stop the guest before any native call
+# (InstallLayerInfoHook, DoHookClipRects, ChangeLayerShape, CollectPixelsLayer
+# and the hook layer constructors would otherwise run guest Hooks from native
+# code).
+LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 108, 114, 120,
+                            126, 132, 138, 156, 162, 168, 174, 180, 186, 192,
+                            204, 210, 216, 222, 228, 234, 240, 246, 258, 264, 270))
+GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
 
 
 def module_name(library):
@@ -385,6 +397,11 @@ CASES = (
     ("exec", "createmsgport.c", "CreateMsgPort", "Kaffeine_CreateMsgPort"),
     ("timer", "beginio.c", "BeginIO", "kaffeine_timer_BeginIO"),
     ("timer", "getsystime.c", "GetSysTime", "kaffeine_timer_GetSysTime"),
+    ("intuition", "windowtoback.c", "WindowToBack", "Kaffeine_WindowToBack"),
+    ("intuition", "windowtofront.c", "WindowToFront", "Kaffeine_WindowToFront"),
+    ("layers", "installlayerhook.c", "InstallLayerHook", "Kaffeine_InstallLayerHook"),
+    ("layers", "newlayerinfo.c", "NewLayerInfo", "Kaffeine_NewLayerInfo"),
+    ("layers", "disposelayerinfo.c", "DisposeLayerInfo", "Kaffeine_DisposeLayerInfo"),
 )
 
 # Explicit table of manual handlers that intentionally ignore one or more
@@ -524,6 +541,10 @@ ALLOWED_IGNORED_REGS = {
         frozenset({"A0", "A1", "A2"}),
         "OpenCatalogA() returns NULL so 68k programs use their built-in strings",
     ),
+    "Kaffeine_LockLayer": (
+        frozenset({"A0"}),
+        "LockLayer() ignores its dummy argument, as layers.library does",
+    ),
 }
 
 HANDLER_PREFIX_RE = re.compile(
@@ -642,6 +663,9 @@ def parse_conf_file(path):
 
 
 def library_source_dir(root, library):
+    # layers.library of AROS is built from rom/hyperlayers
+    if library == "layers":
+        return root / "rom/hyperlayers"
     rom_dir = root / "rom" / library
     if rom_dir.is_dir():
         return rom_dir
@@ -873,10 +897,11 @@ def main():
             r"AROS_LH\w+\s*\([^,]+,\s*" + re.escape(func_name) + r"\s*,.*?"
             r"struct\s+(?:DosLibrary|ExecBase|IntuitionBase|GfxBase|UtilityBase|"
             r"LocaleBase|Library|LibHeader|MathIeeeDoubBasBase|MathIeeeDoubTransBase|"
-            r"Device|TimerBase|WorkbenchBase|IconBase)"
+            r"Device|TimerBase|WorkbenchBase|IconBase|LayersBase)"
             r"\s*\*,\s*\w+\s*,\s*(\d+)\s*,\s*"
             r"(?:Dos|Exec|Intuition|Graphics|Utility|Locale|GadTools|"
-            r"MathIeeeDoubBas|MathIeeeDoubTrans|Mathieeesingbas|Mathffp|Timer|Console|Diskfont|Workbench|Icon)\s*\)"
+            r"MathIeeeDoubBas|MathIeeeDoubTrans|Mathieeesingbas|Mathffp|Timer|Console|Diskfont|Workbench|Icon|"
+            r"Layers)\s*\)"
         )
         location = re.search(pattern, native, re.DOTALL)
         if not location:
@@ -903,6 +928,14 @@ def main():
     seen_ignored = set()
     seen_console_refusals = set()
     seen_icon_refusals = set()
+    seen_layers_refusals = set()
+    seen_graphics_layer_refusals = set()
+    layers_refused = re.findall(r"IPTR kaffeine_layers_Unsupported\([^\n]*\n\{(.*?)\n\}",
+                                sources["kaffeine_layers.c"], re.DOTALL)
+    if len(layers_refused) != 1 or not re.fullmatch(
+            r'\s*\(void\)cpu;\s*return layers_refuse\(ctx,\s*"unsupported layers\.library call"\);\s*',
+            layers_refused[0]):
+        raise ValueError("layers refusal slots must only stop the guest")
     icon_refused = re.findall(r"IPTR kaffeine_icon_Unsupported\([^\n]*\n\{(.*?)\n\}", sources["kaffeine_icon.c"], re.DOTALL)
     if len(icon_refused) != 1 or not re.fullmatch(r'\s*\(void\)cpu;\s*return stop\(ctx,\s*"unsupported icon.library call"\);\s*', icon_refused[0]):
         raise ValueError("icon refusal slots must only stop the guest")
@@ -928,6 +961,16 @@ def main():
                     failures += 1
                     print("FAIL icon.library", -vector, "unexpected refusal slot")
                 seen_icon_refusals.add(vector)
+                continue
+            if handler == "kaffeine_layers_Unsupported":
+                allowed = {"layers": (LAYERS_REFUSED, seen_layers_refusals),
+                           "graphics": (GRAPHICS_LAYER_REFUSED,
+                                        seen_graphics_layer_refusals)}.get(library)
+                if not allowed or vector not in allowed[0]:
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, "unexpected layer refusal slot")
+                else:
+                    allowed[1].add(vector)
                 continue
             want_func = expected_function_name(handler)
             entry = ndk_spec.get(vector)
@@ -994,6 +1037,12 @@ def main():
     if seen_console_refusals != CONSOLE_REFUSED:
         failures += 1
         print("FAIL console.device explicit refusal slots changed")
+    if seen_layers_refusals != LAYERS_REFUSED:
+        failures += 1
+        print("FAIL layers.library explicit refusal slots changed")
+    if seen_graphics_layer_refusals != GRAPHICS_LAYER_REFUSED:
+        failures += 1
+        print("FAIL graphics.library layer refusal slots changed")
     unused_exceptions = sorted(set(ALLOWED_IGNORED_REGS) - seen_ignored)
     for handler in unused_exceptions:
         failures += 1

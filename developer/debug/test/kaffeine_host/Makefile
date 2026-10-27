@@ -60,6 +60,8 @@ DISKFONT_CPPFLAGS := -I$(TEST_DIR)/memory_stubs $(GFX_CPPFLAGS)
 DISKFONT_OBJS := $(addprefix $(BUILD_DIR)/diskfont_,cpu.o dispatch.o thunks_diskfont.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
 WINDOW_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o format.o rastport.o memory.o taglist.o)
 SCREEN_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o rastport.o memory.o taglist.o fontattr.o)
+# The layer bridge with the production run loop, window bridge and heap.
+LAYER_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o format.o rastport.o memory.o taglist.o layers.o)
 MENU_CPPFLAGS := -I$(TEST_DIR)/menus_stubs $(GFX_CPPFLAGS)
 MENU_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o mirror.o copy.o rastport.o memory.o taglist.o)
 MENU_OBJS += $(BUILD_DIR)/menus_bridge.o
@@ -102,6 +104,7 @@ TESTS += test_locale_hooks
 TESTS += test_exec_memory
 TESTS += test_heap_scaling
 TESTS += test_screens
+TESTS += test_layers
 TESTS += test_m68klib
 TESTS += test_hosted_jit
 TESTS += test_guest_tasks
@@ -351,6 +354,9 @@ $(BUILD_DIR)/test_workbench: $(TEST_DIR)/test_workbench.cpp $(WORKBENCH_OBJS) | 
 $(BUILD_DIR)/test_screens: $(TEST_DIR)/test_screens.cpp $(SCREEN_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(SCREEN_OBJS) $(LDLIBS)
 
+$(BUILD_DIR)/test_layers: $(TEST_DIR)/test_layers.cpp $(LAYER_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(LAYER_OBJS) $(LDLIBS)
+
 # Only the menu bridge and its test use this counted AllocVec stub.
 $(BUILD_DIR)/menus_bridge.o: $(KAFFEINE_DIR)/kaffeine_menus.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(MENU_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
@@ -393,6 +399,7 @@ clean:
 	rm -f $(WORKBENCH_OBJS) $(WORKBENCH_OBJS:.o=.d)
 	rm -f $(M68KLIB_OBJS) $(M68KLIB_OBJS:.o=.d) $(BUILD_DIR)/m68klib_library_thunks.c
 	rm -f $(SCREEN_OBJS) $(SCREEN_OBJS:.o=.d)
+	rm -f $(LAYER_OBJS) $(LAYER_OBJS:.o=.d)
 	rm -f $(LOCALE_HOOK_OBJS) $(LOCALE_HOOK_OBJS:.o=.d)
 	rm -f $(CALLBACK_OBJS) $(CALLBACK_OBJS:.o=.d)
 	rm -f $(BUILD_DIR)/hosted_jit.o $(BUILD_DIR)/hosted_jit.d
@@ -409,6 +416,7 @@ clean:
 -include $(DISKFONT_OBJS:.o=.d)
 -include $(WINDOW_OBJS:.o=.d) $(MENU_OBJS:.o=.d) $(GADGET_OBJS:.o=.d)
 -include $(SCREEN_OBJS:.o=.d)
+-include $(LAYER_OBJS:.o=.d)
 -include $(WORKBENCH_OBJS:.o=.d)
 -include $(M68KLIB_OBJS:.o=.d)
 -include $(CALLBACK_OBJS:.o=.d)

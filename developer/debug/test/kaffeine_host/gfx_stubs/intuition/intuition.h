@@ -7,6 +7,7 @@ struct Screen;
 struct RastPort;
 struct Menu;
 struct Gadget;
+struct Layer;
 struct Requester
 {
     struct Requester *OlderRequest;
@@ -29,7 +30,10 @@ struct Window
     WORD GZZMouseX, GZZMouseY, GZZWidth, GZZHeight;
     struct Gadget *FirstGadget;
     struct Requester *FirstRequest;
+    /* last, so that positional initializers of the other tests stay valid */
+    struct Layer *WLayer;
 };
+#define WFLG_BACKDROP 0x00000100
 #ifndef __typedef_RAWARG
 #define __typedef_RAWARG
 typedef void *RAWARG;
@@ -60,6 +64,8 @@ struct ExtIntuiMessage
     struct IntuiMessage eim_IntuiMessage;
     struct TabletData *eim_TabletData;
 };
+#define IDCMP_SIZEVERIFY 0x00000001
+#define IDCMP_REQVERIFY 0x00000800
 #define IDCMP_NEWSIZE 0x00000002
 #define IDCMP_MOUSEMOVE 0x00000010
 #define IDCMP_GADGETDOWN 0x00000020

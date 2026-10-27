@@ -43,6 +43,7 @@
 /* These fixtures borrow metadata-only fonts and acquire no native opens. */
 extern "C" void CloseFont(struct TextFont *) { assert(false); }
 #include "kaffeine_gadgets.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_window.h"
 #include "kaffeine_dispatch.h"
 
@@ -2118,11 +2119,117 @@ static void test_window_stale_gadget_messages()
            replied.size() == 1 && replied[0] == im && !gt_live);
 }
 
+/* What the window bridge tells the layer bridge (kaffeine_layers.c, not
+   linked here): a 68k Window comes only with its 68k Layer, else nothing
+   of it stays; WindowSync() writes the Flags that the layer bridge gives,
+   and a message that is no VERIFY lets it take a snapshot; it hears of a close
+   while the 68k Window and the native window are both still there. */
+static std::vector<std::string> layer_calls;
+static bool layer_open_fails;
+static BOOL layer_opened(KaffeineContext *ctx, ULONG mw, Window *w)
+{
+    assert(ctx == live && Kaffeine_ShadowNative(ctx, mw, KAFFEINE_SHADOW_WINDOW) == w);
+    // everything else of the 68k Window is there already
+    assert(!w->RPort || Kaffeine_ShadowNative(ctx, m68k_read32(ctx, mw + M68K_WIN_RPORT),
+                                              KAFFEINE_SHADOW_RASTPORT) == w->RPort);
+    assert(!w->UserPort || Kaffeine_ShadowNative(ctx, m68k_read32(ctx, mw + M68K_WIN_USERPORT),
+                                                 KAFFEINE_SHADOW_USERPORT) == w->UserPort);
+    layer_calls.push_back("opened");
+    return !layer_open_fails;
+}
+static void layer_closing(KaffeineContext *ctx, ULONG mw, Window *w)
+{
+    assert(ctx == live && Kaffeine_ShadowNative(ctx, mw, KAFFEINE_SHADOW_WINDOW) == w);
+    assert(std::find(closed.begin(), closed.end(), w) == closed.end());
+    layer_calls.push_back("closing");
+    window_events.push_back("layer_closing");
+}
+static ULONG layer_flags(KaffeineContext *ctx, ULONG mw, ULONG native_flags)
+{
+    assert(ctx == live && mw);
+    layer_calls.push_back("flags");
+    // the program's backdrop bit, as the layer bridge keeps a pending one
+    return (native_flags & ~(ULONG)WFLG_BACKDROP) |
+           (m68k_read32(ctx, mw + M68K_WIN_FLAGS) & WFLG_BACKDROP);
+}
+static void layer_synced(KaffeineContext *ctx, ULONG mw, Window *w)
+{
+    assert(ctx == live && Kaffeine_ShadowNative(ctx, mw, KAFFEINE_SHADOW_WINDOW) == w);
+    layer_calls.push_back("synced");
+}
+static void layer_screen(KaffeineContext *, Screen *) { assert(false); }
+static const KaffeineLayerOps recording_layers =
+    { layer_opened, layer_closing, layer_flags, layer_synced, layer_screen, layer_screen };
+
+static void test_window_layer_hooks()
+{
+    Fixture f;
+    f.ctx.layer_ops = &recording_layers;
+    layer_calls.clear();
+    RastPort other_rp = {};
+    Window other = {};
+    other.Width = 100;
+    other.Flags = 0x1000;
+    other.RPort = &other_rp;
+    other.UserPort = &ports[3];
+    const ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    const UWORD shadows = f.ctx.num_shadows;
+    const std::vector<std::string> create = { "flags", "opened" };
+
+    // no 68k Layer: no 68k Window, RastPort or port either
+    layer_open_fails = true;
+    assert(Kaffeine_WindowCreate(&f.ctx, &other) == 0 && layer_calls == create);
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail && f.ctx.num_shadows == shadows);
+    assert(!Kaffeine_ShadowGuest(&f.ctx, &other, KAFFEINE_SHADOW_WINDOW) &&
+           !Kaffeine_ShadowGuest(&f.ctx, &other_rp, KAFFEINE_SHADOW_RASTPORT) &&
+           !Kaffeine_ShadowGuest(&f.ctx, &ports[3], KAFFEINE_SHADOW_USERPORT));
+    layer_open_fails = false;
+    layer_calls.clear();
+    const ULONG o = Kaffeine_WindowCreate(&f.ctx, &other);
+    assert(o && layer_calls == create);
+
+    // a WFLG_BACKDROP of the program stays through WindowSync(); every
+    // other flag follows Intuition
+    m68k_write32(&f.ctx, o + M68K_WIN_FLAGS, 0x1000 | WFLG_BACKDROP | 0x4);
+    layer_calls.clear();
+    Kaffeine_WindowSync(&f.ctx, o, &other);
+    assert(f.lng(o + M68K_WIN_FLAGS) == (0x1000 | WFLG_BACKDROP) && !(other.Flags & WFLG_BACKDROP));
+    assert((layer_calls == std::vector<std::string>{ "flags" }));
+
+    // a message brings the window and the snapshot of its screen up to date
+    layer_calls.clear();
+    f.send(message(&f.native_window, IDCMP_INTUITICKS));
+    ULONG msg = f.getmsg(f.port());
+    assert(msg && (layer_calls == std::vector<std::string>{ "flags", "synced" }));
+    f.reply(msg);
+    // but no layer lock while Intuition may wait for the reply of a VERIFY
+    layer_calls.clear();
+    f.send(message(&f.native_window, IDCMP_MENUVERIFY));
+    msg = f.getmsg(f.port());
+    assert(msg && (layer_calls == std::vector<std::string>{ "flags" }));
+    f.reply(msg);
+
+    // the close: the layer bridge first, the native window last
+    layer_calls.clear();
+    window_events.clear();
+    f.closewindow(f.window);
+    assert((layer_calls == std::vector<std::string>{ "closing" }));
+    auto at = [](const char *e) {
+        return std::find(window_events.begin(), window_events.end(), e) - window_events.begin();
+    };
+    assert(at("layer_closing") < at("CloseWindow") && at("CloseWindow") < (long)window_events.size());
+    layer_calls.clear();
+    Kaffeine_WindowDelete(&f.ctx, o);
+    assert((layer_calls == std::vector<std::string>{ "closing" }));
+    f.ctx.layer_ops = nullptr;
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
     const Test tests[] =
     {
+        { "Layer bridge notifications: whole-or-nothing open, pending backdrop flags, close order", test_window_layer_hooks },
         { "Exec, Intuition and GadTools tables use their ABI slots", test_registration },
         { "A 68k Window comes whole or not at all", test_window_create },
         { "WindowDelete() and CloseWindow() release WScreen once after the Window shadow", test_screen_release_order },

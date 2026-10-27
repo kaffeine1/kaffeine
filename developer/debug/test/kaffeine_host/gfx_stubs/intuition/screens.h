@@ -1,12 +1,15 @@
 #pragma once
 #include <exec/nodes.h>
+#include <exec/semaphores.h>
 #include <graphics/gfx.h>
 #include <graphics/rastport.h>
 #include <graphics/text.h>
 #include <graphics/view.h>
 
-/* Opaque native layer storage; no bridge code reads its contents. */
-struct Layer_Info { APTR unused; };
+/* Native layer storage: only the layer bridge reads top_layer, under
+   LockLayerInfo(); the rest stays opaque. */
+struct Layer;
+struct Layer_Info { struct Layer *top_layer; struct SignalSemaphore Lock; UWORD Flags; };
 
 /* Field names, order and types from compiler/include/intuition/screens.h.
    Host pointers have host width; the tests check guest offsets separately. */

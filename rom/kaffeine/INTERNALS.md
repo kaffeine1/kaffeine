@@ -2876,6 +2876,80 @@ m68k: SetAPen(rp, 2); rp->cp_x = 10; Draw(rp, 50, 10)
    held, and the lock after 32767 locks of one screen, return 0 and give the
    native lock back at once.
 
+## Layer Snapshots
+
+`kaffeine_layers.c` gives classic programs read-only snapshots of the native
+layer topology of every screen that the program has a window on or a 68k
+Screen of.
+
+1. Each native layer of such a screen has one 68k Layer (160 bytes, NDK
+   `graphics/clip.h` offsets, cross-checked against
+   `kaffeine_shadow_layouts.h` by `test_layers`) while it is in the
+   snapshots; `Window.WLayer` (124), the `Layer` of the window's 68k RastPort,
+   `Screen.BarLayer` (334), `Screen.RastPort.Layer` and
+   `Screen.LayerInfo.top_layer` (224) name them. A screen without a 68k
+   Screen gets a 102-byte 68k Layer_Info of the bridge. Only bounds,
+   priority, Flags, scroll, Width/Height and guest pointers are written;
+   ClipRects, regions, bitmaps and native pointers stay 0, the Lock is an
+   initialized guest semaphore, and BackFill is 0, 1 (`LAYERS_NOBACKFILL`)
+   or an opaque 20-byte handle of a native hook of an owned layer.
+2. 68k Layers are not shadow-map entries; generated thunks therefore never
+   resolve one to a native layer. Records are bounded
+   (`KAFFEINE_LAYER_MAX_RECORDS` 64, `KAFFEINE_LAYER_MAX_DEPTH` 48 layers per
+   screen, 16 screens, 32 hook handles).
+3. A snapshot attempts the public `LayerInfo.Lock` semaphore without
+   blocking, reads the native list into native storage and releases the lock,
+   then writes guest memory all or nothing. A busy lock, missing room or memory,
+   or a deeper list leaves the previous snapshot whole. Snapshots are taken
+   when a window opens, for each IntuiMessage of a window that is no VERIFY
+   message (after `Kaffeine_WindowSync()`), after depth calls, when a
+   screen gets a 68k Screen, and in `ctx->gui_poll`, which the outermost
+   `Kaffeine_RunCPU()` calls every `KAFFEINE_GUI_POLL_SLICES` (4096) completed
+   slices, with or without guest tasks. None is taken while the program holds
+   a layer lock.
+4. Owned 68k Layers belong to windows of the program; all others are
+   borrowed (bar, GZZ borders, requesters, other programs): readable, never
+   locked or changed through the bridge. `WindowToBack()`/`WindowToFront()`
+   apply only a `WFLG_BACKDROP`/`LAYERBACKDROP` that the program changed
+   (pending until then, also across `WindowSync()` and polls), under
+   `LockIBase()`/`LockLayer()`, and then call Intuition, whose move shows in a
+   later snapshot. `InstallLayerHook()` takes 0, 1 or a handle of that layer
+   and refuses 68k Hooks before any native call; `LockLayer()`,
+   `UnlockLayer()`, `LockLayerRom()`, `UnlockLayerRom()` and
+   `AttemptLockLayerRom()` lock owned layers, nested and counted. Lock ownership
+   distinguishes guest tasks: a different guest task cannot recurse through the
+   single native executor; contention through these layer calls stops with 20.
+   Applying pending backdrop bits while any layer lock is held also stops
+   with 20 before an IBase or another layer lock could invert the order.
+   Native AROS currently preserves its priority class when the public backdrop
+   bits are cleared; the bridge publishes that real order. Except for the owned
+   LayerInfo calls below, every other
+   layers.library slot, `SyncSBitMap()` and `CopySBitMap()` stop with 20.
+5. A screen opened by the program exposes its bar's internal RastPort
+   through `Screen.BarLayer.rp`, with a reverse `RastPort.Layer` identity.
+   Only this custom-screen owner gains drawing access: bars on borrowed
+   public screens and foreign window layers stay read-only. The bar mirror
+   is protected from guest FreeMem, reuses an existing typed RastPort when
+   present, and retires before the native bar or screen. Publication rolls
+   back a new mapping if the complete graph cannot be published.
+6. `Kaffeine_WindowDelete()` gives the program's locks back and retires the
+   68k Layer and its handles before the native window closes; the screen
+   bridge retires a screen's snapshot before `CloseScreen()`, when its 68k
+   Screen goes, and for all screens before the cleanup unlocks;
+   `Kaffeine_LayersCleanup()` runs after the window and screen cleanup.
+   Both `CloseWindow()` and `FreeSysRequest()` prepare this layer close
+   before menu or gadget removal can wait for Intuition. A refused screen
+   close restores its snapshot immediately; message/depth paths can also
+   rebuild a retired graph. The embedded screen semaphore is initialized
+   once at screen-mirror creation and survives every snapshot or refusal.
+7. `NewLayerInfo()` (-144) owns a real native empty LayerInfo and a protected
+   102-byte classic mirror, with its guest semaphore and public creation flag.
+   A separate table holds at most 16 pairs; these handles never enter the
+   generic shadow map. Allocation failures roll back fully. `DisposeLayerInfo()`
+   (-150) accepts only a live owned handle with an empty native list; borrowed
+   screen LayerInfos, stale or foreign handles and nonempty lists stop with 20
+   before native disposal. Teardown releases each remaining empty pair once.
+
 ## Custom Chip Emulation
 
 All accesses to `$DFF000–$DFFFFF` are intercepted in `AROSMoira::read8/read16/write8/write16`.

@@ -54,6 +54,11 @@ UWORD AddGadget(struct Window *window, struct Gadget *gadget, UWORD position);
 UWORD RemoveGList(struct Window *window, struct Gadget *gadget, WORD numGad);
 void RefreshGList(struct Gadget *gadgets, struct Window *window, struct Requester *requester,
                   WORD numGad);
+/* Depth calls and the IntuitionBase lock, for the layer bridge */
+void WindowToBack(struct Window *window);
+void WindowToFront(struct Window *window);
+ULONG LockIBase(ULONG what);
+void UnlockIBase(ULONG ibLock);
 #ifdef __cplusplus
 }
 #endif

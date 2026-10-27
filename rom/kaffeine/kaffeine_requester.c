@@ -247,11 +247,12 @@ IPTR Kaffeine_FreeSysRequest(struct KaffeineContext *ctx, void *cpu)
     }
     if (guest > 1)
     {
+        Kaffeine_WindowPrepareClose(ctx, guest);
         if (ctx->menu_closing)
             ctx->menu_closing(ctx, req);
         if (ctx->window_gadgets)
             ctx->window_gadgets->closing(ctx, req);
-        Kaffeine_WindowDelete(ctx, guest);
+        Kaffeine_WindowDeletePrepared(ctx, guest);
     }
     FreeSysRequest(req);
     return 0;
