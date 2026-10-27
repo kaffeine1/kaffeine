@@ -52,6 +52,7 @@ struct DiskObject;
 struct Window;
 struct IntuiMessage;
 struct Screen;
+struct DrawInfo;
 struct KaffeineMenuStrip;
 struct KaffeineGadgetBatch;
 struct KaffeineWindowGadgets;
@@ -295,6 +296,16 @@ struct KaffeineContext
     struct {
         APTR native; struct Screen *screen; ULONG guest; BOOL public_lock;
     } visualinfos[KAFFEINE_MAX_VISUALINFOS];
+    /* 68k copies of GetScreenDrawInfo() (kaffeine_screens.c): one for each
+       native DrawInfo of a screen of the program, with the gets that the
+       program has not freed (refs). Each keeps the 68k Screen of its screen,
+       and a borrowed one also holds a native visitor lock (public_lock),
+       until its last free or the end of the program. */
+    #define KAFFEINE_MAX_DRAWINFOS 16
+    struct {
+        struct Screen *screen; struct DrawInfo *native; ULONG guest; UWORD refs;
+        BOOL public_lock;
+    } drawinfos[KAFFEINE_MAX_DRAWINFOS];
     /* the native fonts of those screens, held open for the program, whose
        68k TextFonts stay, as many as there are 68k TextFonts; closed at
        its end */

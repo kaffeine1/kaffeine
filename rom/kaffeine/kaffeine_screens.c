@@ -55,6 +55,21 @@
     screen; when Intuition refuses, everything stays as it was. Screens that
     the program leaves open close at its end, unless a window of the program
     is still on them.
+
+    GetScreenDrawInfo() of a 68k Screen of the program gives a 68k copy of
+    the DrawInfo that Intuition keeps in the screen, one for each native
+    DrawInfo, which nested gets hand out again and the last free retires.
+    The copy is the classic DrawInfo of 50 bytes, dri_Version at most 2,
+    in a mirror that guest FreeMem() cannot take, with its own big-endian
+    pens (at most 64, then ~0) and the 68k TextFont of dri_Font, whose
+    native font the bridge holds as that of a screen. Intuition has no 68k
+    Images: dri_CheckMark and dri_AmigaKey stay 0, as do the reserved
+    longwords. While the program holds a copy, its 68k Screen stays, and a
+    screen that it did not open also keeps a native visitor lock of the
+    bridge, so that neither goes with the program's locks or windows;
+    CloseScreen() refuses a screen with copies. Each get and free reaches
+    Intuition once, as the very pair, and a free of anything else stops the
+    program first.
 */
 
 #include "kaffeine_intern.h"
@@ -98,7 +113,12 @@ enum
     G_LH_HEAD = 0, G_LH_TAIL = 4, G_LH_TAILPRED = 8, G_LH_TYPE = 12, G_LIST_ROOM = 16,
     G_LN_SUCC = 0, G_LN_PRED = 4, G_LN_TYPE = 8, G_LN_PRI = 9, G_LN_NAME = 10,
     G_PSN_SCREEN = 14, G_PSN_FLAGS = 18, G_PSN_SIZE = 20, G_PSN_VISITORCOUNT = 22,
-    G_PSN_SIGTASK = 24, G_PSN_SIGBIT = 28, G_PSN_SIZEOF = 30
+    G_PSN_SIGTASK = 24, G_PSN_SIGBIT = 28, G_PSN_SIZEOF = 30,
+    /* the classic DrawInfo, dri_Version 2, with five reserved longwords */
+    G_DRI_VERSION = 0, G_DRI_NUMPENS = 2, G_DRI_PENS = 4, G_DRI_FONT = 8, G_DRI_DEPTH = 12,
+    G_DRI_RESOLUTION_X = 14, G_DRI_RESOLUTION_Y = 16, G_DRI_FLAGS = 18,
+    G_DRI_CHECKMARK = 22, G_DRI_AMIGAKEY = 26, G_DRI_RESERVED = 30, G_DRAWINFO_SIZE = 50,
+    G_DRI_CLASSIC_VERSION = 2
 };
 
 /* Intuition counts the locks of a screen in a WORD; a program alone does
@@ -117,6 +137,11 @@ enum
 #define MAX_PENS 64
 /* The most user tags of one OpenScreenTagList() */
 #define MAX_SCREEN_TAGS 256
+/* Gets of one DrawInfo that the program holds; Intuition counts none, the
+   bridge gives an excess one back. */
+#define MAX_DRAWINFO_GETS 0x7FFF
+/* The pens of a DrawInfo copy, before the ~0 that ends them */
+#define MAX_DRAWINFO_PENS 64
 
 /* What Intuition points to while a screen that the program opened is open:
    SA_Font or the Font of the NewScreen, with its name and tags, and the
@@ -404,10 +429,10 @@ static BOOL screen_windows(struct KaffeineContext *ctx, const struct Screen *scr
 }
 
 /* A native screen is the program's while it is open from OpenScreen() of
-   the program, while the program holds a lock on it or has a window there;
-   while the program holds the list of public screens, under which
-   Intuition closes no public screen, every 68k Screen stays, also when
-   there was no memory for the copy. */
+   the program, while the program holds a lock on it, has a window there,
+   a VisualInfo or a DrawInfo copy of it; while the program holds the list
+   of public screens, under which Intuition closes no public screen, every
+   68k Screen stays, also when there was no memory for the copy. */
 static BOOL screen_visuals(struct KaffeineContext *ctx, struct Screen *screen)
 {
     int i;
@@ -417,11 +442,23 @@ static BOOL screen_visuals(struct KaffeineContext *ctx, struct Screen *screen)
     return FALSE;
 }
 
+/* Whether a DrawInfo copy of the program keeps that native screen */
+static BOOL screen_drawinfos(struct KaffeineContext *ctx, const struct Screen *screen)
+{
+    int i;
+
+    for (i = 0; i < KAFFEINE_MAX_DRAWINFOS; i++)
+        if (ctx->drawinfos[i].guest && ctx->drawinfos[i].screen == screen)
+            return TRUE;
+    return FALSE;
+}
+
 static BOOL screen_used(struct KaffeineContext *ctx, int i)
 {
     return ctx->pubscreens[i].owned || ctx->pubscreens[i].locks || ctx->pubscreen_list_locks ||
            screen_windows(ctx, ctx->pubscreens[i].native) ||
-           screen_visuals(ctx, ctx->pubscreens[i].native);
+           screen_visuals(ctx, ctx->pubscreens[i].native) ||
+           screen_drawinfos(ctx, ctx->pubscreens[i].native);
 }
 
 /* Whether the 68k Screen of the entry is one that the bridge made, and
@@ -1160,8 +1197,9 @@ IPTR Kaffeine_OpenScreenTagList(struct KaffeineContext *ctx, void *cpu)
 /* intuition -66: CloseScreen(A0=screen) -> D0: TRUE when the screen closed,
    and for NULL, as from Intuition; FALSE when Intuition refuses, as with
    windows or visitors on it, and then the 68k Screen stays as it was.
-   Intuition gets only a screen that the program opened and has not closed;
-   anything else gives FALSE. While a BltBitMap() of the program runs, which
+   Intuition gets only a screen that the program opened and has not closed,
+   and of which it holds no VisualInfo or DrawInfo copy; anything else gives
+   FALSE. While a BltBitMap() of the program runs, which
    may have the BitMap of the screen, the program stops instead. */
 IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
 {
@@ -1179,7 +1217,9 @@ IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
             (unsigned long)screen);
         return FALSE;
     }
-    if (screen_visuals(ctx, ctx->pubscreens[i].native))
+    /* a VisualInfo or a DrawInfo copy of the program still describes it */
+    if (screen_visuals(ctx, ctx->pubscreens[i].native) ||
+        screen_drawinfos(ctx, ctx->pubscreens[i].native))
         return FALSE;
     /* no 68k Layer may stand for a layer of a screen that closes; when
        Intuition refuses, the next snapshot is taken afresh */
@@ -1195,6 +1235,257 @@ IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
     return TRUE;
 }
 
+/* ── DrawInfo ────────────────────────────────────────────────────── */
+
+/* These generated consumers would read a classic guest DrawInfo as a
+   native object. Images and pointer-valued attributes need their own
+   conversions; until then, stop before either native API is called. */
+IPTR Kaffeine_DrawImageState(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return refuse(ctx, "DrawImageState(): unsupported Image/DrawInfo conversion");
+}
+
+IPTR Kaffeine_GetDrawInfoAttr(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return refuse(ctx, "GetDrawInfoAttr(): unsupported DrawInfo attribute conversion");
+}
+
+/* The entry of a DrawInfo copy, by its 68k address, or -1 */
+static int drawinfo_index(struct KaffeineContext *ctx, ULONG guest)
+{
+    int k;
+
+    for (k = 0; guest && k < KAFFEINE_MAX_DRAWINFOS; k++)
+        if (ctx->drawinfos[k].guest == guest)
+            return k;
+    return -1;
+}
+
+/* The entry of the copy of that native DrawInfo of that screen, or -1 */
+static int drawinfo_find(struct KaffeineContext *ctx, const struct Screen *scr,
+                         const struct DrawInfo *dri)
+{
+    int k;
+
+    for (k = 0; k < KAFFEINE_MAX_DRAWINFOS; k++)
+        if (ctx->drawinfos[k].guest && ctx->drawinfos[k].screen == scr &&
+            ctx->drawinfos[k].native == dri)
+            return k;
+    return -1;
+}
+
+/* A free entry, or -1 */
+static int drawinfo_free_entry(struct KaffeineContext *ctx)
+{
+    int k;
+
+    for (k = 0; k < KAFFEINE_MAX_DRAWINFOS; k++)
+        if (!ctx->drawinfos[k].guest)
+            return k;
+    return -1;
+}
+
+/* A native visitor lock of the bridge on a screen that the program did not
+   open, taken by its name in the list of public screens, as Intuition
+   locks a public screen; FALSE for a screen that is not public there or is
+   private, which the bridge cannot keep. */
+static BOOL screen_public_hold(struct Screen *screen)
+{
+    struct List *list = LockPubScreenList();
+    struct Screen *held = NULL;
+    struct Node *node;
+    ULONG n = 0;
+
+    for (node = list->lh_Head; node->ln_Succ && n++ < MAX_LISTED; node = node->ln_Succ)
+        if (((struct PubScreenNode *)node)->psn_Screen == screen && node->ln_Name)
+        {
+            /* Native Intuition increments the signed WORD without an
+               overflow check. Inspect it while its list lock is held. */
+            WORD visitors = ((struct PubScreenNode *)node)->psn_VisitorCount;
+
+            if (visitors >= 0 && visitors < MAX_LOCKS)
+                held = LockPubScreen((CONST_STRPTR)node->ln_Name);
+            break;
+        }
+    UnlockPubScreenList();
+    if (held && held != screen)
+        UnlockPubScreen(NULL, held);
+    return held == screen;
+}
+
+/* The classic 68k DrawInfo of a native one, in its cleared mirror of
+   G_DRAWINFO_SIZE bytes and, when there are pens, room for pens + 1 UWORDs
+   after it: the scalars, the pens as big-endian UWORDs ended by ~0, and
+   the 68k TextFont of dri_Font. Intuition's Images, dri_Screen, dri_Prefs
+   and its reserved fields are native and stay 0, as do the five reserved
+   longwords of the classic DrawInfo. */
+static void drawinfo_fill(struct KaffeineContext *ctx, ULONG guest, const struct DrawInfo *dri,
+                          UWORD pens, ULONG font)
+{
+    ULONG at = guest + G_DRAWINFO_SIZE;
+    UWORD n;
+
+    m68k_write16(ctx, guest + G_DRI_VERSION, dri->dri_Version < G_DRI_CLASSIC_VERSION
+                                             ? dri->dri_Version : G_DRI_CLASSIC_VERSION);
+    m68k_write16(ctx, guest + G_DRI_NUMPENS, pens);
+    if (dri->dri_Pens)
+    {
+        for (n = 0; n < pens; n++)
+            m68k_write16(ctx, at + 2 * n, dri->dri_Pens[n]);
+        m68k_write16(ctx, at + 2 * pens, (UWORD)~0);
+        m68k_write32(ctx, guest + G_DRI_PENS, at);
+    }
+    m68k_write32(ctx, guest + G_DRI_FONT, font);
+    m68k_write16(ctx, guest + G_DRI_DEPTH, dri->dri_Depth);
+    m68k_write16(ctx, guest + G_DRI_RESOLUTION_X, dri->dri_Resolution.X);
+    m68k_write16(ctx, guest + G_DRI_RESOLUTION_Y, dri->dri_Resolution.Y);
+    m68k_write32(ctx, guest + G_DRI_FLAGS, dri->dri_Flags);
+}
+
+/* The last get of a copy is freed: the copy goes, then the 68k Screen when
+   nothing else keeps it, while the visitor lock of the bridge still holds,
+   then that lock. The 68k TextFont and the held native font stay for the
+   program, as those of a screen do. */
+static void drawinfo_retire(struct KaffeineContext *ctx, int k)
+{
+    struct Screen *scr = ctx->drawinfos[k].screen;
+    BOOL locked = ctx->drawinfos[k].public_lock;
+
+    Kaffeine_MirrorRelease(ctx, ctx->drawinfos[k].guest);
+    memset(&ctx->drawinfos[k], 0, sizeof(ctx->drawinfos[k]));
+    screen_release(ctx, scr);
+    if (locked)
+        UnlockPubScreen(NULL, scr);
+}
+
+/* At the end of the program, before any screen lock or font goes: every
+   get that the program left reaches FreeScreenDrawInfo() as its pair, and
+   every copy retires. Nothing is left for a second call. */
+static void drawinfos_cleanup(struct KaffeineContext *ctx)
+{
+    ULONG left = 0;
+    int k;
+
+    for (k = 0; k < KAFFEINE_MAX_DRAWINFOS; k++)
+    {
+        if (!ctx->drawinfos[k].guest)
+            continue;
+        for (; ctx->drawinfos[k].refs; ctx->drawinfos[k].refs--, left++)
+            FreeScreenDrawInfo(ctx->drawinfos[k].screen, ctx->drawinfos[k].native);
+        drawinfo_retire(ctx, k);
+    }
+    if (left)
+        bug("[kaffeine] %lu DrawInfo gets that the program left, freed\n", (unsigned long)left);
+}
+
+/* intuition -690: GetScreenDrawInfo(A0=screen) -> D0: the 68k copy of the
+   native DrawInfo of a 68k Screen of the program, the same for each get of
+   that DrawInfo until its last free. 0 for NULL, which Intuition would
+   read, and when Intuition gives none; also 0, with Intuition's get freed
+   again and nothing kept, when the table of 16 copies is full, the program
+   holds 32767 gets of the copy, a screen that it did not open cannot be
+   held by a visitor lock, or there is no memory for the copy, no hold of
+   its font or no 68k TextFont of it. Any other screen stops the program
+   before Intuition. */
+IPTR Kaffeine_GetScreenDrawInfo(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG screen = THUNK_A(0), guest = 0, font = 0, size;
+    struct Screen *scr = NULL;
+    struct DrawInfo *dri;
+    BOOL holding = FALSE;
+    UWORD pens;
+    int i, k, held = -1;
+
+    if (!screen)
+        return 0;
+    i = screen_index(ctx, NULL, screen);
+    if (i < 0 || !(scr = ctx->pubscreens[i].native) || Kaffeine_ScreenNative(ctx, screen) != scr)
+        return refuse(ctx, "GetScreenDrawInfo(): not a screen of the program");
+    if (!(dri = GetScreenDrawInfo(scr)))
+        return 0;
+    if ((k = drawinfo_find(ctx, scr, dri)) >= 0)
+    {
+        if (ctx->drawinfos[k].refs == MAX_DRAWINFO_GETS)
+        {
+            bug("[kaffeine] GetScreenDrawInfo(): too many gets of %p, given back\n", dri);
+            FreeScreenDrawInfo(scr, dri);
+            return 0;
+        }
+        ctx->drawinfos[k].refs++;
+        return ctx->drawinfos[k].guest;
+    }
+    pens = !dri->dri_Pens ? 0 : dri->dri_NumPens < MAX_DRAWINFO_PENS ? dri->dri_NumPens
+                                                                     : MAX_DRAWINFO_PENS;
+    size = G_DRAWINFO_SIZE;
+    if (dri->dri_Pens)
+        size += 2 * ((ULONG)pens + 1);
+    k = drawinfo_free_entry(ctx);
+    /* everything that can fail before anything is published */
+    if (k < 0)
+        bug("[kaffeine] DrawInfo table full, no copy of %p\n", dri);
+    else if (!ctx->pubscreens[i].owned && !(holding = screen_public_hold(scr)))
+        bug("[kaffeine] GetScreenDrawInfo(): screen %p cannot be held, no copy\n", scr);
+    else if (!(guest = Kaffeine_MirrorAlloc(ctx, size)))
+        bug("[kaffeine] GetScreenDrawInfo(): no guest memory for the copy\n");
+    /* the native font first, so that no 68k TextFont stands for a font
+       that the bridge does not hold */
+    else if (!font_hold(ctx, dri->dri_Font, &held))
+        bug("[kaffeine] GetScreenDrawInfo(): font %p not held, no copy\n", dri->dri_Font);
+    else if (dri->dri_Font && !(font = Kaffeine_FontGuest(ctx, dri->dri_Font)))
+    {
+        bug("[kaffeine] GetScreenDrawInfo(): no 68k TextFont for %p, no copy\n", dri->dri_Font);
+        font_unhold(ctx, held);
+    }
+    else
+    {
+        memset(ctx->mem + guest, 0, size);
+        drawinfo_fill(ctx, guest, dri, pens, font);
+        /* the 68k TextFont stays for the program, as that of a screen */
+        for (i = 0; font && i < KAFFEINE_MAX_FONTS; i++)
+            if (ctx->fonts[i].guest == font)
+                ctx->fonts[i].pinned = TRUE;
+        ctx->drawinfos[k].screen = scr;
+        ctx->drawinfos[k].native = dri;
+        ctx->drawinfos[k].guest = guest;
+        ctx->drawinfos[k].refs = 1;
+        ctx->drawinfos[k].public_lock = holding;
+        return guest;
+    }
+    /* nothing of it stays; Intuition's get goes back while the screen is
+       still held */
+    Kaffeine_MirrorRelease(ctx, guest);
+    FreeScreenDrawInfo(scr, dri);
+    if (holding)
+        UnlockPubScreen(NULL, scr);
+    return 0;
+}
+
+/* intuition -696: FreeScreenDrawInfo(A0=screen, A1=drawInfo): one get of
+   the copy goes back to Intuition as the native pair, and the copy retires
+   with the last one. NULL for drawInfo changes nothing, as it gives
+   Intuition nothing to free. A drawInfo that is no copy the program holds,
+   also one that it has freed, or a screen that is not the 68k Screen of
+   the copy stops the program before Intuition. */
+IPTR Kaffeine_FreeScreenDrawInfo(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG screen = THUNK_A(0), drawinfo = THUNK_A(1);
+    int i, k;
+
+    if (!drawinfo)
+        return 0;
+    if ((k = drawinfo_index(ctx, drawinfo)) < 0)
+        return refuse(ctx, "FreeScreenDrawInfo(): not a DrawInfo that the program holds");
+    i = screen_index(ctx, ctx->drawinfos[k].screen, 0);
+    if (i < 0 || ctx->pubscreens[i].guest != screen)
+        return refuse(ctx, "FreeScreenDrawInfo(): not the screen of that DrawInfo");
+    FreeScreenDrawInfo(ctx->drawinfos[k].screen, ctx->drawinfos[k].native);
+    if (!--ctx->drawinfos[k].refs)
+        drawinfo_retire(ctx, k);
+    return 0;
+}
+
 /* ── The end of the program ──────────────────────────────────────── */
 
 void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
@@ -1202,6 +1493,9 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
     ULONG left = 0;
     int i;
 
+    /* the DrawInfo copies first, which keep 68k Screens, visitor locks and
+       the screens that the program opened */
+    drawinfos_cleanup(ctx);
     /* every layer snapshot goes before the locks that keep screens open */
     if (ctx->layer_ops)
         ctx->layer_ops->screen_closing(ctx, NULL);
