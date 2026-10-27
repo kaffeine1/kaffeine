@@ -36,6 +36,7 @@
 #include "kaffeine_exec_compat.h"
 #include "kaffeine_exec_io.h"
 #include "kaffeine_thunks_gfx.h"
+#include "kaffeine_display.h"
 #include "kaffeine_thunks_diskfont.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_window.h"
@@ -632,6 +633,7 @@ static IPTR thunk_gfx_LoadRGB4(struct KaffeineContext *ctx, void *cpu)
 const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
     KAFFEINE_GRAPHICS_COMPAT_THUNKS,
     KAFFEINE_GRAPHICS_RASTPORT_THUNKS,
+    KAFFEINE_GRAPHICS_DISPLAY_THUNKS,
     { 192, thunk_gfx_LoadRGB4 },
     { 0, NULL }
 };
