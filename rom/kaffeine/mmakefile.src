@@ -26,6 +26,7 @@ KAFFEINE_FILES := \
     kaffeine_init \
     kaffeine_run \
     kaffeine_cpu \
+    kaffeine_sched \
     kaffeine_hook \
     kaffeine_format \
     kaffeine_dispatch \

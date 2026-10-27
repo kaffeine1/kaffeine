@@ -14,9 +14,9 @@ PROGRAMS := hello_short hello_long $(C_PROGRAMS) c_stdio_vec c_compute_fpu
 C_PROGRAMS += exec_messages exec_message_lifetime exec_packets gfx_planar_read icon_objects gfx_display_info
 C_PROGRAMS += gfx_owned_screen
 PROGRAMS += gfx_owned_screen
+C_PROGRAMS += exec_guest_tasks exec_guest_task_window exec_guest_messages
+PROGRAMS += exec_guest_tasks exec_guest_task_window exec_guest_messages
 PROGRAMS += exec_messages exec_message_lifetime exec_packets gfx_planar_read icon_objects gfx_display_info
-C_PROGRAMS += gfx_owned_screen
-PROGRAMS += gfx_owned_screen
 EXEC_LIBRARIES_DIR := $(BUILD_DIR)/exec_libraries-files
 EXEC_LIBRARIES_LIBS := $(EXEC_LIBRARIES_DIR)/emu68test.library \
                        $(EXEC_LIBRARIES_DIR)/emu68test_l.library

@@ -11,7 +11,7 @@ source = Path(sys.argv[1]).read_text()
 dos_source = Path(sys.argv[2]).read_text()
 dos_header = Path(sys.argv[3]).read_text()
 start = source.index("static IPTR open_library(")
-end = source.index("/* -132: Forbid() */", start)
+end = source.index("/* -120/-126: Disable()/Enable()", start)
 for lvo, name in ((552, "OpenLibrary"), (408, "OldOpenLibrary"), (414, "CloseLibrary")):
     assert re.search(r"\{\s*" + str(lvo) + r",\s*thunk_exec_" + name + r"\s*\}", source)
     assert source[start:end].count("static IPTR thunk_exec_" + name + "(") == 1

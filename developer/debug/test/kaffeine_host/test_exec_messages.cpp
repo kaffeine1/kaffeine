@@ -41,6 +41,28 @@ static void ignore_and_null_reply()
     check(f.exec(378,0,f.msg)==0 && f.bytes()==expected && !signals,"NULL ReplyMsg changes only type to measured NT_FREEMSG");
     auto before=f.bytes();check(f.exec(384,f.port)==20 && !f.ctx.running && f.bytes()==before,"empty ordinary WaitPort refuses without mutation or waiting");
 }
+
+static void retired_port_signal()
+{
+    Fixture f;
+    ULONG old=f.exec(666);
+    BYTE bit=(BYTE)f.ctx.mem[old+15];
+    for(auto &entry:f.ctx.io_ports)
+        if(entry.guest==old) entry.sigbit=-1;
+    f.ctx.guest_signals &= ~(1UL<<bit);
+    FreeSignal(bit);
+    ULONG replacement=f.exec(666);
+    check(replacement && f.ctx.mem[replacement+15]==(UBYTE)bit,
+          "a retired task's port bit can be reused by a new port");
+    unsigned before=freed_signals;
+    f.exec(672,old);
+    check(freed_signals==before && (allocated_signals&(1UL<<bit)) &&
+          (f.ctx.guest_signals&(1UL<<bit)),
+          "deleting a retired port cannot free its replacement's signal");
+    f.exec(672,replacement);
+    check(!allocated_signals && !f.ctx.guest_signals,
+          "replacement port still releases its own signal exactly once");
+}
 static void invalid()
 {
     for(ULONG bad:{0U,1U,0x200001U,0xFFFFFFFFU,0x1FFFF0U})
@@ -340,6 +362,7 @@ int main()
 {
     fifo();ignore_and_null_reply();invalid();allocation_failures();real_shadows_and_port_lifetimes();queue_capacity_and_membership();manual_port_identity_and_owned_signal();read_after_arrival_metadata_change();inspection_ignores_other_arrival_metadata();
     released_manual_port_storage();
+    retired_port_signal();
     check(allocated_signals==0,"all owned native signals are released");
     check(native_blocks.empty(),"all native heap records and allocations are released");
     std::printf("Guest Exec message boundary: %u/%u checks passed\n",checks-failures,checks);

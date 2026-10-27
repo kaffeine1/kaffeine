@@ -5,6 +5,7 @@
 */
 #include "kaffeine_messages.h"
 #include "kaffeine_offsets.h"
+#include "kaffeine_sched.h"
 #include <aros/debug.h>
 #include <proto/exec.h>
 #include <string.h>
@@ -100,6 +101,20 @@ static BOOL queue_arrival(struct KaffeineContext *ctx, ULONG port)
     if (flags != 0 && flags != 2)
         return FALSE;
     task = ctx->guest_exec_task;
+    if (ctx->sched)
+    {
+        ULONG owner = m68k_read32(ctx, port + 16);
+        if (!arena(ctx, ctx->m68k_sysbase, M68K_EXECBASE_THISTASK + 4) ||
+            !ctx->task_ops->known_task(ctx, m68k_read32(ctx,
+                ctx->m68k_sysbase + M68K_EXECBASE_THISTASK))) return FALSE;
+        if (flags == 2) return !owner || ctx->task_ops->known_task(ctx, owner);
+        bit = ctx->mem[port + 15];
+        if (bit > 31 || !ctx->task_ops->owns_signal(ctx, owner, 1UL << bit)) return FALSE;
+        for (i = 0; i < KAFFEINE_MAX_IO_PORTS; ++i)
+            if (ctx->io_ports[i].guest == port && ctx->io_ports[i].sigbit != (BYTE)bit)
+                return FALSE;
+        return TRUE;
+    }
     if (task && (!arena(ctx, ctx->m68k_sysbase, M68K_EXECBASE_THISTASK + 4) ||
         m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK) != task)) return FALSE;
     if (flags == 2 && m68k_read32(ctx, port + 16) &&
@@ -204,7 +219,13 @@ void Kaffeine_MessageAppend(struct KaffeineContext *ctx, const struct KaffeineQu
     m68k_write32(ctx, tail, msg);
     m68k_write32(ctx, list + 8, msg);
     if (ctx->mem[q->port + 14] == 0)
-        Signal(FindTask(NULL), 1UL << ctx->mem[q->port + 15]);
+    {
+        ULONG bits = 1UL << ctx->mem[q->port + 15];
+        if (ctx->sched)
+            ctx->task_ops->send_signal(ctx, m68k_read32(ctx, q->port + 16), bits);
+        else
+            Signal(FindTask(NULL), bits);
+    }
 }
 
 IPTR Kaffeine_GuestPutMsg(struct KaffeineContext *ctx, ULONG port, ULONG msg, ULONG d0)
@@ -216,6 +237,11 @@ IPTR Kaffeine_GuestPutMsg(struct KaffeineContext *ctx, ULONG port, ULONG msg, UL
         return Kaffeine_MessageFailure(ctx, "PutMsg");
     Kaffeine_MessageAppend(ctx, &q, msg, 5);
     return d0;
+}
+
+static IPTR retry_guest_wait(struct KaffeineContext *ctx, void *cpu)
+{
+    return Kaffeine_GuestGetMsg(ctx, Kaffeine_GetA(cpu, 0), TRUE);
 }
 
 IPTR Kaffeine_GuestGetMsg(struct KaffeineContext *ctx, ULONG port, BOOL wait)
@@ -262,7 +288,13 @@ IPTR Kaffeine_GuestGetMsg(struct KaffeineContext *ctx, ULONG port, BOOL wait)
     }
     if (!q.count)
     {
-        if (wait) return Kaffeine_MessageFailure(ctx, "empty WaitPort");
+        if (wait)
+        {
+            IPTR result;
+            if (ctx->sched && ctx->task_ops->block_guest_port(ctx, port, retry_guest_wait, &result))
+                return result;
+            return Kaffeine_MessageFailure(ctx, "empty WaitPort");
+        }
         for (i = 0; i < KAFFEINE_MAX_MESSAGE_PORTS; ++i)
             if (ctx->message_ports[i] == port) ctx->message_ports[i] = 0;
         return 0;

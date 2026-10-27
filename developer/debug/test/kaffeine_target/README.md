@@ -62,6 +62,9 @@ at the end.
 | `exec_console.c` | The no-window console.device adapter and RawKeyConvert boundary. |
 | `exec_diskfont.c` | OpenDiskFont and original monochrome font fixtures. |
 | `exec_messages.c` | FIFO messages, signals, replies and nonempty WaitPort. |
+| `exec_guest_tasks.c` | Parent/child task identity, Forbid/Permit, Wait inside Forbid, signals, self-removal and normal child return. |
+| `exec_guest_messages.c` | Child-owned CreateMsgPort, task-to-task PutMsg, blocking WaitPort inside Forbid, FIFO peek/removal, payload processing, ReplyMsg and port cleanup. |
+| `exec_guest_task_window.c` | A child-owned IDCMP window, native Intuition ticks waking a guest child inside Forbid, replies, window cleanup and task removal without user input. |
 | `exec_message_lifetime.c` | Manual ports drained by RemHead, RemTail, Remove and inline Node links, followed by FreeVec or FreeMem. Reacquires the freed bytes with AllocAbs before reusing them, then checks an unrelated message roundtrip, payload guards and the reused buffer. |
 | `exec_packets.c` | Read-only ACTION_READ packets and shared DOS file position. |
 | `gfx_planar_read.c` | Original 32 by 3 planar images at depths 1, 2 and 8. Manually initialized public RastPort/BitMap structures, all 288 in-range pixel values, Flags 0/BMF_STANDARD, and byte-for-byte preservation of both structures, planes and guards. |
