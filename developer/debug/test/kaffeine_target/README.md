@@ -84,7 +84,7 @@ at the end.
 | `gfx_framebuffer_palette_native.c` | Native AArch64 Raspberry driver probe: enumerates truecolor and LUT8 modes, verifies actual eight-bit bitmap storage, pre-renders an indexed screen behind Workbench, checks the physical RGBX pixels after showing it, and changes a live palette entry without rewriting the source indices. Requires kernel framebuffer attributes. |
 | `icon_objects.c` | Owned DiskObject acquisition/free, NULL free, 96 sequential allocation cycles, exact guest FindToolType result pointers, case-insensitive MatchToolValue and preservation of original strings/arrays. The optional `leave` argument is an AROS bridge teardown probe that leaves three objects for context cleanup. Scalar metadata observations may differ between native backends; no icon images are copied or tested. |
 
-The DrawInfo bridge exposes a classic version-2 snapshot with copied pen
+The DrawInfo bridge exposes a classic version-1 snapshot with copied pen
 values and a retained, typed TextFont. Nested gets share one identity until
 the last matching free. It holds the screen for that lifetime, including a
 native visitor lock for borrowed public screens. Native menu image objects

@@ -2546,7 +2546,7 @@ static void test_drawinfo_copy()
         assert(d && !f.stopped() && f.drawinfos() == 1 && dri_calls(DRI_GET, &n->dinfo, s) == 1);
         // no generic shadow record stands for the copy
         assert(f.ctx.num_shadows == shadows);
-        drawinfo_image(f, d, n->dinfo, 2, NUMDRIPENS, tf);
+        drawinfo_image(f, d, n->dinfo, 1, NUMDRIPENS, tf);
         // the font of the screen is held already and keeps its 68k TextFont
         assert(Kaffeine_FontNative(&f.ctx, tf) == &f.font && f.held_fonts() == 1);
         assert(native->count(FONT_OPEN) == opens);
@@ -2582,14 +2582,14 @@ static void test_drawinfo_copy()
             // a later get makes a fresh copy, left for the end of the program
             const ULONG again = f.get_dri(g);
             assert(again && f.drawinfos() == 1);
-            drawinfo_image(f, again, n->dinfo, 2, NUMDRIPENS, tf);
+            drawinfo_image(f, again, n->dinfo, 1, NUMDRIPENS, tf);
         }
     }
 }
 
 /* Each native DrawInfo of a screen has its own copy; a font of its own is
    held and gets its own pinned 68k TextFont; at most 64 pens; the version
-   at most 2; no pens and no font leave their pointers 0. */
+   at most 1; no pens and no font leave their pointers 0. */
 static void test_drawinfo_fields()
 {
     std::array<char, 16> other_name{};
@@ -2609,7 +2609,7 @@ static void test_drawinfo_fields()
     n->use_alt = true;
     const ULONG da = f.get_dri(g);
     assert(da && da != d && f.drawinfos() == 2);
-    drawinfo_image(f, da, n->alt, 2, NUMDRIPENS, tf);
+    drawinfo_image(f, da, n->alt, 1, NUMDRIPENS, tf);
     assert(f.free_dri(g, da) == 0 && dri_calls(DRI_FREE, &n->alt, s) == 1 && f.drawinfos() == 1);
     n->use_alt = false;
     assert(f.get_dri(g) == d && f.free_dri(g, d) == 0 && f.free_dri(g, d) == 0 && !f.drawinfos());
@@ -2622,7 +2622,7 @@ static void test_drawinfo_fields()
     assert(of && of != tf && Kaffeine_FontNative(&f.ctx, of) == &other && Kaffeine_FontFind(&f.ctx, &other) == of);
     assert(f.string(f.lng(of + LN_NAME)) == "other.font" && f.word(of + 20) == 9 && f.word(of + 24) == 7);
     assert(native->count(FONT_OPEN) == opens + 1 && f.held_fonts() == 2 && native->font_opens[&other] == 1);
-    drawinfo_image(f, c, n->dinfo, 2, 64, of);
+    drawinfo_image(f, c, n->dinfo, 1, 64, of);
     assert(f.free_dri(g, c) == 0 && !f.drawinfos());
     // the 68k TextFont stays pinned and the native font held until the end
     assert(Kaffeine_FontFind(&f.ctx, &other) == of && f.held_fonts() == 2);
@@ -2640,7 +2640,7 @@ static void test_drawinfo_fields()
     // pens without a count: only the ~0
     n->dinfo.dri_Version = 2; n->dinfo.dri_Pens = n->pens.data(); n->dinfo.dri_NumPens = 0;
     const ULONG none = f.get_dri(g); assert(none);
-    drawinfo_image(f, none, n->dinfo, 2, 0, 0);
+    drawinfo_image(f, none, n->dinfo, 1, 0, 0);
     assert(f.lng(none + 4) == none + DRI_SIZE && f.free_dri(g, none) == 0 && !f.drawinfos());
     native->font_result = &f.font;
 }
@@ -2810,7 +2810,7 @@ static void test_drawinfo_borrowed_lifetime()
     assert(wb.node.psn_VisitorCount == 1 && Kaffeine_ScreenNative(&f.ctx, g) == &wb.screen);
     assert(Kaffeine_ShadowNative(&f.ctx, g + RP, KAFFEINE_SHADOW_RASTPORT) == &wb.screen.RastPort);
     assert(Kaffeine_ShadowNative(&f.ctx, g + VP, KAFFEINE_SHADOW_VIEWPORT) == &wb.screen.ViewPort);
-    drawinfo_image(f, d, wb.dinfo, 2, NUMDRIPENS, f.lng(g + RP + RP_FONT));
+    drawinfo_image(f, d, wb.dinfo, 1, NUMDRIPENS, f.lng(g + RP + RP_FONT));
     // still a screen of the program: a nested get and a free
     assert(f.get_dri(g) == d && f.free_dri(g, d) == 0 && f.drawinfos() == 1 && wb.node.psn_VisitorCount == 1);
     const size_t mark = native->calls.size();
@@ -2864,7 +2864,7 @@ static void test_drawinfo_owned_lifetime()
     assert(Kaffeine_ScreenNative(&f.ctx, g) == s && f.owned() == 1);
     assert(f.free_dri(g, d) == 0);
     assert(f.close(g) == 0 && native->count(CLOSE) == closes);
-    drawinfo_image(f, d, n->dinfo, 2, NUMDRIPENS, f.lng(g + RP + RP_FONT));
+    drawinfo_image(f, d, n->dinfo, 1, NUMDRIPENS, f.lng(g + RP + RP_FONT));
     assert(f.free_dri(g, d) == 0 && !f.drawinfos() && Kaffeine_ScreenNative(&f.ctx, g) == s);
     assert(f.close(g) == 1 && native->count(CLOSE) == closes + 1);
     f.absent(g, s);
@@ -2970,7 +2970,7 @@ int main()
         { "Full tables refuse before Intuition; missing memory or font closes Intuition's screen again", test_open_bridge_failures },
         { "Teardown releases locks, then closes window-free opened screens, then fonts", test_teardown },
         { "GetScreenDrawInfo: a complete classic BE copy with the screen's 68k TextFont, nested gets, last-free retirement", test_drawinfo_copy },
-        { "One copy per native DrawInfo; own fonts held and pinned; 64 pens and ~0; version 2 at most; NULL pens and font", test_drawinfo_fields },
+        { "One copy per native DrawInfo; own fonts held and pinned; 64 pens and ~0; version 1 at most; NULL pens and font", test_drawinfo_fields },
         { "Invalid screens and invalid, foreign, stale or mismatched frees stop the program before Intuition", test_drawinfo_refusals },
         { "Native, memory, font and table failures and the 32767-get guard give Intuition's get back and keep nothing", test_drawinfo_failures },
         { "A copy keeps a locked screen after its locks, windows and VisualInfos; unholdable screens get none", test_drawinfo_borrowed_lifetime },

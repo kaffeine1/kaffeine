@@ -59,7 +59,7 @@
     GetScreenDrawInfo() of a 68k Screen of the program gives a 68k copy of
     the DrawInfo that Intuition keeps in the screen, one for each native
     DrawInfo, which nested gets hand out again and the last free retires.
-    The copy is the classic DrawInfo of 50 bytes, dri_Version at most 2,
+    The copy is the classic DrawInfo of 50 bytes, dri_Version at most 1,
     in a mirror that guest FreeMem() cannot take, with its own big-endian
     pens (at most 64, then ~0) and the 68k TextFont of dri_Font, whose
     native font the bridge holds as that of a screen. Intuition has no 68k
@@ -114,11 +114,13 @@ enum
     G_LN_SUCC = 0, G_LN_PRED = 4, G_LN_TYPE = 8, G_LN_PRI = 9, G_LN_NAME = 10,
     G_PSN_SCREEN = 14, G_PSN_FLAGS = 18, G_PSN_SIZE = 20, G_PSN_VISITORCOUNT = 22,
     G_PSN_SIGTASK = 24, G_PSN_SIGBIT = 28, G_PSN_SIZEOF = 30,
-    /* the classic DrawInfo, dri_Version 2, with five reserved longwords */
+    /* the classic DrawInfo storage; version 1 without native menu Images */
     G_DRI_VERSION = 0, G_DRI_NUMPENS = 2, G_DRI_PENS = 4, G_DRI_FONT = 8, G_DRI_DEPTH = 12,
     G_DRI_RESOLUTION_X = 14, G_DRI_RESOLUTION_Y = 16, G_DRI_FLAGS = 18,
     G_DRI_CHECKMARK = 22, G_DRI_AMIGAKEY = 26, G_DRI_RESERVED = 30, G_DRAWINFO_SIZE = 50,
-    G_DRI_CLASSIC_VERSION = 2
+    /* Version 2 promises menu Images; expose version 1 until those have
+       classic counterparts, so callers can take their older image path. */
+    G_DRI_CLASSIC_VERSION = 1
 };
 
 /* Intuition counts the locks of a screen in a WORD; a program alone does
