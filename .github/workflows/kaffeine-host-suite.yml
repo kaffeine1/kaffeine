@@ -7,6 +7,7 @@ name: kaffeine host suite
 # request a new push stops the run of the old one; on master a run that
 # has started goes to its end.
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - '.github/workflows/kaffeine-host-suite.yml'
