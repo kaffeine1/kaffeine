@@ -80,7 +80,7 @@ ICON_OBJS := $(MESSAGE_OBJS) $(BUILD_DIR)/icon_boundary_icon.o
 TESTS = test_kaffeine test_moira_exec test_hello_thunks test_dispatch test_hunk_loading
 TESTS += test_exec_lists
 TESTS += test_dos_thunks test_exec_messages test_dos_packets
-TESTS += test_icon test_display
+TESTS += test_icon test_display test_fbgfx_refresh
 TESTS += test_memheader test_memheader_moira
 TESTS += test_utility_thunks test_locale_thunks test_mathieee_thunks
 TESTS += test_mathffp_thunks
@@ -437,3 +437,6 @@ $(BUILD_DIR)/display_boundary_display.o: $(KAFFEINE_DIR)/kaffeine_display.c | $(
 $(BUILD_DIR)/test_display: $(TEST_DIR)/test_display.cpp $(DISPLAY_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(DISPLAY_OBJS) $(LDLIBS)
 -include $(BUILD_DIR)/display_boundary_display.d
+
+$(BUILD_DIR)/test_fbgfx_refresh: CPPFLAGS += -I$(TEST_DIR)/../../../../arch/aarch64-raspi/hidd/fbgfx
+$(BUILD_DIR)/test_fbgfx_refresh: $(TEST_DIR)/../../../../arch/aarch64-raspi/hidd/fbgfx/fbgfx_refresh.h

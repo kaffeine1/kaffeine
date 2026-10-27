@@ -101,3 +101,7 @@ check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
 .PHONY: all clean check-runner
+
+# Native AArch64 framebuffer check: never build this with M68K_CC.
+$(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)
+	$(NATIVE_CC) -O2 -Wall -Werror -o $@ $<
