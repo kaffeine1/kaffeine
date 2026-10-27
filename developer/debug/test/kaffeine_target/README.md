@@ -51,9 +51,11 @@ at the end.
 | `c_stdio.c` | A libnix C program with stdio: `argv`, `printf()` and `sprintf()` formats, including floating point through the `printf()` of libnix's `libm.a`, the `malloc()` family, `strdup()`, `qsort()`, `strtol()`, and `stderr`, which libnix takes from `pr_CES` of the process: the error stream that the runner redirects with `*>` must reach it. Built as `c_stdio`, and as `c_stdio_vec` with its own `malloc()` family on `AllocVec()`. |
 | `libgcc_ieee.c` | `__fixdfsi()` and `__floatsidf()` on mathieeedoubbas.library, which the floating point `printf()` of libnix needs and the empty libgcc of the toolchain lacks. Linked into `c_stdio` and `c_stdio_vec`. |
 | `c_compute.c` | Compiled C code with few library calls: libnix `argv`, `qsort()`, `strtol()`, string functions, a CRC32, 32 and 64-bit integer arithmetic. Built for the 68000 (`c_compute`, which also checks the FPU flags and the IEEE math libraries) and for the 68020 with 68881 instructions (`c_compute_fpu`, with double precision arithmetic). |
-| `bzip2_amiga.c` | What bzip2 1.0.8 needs beyond libnix to run as a target program: `fchmod()` and `fchown()`, which succeed without doing anything, and `__floatsisf()` and `__floatunsidf()` for its statistics on the IEEE libraries, which the empty libgcc of the toolchain lacks. |
+| `bzip2_amiga.c` | What bzip2 1.0.8 needs beyond libnix to run as a target program: `fchmod()` and `fchown()`, which succeed without doing anything. |
+| `libgcc_ieee_ports.c` | `__floatsisf()` and `__fixsfsi()` on mathieeesingbas.library and `__floatunsidf()` on mathieeedoubbas.library, the conversions that bzip2 1.0.8 and the IJG JPEG library 9f call and the empty libgcc of the toolchain lacks. Linked into `bzip2`, `cjpeg`, `djpeg` and `jpegtran`. |
+| `jpeg_jconfig.h` | The `jconfig.h` of the IJG JPEG library 9f for m68k-amigaos-gcc with libnix, after the `jconfig.sas` of its distribution: Unix command line with standard input and output, everything in memory with `jmemnobs.c`. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, and bzip2 1.0.8 when `BZIP2_SRC` names its source. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, and `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -88,6 +90,13 @@ and output locations. The default output directory is this test directory's
 Set `BZIP2_SRC` to an unpacked bzip2 1.0.8 source tree to include its test
 executable. Its sample input and reference output files are supplied by
 that source distribution.
+
+Set `JPEG_SRC` to an unpacked IJG JPEG library 9f source tree, such as the
+one that the AROS build fetches for its Ports, to include `cjpeg`, `djpeg`
+and `jpegtran`. The Makefile copies the sources to `build/jpeg-src` with
+`jpeg_jconfig.h` as their `jconfig.h`, because the `jconfig.h` of the tree
+belongs to the AROS host and a quoted `#include` finds it first. The test
+images and reference files are supplied by that source distribution.
 
 ## Running on AROS AArch64
 
@@ -136,6 +145,28 @@ The bitmap font is generated from original fixture data by the Makefile.
 The packet fixture is an original 12-byte file. Requests of 5, 9 and 4 bytes
 return 5, 7 and 0; ordinary Read and Seek share the position. No AmigaOS ROM,
 application or proprietary font is supplied with these tests.
+
+## The IJG JPEG self-test
+
+The seven steps of the library's own `make test` run as seven programs,
+each a filter from standard input to standard output, and pass only if the
+output is byte for byte the reference file of the distribution:
+
+| Program | Executable and arguments | `--input` | `--expect` |
+| --- | --- | --- | --- |
+| `jpeg_d_ppm` | `djpeg -dct int -ppm` | `testorig.jpg` | `testimg.ppm` |
+| `jpeg_d_gif` | `djpeg -dct int -gif` | `testorig.jpg` | `testimg.gif` |
+| `jpeg_d_bmp` | `djpeg -dct int -bmp -colors 256` | `testorig.jpg` | `testimg.bmp` |
+| `jpeg_c_int` | `cjpeg -dct int` | `testimg.ppm` | `testimg.jpg` |
+| `jpeg_d_prog` | `djpeg -dct int -ppm` | `testprog.jpg` | `testimg.ppm` |
+| `jpeg_c_prog` | `cjpeg -dct int -progressive -opt` | `testimg.ppm` | `testimgp.jpg` |
+| `jpeg_tran` | `jpegtran` | `testprog.jpg` | `testorig.jpg` |
+
+For example, with `J` the jpeg-9f directory, the first step is
+`--args jpeg_d_ppm "-dct int -ppm" --input jpeg_d_ppm $J/testorig.jpg
+--expect jpeg_d_ppm $J/testimg.ppm jpeg_d_ppm=build/djpeg`. The same seven
+filters give the reference files when they are built for the host from the
+same sources and `jpeg_jconfig.h`.
 
 ## Expected containment and exit probes
 
