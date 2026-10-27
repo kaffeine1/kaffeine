@@ -78,6 +78,8 @@ def module_name(library):
 
 
 CASES = (
+    ("graphics", "getdisplayinfodata.c", "GetDisplayInfoData", "thunk_gfx_GetDisplayInfoData"),
+    ("graphics", "finddisplayinfo.c", "FindDisplayInfo", "thunk_gfx_FindDisplayInfo"),
     ("icon", "getdiskobject.c", "GetDiskObject", "kaffeine_icon_GetDiskObject"),
     ("icon", "freediskobject.c", "FreeDiskObject", "kaffeine_icon_FreeDiskObject"),
     ("icon", "findtooltype.c", "FindToolType", "kaffeine_icon_FindToolType"),
@@ -381,6 +383,10 @@ CASES = (
 # Explicit table of manual handlers that intentionally ignore one or more
 # fd arguments, with the exact ignored register set and the reason.
 ALLOWED_IGNORED_REGS = {
+    "thunk_gfx_FindDisplayInfo": (
+        frozenset({"D0"}),
+        "FindDisplayInfo() stops20 until native display handles have guest identities",
+    ),
     "kaffeine_dos_LockRecords": (
         frozenset({"D1", "D2"}),
         "LockRecords() stops with rc20; native-width record arrays are unsupported",

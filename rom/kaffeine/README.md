@@ -856,3 +856,17 @@ The Moira CPU core is licensed under the
 [MIT License](https://opensource.org/licenses/MIT).
 See the [core license at the pinned Moira revision](https://github.com/dirkwhoffmann/Moira/blob/1efd69467ca13b27b2fb40febd5cb31dbecdea5f/Moira/LICENSE)
 and the [project licensing notes](../../docs/kaffeine/LICENSING.md) for details.
+
+### Display metadata queries
+
+`GetDisplayInfoData` accepts a NULL handle and a mode ID for `DTAG_DISP`,
+`DTAG_DIMS` and `DTAG_NAME`. It queries a complete native temporary and writes
+only classic big-endian fields into the validated guest destination. Native
+padding and reserved pointer fields are not exported. Classic transfer counts
+are at most 48, 66 and 48 bytes; partial dimension queries copy complete
+rectangles after their 26-byte prefix, leaving all other bytes untouched.
+
+`FindDisplayInfo`, non-NULL query handles, monitor/vector chunks and unknown
+tags stop with return code 20 until their opaque or pointer-rich data has a
+bridge. `NextDisplayInfo` remains a scalar mode-ID query. This subset does not
+claim display-handle or monitor-structure support.

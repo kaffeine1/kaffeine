@@ -80,7 +80,7 @@ ICON_OBJS := $(MESSAGE_OBJS) $(BUILD_DIR)/icon_boundary_icon.o
 TESTS = test_kaffeine test_moira_exec test_hello_thunks test_dispatch test_hunk_loading
 TESTS += test_exec_lists
 TESTS += test_dos_thunks test_exec_messages test_dos_packets
-TESTS += test_icon
+TESTS += test_icon test_display
 TESTS += test_memheader test_memheader_moira
 TESTS += test_utility_thunks test_locale_thunks test_mathieee_thunks
 TESTS += test_mathffp_thunks
@@ -430,3 +430,10 @@ $(BUILD_DIR)/icon_boundary_icon.o: $(KAFFEINE_DIR)/kaffeine_icon.c | $(BUILD_DIR
 $(BUILD_DIR)/test_icon: $(TEST_DIR)/test_icon.cpp $(ICON_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(ICON_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(ICON_OBJS) $(LDLIBS)
 -include $(BUILD_DIR)/icon_boundary_icon.d
+
+DISPLAY_OBJS := $(MESSAGE_OBJS) $(BUILD_DIR)/display_boundary_display.o
+$(BUILD_DIR)/display_boundary_display.o: $(KAFFEINE_DIR)/kaffeine_display.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
+$(BUILD_DIR)/test_display: $(TEST_DIR)/test_display.cpp $(DISPLAY_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(DISPLAY_OBJS) $(LDLIBS)
+-include $(BUILD_DIR)/display_boundary_display.d

@@ -2,11 +2,13 @@
 #include <exec/types.h>
 #include <graphics/rastport.h>
 #include <graphics/text.h>
+#include <graphics/displayinfo.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+ULONG GetDisplayInfoData(DisplayInfoHandle handle, UBYTE *buf, ULONG size, ULONG tag, ULONG id);
 struct TextFont *OpenFont(const struct TextAttr *textAttr);
 void CloseFont(struct TextFont *textFont);
 void SetFont(struct RastPort *rp, struct TextFont *textFont);
