@@ -2772,11 +2772,15 @@ m68k: SetAPen(rp, 2); rp->cp_x = 10; Draw(rp, 50, 10)
   NULL and all-one plane pointers are unsupported. Signed WORD coordinates
   must lie within BytesPerRow * 8 by Rows. The read combines MSB-first plane
   bits into a pen without changing guest memory or calling native graphics.
-  Unsupported inputs stop with rc 20. InitRastPort, InitBitMap and other
-  guest-built drawing operations require separate adapters.
-- `Layer`, `BitMap`, `AreaPtrn`, `TmpRas`, `AreaInfo`, `GelsInfo` and
-  `RP_User` are native pointers: they stay as the program left them, 0 in a
-  new RastPort, and never reach native code.
+  Unsupported inputs stop with rc 20. InitBitMap has the separate metadata
+  adapter described below; InitRastPort and other guest-built drawing
+  operations still require their own adapters.
+- The layer bridge publishes typed guest Layer identities. Screen RastPorts,
+  and window RastPorts whose native bitmap matches a live owned screen,
+  expose that screen's typed BitMap handle; native planes remain opaque.
+  Drawing preserves these handles and guest edits. `AreaPtrn`, `TmpRas`,
+  `AreaInfo`, `GelsInfo` and `RP_User` stay as the program left them, zero in
+  a new RastPort, and never reach native code.
 - Fonts have a 52-byte guest TextFont, name and read-only monochrome glyph
   snapshot in one owned allocation, with one identity per native font in
   the 32-entry `ctx->fonts` table. CharData contains the complete YSize *
@@ -2996,8 +3000,16 @@ Screen of.
     pixels and return values in both transfer directions. `GetBitMapAttr()`
     (-960) reads scalar attributes through the same typed identities, preserving
     ordinary planar flags and querying actual native screen metadata. Unknown
-    attributes return zero. The nine other graphics
-    vectors that consume, allocate or initialize BitMaps are explicitly refused
+    attributes return zero. `InitBitMap()` (-390) initializes only the eight
+    classic metadata bytes, using the native BYTE/UWORD argument widths and
+    AROS's standard planar flag. All eight caller plane pointers remain
+    unchanged. A complete, word-aligned 40-byte descriptor may live in static,
+    heap or stack storage; zero and extreme initializer values are permitted,
+    while later drawing validates them separately. Screen bitmap handles and
+    private common bitmaps still retained by a LayerInfo, including its internal
+    root or a constructor backfill, stop with code 20 before any write. This
+    path neither allocates planes nor calls native graphics. The eight other
+    graphics bitmap-related vectors are explicitly refused
     until their conversion is implemented; no generated fallback receives these
     classic bitmap objects or screen handles. The five cybergraphics bitmap
     query/lock/transfer vectors have the same explicit refusal boundary.

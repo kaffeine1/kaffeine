@@ -23,7 +23,10 @@
     (-30 of graphics) between the common BitMaps of such LayerInfos, the
     BitMaps of screens that the program opened and its ordinary planar
     BitMaps reaches a reference planar blit and WaitBlit(); the screens are
-    set up in the table of screens as the screen bridge leaves them. Every
+    set up in the table of screens as the screen bridge leaves them.
+    InitBitMap() (-390 of graphics) writes the classic scalars of ordinary
+    68k BitMaps as graphics' initbitmap.c does, with no native call, and
+    stops before any write for screen BitMaps and kept common ones. Every
     generated thunk is poisoned.
 */
 
@@ -2605,6 +2608,50 @@ static void test_bitmap_attributes()
     assert(query(bm, BMA_WIDTH) == 32 && f.ctx.running);
 }
 
+/* What graphics' InitBitMap() leaves in the first 8 bytes of a classic
+   BitMap (graphics/gfx.h), big endian: BytesPerRow, Rows, Flags
+   BMF_STANDARD, Depth, pad 0 */
+static std::vector<UBYTE> classic_head(UWORD bpr, UWORD rows, UBYTE depth)
+{
+    return { (UBYTE)(bpr >> 8), (UBYTE)bpr, (UBYTE)(rows >> 8), (UBYTE)rows, BMF_STANDARD, depth, 0, 0 };
+}
+
+/* InitBitMap() (-390) through its literal LVO gives D0 0 and changes the
+   8 bytes at bm to classic_head(bpr, rows, depth) and nothing else of
+   guest memory: not the planes, not a byte around. Nothing native runs,
+   no BitMap is set up natively, no blit, no guest memory and no shadow. */
+static bool init_writes(Fixture &f, ULONG bm, ULONG d0, ULONG d1, ULONG d2,
+                        UWORD bpr, UWORD rows, UBYTE depth)
+{
+    m68k_write32(&f.ctx, Fixture::stack, 0x76543210);
+    std::vector<UBYTE> expected = f.memory;
+    const std::vector<UBYTE> head = classic_head(bpr, rows, depth);
+    std::copy(head.begin(), head.end(), expected.begin() + bm);
+    const unsigned inits = init_bitmaps, attrs = bitmap_attrs, waits = wait_blits;
+    const size_t n = blits.size(), e = events.size(), c = creates.size(), d = deletes;
+    const UWORD shadows = f.ctx.num_shadows;
+    const ULONG avail = f.avail();
+    return f.call(Fixture::graphics_base, 390, { bm }, { d0, d1, d2 }) == 0 && f.ctx.running &&
+           f.memory == expected && init_bitmaps == inits && bitmap_attrs == attrs &&
+           wait_blits == waits && blits.size() == n && events.size() == e && creates.size() == c &&
+           deletes == d && f.ctx.num_shadows == shadows && f.avail() == avail;
+}
+
+/* InitBitMap() stops the program (20) with no byte of guest memory
+   changed and nothing native */
+static bool init_refused(Fixture &f, ULONG bm, ULONG d0 = 3, ULONG d1 = 320, ULONG d2 = 200)
+{
+    m68k_write32(&f.ctx, Fixture::stack, 0x76543210);
+    const std::vector<UBYTE> before = f.memory;
+    const unsigned inits = init_bitmaps, attrs = bitmap_attrs, waits = wait_blits;
+    const size_t n = blits.size(), e = events.size(), c = creates.size(), d = deletes;
+    const UWORD shadows = f.ctx.num_shadows;
+    return f.call(Fixture::graphics_base, 390, { bm }, { d0, d1, d2 }) == 20 && f.stopped() &&
+           f.memory == before && init_bitmaps == inits && bitmap_attrs == attrs &&
+           wait_blits == waits && blits.size() == n && events.size() == e && creates.size() == c &&
+           deletes == d && f.ctx.num_shadows == shadows;
+}
+
 static void test_bitmap_vector_guards()
 {
     Fixture f;
@@ -2612,7 +2659,7 @@ static void test_bitmap_vector_guards()
     const auto heap = f.heap();
     const auto before = events;
     const unsigned made = init_bitmaps, attrs = bitmap_attrs;
-    for (ULONG lvo : { 390u, 606u, 636u, 678u, 918u, 924u, 942u, 1020u, 1206u })
+    for (ULONG lvo : { 606u, 636u, 678u, 918u, 924u, 942u, 1020u, 1206u })
     {
         assert(f.call(Fixture::graphics_base, lvo, { bm, bm, bm, bm }, { 1, 2, 3, 4, 5, 6, 7, 8 }) == 20);
         assert(f.stopped() && f.heap_is(heap) && events == before);
@@ -2624,6 +2671,242 @@ static void test_bitmap_vector_guards()
         assert(f.stopped() && f.heap_is(heap) && events == before);
         assert(init_bitmaps == made && bitmap_attrs == attrs && blits.empty() && !wait_blits);
     }
+    /* InitBitMap() is converted, not refused: the same ordinary BitMap
+       gets graphics' scalars of depth 1, width 2 and height 3 */
+    assert(init_writes(f, bm, 1, 2, 3, 2, 3, 1));
+    assert(init_bitmaps == made && events == before && blits.empty());
+}
+
+/* InitBitMap() (-390) as graphics' initbitmap.c: A0 bm, D0 a BYTE depth,
+   D1 and D2 UWORD width and height, from the low halves alone; Depth,
+   Rows, Flags BMF_STANDARD, pad 0 and BytesPerRow ((width + 15) >> 3) & ~1
+   big endian, and no Plane pointer or other byte changes. Any scalars,
+   zero ones and the full narrowed range included, on a BitMap whose
+   other bytes are anything, in static, heap and stack storage and at the
+   very end of guest memory. Later calls check what it wrote. */
+static void test_init_bitmap_scalars()
+{
+    Fixture f;
+    struct Case { ULONG d0, d1, d2; UWORD bpr, rows; UBYTE depth; };
+    const Case cases[] = {
+        { 3, 320, 200, 40, 200, 3 },
+        { 0xABCDEF08u, 0x12340011u, 0xFFFF0007u, 4, 7, 8 },
+        { 0, 0, 0, 0, 0, 0 },
+        { 0xFFFFFFFFu, 1, 1, 2, 1, 0xFF },
+        { 0x80u, 0xFFFFu, 0xFFFFu, 0x2000, 0xFFFF, 0x80 },
+        { 0x7Fu, 0xFFF0u, 0x8000u, 0x1FFE, 0x8000, 0x7F },
+        { 1, 15, 2, 2, 2, 1 },
+        { 1, 16, 2, 2, 2, 1 },
+        { 1, 17, 2, 4, 2, 1 },
+        { 0x00000108u, 0x00010000u, 0x00010000u, 0, 0, 8 },
+    };
+    /* static storage below the libraries, the heap, a frame below the
+       stack pointer, and the last 40 bytes of guest memory */
+    const ULONG in_heap = f.bitmap(4, 8, 2);
+    const ULONG storage[] = { 0x0600, in_heap, Fixture::stack - 0x30,
+                              f.ctx.mem_size - M68K_SIZEOF_BITMAP };
+    UBYTE fill = 0x31;
+    for (ULONG bm : storage)
+        for (const Case &c : cases)
+        {
+            /* arbitrary bytes, planes neither NULL nor aligned nor inside
+               guest memory among them, and the same around the BitMap but
+               for the heap's own chunk headers; init_writes() compares
+               every byte of guest memory all the same */
+            const ULONG margin = bm == in_heap ? 0 : 16;
+            for (ULONG i = bm - margin; i < bm + M68K_SIZEOF_BITMAP + margin && i < f.ctx.mem_size; ++i)
+                f.memory[i] = (UBYTE)(fill + 7 * i);
+            m68k_write32(&f.ctx, bm + M68K_BM_PLANES, 0xFFFFFFFFu);
+            m68k_write32(&f.ctx, bm + M68K_BM_PLANES + 4, 0x00000001u);
+            fill = (UBYTE)(fill + 0x0B);
+            assert(init_writes(f, bm, c.d0, c.d1, c.d2, c.bpr, c.rows, c.depth));
+            assert(f.L(bm + M68K_BM_PLANES) == 0xFFFFFFFFu && f.L(bm + M68K_BM_PLANES + 4) == 1);
+        }
+    assert(init_bitmaps == 0 && events.empty() && blits.empty() && creates.empty() && !bitmap_attrs);
+
+    /* over real planes: later calls see the new scalars and the planes
+       that the program set up, and check them themselves */
+    std::vector<ULONG> planes;
+    const ULONG bm = f.bitmap(4, 8, 2, &planes);
+    assert(init_writes(f, bm, 2, 64, 4, 8, 4, 2));
+    assert(f.L(bm + M68K_BM_PLANES) == planes[0] && f.L(bm + M68K_BM_PLANES + 4) == planes[1]);
+    assert(f.call(Fixture::graphics_base, 960, { bm }, { 0, BMA_WIDTH }) == 64 && f.ctx.running);
+    assert(f.call(Fixture::graphics_base, 960, { bm }, { 0, BMA_HEIGHT }) == 4);
+    assert(f.call(Fixture::graphics_base, 960, { bm }, { 0, BMA_FLAGS }) == BMF_STANDARD);
+    assert(f.call(Fixture::graphics_base, 30, { bm, bm, 0 }, { 0, 0, 8, 0, 8, 4, 0xC0, 0xFF }) == 2);
+    assert(f.ctx.running && blits.size() == 1 && blits[0].src_copy.BytesPerRow == 8 &&
+           blits[0].src_copy.Rows == 4 && blits[0].src_copy.Planes[1] == f.memory.data() + planes[1]);
+    /* a depth of 0 is written as such, and refused by the next consumer */
+    assert(init_writes(f, bm, 0, 64, 4, 8, 4, 0));
+    assert(f.call(Fixture::graphics_base, 960, { bm }, { 0, BMA_DEPTH }) == 20 && f.stopped());
+}
+
+/* Before any write: NULL, odd, incomplete, outside or wrapping addresses
+   and a context without guest memory; the BitMap of a screen of the
+   program, owned or borrowed, by the table of screens alone. A copy of a
+   handle's bytes elsewhere is an ordinary BitMap, and a handle that the
+   table no longer names is one too. */
+static void test_init_bitmap_refusals()
+{
+    Fixture f;
+    const ULONG size = f.ctx.mem_size;
+
+    for (ULONG bad : { 0u, 1u, 0x0601u, size - M68K_SIZEOF_BITMAP + 1, size - M68K_SIZEOF_BITMAP + 2,
+                       size - 2, size, size + 0x100, 0x80000000u, 0xFFFFFFD8u, 0xFFFFFFFEu })
+        assert(init_refused(f, bad));
+    assert(init_writes(f, size - M68K_SIZEOF_BITMAP, 1, 8, 1, 2, 1, 1));
+
+    /* no guest memory at all: nothing is read or written */
+    f.state.a[0] = 0x0600;
+    f.state.d[0] = 1;
+    f.state.d[1] = 16;
+    f.state.d[2] = 16;
+    f.ctx.running = TRUE;
+    f.ctx.exit_code = 0;
+    UBYTE *const mem = f.ctx.mem;
+    const std::vector<UBYTE> before = f.memory;
+    f.ctx.mem = nullptr;
+    assert(Kaffeine_InitBitMap(&f.ctx, &f.cpu) == 20 && !f.ctx.running && f.ctx.exit_code == 20);
+    f.ctx.mem = mem;
+    assert(f.memory == before);
+
+    NativeScreenBitMap mine, theirs;
+    const ULONG sg = f.open_screen(mine, 6, 12, 3, 40);
+    const ULONG pg = f.open_screen(theirs, 6, 12, 3, 40, false);
+    const ULONG handle = sg + M68K_SCR_BITMAP, borrowed = pg + M68K_SCR_BITMAP;
+    const BitMap native = mine.bm;
+    assert(init_refused(f, handle) && init_refused(f, borrowed));
+    assert(init_refused(f, handle, 0, 0, 0) && init_refused(f, borrowed, 8, 0xFFFF, 0xFFFF));
+    assert(std::memcmp(&mine.bm, &native, sizeof(native)) == 0 && init_bitmaps == 0);
+    /* the handle's bytes describe nothing: a copy is the program's own */
+    const ULONG copy = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_BITMAP, MEMF_CLEAR);
+    assert(copy);
+    std::copy(f.memory.begin() + handle, f.memory.begin() + handle + M68K_SIZEOF_BITMAP,
+              f.memory.begin() + copy);
+    assert(init_writes(f, copy, 3, 48, 12, 6, 12, 3));
+
+    /* a screen that the table still lists as the program's, but whose
+       shadow has gone, is no ordinary BitMap either */
+    int slot = 0;
+    while (f.ctx.pubscreens[slot].guest != sg)
+        ++slot;
+    Kaffeine_ShadowForget(&f.ctx, sg, KAFFEINE_SHADOW_SCREEN);
+    assert(init_refused(f, handle));
+    /* stale: the table names it no longer. Its 68k Screen is kept as guest
+       memory here, so that the write lands in storage of the program. */
+    f.ctx.layer_ops->screen_closing(&f.ctx, &mine.screen);
+    f.ctx.pubscreens[slot] = {};
+    mine.open = false;
+    screen_bitmaps.erase(std::find(screen_bitmaps.begin(), screen_bitmaps.end(), &mine));
+    assert(init_writes(f, handle, 2, 48, 12, 6, 12, 2));
+    std::memset(f.memory.data() + sg, 0, M68K_SIZEOF_SCREEN);
+    Kaffeine_MirrorRelease(&f.ctx, sg);
+    /* the borrowed one stays refused until it goes */
+    assert(init_refused(f, borrowed));
+    f.close_screen(theirs, pg);
+}
+
+/* A common BitMap is the LayerInfo's from its first native creation that
+   leaves a root or a list until DisposeLayerInfo() has returned: its 68k
+   BitMap is refused all that time, also with only the internal root left
+   or after a partial creation, and is the program's ordinary BitMap
+   before and after, and without the bridge. Other ordinary BitMaps are
+   initialized throughout. */
+static void test_init_bitmap_common_lifetime()
+{
+    Fixture f;
+    std::vector<ULONG> planes;
+    const ULONG li = f.new_info(), bm = f.bitmap(4, 8, 1, &planes), other = f.bitmap(4, 8, 1);
+
+    /* a LayerInfo without a common BitMap yet holds nothing */
+    assert(init_writes(f, bm, 1, 32, 8, 4, 8, 1));
+    const ULONG l = f.create(li, bm, 0, 0, 31, 7, LAYERSIMPLE);
+    assert(l && f.ctx.running);
+    BitMap *const common = creates.back().bm;
+    const BitMap kept = *common;
+    assert(init_refused(f, bm) && init_refused(f, bm, 1, 32, 8));
+    assert(init_writes(f, other, 1, 16, 4, 2, 4, 1));
+    /* the common BitMap is still the one graphics gets */
+    assert(f.call(Fixture::graphics_base, 30, { bm, bm, 0 }, { 0, 0, 8, 0, 8, 8, 0xC0, 0x01 }) == 1);
+    assert(f.ctx.running && blits.back().src == common && blits.back().src_origin == ORIGIN_COMMON);
+
+    /* only the internal root is left, which still reads it */
+    assert(f.destroy(l) == TRUE && f.ctx.running && native_layers.empty());
+    assert(native_infos[0]->check_lp && native_infos[0]->top_layer == native_infos[0]->check_lp);
+    assert(f.L(li + M68K_LI_TOP_LAYER) == 0);
+    assert(init_refused(f, bm) && std::memcmp(common, &kept, sizeof(kept)) == 0);
+    root_read(native_infos[0]->check_lp);
+
+    /* disposed of: the 68k BitMap is the program's again */
+    assert(f.call(Fixture::layers_base, 150, { li }) == 0 && f.ctx.running && disposed_infos == 1);
+    assert(init_writes(f, bm, 1, 64, 4, 8, 4, 1));
+    assert(f.L(bm + M68K_BM_PLANES) == planes[0]);
+
+    /* a first creation that fails after making the root keeps the BitMap;
+       one that leaves neither root nor list fixes none */
+    const ULONG li2 = f.new_info(), bm2 = f.bitmap(4, 8, 1);
+    const ULONG li3 = f.new_info(), bm3 = f.bitmap(4, 8, 1);
+    create_mode = CREATE_FAILS_EARLY;
+    assert(f.create(li2, bm2, 0, 0, 31, 7, LAYERSIMPLE) == 0 && f.ctx.running);
+    create_mode = CREATE_ROOT_FAILS;
+    assert(f.create(li3, bm3, 0, 0, 31, 7, LAYERSIMPLE) == 0 && f.ctx.running);
+    create_mode = CREATE_OK;
+    assert(native_infos[0]->check_lp && !native_infos[1]->check_lp);
+    assert(init_refused(f, bm2));
+    assert(init_writes(f, bm3, 1, 32, 8, 4, 8, 1));
+
+    /* without the bridge, after every LayerInfo went with its root */
+    Kaffeine_LayersCleanup(&f.ctx);
+    assert(!f.ctx.layers && native_infos.empty() && roots.empty());
+    assert(init_writes(f, bm2, 2, 33, 9, 6, 9, 2));
+}
+
+/* A 68k backfill hook that runs while CreateUpfrontHookLayer() makes the
+   first layer of a LayerInfo, so after the bridge bound the layer and its
+   common BitMap but before the constructor returned, cannot initialize
+   that BitMap: the nested call stops the program with the descriptor
+   unchanged, no native InitBitMap() beyond the bridge's own, and the
+   layer goes again; the root keeps the BitMap. Another ordinary BitMap is
+   initialized from the same hook. */
+static void test_init_bitmap_from_constructor_hook()
+{
+    Fixture f;
+    const ULONG li = f.new_info(), bm = f.bitmap(4, 8, 1), h = f.hook();
+    const ULONG li2 = f.new_info(), bm2 = f.bitmap(4, 8, 1), plain = f.bitmap(2, 4, 1);
+    const std::vector<UBYTE> desc(f.memory.begin() + bm, f.memory.begin() + bm + M68K_SIZEOF_BITMAP);
+
+    action = GUEST_LVO;
+    layers_lib_base = Fixture::graphics_base;
+    guest_lvo = 390;
+    guest_lvo_a = { bm };
+    guest_lvo_d = { 2, 64, 4 };
+    assert(f.call_on(f.cpu, Fixture::layers_base, 186, { li, bm, 0, h }, { 0, 0, 31, 7, LAYERSIMPLE }, false) == 20);
+    assert(!f.ctx.running && f.ctx.exit_code == 20 && f.ctx.callback_depth == 0);
+    assert(hook_calls.size() == 1 && hook_calls[0].nested == 20 && hook_calls[0].a0 == h);
+    assert(hook_calls[0].rp_bitmap == bm && hook_calls[0].info_top == hook_calls[0].msg_layer);
+    assert(std::equal(desc.begin(), desc.end(), f.memory.begin() + bm));
+    assert(creates.size() == 1 && init_bitmaps == 1 && deletes == 1 && native_layers.empty());
+    assert(native_infos[0]->check_lp && f.L(li + M68K_LI_TOP_LAYER) == 0);
+    action = GUEST_DRAW;
+    layers_lib_base = Fixture::layers_base;
+    assert(init_refused(f, bm));
+
+    /* callbacks are not closed to ordinary BitMaps */
+    const std::vector<UBYTE> desc2(f.memory.begin() + bm2, f.memory.begin() + bm2 + M68K_SIZEOF_BITMAP);
+    const ULONG plane = f.L(plain + M68K_BM_PLANES);
+    action = GUEST_LVO;
+    layers_lib_base = Fixture::graphics_base;
+    guest_lvo_a = { plain };
+    guest_lvo_d = { 0xFF01u, 0xABCD0010u, 0x00000006u };
+    const ULONG l = f.create(li2, bm2, 0, 0, 31, 7, LAYERSIMPLE, h);
+    action = GUEST_DRAW;
+    layers_lib_base = Fixture::layers_base;
+    assert(l && f.ctx.running && hook_calls.size() == 2 && hook_calls[1].nested == 0);
+    const std::vector<UBYTE> head = classic_head(2, 6, 1);
+    assert(std::equal(head.begin(), head.end(), f.memory.begin() + plain));
+    assert(f.L(plain + M68K_BM_PLANES) == plane);
+    assert(std::equal(desc2.begin(), desc2.end(), f.memory.begin() + bm2));
+    assert(creates.size() == 2 && init_bitmaps == 2);
 }
 
 int main()
@@ -2654,6 +2937,10 @@ int main()
         { "BltBitMap() refuses borrowed, foreign, stale and NULL screen BitMaps and native-size overruns", test_blit_screen_refusals },
         { "GetBitMapAttr() uses typed bitmap identity and preserves classic scalar flags", test_bitmap_attributes },
         { "Unconverted graphics and cybergraphics bitmap vectors stop before native code and guest writes", test_bitmap_vector_guards },
+        { "InitBitMap() (-390) writes graphics' BE scalars from narrowed registers, never planes or other bytes", test_init_bitmap_scalars },
+        { "InitBitMap() refuses bad addresses, no memory, owned and borrowed screen BitMaps before any write", test_init_bitmap_refusals },
+        { "InitBitMap() refuses a common BitMap while its LayerInfo or root keeps it, and only then", test_init_bitmap_common_lifetime },
+        { "InitBitMap() from a constructor's backfill hook cannot change the bound common BitMap", test_init_bitmap_from_constructor_hook },
         { "Teardown deletes private layers before their LayerInfos, once, without 68k code", test_cleanup }
     };
     for (const Test &test : tests)

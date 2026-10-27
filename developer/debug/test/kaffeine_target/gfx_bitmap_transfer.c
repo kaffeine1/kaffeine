@@ -36,11 +36,7 @@ int main(void)
            dim.MaxDepth==8 && dim.Nominal.MaxX>=159 && dim.Nominal.MaxY>=119) break;
     }
     if(!check(mode!=INVALID_ID,"find a native indexed display mode"))goto done;
-#ifdef __AROS__
     InitBitMap(&bm,3,128,96);
-#else
-    bm.BytesPerRow=16;bm.Rows=96;bm.Depth=3;
-#endif
     for(p=0;p<3;p++) {
         bm.Planes[p]=AllocMem(bytes,MEMF_PUBLIC|MEMF_CLEAR);
         if(!check(bm.Planes[p]!=NULL,"allocate independent planar storage"))goto done;

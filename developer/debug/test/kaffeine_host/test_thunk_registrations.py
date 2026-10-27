@@ -85,7 +85,7 @@ LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114, 12
                             204, 210, 216, 222, 228, 234, 240, 246, 258, 264, 270))
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
 CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
-GRAPHICS_BITMAP_REFUSED = frozenset((390, 606, 636, 678, 918, 924, 942, 1020, 1206))
+GRAPHICS_BITMAP_REFUSED = frozenset((606, 636, 678, 918, 924, 942, 1020, 1206))
 # Every graphics.conf vector that takes a Region but NewRegion, OrRectRegion
 # and DisposeRegion: the generated thunks would read a 68k Region as native.
 GRAPHICS_REGION_REFUSED = frozenset((504, 522, 528, 558, 612, 618, 624,
@@ -425,6 +425,8 @@ CASES = (
     # Reads every fd register, A2 only to refuse a TempA: no ignored ones.
     ("graphics", "bltbitmap.c", "BltBitMap", "Kaffeine_BltBitMap"),
     ("graphics", "getbitmapattr.c", "GetBitMapAttr", "Kaffeine_GetBitMapAttr"),
+    # A0, D0, D1 and D2, narrowed as the BYTE/UWORD prototype; Planes untouched.
+    ("graphics", "initbitmap.c", "InitBitMap", "Kaffeine_InitBitMap"),
 )
 
 # Explicit table of manual handlers that intentionally ignore one or more

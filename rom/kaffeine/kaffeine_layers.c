@@ -175,6 +175,13 @@
     native call, and until then ctx->bitmap_blits keeps every LayerInfo of
     the program and every screen that it opened, so every native BitMap of
     the call outlives the blit.
+
+    InitBitMap() of graphics writes the scalars of a 68k BitMap of the
+    program in guest memory, as graphics would, without a native call and
+    without touching its Planes. The BitMap of a screen of the program and
+    a common BitMap that a LayerInfo keeps, also while its first layer is
+    being made, stop the program instead, so that neither changes under
+    the native BitMap that it stands for.
 */
 
 #include "kaffeine_intern.h"
@@ -2165,6 +2172,63 @@ IPTR Kaffeine_GetBitMapAttr(struct KaffeineContext *ctx, void *cpu)
     case BMA_DEPTH: return side.desc.depth;
     case BMA_FLAGS: return side.desc.flags & BMF_STANDARD;
     }
+    return 0;
+}
+
+/* Whether the 68k BitMap bm is kept by a LayerInfo of the program as its
+   common BitMap, by the bridge's records alone: the table of LayerInfos,
+   also for one whose layers are all gone but whose internal root still
+   reads it, and every private record alive or being made, which names its
+   BitMap and the common one from before its native creation, so also
+   while that runs its first backfill. */
+static BOOL layers_bitmap_retained(struct KaffeineLayers *st, ULONG bm)
+{
+    int i;
+
+    for (i = 0; st && i < KAFFEINE_LAYER_MAX_INFOS; i++)
+        if (st->infos[i].native && st->infos[i].common && st->infos[i].common->guest == bm)
+            return TRUE;
+    for (i = 0; st && i < KAFFEINE_LAYER_MAX_RECORDS; i++)
+    {
+        const struct LayerPrivate *p = st->records[i].priv;
+
+        if (st->records[i].kind == LR_PRIVATE && p &&
+            (p->guest_bitmap == bm || (p->common && p->common->guest == bm)))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+/* graphics -390: InitBitMap(A0=bm, D0=depth, D1=width, D2=height), VOID,
+   so D0 is 0. As graphics does, with the BYTE and UWORD arguments from
+   the low halves alone: Depth, Rows, Flags BMF_STANDARD, pad 0 and
+   BytesPerRow ((width + 15) >> 3) & ~1 of the 40 classic bytes, big
+   endian, and nothing else; Planes are the caller's and are neither read
+   nor written, and any scalars, also 0, are taken, as later calls check
+   them. The BitMap may be anywhere in guest memory, a stack or static
+   one included. A BitMap that is not whole and word aligned in guest
+   memory, that of a screen of the program, owned or borrowed, and a
+   common BitMap that a LayerInfo keeps stop the program before any
+   write. Nothing native is called. */
+IPTR Kaffeine_InitBitMap(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG bm = THUNK_A(0);
+    UBYTE depth = (UBYTE)(BYTE)THUNK_D(0);
+    UWORD width = (UWORD)THUNK_D(1), height = (UWORD)THUNK_D(2);
+    struct Screen *scr;
+
+    if (!ctx->mem || !bm || (bm & 1) || bm >= ctx->mem_size ||
+        ctx->mem_size - bm < M68K_SIZEOF_BITMAP)
+        return layers_refuse(ctx, "InitBitMap(): not a whole BitMap in guest memory");
+    if (Kaffeine_ScreenBitMapOf(ctx, bm, &scr) != KAFFEINE_SCREEN_BITMAP_NONE)
+        return layers_refuse(ctx, "InitBitMap(): the BitMap of a screen");
+    if (layers_bitmap_retained(ctx->layers, bm))
+        return layers_refuse(ctx, "InitBitMap(): the common BitMap of a LayerInfo");
+    m68k_write16(ctx, bm + M68K_BM_BYTESPERROW, (UWORD)(((width + 15) >> 3) & ~0x1));
+    m68k_write16(ctx, bm + M68K_BM_ROWS, height);
+    ctx->mem[bm + M68K_BM_FLAGS] = BMF_STANDARD;
+    ctx->mem[bm + M68K_BM_DEPTH] = depth;
+    m68k_write16(ctx, bm + M68K_BM_PAD, 0);
     return 0;
 }
 

@@ -187,6 +187,10 @@ IPTR Kaffeine_AttemptLockLayerRom(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu);
 /* graphics -960: scalar attributes of the same typed bitmap classes. */
 IPTR Kaffeine_GetBitMapAttr(struct KaffeineContext *ctx, void *cpu);
+/* graphics -390: the classic scalars of a 68k BitMap in guest memory, as
+   graphics writes them, never its planes; a screen's BitMap and a common
+   BitMap that a LayerInfo keeps stop the program (20). */
+IPTR Kaffeine_InitBitMap(struct KaffeineContext *ctx, void *cpu);
 /* Every other layer call: stops the program (20) before any native call */
 IPTR kaffeine_layers_Unsupported(struct KaffeineContext *ctx, void *cpu);
 /* Unconverted graphics BitMap operations: never pass a classic mirror native. */
@@ -214,7 +218,7 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     { 450, kaffeine_layers_Unsupported },     /* CopySBitMap */ \
     { 654, Kaffeine_AttemptLockLayerRom }, \
     {  30, Kaffeine_BltBitMap }, \
-    { 390, kaffeine_bitmaps_Unsupported },    /* InitBitMap */ \
+    { 390, Kaffeine_InitBitMap }, \
     { 606, kaffeine_bitmaps_Unsupported },    /* BltBitMapRastPort */ \
     { 636, kaffeine_bitmaps_Unsupported },    /* BltMaskBitMapRastPort */ \
     { 678, kaffeine_bitmaps_Unsupported },    /* BitMapScale */ \
