@@ -259,7 +259,7 @@ $(BUILD_DIR)/test_console: $(TEST_DIR)/test_console.cpp $(IO_OBJS) | $(BUILD_DIR
 $(BUILD_DIR)/task_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(TASK_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
 
-$(BUILD_DIR)/test_exec_tasks: $(TEST_DIR)/test_exec_tasks.cpp $(TASK_OBJS) | $(BUILD_DIR)
+$(BUILD_DIR)/test_exec_tasks: $(TEST_DIR)/test_exec_tasks.cpp $(KAFFEINE_DIR)/kaffeine_moira.cpp $(KAFFEINE_DIR)/Moira/Moira/Moira.cpp $(KAFFEINE_DIR)/Moira/Moira/MoiraDebugger.cpp $(TASK_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(TASK_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(TASK_OBJS) $(LDLIBS)
 
 # Compile the heap and memory thunks as C and count their native allocations.

@@ -43,9 +43,16 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   mathffp calls, the no-window console unit, disk fonts, guest queues and
   bounded DOS read packets.
 - Personal Paint loads fonts and image I/O libraries and completes packet
-  reads and WaitPort/GetMsg replies. Startup then reaches a contained
-  callback memory-access fault; the editor and full application lifecycle
+  reads and WaitPort/GetMsg replies. Startup passes the blitter library's
+  Exec memory-list scan, then reaches a later DOS read packet rejected by
+  the bridge's boundary checks; the editor and full application lifecycle
   have not been validated.
+
+The embedded native Exec lists currently have empty guest headers with
+valid head, tail and predecessor sentinels. Their native identities remain
+available to intercepted named lookups; direct guest traversal does not
+expose native memory headers, devices, libraries or tasks. The public
+guest port and semaphore lists have their own guest nodes.
 
 The production AROS path still uses the Moira interpreter. Complete
 application operation, an FPU, new guest processes, general asynchronous
@@ -104,6 +111,8 @@ point of the provenance of the NDK data.
 
 ## Verified scope
 
+The combined message/packet compatibility baseline has these results:
+
 | Environment | Result |
 | --- | --- |
 | macOS arm64 and Linux GCC 14 | All 38 host executables pass |
@@ -118,9 +127,15 @@ modes, with output compared byte for byte. Host, QEMU and native-reference
 results describe their respective environments; physical hardware has
 not been validated.
 
-Personal Paint progresses through font loading, DOS packet reads and
-WaitPort/GetMsg replies. Its startup is still incomplete because it reaches
-a contained memory-access fault during a 68k callback. Sampled mathffp
+The embedded-list regression passes 28 checks on native AmigaOS and in
+each AROS Shell/Run execution. Its original host callback fixture reproduces
+the former arena-end fault with the old shadow initialization and passes
+all 91 task/list checks with the corrected headers.
+
+Personal Paint progresses through font loading, DOS packet reads,
+WaitPort/GetMsg replies and the blitter library's memory-list scan. Its
+startup is still incomplete because a later DOS read packet is rejected by the
+bridge's boundary checks. Sampled mathffp
 SPDiv results include eight one-ULP differences from AmigaOS.
 
 ## Building and testing
@@ -144,7 +159,7 @@ uses observable application outcomes:
 
 1. Complete useful 68k application operations on AROS ARM64, prioritizing
    Personal Paint's editor, tools, load/save, cleanup and desktop use.
-   The current next blocker is its callback memory-access fault.
+   The current next blocker is the later DOS read-packet boundary.
 2. Accelerate the same binaries with the Kaffeine JIT or a verified hybrid
    mode, preserving behavior and measuring end-to-end benefits.
 3. Validate interaction, stability, memory and performance on real hardware.
