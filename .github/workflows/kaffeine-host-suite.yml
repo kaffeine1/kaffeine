@@ -1,0 +1,78 @@
+name: kaffeine host suite
+
+# Only when the bridge, its host tests or the AROS sources that they build
+# or read change: the .conf files and the native functions of the
+# libraries that test_thunk_registrations.py checks, and the dos and
+# utility sources and dos headers that the tests compile. On a pull
+# request a new push stops the run of the old one; on master a run that
+# has started goes to its end.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/kaffeine-host-suite.yml'
+      - 'rom/kaffeine/**'
+      - 'developer/debug/test/kaffeine_host/**'
+      - 'compiler/include/dos/**'
+      - 'rom/dos/**'
+      - 'rom/exec/**'
+      - 'rom/graphics/**'
+      - 'rom/intuition/**'
+      - 'rom/timer/**'
+      - 'rom/utility/**'
+      - 'workbench/libs/gadtools/**'
+      - 'workbench/libs/locale/**'
+      - 'workbench/libs/mathieee*/**'
+      - 'workbench/libs/workbench/**'
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/kaffeine-host-suite.yml'
+      - 'rom/kaffeine/**'
+      - 'developer/debug/test/kaffeine_host/**'
+      - 'compiler/include/dos/**'
+      - 'rom/dos/**'
+      - 'rom/exec/**'
+      - 'rom/graphics/**'
+      - 'rom/intuition/**'
+      - 'rom/timer/**'
+      - 'rom/utility/**'
+      - 'workbench/libs/gadtools/**'
+      - 'workbench/libs/locale/**'
+      - 'workbench/libs/mathieee*/**'
+      - 'workbench/libs/workbench/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  kaffeine-host-suite:
+    name: kaffeine host suite (Linux, GCC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check out the Moira submodule
+        run: git submodule update --init rom/kaffeine/Moira
+
+      - name: Show compilers
+        run: |
+          gcc --version | head -n 1
+          g++ --version | head -n 1
+          python3 --version
+
+      - name: Build the host tests
+        run: make -C developer/debug/test/kaffeine_host -j"$(nproc)" all
+
+      # Without NDK_FD_DIR and AROS_FD_DIR, test_thunk_registrations.py
+      # checks the manual tables against the AROS .conf files in the tree.
+      # Line-buffered output keeps the last lines of a test that crashes.
+      - name: Run the host tests
+        run: make -C developer/debug/test/kaffeine_host test RUNNER="stdbuf -oL -eL"

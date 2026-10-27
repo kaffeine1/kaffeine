@@ -9,6 +9,10 @@
     Lang: english
 */
 
+#ifndef EXEC_TYPES_H
+#   include <exec/types.h>
+#endif
+
 /* Hunk types */
 #define HUNK_UNIT          999
 #define HUNK_NAME         1000
@@ -71,5 +75,29 @@
 #define HUNKF_ADVISORY (1L<<HUNKB_ADVISORY)
 #define HUNKF_CHIP     (1L<<HUNKB_CHIP)
 #define HUNKF_FAST     (1L<<HUNKB_FAST)
+
+/* Relocations applied by LoadSeg() to a 68k HUNK seglist on a non-m68k
+   host, returned by GetSegListInfo() with GSLI_68KRelocs. A 68k emulator
+   that copies the segments to other addresses uses them to rebase the
+   relocated longwords. Hunk numbers are positions in the seglist chain,
+   starting from 0 for the first segment. */
+struct HunkRelocation
+{
+    ULONG hr_Offset;    /* Byte offset of the longword in hunk hr_Source */
+    UWORD hr_Source;    /* Hunk that contains the longword */
+    UWORD hr_Target;    /* Hunk whose address was added */
+    UWORD hr_Type;      /* HRT_ABSOLUTE or HRT_RELATIVE */
+    UWORD hr_Pad;
+};
+
+#define HRT_ABSOLUTE 0  /* Longword was increased by the target address */
+#define HRT_RELATIVE 1  /* Longword was increased by target - source address */
+
+struct HunkRelocTable
+{
+    ULONG                  hrt_NumHunks;
+    ULONG                  hrt_NumRelocs;
+    struct HunkRelocation *hrt_Relocs;
+};
 
 #endif /* DOS_DOSHUNKS_H */

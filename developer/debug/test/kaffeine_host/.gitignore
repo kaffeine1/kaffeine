@@ -1,0 +1,5 @@
+test_kaffeine
+test_moira_exec
+test_hello_thunks
+*.dSYM
+build/

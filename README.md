@@ -1,3 +1,55 @@
+# Kaffeine: an open source home for the Amiga ecosystem
+
+Kaffeine aims to preserve Amiga software across platforms and hardware
+generations. AROS is the native operating system; `kaffeine.library` is the
+compatibility infrastructure intended to let supported applications share
+the same desktop, without a separately managed emulator or virtual machine.
+
+**ARM64 is the first host. The 68k is the first guest environment.**
+Other hosts and guest environments are long-term directions, with their
+own CPU, ABI and platform requirements.
+
+Read the [project manifesto](docs/kaffeine/MANIFESTO.md)
+([original Italian](docs/kaffeine/MANIFESTO.it.md)) for the vision,
+architectural boundaries and observable milestones.
+
+## Current implementation
+
+The current bridge runs 68k HUNK programs inside AROS AArch64 using Moira
+as the CPU interpreter. Supported library calls reach native AROS services;
+targeted graphics tests use AROS windows, fonts, menus and gadgets. CLI
+programs and the bzip2 self-test run in QEMU. A hosted AArch64 translation
+probe is a step toward the Kaffeine JIT, separate from the production AROS
+execution path.
+
+Personal Paint is the first substantial graphical application target.
+Startup reaches font loading and DOS packet reads, then stops at a
+contained callback memory-access fault. Reaching the editor, loading and
+saving images, correct shutdown, desktop startup and responsiveness remain
+milestones to verify.
+
+PPC guests, RISC-V hosting, a general hybrid CPU backend and multicore
+execution are future work. The manifesto does not claim them as implemented.
+
+## Documentation and tests
+
+- [Current behavior, architecture and verified limits](README.KAFFEINE.md).
+- [Host regression tests](developer/debug/test/kaffeine_host/README.md).
+- [AROS target programs and QEMU runner](developer/debug/test/kaffeine_target/README.md).
+- [Library implementation](rom/kaffeine/README.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).
+- [Licenses and provenance](docs/kaffeine/LICENSING.md).
+
+The project builds on AROS and its original `m68kemu.library`. The bridge is
+now `kaffeine.library` in `rom/kaffeine`. Emu68 remains a design reference;
+its code is not included. Application software retains its own licenses.
+
+## Upstream AROS documentation
+
+The content below comes from the upstream AROS repository. References to
+nightlies and CI services describe the upstream project.
+
+---
+
 [![AROS Logo](http://aros.org/images/toplogo.png?v=1.0)](http://developers.aros.org)
 # AROS Git Repository [![Codacy Badge](https://app.codacy.com/project/badge/Grade/8dd5a86f87064c14ba75f291c045e788)](https://app.codacy.com/gh/aros-development-team/AROS/dashboard)
 

@@ -1013,7 +1013,7 @@ struct Gadget *DoActivateGadget(struct Window *win, struct Requester *req, struc
             gad->Flags |= GFLG_SELECTED;
             if (si && si->UndoBuffer)
             {
-                    strcpy(si->UndoBuffer, si->Buffer);
+                    CopyStrGadText(si->UndoBuffer, si->Buffer, si->MaxChars);
             }
 
             gad->Activation |= GACT_ACTIVEGADGET;

@@ -82,7 +82,7 @@ FUNCTIONS := abortpkt addbuffers adddosentry addpart addsegment \
 #MM     kernel-exec-includes \
 #MM     kernel-timer-includes \
 #MM     kernel-intuition-includes \
-#MM     kernel-m68kemu-library-includes
+#MM     kernel-kaffeine-library-includes
 
 #MM- core-linklibs : linklibs-dos
 

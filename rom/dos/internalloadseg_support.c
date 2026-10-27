@@ -82,24 +82,35 @@ void register_elf(BPTR file, BPTR hunks, struct elfheader *eh, struct sheader *s
  * No DosBase = Open debug.library manually, this enables
  * us to have RDB segments in debug.library list.
  */
-void register_hunk(BPTR file, BPTR hunks, APTR header, struct DosLibrary *DOSBase)
+void register_hunk(BPTR file, BPTR hunks, APTR header,
+                   const struct HunkRelocTable *relocs, struct DosLibrary *DOSBase)
 {
     struct Library *DebugBase;
     struct KernelBase *KernelBase = OpenResource("kernel.resource");
     BOOL issuper = (KernelBase && KrnIsSuper());
     if (DOSBase)
     {
-        struct Node *segnode = AllocVec(sizeof(struct Node), MEMF_CLEAR);
+        ULONG relocsize = relocs ? relocs->hrt_NumRelocs * sizeof(struct HunkRelocation) : 0;
+        struct HunkSegNode *segnode = AllocVec(sizeof(struct HunkSegNode) + relocsize, MEMF_CLEAR);
         if (segnode)
         {
-            segnode->ln_Name = (char *)hunks;
-            segnode->ln_Type = SEGTYPE_HUNK;
+            segnode->hsn_Node.ln_Name = (char *)hunks;
+            segnode->hsn_Node.ln_Type = SEGTYPE_HUNK;
+            if (relocs)
+            {
+                segnode->hsn_Relocs.hrt_NumHunks  = relocs->hrt_NumHunks;
+                segnode->hsn_Relocs.hrt_NumRelocs = relocs->hrt_NumRelocs;
+                segnode->hsn_Relocs.hrt_Relocs    = (struct HunkRelocation *)(segnode + 1);
+                if (relocsize)
+                    CopyMem(relocs->hrt_Relocs, segnode->hsn_Relocs.hrt_Relocs, relocsize);
+                segnode->hsn_HasRelocs = TRUE;
+            }
 
             if (issuper)
                 Forbid();
             else
                 ObtainSemaphore(&IDosBase(DOSBase)->segsem);
-            AddTail(&IDosBase(DOSBase)->segdata, segnode);
+            AddTail(&IDosBase(DOSBase)->segdata, &segnode->hsn_Node);
             if (issuper)
                 Permit();
             else

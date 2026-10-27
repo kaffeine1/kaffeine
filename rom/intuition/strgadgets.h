@@ -30,3 +30,4 @@ VOID UpdateStrGadget(struct Gadget *, struct Window *, struct Requester *,
                      struct IntuitionBase *);
 ULONG HandleStrInput(struct Gadget *, struct GadgetInfo *,
                      struct InputEvent *, UWORD *, struct IntuitionBase *);
+WORD CopyStrGadText(STRPTR dest, CONST_STRPTR text, WORD maxchars);

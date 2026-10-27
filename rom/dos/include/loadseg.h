@@ -10,10 +10,13 @@
 
 #include <aros/libcall.h>
 #include <dos/elf.h>
+#include <dos/doshunks.h>
 
 /* This is called after ELF file is loaded. You may grab the debug info from it. */
 void register_elf(BPTR file, BPTR hunks, struct elfheader *eh, struct sheader *sh, struct DosLibrary *DOSBase);
-void register_hunk(BPTR file, BPTR hunks, APTR header, struct DosLibrary *DOSBase);
+/* relocs is NULL unless the loader recorded relocations for kaffeine.library. */
+void register_hunk(BPTR file, BPTR hunks, APTR header,
+                   const struct HunkRelocTable *relocs, struct DosLibrary *DOSBase);
 
 AROS_LD4(BPTR, InternalLoadSeg,
          AROS_LDA(BPTR       , fh           , D0),

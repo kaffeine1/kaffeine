@@ -58,6 +58,8 @@
 
     NOTES
         DrawImageState(), handles both boopsi and conventional images.
+        A conventional image is drawn inverted for IDS_SELECTED, where
+        AmigaOS 3.2.3 draws it as for IDS_NORMAL.
 
     EXAMPLE
 
@@ -71,16 +73,28 @@
 {
     AROS_LIBFUNC_INIT
 
+    SANITY_CHECK(rp)
+    SANITY_CHECK(image)
+
+    int_DrawImageState(rp, image, leftOffset, topOffset, state, drawInfo, TRUE,
+                       IntuitionBase);
+
+    AROS_LIBFUNC_EXIT
+} /* DrawImageState */
+
+/* invert_selected FALSE draws a conventional image as it is in every state,
+   as AmigaOS does, while image objects of the chain still get the state */
+void int_DrawImageState(struct RastPort *rp, struct Image *image,
+                        WORD leftOffset, WORD topOffset, ULONG state,
+                        struct DrawInfo *drawInfo, BOOL invert_selected,
+                        struct IntuitionBase *IntuitionBase)
+{
     struct GfxBase *GfxBase = GetPrivIBase(IntuitionBase)->GfxBase;
     struct LayersBase *LayersBase = GetPrivIBase(IntuitionBase)->LayersBase;
     IPTR apen, bpen, drmd;
 #ifdef __MORPHOS__
     IPTR penmode;
 #endif
-
-
-    SANITY_CHECK(rp)
-    SANITY_CHECK(image)
 
     if (rp->Layer) LockLayer(0,rp->Layer);
 
@@ -208,7 +222,7 @@
                                   rp,
                                   leftOffset + image->LeftEdge, topOffset + image->TopEdge,
                                   image->Width, image->Height,
-                                  (state == IDS_SELECTED) ? 0x30 : 0xC0);
+                                  (invert_selected && (state == IDS_SELECTED)) ? 0x30 : 0xC0);
             }
 
         #else
@@ -299,6 +313,4 @@
 #endif
 
     if (rp->Layer) UnlockLayer(rp->Layer);
-
-    AROS_LIBFUNC_EXIT
-} /* DrawImageState */
+} /* int_DrawImageState */

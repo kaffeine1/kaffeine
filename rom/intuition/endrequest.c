@@ -5,6 +5,7 @@
 
 #include <proto/layers.h>
 #include "intuition_intern.h"
+#include "inputhandler.h"
 #include "inputhandler_actions.h"
 
 #ifdef SKINS
@@ -86,8 +87,20 @@ static VOID int_endrequest(struct EndRequestActionMsg *msg,
     struct Window *window = msg->window;
     struct Requester *requester = msg->requester;
     struct Requester *p = window->FirstRequest;
-    // struct IIHData  *iihdata = (struct IIHData *)GetPrivIBase(IntuitionBase)->InputHandler->is_Data;
+    struct IIHData  *iihdata = (struct IIHData *)GetPrivIBase(IntuitionBase)->InputHandler->is_Data;
     // int i;
+
+    /* The gadget help forgets the window, whose requester gadgets go,
+       before its layers are locked, as RefreshGList() locks them after
+       GadgetLock */
+    LOCKGADGET(IntuitionBase)
+    if (iihdata->LastHelpWindow == window)
+    {
+        iihdata->LastHelpGadget = NULL;
+        iihdata->LastHelpWindow = NULL;
+        iihdata->HelpGadgetFindTime = 0;
+    }
+    UNLOCKGADGET(IntuitionBase)
 
     //jDc: intuition68k doesn't care (tested)
     //if (requester->Flags & REQACTIVE)

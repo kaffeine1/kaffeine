@@ -22,17 +22,24 @@
 
 /****************************************************************************************/
 
+/* A traditional Image of the chain draws as it is, as on AmigaOS:
+   GFLG_GADGHIMAGE chose SelectRender for the selected state, and
+   GFLG_GADGHCOMP and GFLG_GADGHBOX complement it after. Only image objects
+   get the state, which DrawImageState() of AROS would also apply to a
+   traditional Image by inverting it. */
 #define RENDERGADGET(win,gad,rend)                  \
     if (rend)                                       \
     {                                               \
         if (gad->Flags & GFLG_GADGIMAGE)            \
         {                                           \
-            DrawImageState (rp                      \
+            int_DrawImageState (rp                  \
                             , (struct Image *)rend  \
                             , bbox.Left             \
                             , bbox.Top              \
                             , state                 \
                             , dri                   \
+                            , FALSE                 \
+                            , IntuitionBase         \
                            );                       \
         }                                           \
         else                                        \

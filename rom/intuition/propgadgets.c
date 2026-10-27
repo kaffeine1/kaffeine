@@ -112,6 +112,67 @@ static void RenderPropBackground(struct Gadget *gad, struct Window *win, struct 
 }
 
 
+/* The arithmetic of AmigaOS 3.2.3, which programs read back from the
+   PropInfo and the knob Image. An AUTOKNOB on an axis that moves takes its
+   body's share of the interior, rounded up, at least min pixels and at most
+   the interior. */
+static WORD knob_share(WORD size, UWORD body, WORD min)
+{
+    LONG share = ((LONG)size * body + MAXBODY - 1) / MAXBODY;
+
+    if (share < min)
+        share = min;
+    if (share > size)
+        share = size;
+    return (WORD)share;
+}
+
+/* The place of the knob within the interior for pot, in room pixels of
+   travel: (pot + 1) times room divided by 65536, rounded down, a room
+   below 0 included */
+static WORD knob_offset(UWORD pot, LONG room)
+{
+    QUAD q = ((QUAD)pot + 1) * room;
+
+    return (WORD)(q >= 0 ? q >> 16 : -((-q + 0xFFFF) >> 16));
+}
+
+/* The pot of a knob place pixels from where it starts, of room pixels to
+   travel; MAXPOT where it cannot travel */
+static UWORD knob_pot(LONG place, LONG room)
+{
+    if (room <= 0 || place >= room)
+        return MAXPOT;
+    if (place <= 0)
+        return 0;
+    return (UWORD)((ULONG)place * MAXPOT / (ULONG)room);
+}
+
+/* A rectangle cut to the box of its gadget */
+static void clip_box(struct BBox *r, const struct BBox *box)
+{
+    LONG right = r->Left + r->Width, bottom = r->Top + r->Height;
+
+    if (r->Left < box->Left)
+        r->Left = box->Left;
+    if (r->Top < box->Top)
+        r->Top = box->Top;
+    if (right > box->Left + box->Width)
+        right = box->Left + box->Width;
+    if (bottom > box->Top + box->Height)
+        bottom = box->Top + box->Height;
+    r->Width = right - r->Left;
+    r->Height = bottom - r->Top;
+}
+
+/* The step of a page for a body, 0 for 0 */
+static UWORD pot_res(UWORD body)
+{
+    if (body > MAXBODY / 2)
+        return MAXPOT;
+    return (UWORD)(((ULONG)body << 16) / (MAXBODY - body));
+}
+
 VOID HandlePropSelectDown(struct Gadget *gadget, struct Window *w, struct Requester *req,
                           UWORD mouse_x, UWORD mouse_y, struct IntuitionBase *IntuitionBase)
 {
@@ -181,13 +242,21 @@ VOID HandlePropSelectDown(struct Gadget *gadget, struct Window *w, struct Reques
     /* jDc: when clicked on frame, prop gadget also gets activated! */
     if (!(flags & PROPBORDERLESS))
     {
-        if (pi->Flags & FREEVERT)
+        /* across the axis that does not move, as far as the borders reach,
+           which the frame lies in; a pixel aside for a knob that moves both
+           ways */
+        if ((pi->Flags & FREEVERT) && (pi->Flags & FREEHORIZ))
         {
             knob.Left --;
             knob.Width += 2;
+        }
+        else if (pi->Flags & FREEVERT)
+        {
+            knob.Left -= pi->LeftBorder;
+            knob.Width += 2 * pi->LeftBorder;
         } else {
-            knob.Top ++;
-            knob.Height += 2;
+            knob.Top -= pi->TopBorder;
+            knob.Height += 2 * pi->TopBorder;
         }
     }
 
@@ -219,8 +288,10 @@ VOID HandlePropSelectUp(struct Gadget *gadget, struct Window *w,
 
     pi = (struct PropInfo *)gadget->SpecialInfo;
 
+    /* KNOBHIT stays, as on AmigaOS 3.2.3, where a program reads it after
+       the GADGETUP to tell a drag of the knob from a click beside it; the
+       knob looks pressed only while the gadget is selected. */
     gadget->Flags &= ~GFLG_SELECTED;
-    if (pi) pi->Flags &= ~KNOBHIT;
 
     if (pi) RefreshPropGadget (gadget, w, req, IntuitionBase);
 
@@ -244,6 +315,8 @@ VOID HandlePropMouseMove(struct Gadget *gadget, struct Window *w,struct Requeste
 {
     struct BBox      knob;
     struct PropInfo *pi;
+    LONG             hroom, vroom;
+    UWORD            hpot, vpot;
 
     pi = (struct PropInfo *)gadget->SpecialInfo;
 
@@ -275,46 +348,20 @@ VOID HandlePropMouseMove(struct Gadget *gadget, struct Window *w,struct Requeste
                 anymore but relative to gadget
                 box */
 
-        dx = dx - GetPrivIBase(IntuitionBase)->prop_clickoffset_x;
-        dy = dy - GetPrivIBase(IntuitionBase)->prop_clickoffset_y;
+        /* the place of the knob within the interior, and the pot of each
+           axis the share of the room that it has there, as on AmigaOS 3.2.3:
+           on an axis that does not move the knob stays at the start, and an
+           axis without room, as that of an AUTOKNOB, gives MAXPOT */
+        dx = dx - GetPrivIBase(IntuitionBase)->prop_clickoffset_x - pi->LeftBorder;
+        dy = dy - GetPrivIBase(IntuitionBase)->prop_clickoffset_y - pi->TopBorder;
+        hroom = pi->CWidth - 2 * pi->LeftBorder - knob.Width;
+        vroom = pi->CHeight - 2 * pi->TopBorder - knob.Height;
+        hpot = knob_pot((pi->Flags & FREEHORIZ) ? dx : 0, hroom);
+        vpot = knob_pot((pi->Flags & FREEVERT) ? dy : 0, vroom);
 
-        if (pi->Flags & FREEHORIZ
-                && pi->CWidth != knob.Width)
+        if (hpot != pi->HorizPot || vpot != pi->VertPot)
         {
-
-            dx = (dx * MAXPOT) / (pi->CWidth - knob.Width);
-            if (dx < 0)
-            {
-                dx = 0;
-            }
-            else if (dx > MAXPOT)
-            {
-                dx = MAXPOT;
-            }
-
-        } /* FREEHORIZ */
-
-        if (pi->Flags & FREEVERT
-                && pi->CHeight != knob.Height)
-        {
-            dy = (dy * MAXPOT) / (pi->CHeight - knob.Height);
-
-            if (dy < 0)
-            {
-                dy = 0;
-            }
-            else if (dy > MAXPOT)
-            {
-                dy = MAXPOT;
-            }
-
-        } /* FREEVERT */
-
-        if ( ((pi->Flags & FREEHORIZ) && (dx != pi->HorizPot)) ||
-                ((pi->Flags & FREEVERT)  && (dy != pi->VertPot)) )
-
-        {
-            NewModifyProp (gadget, w, req, pi->Flags, dx, dy, pi->HorizBody, pi->VertBody, 1);
+            NewModifyProp (gadget, w, req, pi->Flags, hpot, vpot, pi->HorizBody, pi->VertBody, 1);
         }
 
     } /* Has PropInfo and Mouse is over knob */
@@ -325,87 +372,76 @@ VOID HandlePropMouseMove(struct Gadget *gadget, struct Window *w,struct Requeste
 int CalcKnobSize (struct Gadget * propGadget, struct BBox * knobbox)
 {
     struct PropInfo *pi;
-    WORD             x, y;
-    
+    struct Image    *im;
+    WORD             bx, by, left, top, width, height, kw, kh;
+
     pi = (struct PropInfo *)propGadget->SpecialInfo;
+    im = (struct Image *)propGadget->GadgetRender;
 
-    //dprintf("CalcKnobSize(%lx,%d,%d,%d,%d)\n", propGadget,
-    //      propGadget->LeftEdge, propGadget->TopEdge, propGadget->Width, propGadget->Height);
-    //dprintf("knob(%d,%d,%d,%d)\n", knobbox->Left, knobbox->Top, knobbox->Width, knobbox->Height);
-
+    /* As AmigaOS 3.2.3 lays the gadget out: the container is its box, and
+       the knob moves within it less the borders, none for PROPBORDERLESS, a
+       pixel for PROPNEWLOOK and 4 by 2 for the old look */
     if (pi->Flags & PROPBORDERLESS)
+        bx = by = 0;
+    else if (pi->Flags & PROPNEWLOOK)
+        bx = by = 1;
+    else
     {
-        pi->LeftBorder = 0;
-        pi->TopBorder  = 0;
+        bx = 4;
+        by = 2;
+    }
+    pi->LeftBorder = bx;
+    pi->TopBorder  = by;
+    pi->CWidth     = knobbox->Width;
+    pi->CHeight    = knobbox->Height;
+    left   = knobbox->Left + bx;
+    top    = knobbox->Top + by;
+    width  = knobbox->Width - 2 * bx;
+    height = knobbox->Height - 2 * by;
+
+    /* A knob image of the program's own keeps its size; an AUTOKNOB fills
+       the interior on an axis that does not move, and takes its body's
+       share of it on one that does; a pixel at least */
+    if (!(pi->Flags & AUTOKNOB) && im)
+    {
+        kw = im->Width;
+        kh = im->Height;
     }
     else
     {
-        x = y = 1;
-
-        knobbox->Left += x;
-        knobbox->Top += y;
-        knobbox->Width -= x * 2;
-        knobbox->Height -= y * 2;
-        pi->LeftBorder = x;
-        pi->TopBorder  = y;
+        kw = (pi->Flags & FREEHORIZ) ? knob_share(width, pi->HorizBody, KNOBHMIN) : width;
+        kh = (pi->Flags & FREEVERT) ? knob_share(height, pi->VertBody, KNOBVMIN) : height;
+        if (kw < 1)
+            kw = 1;
+        if (kh < 1)
+            kh = 1;
     }
-    //dprintf("knob(%d,%d,%d,%d)\n", knobbox->Left, knobbox->Top, knobbox->Width, knobbox->Height);
-
-    pi->CWidth     = knobbox->Width;
-    pi->CHeight    = knobbox->Height;
-
-    if ((!(pi->Flags & AUTOKNOB)) && propGadget->GadgetRender)
-    {
-        struct Image *im = propGadget->GadgetRender;
-
-        knobbox->Width = im->Width;
-        knobbox->Height = im->Height;
-    }
-
+    knobbox->Left   = left;
+    knobbox->Top    = top;
+    knobbox->Width  = kw;
+    knobbox->Height = kh;
     if (pi->Flags & FREEHORIZ)
-    {
-        if (pi->Flags & AUTOKNOB)
-        {
-            knobbox->Width = pi->CWidth * pi->HorizBody / MAXBODY;
-            if (knobbox->Width < KNOBHMIN) knobbox->Width = KNOBHMIN;
-        }
-
-        knobbox->Left = knobbox->Left + (pi->CWidth - knobbox->Width)
-                        * pi->HorizPot / MAXPOT;
-
-        if (pi->HorizBody)
-        {
-            if (pi->HorizBody < MAXBODY/2)
-                pi->HPotRes = MAXPOT * 32768 / ((MAXBODY * 32768 / pi->HorizBody) - 32768);
-            else
-                pi->HPotRes = MAXPOT;
-        }
-        else
-            pi->HPotRes = 1;
-    }
-
+        knobbox->Left += knob_offset(pi->HorizPot, (LONG)width - kw);
     if (pi->Flags & FREEVERT)
+        knobbox->Top += knob_offset(pi->VertPot, (LONG)height - kh);
+
+    pi->HPotRes = pot_res(pi->HorizBody);
+    pi->VPotRes = pot_res(pi->VertBody);
+
+    /* AmigaOS 3.2.3 keeps the knob of a classic gadget in its Image, where
+       programs read it: the place within the borders, and the size of an
+       AUTOKNOB */
+    if (im && !((propGadget->Flags & GFLG_EXTENDED) &&
+                (((struct ExtGadget *)propGadget)->MoreFlags & GMORE_BOOPSIGADGET)))
     {
+        im->LeftEdge = knobbox->Left - left;
+        im->TopEdge  = knobbox->Top - top;
         if (pi->Flags & AUTOKNOB)
         {
-            knobbox->Height = pi->CHeight * pi->VertBody / MAXBODY;
-            if (knobbox->Height < KNOBVMIN) knobbox->Height = KNOBVMIN;
+            im->Width  = kw;
+            im->Height = kh;
         }
-
-        knobbox->Top = knobbox->Top + (pi->CHeight - knobbox->Height)
-                       * pi->VertPot / MAXPOT;
-
-        if (pi->VertBody)
-        {
-            if (pi->VertBody < MAXBODY/2)
-                pi->VPotRes = MAXPOT * 32768 / ((MAXBODY * 32768 / pi->VertBody) - 32768);
-            else
-                pi->VPotRes = MAXPOT;
-        }
-        else
-            pi->VPotRes = 1;
     }
-    //dprintf("knob(%d,%d,%d,%d)\n", knobbox->Left, knobbox->Top, knobbox->Width, knobbox->Height);
 
     return TRUE;
 } /* CalcKnobSize */
@@ -515,18 +551,49 @@ void RefreshPropGadgetKnob (struct Gadget * gadget, struct BBox * clear,
     struct RastPort     *rp;
     struct PropInfo     *pi;
     struct GadgetInfo    gi;
+    struct BBox          box, kclip, cclip;
     UWORD                flags;
-    BOOL                 onborder;
+    BOOL                 onborder, empty;
 
     D(bug("RefresPropGadgetKnob(flags=%d, clear=%p, knob = %p, win=%s)\n",
           flags, clear, knob, window->Title));
 
-    if ((knob->Width < 1) || (knob->Height < 1)) return;
-    
-    onborder = (IS_BORDER_GADGET(gadget) || isonborder(gadget,window));
-
     pi = (struct PropInfo *)gadget->SpecialInfo;
     flags = pi->Flags;
+    onborder = (IS_BORDER_GADGET(gadget) || isonborder(gadget,window));
+
+    /* A gadget smaller than its borders may have its knob partly or wholly
+       outside: only what lies within its frame is drawn or cleared, and an
+       image of the program's own only when all of it lies there; a knob
+       that is not drawn hides nothing of the background that its old place
+       leaves. */
+    CalcBBox (window, req, gadget, &box);
+    if (!(flags & PROPBORDERLESS))
+    {
+        box.Left++;
+        box.Top++;
+        box.Width -= 2;
+        box.Height -= 2;
+    }
+    kclip = *knob;
+    clip_box(&kclip, &box);
+    empty = kclip.Width < 1 || kclip.Height < 1 ||
+            (!(flags & AUTOKNOB) &&
+             (kclip.Left != knob->Left || kclip.Top != knob->Top ||
+              kclip.Width != knob->Width || kclip.Height != knob->Height));
+    if (empty)
+        kclip.Width = kclip.Height = 0;
+    knob = &kclip;
+    if (clear)
+    {
+        cclip = *clear;
+        clip_box(&cclip, &box);
+        clear = &cclip;
+    }
+
+    /* a window decorator draws the background with the knob: none for no
+       knob, as before */
+    if (empty && (!clear || onborder)) return;
 
     if ((dri = GetScreenDrawInfo(window->WScreen)))
     {
@@ -611,7 +678,13 @@ void RefreshPropGadgetKnob (struct Gadget * gadget, struct BBox * clear,
                       b.MaxY));
             #endif
             
-                nrects = SubtractRectFromRect(&a, &b, clearrects);
+                if (empty)
+                {
+                    clearrects[0] = a;
+                    nrects = 1;
+                }
+                else
+                    nrects = SubtractRectFromRect(&a, &b, clearrects);
 
                 D(bug("RefresPropGadgetKnob: nrects %d\n",
                       nrects));
@@ -659,9 +732,14 @@ void RefreshPropGadgetKnob (struct Gadget * gadget, struct BBox * clear,
 
             } /* if (clear) */
 
-            if (flags & AUTOKNOB)
+            if (empty)
             {
-                int hit = ((flags & KNOBHIT) != 0);
+                /* no knob to draw */
+            }
+            else if (flags & AUTOKNOB)
+            {
+                /* KNOBHIT stays after the drag: pressed only while selected */
+                int hit = ((flags & KNOBHIT) != 0) && (gadget->Flags & GFLG_SELECTED);
 
                 D(bug("RefresPropGadgetKnob: draw knob Left %d Top %d Width %d Height %d\n",
                       knob->Left,
@@ -817,15 +895,19 @@ void RefreshPropGadgetKnob (struct Gadget * gadget, struct BBox * clear,
             #endif
                 {
                 #if 1
-                    image->LeftEdge = knob->Left - bbox.Left;
-                    image->TopEdge = knob->Top - bbox.Top;
+                    /* The place within the borders, as CalcKnobSize() keeps
+                       it for a classic gadget */
+                    WORD x = bbox.Left + pi->LeftBorder, y = bbox.Top + pi->TopBorder;
+
+                    image->LeftEdge = knob->Left - x;
+                    image->TopEdge = knob->Top - y;
                     // image->Width = knob->Width;
                     // image->Height = knob->Height;
                     
                     DrawImageState(rp,
                                    image,
-                                   bbox.Left,
-                                   bbox.Top,
+                                   x,
+                                   y,
                                    IDS_NORMAL,
                                    (struct DrawInfo *)dri);
                 #else

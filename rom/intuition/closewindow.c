@@ -232,6 +232,16 @@ VOID int_closewindow(struct CloseWindowActionMsg *msg,
 
     iihd = (struct IIHData *)GetPrivIBase(IntuitionBase)->InputHandler->is_Data;
 
+    /* The gadget help forgets the window and its gadgets */
+    LOCKGADGET(IntuitionBase)
+    if (iihd->LastHelpWindow == msg->window)
+    {
+        iihd->LastHelpGadget = NULL;
+        iihd->LastHelpWindow = NULL;
+        iihd->HelpGadgetFindTime = 0;
+    }
+    UNLOCKGADGET(IntuitionBase)
+
     /* if there is an active gadget in the msg->window being closed, then make
        it inactive */
     if (iihd->ActiveGadget &&

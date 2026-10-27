@@ -33,6 +33,78 @@ struct SRBuffer
     ULONG avail;
 };
 
+#if !defined(__mc68000__)
+/*
+ * On non-m68k hosts a 68k seglist may be run by kaffeine.library, which
+ * copies the segments into its own guest address space. Keep a record of
+ * every relocation applied here so that the copy can be rebased.
+ */
+#define RECORD_RELOCS
+
+struct RelocRecorder
+{
+    struct HunkRelocation *relocs;
+    ULONG                  count;
+    ULONG                  max;
+    BOOL                   active;
+};
+
+static LONG record_reloc(struct RelocRecorder *rr, ULONG first, ULONG last,
+                         ULONG source, ULONG target, ULONG offset, UWORD type)
+{
+    struct HunkRelocation *hr;
+
+    if (!rr->active)
+        return 0;
+
+    if (source < first || source > last || target < first || target > last ||
+        last - first > 0xFFFF)
+        return ERROR_BAD_HUNK;
+
+    if (rr->count == rr->max)
+    {
+        ULONG max = rr->max ? rr->max * 2 : 64;
+        struct HunkRelocation *relocs = AllocVec(max * sizeof(*relocs), MEMF_ANY);
+
+        if (!relocs)
+            return ERROR_NO_FREE_STORE;
+        if (rr->relocs)
+        {
+            CopyMem(rr->relocs, relocs, rr->count * sizeof(*relocs));
+            FreeVec(rr->relocs);
+        }
+        rr->relocs = relocs;
+        rr->max    = max;
+    }
+
+    hr = &rr->relocs[rr->count++];
+    hr->hr_Offset = offset;
+    hr->hr_Source = source - first;
+    hr->hr_Target = target - first;
+    hr->hr_Type   = type;
+    hr->hr_Pad    = 0;
+
+    return 0;
+}
+
+static void free_relocs(struct RelocRecorder *rr)
+{
+    FreeVec(rr->relocs);
+    rr->relocs = NULL;
+    rr->count = rr->max = 0;
+}
+
+#define RECORD_RELOC(source, target, offset, type)                         \
+    do {                                                                    \
+        LONG rerr = record_reloc(&recorder, first, last, (source), (target), \
+                                 (offset), (type));                         \
+        if (rerr)                                                           \
+            ERROR(rerr);                                                    \
+    } while (0)
+#else
+#define RECORD_RELOC(source, target, offset, type)
+#endif
+
 static int read_block_buffered(BPTR file, APTR buffer, ULONG size, SIPTR * funcarray, struct SRBuffer * srb, struct DosLibrary * DOSBase)
 {
     if (!srb) {
@@ -106,6 +178,9 @@ BPTR InternalLoadSeg_AOS(BPTR fh,
   ULONG tmp, req;
   SIPTR dummy;
   struct SRBuffer srbbuf, *srb;
+#if defined(RECORD_RELOCS)
+  struct RelocRecorder recorder = { NULL, 0, 0, FALSE };
+#endif
 #if DEBUG
   static STRPTR segtypes[] = { "CODE", "DATA", "BSS", };
 #endif
@@ -120,6 +195,10 @@ BPTR InternalLoadSeg_AOS(BPTR fh,
   }
   srb = &srbbuf;
   srb->buffer = NULL;
+#if defined(RECORD_RELOCS)
+  /* Overlay nodes and loads without DOS are never run by the emulator. */
+  recorder.active = (DOSBase != NULL && table == BNULL);
+#endif
 
   curhunk = lasthunk = 0; /* keep GCC quiet */
   /* start point is HUNK_HEADER + 4 */
@@ -318,6 +397,7 @@ BPTR InternalLoadSeg_AOS(BPTR fh,
             offset = AROS_BE2LONG(offset);
 
             //D(bug("\t\t0x%06lx\n", offset));
+            RECORD_RELOC(lasthunk, lcount, offset, HRT_ABSOLUTE);
             addr = (ULONG *)(GETHUNKPTR(lasthunk) + offset);
 
             val = AROS_BE2LONG(*addr) + (IPTR)GETHUNKPTR(lcount);
@@ -365,6 +445,7 @@ BPTR InternalLoadSeg_AOS(BPTR fh,
               offset = AROS_BE2WORD(offset);
 
               //D(bug("\t\t0x%06lx\n", offset));
+              RECORD_RELOC(lasthunk, wcount, offset, HRT_RELATIVE);
               addr = (ULONG *)(GETHUNKPTR(lasthunk) + offset);
 
               val = AROS_BE2LONG(*addr) + (IPTR)(GETHUNKPTR(wcount) - GETHUNKPTR(lasthunk));
@@ -399,7 +480,7 @@ BPTR InternalLoadSeg_AOS(BPTR fh,
             if (wcount == 0L)
               break;
 
-            wcount = AROS_BE2LONG(wcount);
+            wcount = AROS_BE2WORD(wcount);
 
             i = wcount;
             Wordcount++;
@@ -423,6 +504,10 @@ BPTR InternalLoadSeg_AOS(BPTR fh,
               offset = AROS_BE2WORD(wcount);
 
               D(bug("\t\t0x%06lx += 0x%lx\n", offset, GETHUNKPTR(lcount)));
+              /* The HUNK_ABSRELOC16 value below also subtracts the offset,
+                 which is the same in every copy of the hunk. */
+              RECORD_RELOC(lasthunk, lcount, offset,
+                           (hunktype & 0xFFFFFF) == HUNK_ABSRELOC16 ? HRT_RELATIVE : HRT_ABSOLUTE);
               addr = (ULONG *)(GETHUNKPTR(lasthunk) + offset);
 
               if ((hunktype & 0xFFFFFF) == HUNK_ABSRELOC16)
@@ -562,6 +647,9 @@ done:
         h[4] = (ULONG)overlaytable;
         h[5] = (ULONG)MKBADDR(hunktab);
         D(bug("overlay loaded!\n"));
+#if defined(RECORD_RELOCS)
+        free_relocs(&recorder);
+#endif
         return (BPTR)(-(LONG)MKBADDR(h));
 #endif
       }
@@ -574,7 +662,19 @@ done:
 
     last_p = firsthunk;
 
-    register_hunk(fh, firsthunk, NULL, DOSBase);
+#if defined(RECORD_RELOCS)
+    if (recorder.active)
+    {
+      struct HunkRelocTable relocs;
+
+      relocs.hrt_NumHunks  = last - first + 1;
+      relocs.hrt_NumRelocs = recorder.count;
+      relocs.hrt_Relocs    = recorder.relocs;
+      register_hunk(fh, firsthunk, NULL, &relocs, DOSBase);
+    }
+    else
+#endif
+    register_hunk(fh, firsthunk, NULL, NULL, DOSBase);
 
     ilsFreeVec(hunktab);
     hunktab = NULL;
@@ -588,6 +688,9 @@ end:
     ilsFreeVec(hunktab);
   }
   ilsFreeMem(srb->buffer, LOADSEG_HUNK_BUFFER);
+#if defined(RECORD_RELOCS)
+  free_relocs(&recorder);
+#endif
   return last_p;
 } /* InternalLoadSeg */
 

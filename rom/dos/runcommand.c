@@ -8,8 +8,8 @@
 
 #include <proto/exec.h>
 #include <proto/dos.h>
-#define __M68KEMU_NOLIBBASE__
-#include <proto/m68kemu.h>
+#define __KAFFEINE_NOLIBBASE__
+#include <proto/kaffeine.h>
 
 #include <exec/memory.h>
 #include <utility/tagitem.h>
@@ -106,10 +106,27 @@
 #if !defined(__mc68000__)
             /* Route m68k hunk binaries through emulator */
             if (hunkinfo) {
-                struct Library *M68KEmuBase = OpenLibrary("m68kemu.library", 0);
-                if (M68KEmuBase) {
-                    LONG m68k_ret = RunHunk(segList, stacksize, argptr, argsize);
-                    CloseLibrary(M68KEmuBase);
+                struct Library *KaffeineBase = OpenLibrary("kaffeine.library", 0);
+                if (KaffeineBase) {
+                    LONG m68k_ret;
+
+                    /* Give the 68k program its arguments as a native command
+                       gets them below: in pr_Arguments, and injected into
+                       Input(), where ReadArgs() reads them. */
+                    oldargs = me->pr_Arguments;
+                    me->pr_Arguments = (STRPTR)argptr;
+                    vbuf_inject(Input(), argptr, argsize);
+
+                    m68k_ret = RunHunk(segList, stacksize, argptr, argsize);
+
+                    me->pr_Arguments = oldargs;
+                    if (Input())
+                    {
+                        struct FileHandle *in = (struct FileHandle *)BADDR(Input());
+                        if (in->fh_Func3 != -1)
+                            Flush(Input());
+                    }
+                    CloseLibrary(KaffeineBase);
                     return m68k_ret;
                 }
             }

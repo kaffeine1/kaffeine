@@ -179,6 +179,7 @@
 #define GSLI_ElfHandle  (GSLI_Dummy + 4)
 #define GSLI_68KHUNK    (GSLI_Dummy + 5)
 #define GSLI_68KOVLAY   (GSLI_Dummy + 6)
+#define GSLI_68KRelocs  (GSLI_Dummy + 7) /* struct HunkRelocTable * */
 
 /* Tags for AllocDosObject(). */
 

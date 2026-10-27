@@ -1,0 +1,13 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Fabian Schmieder (@metaneutrons)
+include $(SRCDIR)/config/aros.cfg
+
+%build_prog mmake=test-kaffeine \
+    progname=test_kaffeine targetdir=$(AROS_TESTS)/kaffeine \
+    files=test_kaffeine
+
+%build_prog mmake=test-kaffeine-runm68k \
+    progname=RunM68K targetdir=$(AROS_C) \
+    files=runm68k
+
+%common

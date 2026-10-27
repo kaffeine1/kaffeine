@@ -5,6 +5,18 @@
 #define SEGTYPE_HUNK_OVERLAY    2
 #define SEGTYPE_ELF             10
 
+#include <exec/nodes.h>
+#include <dos/doshunks.h>
+
+/* Seglist information node for SEGTYPE_HUNK. Recorded relocations, if any,
+   are stored in the same allocation after the node. */
+struct HunkSegNode
+{
+    struct Node           hsn_Node;
+    struct HunkRelocTable hsn_Relocs;
+    BOOL                  hsn_HasRelocs;
+};
+
 BPTR InternalLoadSeg_AOS(BPTR file,
                          BPTR table,
                          SIPTR * funcarray,

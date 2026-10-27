@@ -28,15 +28,40 @@
 #define SFLG_WORKBUF_ALLOCATED  (1 << 3)
 #define SFLG_UNDOBUF_ALLOCATED  (1 << 4)
 
+/* Copy up to len bytes of text into the buffer of a StringInfo, which has
+   MaxChars bytes: no more than MaxChars - 1, and a NUL. */
+static void set_buffer_bytes(struct StringInfo *StrInfo, CONST_STRPTR text, ULONG len)
+{
+    if (StrInfo->MaxChars < 1)
+        return;
+    if (len > (ULONG)StrInfo->MaxChars - 1)
+        len = (ULONG)StrInfo->MaxChars - 1;
+    memcpy(StrInfo->Buffer, text, len);
+    StrInfo->Buffer[len] = '\0';
+}
+
+/* A text into the buffer, read no further than the buffer takes */
+static void set_buffer_text(struct StringInfo *StrInfo, CONST_STRPTR text)
+{
+    ULONG len = 0;
+
+    if (StrInfo->MaxChars < 1)
+        return;
+    while (len < (ULONG)StrInfo->MaxChars - 1 && text[len])
+        len++;
+    set_buffer_bytes(StrInfo, text, len);
+}
+
+/* The LongInt of a StringInfo as decimal digits in its buffer; unsigned
+   arithmetic also gives the lowest LONG its digits. */
 static void set_buffer_str(struct StringInfo *StrInfo)
 {
     char  buf[64];
     char *ptr = buf + sizeof(buf);
-    LONG  value = StrInfo->LongInt;
-    int   len;
+    ULONG value = (ULONG)StrInfo->LongInt;
 
-    if (value < 0)
-        value = -value;
+    if (StrInfo->LongInt < 0)
+        value = 0 - value;
 
     do
     {
@@ -48,13 +73,7 @@ static void set_buffer_str(struct StringInfo *StrInfo)
     if (StrInfo->LongInt < 0)
         *--ptr = '-';
 
-    len = buf + sizeof(buf) - ptr;
-
-    if (len >= StrInfo->MaxChars)
-        len = StrInfo->MaxChars - 1;
-
-    StrInfo->Buffer[len] = '\0';
-    memcpy(StrInfo->Buffer, ptr, len);
+    set_buffer_bytes(StrInfo, ptr, buf + sizeof(buf) - ptr);
 }
 
 /*****************
@@ -105,27 +124,33 @@ STATIC IPTR strg_set(Class *cl, struct Gadget * g, struct opSet *msg)
                 {
                     /* OM_NEW STRINGA_TextVal is handled in strg_new! */
 
-                    strcpy(data->StrInfo.Buffer, (STRPTR)tidata ? (STRPTR)tidata : (STRPTR)"");
+                    set_buffer_text(&data->StrInfo, tidata ? (CONST_STRPTR)tidata : (CONST_STRPTR)"");
                     g->Activation &= ~GACT_LONGINT;
                     retval = 1UL;
                     notify = TRUE;
                 }
                 break;
 
+            /* Only at creation: the buffers have the size of MaxChars,
+               and the class frees those that it allocated itself. */
             case STRINGA_MaxChars:      /* [I] */
-                data->StrInfo.MaxChars = (WORD)tidata;
+                if (msg->MethodID == OM_NEW)
+                    data->StrInfo.MaxChars = (WORD)tidata;
                 break;
 
             case STRINGA_Buffer:        /* [I] */
-                data->StrInfo.Buffer = (STRPTR)tidata;
+                if (msg->MethodID == OM_NEW)
+                    data->StrInfo.Buffer = (STRPTR)tidata;
                 break;
 
             case STRINGA_UndoBuffer:    /* [I] */
-                data->StrInfo.UndoBuffer = (STRPTR)tidata;
+                if (msg->MethodID == OM_NEW)
+                    data->StrInfo.UndoBuffer = (STRPTR)tidata;
                 break;
 
             case STRINGA_WorkBuffer:    /* [I] */
-                data->StrExtend.WorkBuffer = (STRPTR)tidata;
+                if (msg->MethodID == OM_NEW)
+                    data->StrExtend.WorkBuffer = (STRPTR)tidata;
                 break;
 
             case STRINGA_BufferPos:     /* [ISU] */
@@ -139,7 +164,12 @@ STATIC IPTR strg_set(Class *cl, struct Gadget * g, struct opSet *msg)
                 break;
 
             case STRINGA_AltKeyMap:     /* [IS] */
+                /* Intuition uses it only with GACT_ALTKEYMAP */
                 data->StrInfo.AltKeyMap = (struct KeyMap *)tidata;
+                if (tidata)
+                    g->Activation |= GACT_ALTKEYMAP;
+                else
+                    g->Activation &= ~GACT_ALTKEYMAP;
                 break;
 
             case STRINGA_Font:      /* [IS] */
@@ -310,7 +340,7 @@ IPTR StrGClass__OM_NEW(Class *cl, Object * o, struct opSet *msg)
         textval = (STRPTR)GetTagData(STRINGA_TextVal, 0, msg->ops_AttrList);
         if (textval)
         {
-            strcpy(data->StrInfo.Buffer, textval);
+            set_buffer_text(&data->StrInfo, textval);
             D(bug("strgclass:Initializing string gadget to text value %s\n", textval));
             g->Activation &= ~GACT_LONGINT;
         }
@@ -543,7 +573,8 @@ IPTR StrGClass__GM_GOACTIVE(Class *cl, struct Gadget *g, struct gpInput *msg)
         g->Flags |= GFLG_SELECTED;
         if (data->StrInfo.UndoBuffer)
         {
-            strcpy(data->StrInfo.UndoBuffer, data->StrInfo.Buffer);
+            CopyStrGadText(data->StrInfo.UndoBuffer, data->StrInfo.Buffer,
+                           data->StrInfo.MaxChars);
         }
 
         if ((rp = ObtainGIRPort(gi)))

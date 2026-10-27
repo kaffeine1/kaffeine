@@ -1,0 +1,11 @@
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+#pragma once
+#include <graphics/text.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+struct TextFont *OpenDiskFont(struct TextAttr *textAttr);
+#ifdef __cplusplus
+}
+#endif

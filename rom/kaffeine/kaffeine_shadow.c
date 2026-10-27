@@ -1,0 +1,378 @@
+/*
+    Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Fabian Schmieder (@metaneutrons)
+*/
+/* kaffeine_shadow.c — Generic struct shadow engine + generated layout tables */
+
+#include <aros/debug.h>
+#include <exec/types.h>
+#include <exec/ports.h>
+#include <exec/execbase.h>
+#include <dos/dosextens.h>
+#include <proto/exec.h>
+#include <proto/dos.h>
+#include <string.h>
+#include <stddef.h>
+
+#include "kaffeine_intern.h"
+#include "kaffeine_offsets.h"
+#include "kaffeine_shadow.h"
+#include "kaffeine_cli.h"
+#include "kaffeine_tasks.h"
+#include "kaffeine_filehandle.h"
+
+/* Keep registry ownership with the engine that creates and destroys shadows. */
+ULONG shadow_register(struct KaffeineContext *ctx, ULONG m68k_addr, void *native, UWORD type)
+{
+    if (ctx->num_shadows < KAFFEINE_MAX_SHADOWS) {
+        ctx->shadow_map[ctx->num_shadows].m68k_addr = m68k_addr;
+        ctx->shadow_map[ctx->num_shadows].native_ptr = native;
+        ctx->shadow_map[ctx->num_shadows].type = type;
+        ctx->num_shadows++;
+        return m68k_addr;
+    }
+    bug("[kaffeine] shadow_register: shadow table full (%u entries), cannot register 0x%lx\n",
+        (unsigned)KAFFEINE_MAX_SHADOWS, (unsigned long)m68k_addr);
+    return 0;
+}
+
+void *shadow_lookup(struct KaffeineContext *ctx, ULONG m68k_addr)
+{
+    for (UWORD i = 0; i < ctx->num_shadows; i++)
+        if (ctx->shadow_map[i].m68k_addr == m68k_addr)
+            return ctx->shadow_map[i].native_ptr;
+    return NULL;
+}
+
+void shadow_remove(struct KaffeineContext *ctx, ULONG m68k_addr)
+{
+    for (UWORD i = 0; i < ctx->num_shadows; i++)
+        if (ctx->shadow_map[i].m68k_addr == m68k_addr) {
+            ctx->shadow_map[i] = ctx->shadow_map[--ctx->num_shadows];
+            return;
+        }
+}
+
+/* ── Generated layout tables (179 structs, 766 fields) ── */
+#include "kaffeine_shadow_layouts.h"
+
+/* ── Engine ── */
+
+static void sync_fields(struct KaffeineContext *ctx,
+                        const struct M68KFieldMap *fields,
+                        ULONG m68k_base, void *native)
+{
+    for (const struct M68KFieldMap *f = fields; f->type != SF_END; f++)
+    {
+        UBYTE *src = (UBYTE *)native + f->native_off;
+        switch (f->type) {
+        case SF_BYTE:
+            ctx->mem[m68k_base + f->m68k_off] = *src;
+            break;
+        case SF_WORD:
+            m68k_write16(ctx, m68k_base + f->m68k_off, *(UWORD *)src);
+            break;
+        case SF_LONG:
+            m68k_write32(ctx, m68k_base + f->m68k_off, *(ULONG *)src);
+            break;
+        case SF_PTR: {
+            void *ptr = *(void **)src;
+            if (!ptr) { m68k_write32(ctx, m68k_base + f->m68k_off, 0); break; }
+            /* Check if this native pointer already has a shadow */
+            ULONG existing = 0;
+            for (UWORD i = 0; i < ctx->num_shadows; i++)
+                if (ctx->shadow_map[i].native_ptr == ptr &&
+                    ctx->shadow_map[i].type == f->shadow_type)
+                    { existing = ctx->shadow_map[i].m68k_addr; break; }
+            if (existing) {
+                m68k_write32(ctx, m68k_base + f->m68k_off, existing);
+            } else if (f->sub_layout) {
+                /* Known struct type — create a proper sub-shadow */
+                ULONG mp = Kaffeine_HeapAlloc(ctx, f->sub_layout->m68k_size, 0);
+                if (mp) {
+                    shadow_register(ctx, mp, ptr, f->shadow_type);
+                    m68k_write32(ctx, m68k_base + f->m68k_off, mp);
+                    sync_fields(ctx, f->sub_layout->fields, mp, ptr);
+                } else {
+                    m68k_write32(ctx, m68k_base + f->m68k_off, 0);
+                }
+            } else {
+                /* Unknown struct — write 0 rather than an empty placeholder
+                   that m68k code would dereference into garbage */
+                m68k_write32(ctx, m68k_base + f->m68k_off, 0);
+            }
+            break;
+        }
+        }
+    }
+}
+
+ULONG shadow_create(struct KaffeineContext *ctx,
+                    const struct M68KStructLayout *layout,
+                    void *native)
+{
+    ULONG m = Kaffeine_HeapAlloc(ctx, layout->m68k_size, 0);
+    if (!m) return 0;
+    if (!shadow_register(ctx, m, native, layout->shadow_type)) {
+        Kaffeine_HeapFree(ctx, m, layout->m68k_size);
+        return 0;
+    }
+    sync_fields(ctx, layout->fields, m, native);
+    return m;
+}
+
+void shadow_sync(struct KaffeineContext *ctx,
+                 const struct M68KStructLayout *layout,
+                 ULONG m68k_addr, void *native)
+{
+    sync_fields(ctx, layout->fields, m68k_addr, native);
+}
+
+void shadow_destroy(struct KaffeineContext *ctx,
+                    const struct M68KStructLayout *layout,
+                    ULONG m68k_addr)
+{
+    shadow_remove(ctx, m68k_addr);
+    Kaffeine_HeapFree(ctx, m68k_addr, layout->m68k_size);
+}
+
+/* ── Layout lookup by name ── */
+
+const struct M68KStructLayout *shadow_find_layout(const char *name)
+{
+    for (int i = 0; shadow_gen_layouts[i].name; i++) {
+        if (strcmp(shadow_gen_layouts[i].name, name) == 0)
+            return &shadow_gen_layouts[i];
+    }
+    return NULL;
+}
+
+/* ── Convenience: create shadow by struct name ── */
+
+ULONG shadow_create_by_name(struct KaffeineContext *ctx,
+                            const char *struct_name, void *native)
+{
+    const struct M68KStructLayout *layout = shadow_find_layout(struct_name);
+    if (!layout) {
+        D(bug("[kaffeine] shadow_create_by_name: unknown struct '%s'\n", struct_name));
+        return 0;
+    }
+    return shadow_create(ctx, layout, native);
+}
+
+
+/* ── m68k→native struct translation ── */
+
+/* Convert m68k TagItem list (8 bytes per entry) to native (16 bytes on 64-bit).
+   String-valued tags are resolved to host pointers.
+   Caller must free_native_taglist / FreeVec the returned array. Returns NULL on failure. */
+struct TagItem *m68k_to_native_taglist(struct KaffeineContext *ctx, ULONG m68k_addr)
+{
+    if (!m68k_addr) return NULL;
+
+    /* Count tags */
+    int n = 0;
+    ULONG p = m68k_addr;
+    while (m68k_read32(ctx, p) != TAG_DONE) { n++; p += 8; }
+    n++; /* include TAG_DONE */
+
+    struct TagItem *ht = (struct TagItem *)AllocVec(n * sizeof(struct TagItem), MEMF_CLEAR);
+    if (!ht) return NULL;
+
+    p = m68k_addr;
+    for (int i = 0; i < n; i++) {
+        ht[i].ti_Tag = m68k_read32(ctx, p);
+        ULONG v = m68k_read32(ctx, p + 4);
+        /* Heuristic: tags with pointer values need host resolution */
+        if (v >= 0x100 && v < ctx->mem_size)
+            ht[i].ti_Data = (IPTR)m68k_to_host(ctx, v);
+        else
+            ht[i].ti_Data = (IPTR)v;
+        p += 8;
+    }
+    return ht;
+}
+
+void free_native_taglist(struct TagItem *tags)
+{
+    if (tags) FreeVec(tags);
+}
+
+/* Translate an m68k struct to a native struct using a layout table.
+   Allocates and returns a native struct. Caller must FreeMem it. */
+void *m68k_to_native_struct(struct KaffeineContext *ctx,
+                            const char *struct_name, ULONG m68k_addr)
+{
+    const struct M68KStructLayout *layout = shadow_find_layout(struct_name);
+    if (!layout || !m68k_addr) return NULL;
+
+    /* Find native size from the gen table */
+    ULONG native_size = 0;
+    for (int i = 0; shadow_gen_layouts[i].name; i++) {
+        if (strcmp(shadow_gen_layouts[i].name, struct_name) == 0) {
+            /* We don't store native_size in the layout, estimate from last field */
+            native_size = layout->m68k_size * 3; /* conservative overestimate */
+            break;
+        }
+    }
+    if (!native_size) return NULL;
+
+    void *native = AllocMem(native_size, MEMF_CLEAR);
+    if (!native) return NULL;
+
+    /* Reverse sync: read m68k fields, write to native offsets */
+    for (const struct M68KFieldMap *f = layout->fields; f->type != SF_END; f++) {
+        UBYTE *dst = (UBYTE *)native + f->native_off;
+        switch (f->type) {
+        case SF_BYTE:
+            *dst = ctx->mem[m68k_addr + f->m68k_off];
+            break;
+        case SF_WORD:
+            *(UWORD *)dst = m68k_read16(ctx, m68k_addr + f->m68k_off);
+            break;
+        case SF_LONG:
+            *(ULONG *)dst = m68k_read32(ctx, m68k_addr + f->m68k_off);
+            break;
+        case SF_PTR: {
+            ULONG mptr = m68k_read32(ctx, m68k_addr + f->m68k_off);
+            if (mptr)
+                *(void **)dst = m68k_to_host_or_shadow(ctx, mptr);
+            break;
+        }
+        }
+    }
+    return native;
+}
+
+/* ── ExecBase shadow init ── */
+
+static BOOL task_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    return ctx->mem && addr && size <= ctx->mem_size && addr <= ctx->mem_size - size;
+}
+
+ULONG shadow_task(struct KaffeineContext *ctx, void *native_task, BOOL current)
+{
+    struct Task *task = (struct Task *)native_task;
+    const struct M68KStructLayout *layout = shadow_find_layout("Task");
+    ULONG guest;
+    UWORD i;
+
+    if (!task || !layout)
+        return 0;
+    for (i = 0; i < ctx->num_shadows; i++)
+        if (ctx->shadow_map[i].native_ptr == task && ctx->shadow_map[i].type == layout->shadow_type)
+        {
+            guest = ctx->shadow_map[i].m68k_addr;
+            return task_range(ctx, guest, layout->m68k_size) ? guest : 0;
+        }
+    /* Existing identities remain usable when full. A new task fails before
+       allocating, so no unregistered or unstable shadow can escape. */
+    if (ctx->num_shadows == KAFFEINE_MAX_SHADOWS)
+        return 0;
+    guest = Kaffeine_HeapAlloc(ctx, M68K_SIZEOF_PROCESS, 0);
+    if (!task_range(ctx, guest, M68K_SIZEOF_PROCESS))
+        return 0;
+    if (!shadow_register(ctx, guest, task, layout->shadow_type))
+    {
+        Kaffeine_HeapFree(ctx, guest, M68K_SIZEOF_PROCESS);
+        return 0;
+    }
+    /* The heap can return dirty memory. Foreign tasks get zero Process fields,
+       never this context's CLI, arguments or native streams. */
+    memset(ctx->mem + guest, 0, M68K_SIZEOF_PROCESS);
+    shadow_sync(ctx, layout, guest, task);
+    if (current && task->tc_Node.ln_Type == NT_PROCESS)
+    {
+        m68k_write32(ctx, guest + M68K_PR_CLI, Kaffeine_GetCLI(ctx) >> 2);
+        m68k_write32(ctx, guest + M68K_PR_ARGUMENTS, ctx->m68k_argptr);
+        m68k_write32(ctx, guest + M68K_PR_CIS, Kaffeine_FileImport(ctx, Input(), FALSE));
+        m68k_write32(ctx, guest + M68K_PR_COS, Kaffeine_FileImport(ctx, Output(), FALSE));
+        /* The Shell sets the error stream for *>; libnix takes stderr from
+           here and opens the console only when it is zero. */
+        m68k_write32(ctx, guest + M68K_PR_CES, Kaffeine_FileImport(ctx, ((struct Process *)task)->pr_CES, FALSE));
+    }
+    return guest;
+}
+
+/* -294: FindTask(A1=name) -> D0=stable guest Task address. */
+IPTR Kaffeine_FindTask(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG name_addr = THUNK_A(1);
+    const char *name;
+
+    if (!name_addr)
+    {
+        /* The context can execute in a different native process from the one
+           that prepared it. Its guest identity is always the ExecBase field. */
+        if (!task_range(ctx, ctx->m68k_sysbase, M68K_EXECBASE_THISTASK + 4))
+            return 0;
+        return m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK);
+    }
+    if (!task_range(ctx, name_addr, 1) ||
+        !memchr(ctx->mem + name_addr, 0, ctx->mem_size - name_addr))
+        return 0;
+    name = (const char *)ctx->mem + name_addr;
+    return shadow_task(ctx, FindTask(name), FALSE);
+}
+
+/* ExecBase embedded list offsets (m68k -> AROS) */
+static const struct { UWORD m68k_off; UWORD native_off; const char *name; } execbase_lists[] = {
+    { M68K_EXECBASE_MEMLIST,       624, "MemList" },
+    { M68K_EXECBASE_RESOURCELIST,  656, "ResourceList" },
+    { M68K_EXECBASE_DEVICELIST,    688, "DeviceList" },
+    { M68K_EXECBASE_INTRLIST,      720, "IntrList" },
+    { M68K_EXECBASE_LIBLIST,       752, "LibList" },
+    { M68K_EXECBASE_TASKREADY,     816, "TaskReady" },
+    { M68K_EXECBASE_TASKWAIT,      848, "TaskWait" },
+    {   0,    0, NULL },
+};
+
+ULONG shadow_init_execbase(struct KaffeineContext *ctx, ULONG m68k_base, void *native_sysbase)
+{
+    const struct M68KStructLayout *layout = shadow_find_layout("ExecBase");
+    if (!layout || !task_range(ctx, m68k_base, layout->m68k_size)) return 0;
+
+    if (!shadow_register(ctx, m68k_base, native_sysbase, layout->shadow_type)) return 0;
+    sync_fields(ctx, layout->fields, m68k_base, native_sysbase);
+
+    /* Override AttnFlags: the 68040 integer unit without an FPU, as Moira
+       runs it (see M68K_ATTNFLAGS_68040) */
+    m68k_write16(ctx, m68k_base + M68K_EXECBASE_ATTNFLAGS, M68K_ATTNFLAGS_68040);
+
+    /* Generated pointer fields without a sub-layout are zeroed by sync_fields.
+       Publish the same registered snapshot that named FindTask lookups reuse. */
+    ctx->guest_exec_task = shadow_task(ctx, FindTask(NULL), TRUE);
+    m68k_write32(ctx, m68k_base + M68K_EXECBASE_THISTASK, ctx->guest_exec_task);
+
+    /* Public guest objects cannot share links with native Exec lists. */
+    {
+        const UWORD offsets[] = { M68K_EXECBASE_SEMAPHORELIST, M68K_EXECBASE_PORTLIST };
+        const UBYTE types[] = { NT_SIGNALSEM, NT_MSGPORT };
+        unsigned i;
+
+        for (i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++)
+        {
+            ULONG list = m68k_base + offsets[i];
+
+            m68k_write32(ctx, list, list + 4);
+            m68k_write32(ctx, list + 4, 0);
+            m68k_write32(ctx, list + 8, list);
+            ctx->mem[list + 12] = types[i];
+            ctx->mem[list + 13] = 0;
+        }
+    }
+
+    /* Library node fields */
+    struct Library *lib = (struct Library *)native_sysbase;
+    m68k_write16(ctx, m68k_base + M68K_EXECBASE_LIBVERSION, lib->lib_Version);
+    m68k_write16(ctx, m68k_base + M68K_EXECBASE_LIBREVISION, lib->lib_Revision);
+
+    /* Embedded lists: register each native list as a shadow */
+    for (int i = 0; execbase_lists[i].name; i++) {
+        struct List *native_list = (struct List *)((UBYTE *)native_sysbase + execbase_lists[i].native_off);
+        shadow_register(ctx, m68k_base + execbase_lists[i].m68k_off, native_list, 17);
+    }
+
+    return m68k_base;
+}

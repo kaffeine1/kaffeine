@@ -19,8 +19,8 @@
 #include <proto/utility.h>
 #include <proto/intuition.h>
 #include <proto/graphics.h>
-#define __M68KEMU_NOLIBBASE__
-#include <proto/m68kemu.h>
+#define __KAFFEINE_NOLIBBASE__
+#include <proto/kaffeine.h>
 
 #include "dos_intern.h"
 #include LC_LIBDEFS_FILE
@@ -848,10 +848,10 @@ static void DosEntry(void)
         struct TagItem htags[] = { { GSLI_68KHUNK, (IPTR)&hunkinfo }, { TAG_DONE, 0 } };
         if (segArray[3] && GetSegListInfo(segArray[3], htags) && hunkinfo)
         {
-            struct Library *M68KEmuBase = OpenLibrary("m68kemu.library", 0);
-            if (M68KEmuBase) {
+            struct Library *KaffeineBase = OpenLibrary("kaffeine.library", 0);
+            if (KaffeineBase) {
                 result = RunHunk(segArray[3], me->pr_StackSize, me->pr_Arguments, argSize);
-                CloseLibrary(M68KEmuBase);
+                CloseLibrary(KaffeineBase);
                 goto skip_native_entry;
             }
         }

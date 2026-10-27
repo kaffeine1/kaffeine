@@ -35,6 +35,14 @@
 
     INPUTS
         seglist - The segment list.
+        taglist - Tags whose ti_Data points to an IPTR that receives:
+                  GSLI_ElfHandle - the seglist, if it was loaded from ELF.
+                  GSLI_68KHUNK   - the seglist, if it was loaded from a
+                                   68k HUNK file.
+                  GSLI_68KRelocs - a struct HunkRelocTable describing the
+                                   relocations applied to a 68k HUNK seglist
+                                   on a non-m68k host. It remains valid
+                                   until the seglist is unloaded.
 
     RESULT
         returns number of tags aknowledged.
@@ -93,6 +101,16 @@
                         {
                             IPTR *storage = (IPTR *)tag->ti_Data;
                             *storage = (IPTR)segfound->ln_Name;
+                            count++;
+                        }
+                        break;
+
+                    case GSLI_68KRelocs:
+                        if ((tag->ti_Data) && (segfound->ln_Type == SEGTYPE_HUNK) &&
+                            ((struct HunkSegNode *)segfound)->hsn_HasRelocs)
+                        {
+                            IPTR *storage = (IPTR *)tag->ti_Data;
+                            *storage = (IPTR)&((struct HunkSegNode *)segfound)->hsn_Relocs;
                             count++;
                         }
                         break;

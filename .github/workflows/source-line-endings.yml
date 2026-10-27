@@ -1,8 +1,12 @@
 name: Report source line endings
 
+# Pull requests only, where a new push stops the run of the old one.
 on:
-  push:
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

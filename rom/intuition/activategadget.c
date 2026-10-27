@@ -51,6 +51,9 @@ static VOID int_activategadget(struct ActivateGadgetActionMsg *msg,
     RESULT
 
     NOTES
+        A Boolean or proportional gadget is not activated: as on AmigaOS
+        3.2.3, the result is TRUE for one on the active window while no
+        gadget is in use, disabled or not, and the gadget stays as it is.
 
     EXAMPLE
 
@@ -74,7 +77,9 @@ static VOID int_activategadget(struct ActivateGadgetActionMsg *msg,
         if (1)
         {
             if ((((gadget->GadgetType & GTYP_GTYPEMASK) == GTYP_CUSTOMGADGET) && (!(gadget->Activation & GACT_ACTIVEGADGET))) ||
-                ((gadget->GadgetType & GTYP_GTYPEMASK) == GTYP_STRGADGET))
+                ((gadget->GadgetType & GTYP_GTYPEMASK) == GTYP_STRGADGET) ||
+                ((gadget->GadgetType & GTYP_GTYPEMASK) == GTYP_BOOLGADGET) ||
+                ((gadget->GadgetType & GTYP_GTYPEMASK) == GTYP_PROPGADGET))
             {
                 struct ActivateGadgetActionMsg msg;
                 
@@ -139,9 +144,15 @@ static VOID int_activategadget(struct ActivateGadgetActionMsg *msg,
                     iihdata->ActiveGadget));
 
     if ((iihdata->ActiveGadget == NULL) &&
-        (IntuitionBase->ActiveWindow == window) &&
-        ((gadget->Flags & GFLG_DISABLED) == 0))
+        (IntuitionBase->ActiveWindow == window))
     {
-        msg->success = (DoActivateGadget(window, req, gadget, IntuitionBase) != NULL);
+        /* A Boolean or proportional gadget is not activated: AmigaOS 3.2.3
+           answers TRUE for one there, disabled or not, and leaves it as it
+           is. */
+        if ((gadget->GadgetType & GTYP_GTYPEMASK) == GTYP_BOOLGADGET ||
+            (gadget->GadgetType & GTYP_GTYPEMASK) == GTYP_PROPGADGET)
+            msg->success = TRUE;
+        else if ((gadget->Flags & GFLG_DISABLED) == 0)
+            msg->success = (DoActivateGadget(window, req, gadget, IntuitionBase) != NULL);
     }
 }

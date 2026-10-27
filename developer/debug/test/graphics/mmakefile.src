@@ -20,6 +20,7 @@ FILES := screenppm \
     showvisshape \
     testarrayops \
     textbug \
+    textlong \
     truecolorpens \
     weightamatch \
     wpaaglobal \

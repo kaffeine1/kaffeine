@@ -55,8 +55,19 @@ static inline elf_uintptr_t elf_read_uintptr(const void *p)
 uint32_t        int_shnum;
 uint32_t        int_shstrndx;
 
-int checkHeader(struct elfheader *eh)
+int checkHeader(struct elfheader *eh_file)
 {
+        /*
+         * Inside the BSP package an ELF header is only 4-byte aligned, and
+         * the MMU is still off, so any unaligned load faults. Read the
+         * header from an aligned copy: the compiler may otherwise merge its
+         * byte fields into wider loads based on the structure's alignment.
+         */
+        struct elfheader ehdr;
+        struct elfheader *eh = &ehdr;
+
+        elf_memcpy(eh, eh_file, sizeof(ehdr));
+
         if (eh->ident[0] != 0x7f || eh->ident[1] != 'E'  ||
                         eh->ident[2] != 'L'  || eh->ident[3] != 'F')
         {
@@ -83,14 +94,17 @@ int checkHeader(struct elfheader *eh)
                         return 0;
                 }
 
-                struct sheader *sh = (struct sheader *)((intptr_t)eh + elf_read_uintptr(&eh->shoff));
-                DELF(kprintf("[BOOT:ELF] extended: sh=%p\n", sh));
+                struct sheader sh0;
+                void *sh_file = (void *)((intptr_t)eh_file + elf_read_uintptr(&eh->shoff));
+                DELF(kprintf("[BOOT:ELF] extended: sh=%p\n", sh_file));
+
+                elf_memcpy(&sh0, sh_file, sizeof(sh0));
 
                 if (int_shnum == 0)
-                        int_shnum = sh->size;
+                        int_shnum = sh0.size;
 
                 if (int_shstrndx == SHN_XINDEX)
-                        int_shstrndx = sh->link;
+                        int_shstrndx = sh0.link;
 
                 if (int_shnum == 0 || int_shstrndx == SHN_XINDEX)
                 {

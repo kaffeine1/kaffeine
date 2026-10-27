@@ -8,6 +8,7 @@
 #include <proto/graphics.h>
 #include <proto/utility.h>
 #include <proto/keymap.h>
+#include <exec/memory.h>
 #include <intuition/screens.h>
 #include <intuition/cghooks.h>
 #include <graphics/gfxmacros.h>
@@ -37,6 +38,12 @@ size_t  stccpy(char *s1, const char *s2, size_t n);
 
 #define NUMPENS 3
 #define STRALIGNMASK    (GACT_STRINGLEFT|GACT_STRINGCENTER|GACT_STRINGRIGHT)
+/* A gadget with a StringExtend: GACT_STRINGEXTEND means the same as
+   GFLG_STRINGEXTEND since V37, as on AmigaOS 3.2.3; either without an
+   Extension leaves the gadget plain */
+#define STRINGEXTENDED(gad) ((((gad)->Flags & GFLG_STRINGEXTEND) || \
+                              ((gad)->Activation & GACT_STRINGEXTEND)) && \
+                             ((struct StringInfo *)(gad)->SpecialInfo)->Extension)
 
 #define KEYBUFSIZE  10
 #define SHIFT       (IEQUALIFIER_LSHIFT|IEQUALIFIER_RSHIFT)
@@ -212,13 +219,17 @@ void UpdateDisp(struct Gadget       *gad,
         /* 2) More than fits into the gadget ? */
         if (strsize > bbox->Width)
         {
+            WORD numfit;
+
             /* Compute new DispPos such that the cursor is at the right */
-            strinfo->DispPos = strinfo->BufferPos
-                               - TextFit(rp,
-                                         &(strinfo->Buffer[strinfo->BufferPos]),
-                                         strinfo->NumChars, &te, NULL, -1,
-                                         bbox->Width, rp->Font->tf_YSize)
-                               + 1;
+            numfit = TextFit(rp,
+                             &(strinfo->Buffer[strinfo->BufferPos]),
+                             strinfo->NumChars, &te, NULL, -1,
+                             bbox->Width, rp->Font->tf_YSize);
+
+            /* In a box narrower than the character at the cursor nothing
+               fits, and the text then starts at the cursor, not past it */
+            strinfo->DispPos = strinfo->BufferPos - ((numfit > 0) ? numfit - 1 : 0);
 
             D(bug("cursor right of visible area, new disppos: %d\n", strinfo->DispPos));
         }
@@ -250,23 +261,60 @@ void UpdateDisp(struct Gadget       *gad,
 
 /*****************************************************************************************/
 
-STATIC UWORD GetTextLeft(struct Gadget      *gad,
-                         struct BBox        *bbox,
-                         struct RastPort    *rp,
-                         struct IntuitionBase   *IntuitionBase)
+/* Where the text of a centred or right aligned string gadget starts in its
+   box, as on AmigaOS 3.1 and 3.2.3. Such a gadget aligns what it draws:
+   the characters from DispPos that fit into the box, which UpdateDisp()
+   counts in DispCount, and the cursor after them when it is at the end of
+   the text. Not the rest of a text that does not fit, which would start
+   left of the box. The room it aligns them in is the box; for a plain
+   gadget, one without a StringExtend, in a font of fixed width, the whole
+   characters that fit into the box, which a text that does not fit fills,
+   so that it shows such a text from the left of its box. Right aligned
+   text ends at the right edge of the room. Returns the offset of the text
+   into the box, never below 0, and in textwidth the width aligned. */
+STATIC WORD AlignedText(struct Gadget    *gad,
+                        struct BBox      *bbox,
+                        struct RastPort  *rp,
+                        WORD             *textwidth,
+                        struct IntuitionBase *IntuitionBase)
+{
+    struct GfxBase      *GfxBase = GetPrivIBase(IntuitionBase)->GfxBase;
+    struct StringInfo   *strinfo = (struct StringInfo *)gad->SpecialInfo;
+    STRPTR               dispstr = &(strinfo->Buffer[strinfo->DispPos]);
+    WORD                 dispstrlen = strinfo->NumChars - strinfo->DispPos;
+    WORD                 room = bbox->Width;
+    WORD                 drawn, offset;
+    struct TextExtent    te;
+
+    if (dispstrlen < 0)
+        dispstrlen = 0;
+    drawn = TextFit(rp, dispstr, dispstrlen, &te, NULL, 1, bbox->Width, rp->Font->tf_YSize);
+    *textwidth = TextLength(rp, dispstr, drawn);
+    if (drawn == dispstrlen && strinfo->BufferPos == strinfo->NumChars)
+        *textwidth += TextLength(rp, cursorkey, CURSORKEYLEN);
+
+    if (!STRINGEXTENDED(gad) && !(rp->Font->tf_Flags & FPF_PROPORTIONAL) &&
+        rp->Font->tf_XSize > 0)
+        room -= room % rp->Font->tf_XSize;
+
+    offset = room - *textwidth;
+    if ((gad->Activation & STRALIGNMASK) == GACT_STRINGCENTER)
+        offset /= 2;
+
+    return (offset > 0) ? offset : 0;
+}
+
+/*****************************************************************************************/
+
+STATIC WORD GetTextLeft(struct Gadget      *gad,
+                        struct BBox        *bbox,
+                        struct RastPort    *rp,
+                        struct IntuitionBase   *IntuitionBase)
 {
     /* Gets left position of text in the string gadget */
 
-    struct GfxBase      *GfxBase = GetPrivIBase(IntuitionBase)->GfxBase;
-    struct StringInfo   *strinfo = (struct StringInfo *)gad->SpecialInfo;
-    UWORD                text_left = 0;
-    STRPTR               dispstr = &(strinfo->Buffer[strinfo->DispPos]);
-    UWORD                dispstrlen;
-    BOOL                 cursor_at_end;
-
-    cursor_at_end = (strinfo->BufferPos == strinfo->NumChars);
-
-    dispstrlen = strinfo->NumChars - strinfo->DispPos;
+    WORD                 text_left = 0;
+    WORD                 textwidth;
 
     /* Calcluate start offset of gadget text */
     switch (gad->Activation & STRALIGNMASK)
@@ -278,21 +326,8 @@ STATIC UWORD GetTextLeft(struct Gadget      *gad,
             break;
 
         case GACT_STRINGCENTER:
-            {
-                WORD textwidth = TextLength(rp, dispstr, dispstrlen);
-
-                if (cursor_at_end) textwidth += TextLength(rp, cursorkey, CURSORKEYLEN);
-                text_left = bbox->Left + ((bbox->Width - textwidth) / 2);
-            }
-            break;
-
         case GACT_STRINGRIGHT:
-            {
-                WORD textwidth = TextLength(rp, dispstr, dispstrlen);
-
-                if (cursor_at_end) textwidth += TextLength(rp, cursorkey, CURSORKEYLEN);
-                text_left =  bbox->Left + (bbox->Width - 1 - textwidth);
-            }
+            text_left = bbox->Left + AlignedText(gad, bbox, rp, &textwidth, IntuitionBase);
             break;
     }
     return (text_left);
@@ -300,21 +335,19 @@ STATIC UWORD GetTextLeft(struct Gadget      *gad,
 
 /*****************************************************************************************/
 
-STATIC UWORD GetTextRight(struct Gadget     *gad,
-                          struct BBox       *bbox,
-                          struct RastPort   *rp,
-                          struct IntuitionBase  *IntuitionBase)
+STATIC WORD GetTextRight(struct Gadget     *gad,
+                         struct BBox       *bbox,
+                         struct RastPort   *rp,
+                         struct IntuitionBase  *IntuitionBase)
 {
     /* Gets right offset of text in the string gadget */
 
     struct GfxBase      *GfxBase = GetPrivIBase(IntuitionBase)->GfxBase;
     struct StringInfo   *strinfo = (struct StringInfo *)gad->SpecialInfo;
-    UWORD                text_right = 0;
+    WORD                 text_right = 0;
     STRPTR               dispstr = &(strinfo->Buffer[strinfo->DispPos]);
     UWORD                dispstrlen;
-    BOOL                 cursor_at_end;
-
-    cursor_at_end = (strinfo->BufferPos == strinfo->NumChars);
+    WORD                 textwidth;
 
     dispstrlen = strinfo->NumChars - strinfo->DispPos;
 
@@ -328,19 +361,31 @@ STATIC UWORD GetTextRight(struct Gadget     *gad,
             break;
 
         case GACT_STRINGCENTER:
-            {
-                WORD textwidth = TextLength(rp, dispstr, dispstrlen);
-
-                if (cursor_at_end) textwidth += TextLength(rp, cursorkey, CURSORKEYLEN);
-                text_right = bbox->Left + bbox->Width - 1 - ((bbox->Width - textwidth) / 2);
-            }
-            break;
-
         case GACT_STRINGRIGHT:
-            text_right = bbox->Left + bbox->Width  - 1;
+            text_right = bbox->Left + AlignedText(gad, bbox, rp, &textwidth, IntuitionBase);
+            text_right += textwidth - 1;
             break;
     }
     return (text_right);
+}
+
+/*****************************************************************************************/
+
+/* The font of a string gadget, which the render draws its text in and a click
+   measures it with: that of its StringExtend, else the screen's, also for a
+   gadget without a StringExtend, as on AmigaOS. Neither GfxBase->DefaultFont
+   nor the font of the window's RastPort plays a part there. */
+STATIC struct TextFont *StrGadgetFont(struct Gadget *gad, struct DrawInfo *dri)
+{
+    if (STRINGEXTENDED(gad))
+    {
+        struct StringExtend *strext = ((struct StringInfo *)gad->SpecialInfo)->Extension;
+
+        if (strext->Font)
+            return strext->Font;
+    }
+
+    return dri->dri_Font;
 }
 
 /*****************************************************************************************/
@@ -355,18 +400,13 @@ STATIC VOID GetPensAndFont(struct Gadget *gad,
     struct GfxBase  *GfxBase = GetPrivIBase(IntuitionBase)->GfxBase;
     struct DrawInfo *dri = GetScreenDrawInfo(win->WScreen);
 
-    SetFont(rp, dri->dri_Font);
+    SetFont(rp, StrGadgetFont(gad, dri));
 
-    if (gad->Flags & GFLG_STRINGEXTEND)
+    if (STRINGEXTENDED(gad))
     {
         struct StringExtend *strext;
 
         strext = ((struct StringInfo *)gad->SpecialInfo)->Extension;
-
-        if (strext->Font)
-        {
-            SetFont(rp, strext->Font);
-        }
 
         if ((gad->Flags & GFLG_SELECTED) == GFLG_SELECTED)
         {
@@ -388,14 +428,6 @@ STATIC VOID GetPensAndFont(struct Gadget *gad,
         ** valid pens). If the window is closed, and the screen is closed
         ** we won't be here anymore.
         */
-
-        /* jDc: set the font to Topaz,8! */
-        if (GetPrivIBase(IntuitionBase)->TopazFont)
-        {
-            SetFont(rp,GetPrivIBase(IntuitionBase)->TopazFont);
-        } else {
-            SetFont(rp,GfxBase->DefaultFont);
-        }
 
 #if 0
         if ((gad->Flags & GFLG_SELECTED) == GFLG_SELECTED)
@@ -434,6 +466,8 @@ ULONG HandleStrInput(   struct Gadget       *gad,
     struct SGWork        sgw;
     struct StringInfo   *strinfo = (struct StringInfo *)gad->SpecialInfo;
     struct StringExtend *strext = NULL;
+    STRPTR               workbuffer = NULL, longcopy = NULL;
+    WORD                 workroom = 0;
     ULONG                command = 0;
 
     EnterFunc(bug("HandleStrInput(gad=%p, ginfo=%p, ievent=%p)\n",
@@ -458,20 +492,57 @@ ULONG HandleStrInput(   struct Gadget       *gad,
     sgw.Code    = 0;
     sgw.BufferPos   = strinfo->BufferPos;
     sgw.NumChars    = strinfo->NumChars;
+    /* the two read apart: a refresh by the program between them may have
+       counted a shorter text */
+    if (sgw.BufferPos > sgw.NumChars)
+        sgw.BufferPos = sgw.NumChars;
+    if (sgw.BufferPos < 0)
+        sgw.BufferPos = 0;
     sgw.Actions = 0;
     sgw.LongInt = strinfo->LongInt;
     sgw.GadgetInfo  = ginfo;
     sgw.EditOp  = EO_NOOP;
 
-    if (gad->Flags & GFLG_STRINGEXTEND)
+    if (STRINGEXTENDED(gad))
     {
         D(bug("HandleStrInput: Extended gadget\n"));
         strext = strinfo->Extension;
         if (strext->WorkBuffer)
         {
-            sgw.WorkBuffer = strext->WorkBuffer;
-            /* The edit hook gets *copy* of the current buffer contents */
-            strcpy(sgw.WorkBuffer, strinfo->Buffer);
+            /* The edit hooks get a *copy* of the current buffer contents,
+               in the work buffer, which has MaxChars bytes like the buffer.
+               A longer text, which only the program can have put into its
+               buffer, gets a copy of its own length instead: AmigaOS copies
+               all of it too, but past the end of the work buffer. Without
+               memory for that, Intuition's own hook edits the buffer
+               itself, as for a gadget without a work buffer; but a hook of
+               the program, the gadget's own or one installed with
+               SetEditHook(), could not reject the change any more, so the
+               event does nothing then. */
+            /* the count of sgw, which the edit uses: a refresh by the
+               program meanwhile may count the text anew */
+            if (sgw.NumChars < strinfo->MaxChars && !strinfo->Buffer[sgw.NumChars])
+            {
+                workbuffer = strext->WorkBuffer;
+                workroom = strinfo->MaxChars;
+            }
+            else
+            {
+                /* room for every edit that DoSGHKey() allows: the text of
+                   that count, and MaxChars at least, as the text may have
+                   grown since */
+                workroom = sgw.NumChars + 1 > strinfo->MaxChars ? sgw.NumChars + 1
+                                                                 : strinfo->MaxChars;
+                workbuffer = longcopy = AllocVec(workroom, MEMF_ANY);
+                if (!longcopy && (strext->EditHook || GetPrivIBase(IntuitionBase)->GlobalEditHook !=
+                                  &GetPrivIBase(IntuitionBase)->DefaultEditHook))
+                    ReturnInt("HandleStrInput", ULONG, 0UL);
+            }
+            if (workbuffer)
+            {
+                sgw.WorkBuffer = workbuffer;
+                CopyStrGadText(workbuffer, strinfo->Buffer, workroom);
+            }
         }
         sgw.Modes = strext->InitialModes;
     }
@@ -500,7 +571,10 @@ ULONG HandleStrInput(   struct Gadget       *gad,
             {
                 command = SGH_KEY;
                 sgw.Actions = SGA_USE;
-                if (1 == MapRawKey(sgw.IEvent, &buf, 1, strinfo->AltKeyMap))
+                /* the keymap of the gadget only with GACT_ALTKEYMAP, as
+                   on AmigaOS 3.2.3 */
+                if (1 == MapRawKey(sgw.IEvent, &buf, 1,
+                                   (gad->Activation & GACT_ALTKEYMAP) ? strinfo->AltKeyMap : NULL))
                 {
                     D(bug("HandleStrInput: sgw.Code 0x%lx\n",buf));
                     sgw.Code = (UWORD)buf;
@@ -512,7 +586,10 @@ ULONG HandleStrInput(   struct Gadget       *gad,
     }
 
     if (!command)
+    {
+        FreeVec(longcopy);
         ReturnInt("HandleStrInput", ULONG , 0UL);
+    }
 
     /* Call the global editing hook */
 
@@ -533,10 +610,14 @@ ULONG HandleStrInput(   struct Gadget       *gad,
     /* Copy possibly changed stuff into stringgad */
     if (sgw.Actions & SGA_USE)
     {
-        if (strext)
+        /* The result of the hooks, back into the buffer, no longer than
+           the copy could hold */
+        if (workbuffer)
         {
-            if (strext->WorkBuffer)
-                strcpy(strinfo->Buffer, strext->WorkBuffer);
+            WORD len = CopyStrGadText(strinfo->Buffer, workbuffer, workroom);
+
+            if (sgw.NumChars > len)
+                sgw.NumChars = len;
         }
 
         strinfo->BufferPos = sgw.BufferPos;
@@ -556,6 +637,7 @@ ULONG HandleStrInput(   struct Gadget       *gad,
         }
 #endif
     }
+    FreeVec(longcopy);
 
     if (sgw.Actions & SGA_BEEP)
     {
@@ -617,7 +699,7 @@ STATIC ULONG DoSGHClick(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
     struct Window       *window;
     struct Requester    *req;
 
-    UWORD                text_left, text_right;
+    WORD                 text_left, text_right;
     WORD                 mousex;
 
     window = sgw->GadgetInfo->gi_Window;
@@ -637,22 +719,14 @@ STATIC ULONG DoSGHClick(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
 
     CalcBBox(window, req, gad, &bbox);
 
+    /* The font the gadget is drawn in, so that the click lands on the
+       character shown under the pointer */
     {
         struct DrawInfo *dri;
 
         dri = GetScreenDrawInfo(window->WScreen);
-        SetFont(rp, dri->dri_Font);
+        SetFont(rp, StrGadgetFont(gad, dri));
         FreeScreenDrawInfo(window->WScreen, dri);
-    }
-
-    if (gad->Flags & GFLG_STRINGEXTEND)
-    {
-        struct StringExtend *strext = strinfo->Extension;
-        
-        if (strext->Font)
-        {
-            SetFont(rp, strext->Font);
-        }
     }
 
     /* If we are made active, save contents to undobuffer (if any exists) */
@@ -662,7 +736,7 @@ STATIC ULONG DoSGHClick(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
         if (strinfo->UndoBuffer)
         {
             D(bug("sghclick: saving into undo buffer\n"));
-            strcpy(strinfo->UndoBuffer, strinfo->Buffer);
+            CopyStrGadText(strinfo->UndoBuffer, strinfo->Buffer, strinfo->MaxChars);
         }
         gad->Flags |= GFLG_SELECTED;
     }
@@ -683,9 +757,10 @@ STATIC ULONG DoSGHClick(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
 
         struct TextExtent te;
         STRPTR            dispstr = strinfo->Buffer + strinfo->DispPos;
+        WORD              dispchars = sgw->NumChars - strinfo->DispPos;
 
         sgw->BufferPos =   strinfo->DispPos
-                           + TextFit(rp, dispstr, sgw->NumChars - strinfo->DispPos,
+                           + TextFit(rp, dispstr, (dispchars > 0) ? dispchars : 0,
                                      &te, NULL, 1,
                                      mousex - text_left, rp->Font->tf_YSize);
         D(bug("sghclick: click inside text.\n"));
@@ -707,6 +782,13 @@ STATIC ULONG DoSGHClick(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
 
     } /* if (click is on text or not) */
 
+    /* No further than the end of the text: DispCount is that of the last
+       render, which may have shown a longer text, and a global edit hook of
+       the program may have shortened the text before passing the click on
+       to this one */
+    if (sgw->BufferPos > sgw->NumChars)
+        sgw->BufferPos = sgw->NumChars;
+
     D(bug("sghclick: new cursor position: %d\n", sgw->BufferPos));
 
     sgw->Actions = (SGA_USE|SGA_REDISPLAY);
@@ -717,6 +799,31 @@ STATIC ULONG DoSGHClick(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
     D(bug("Gadget text: %s\n", sgw->WorkBuffer));
 
     ReturnInt ("DoSGHClick", ULONG, 1);
+}
+
+/*****************************************************************************************/
+
+/* Copy the text of a string gadget into one of its buffers, which the RKRM
+   sizes by MaxChars, the undo and the work buffer like the buffer itself: no
+   more than MaxChars - 1 characters, and a NUL. Returns the characters
+   copied. A buffer that a program gives twice already holds its text, and
+   keeps all of it. AmigaOS copies MaxChars characters, without the NUL,
+   into the undo buffer. */
+WORD CopyStrGadText(STRPTR dest, CONST_STRPTR text, WORD maxchars)
+{
+    WORD len = 0;
+
+    if (maxchars < 1)
+        return 0;
+    while (len < maxchars - 1 && text[len])
+        len++;
+    if (dest != text)
+    {
+        memmove(dest, text, len);
+        dest[len] = '\0';
+    }
+
+    return len;
 }
 
 /*****************************************************************************************/
@@ -951,7 +1058,7 @@ STATIC ULONG DoSGHKey(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
                                         {
                                             int len;
                                             len = sgw->NumChars - sgw->BufferPos;
-                                            memcpy(&sgw->WorkBuffer[sgw->BufferPos-1],&sgw->WorkBuffer[sgw->BufferPos],len);
+                                            memmove(&sgw->WorkBuffer[sgw->BufferPos-1],&sgw->WorkBuffer[sgw->BufferPos],len);
 
                                             sgw->BufferPos--;
                                             sgw->WorkBuffer[sgw->BufferPos + len] = 0;
@@ -999,9 +1106,10 @@ STATIC ULONG DoSGHKey(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
                                                         int len;
                                                         int pos;
                                                         /*
-                                                         * search space
+                                                         * search the space before the word; with no space
+                                                         * before it, the word starts the buffer
                                                          */
-                                                        for (pos=sgw->BufferPos-1;pos >= 0;pos--)
+                                                        for (pos=sgw->BufferPos-1;pos > 0;pos--)
                                                         {
                                                             if (sgw->WorkBuffer[pos] == ' ')
                                                             {
@@ -1009,7 +1117,7 @@ STATIC ULONG DoSGHKey(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
                                                             }
                                                         }
                                                         len = sgw->NumChars - sgw->BufferPos;
-                                                        memcpy(&sgw->WorkBuffer[pos],&sgw->WorkBuffer[sgw->BufferPos],len);
+                                                        memmove(&sgw->WorkBuffer[pos],&sgw->WorkBuffer[sgw->BufferPos],len);
 
                                                         sgw->NumChars -= sgw->BufferPos - pos;
                                                         sgw->BufferPos = pos;
@@ -1038,7 +1146,7 @@ STATIC ULONG DoSGHKey(struct SGWork *sgw, struct IntuitionBase *IntuitionBase)
                                                         {
                                                             int len;
                                                             len = sgw->NumChars - sgw->BufferPos;
-                                                            memcpy(&sgw->WorkBuffer[0],&sgw->WorkBuffer[sgw->BufferPos],len);
+                                                            memmove(&sgw->WorkBuffer[0],&sgw->WorkBuffer[sgw->BufferPos],len);
 
                                                             sgw->BufferPos = 0;
                                                             sgw->WorkBuffer[len] = 0;
@@ -1325,11 +1433,34 @@ VOID UpdateStringInfo(struct Gadget *gad)
     }
 #endif
 
-    strinfo->NumChars = strlen(strinfo->Buffer);
+    /* All of the text, also beyond MaxChars - 1 characters, as AmigaOS:
+       without a work buffer that fits it, the editing code works on the
+       buffer itself, and rendering writes its NUL at NumChars. But no more
+       than the 0x7FFE characters of the largest MaxChars, so that
+       NumChars + 1 is still a WORD. */
+    strinfo->NumChars = strnlen(strinfo->Buffer, 0x7FFE);
 
+    /* The editing code needs the cursor within 0..NumChars */
     if (strinfo->BufferPos > strinfo->NumChars)
     {
         strinfo->BufferPos = strinfo->NumChars;
+    }
+    else if (strinfo->BufferPos < 0)
+    {
+        strinfo->BufferPos = 0;
+    }
+
+    /* And DispPos, the first character shown, from which a click measures
+       the text: it is still that of the last render when the program has
+       shortened the text without a refresh, or an edit hook has changed it
+       without SGA_REDISPLAY */
+    if (strinfo->DispPos > strinfo->NumChars)
+    {
+        strinfo->DispPos = strinfo->NumChars;
+    }
+    else if (strinfo->DispPos < 0)
+    {
+        strinfo->DispPos = 0;
     }
 
     D(bug("%s gadget contains buffer %s of length %d\n",
@@ -1350,7 +1481,7 @@ VOID UpdateStrGadget(struct Gadget  *gad,
     struct GadgetInfo    gi;
     struct BBox          bbox;
     struct StringInfo   *strinfo = (struct StringInfo *)gad->SpecialInfo;
-    UWORD                text_left;
+    WORD                 text_left;
     UWORD                text_top;
     struct RastPort     *rp;
     STRPTR               dispstr;

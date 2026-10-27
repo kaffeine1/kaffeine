@@ -1842,10 +1842,15 @@ diff -ruN gcc-10.5.0/libgcc/config.host gcc-10.5.0.aros/libgcc/config.host
  m68k-*-elf* | fido-*-elf)
  	tmake_file="$tmake_file m68k/t-floatlib"
  	;;
-@@ -1523,6 +1532,9 @@
+@@ -1523,6 +1532,14 @@
  	tmake_file="$tmake_file nvptx/t-nvptx"
  	extra_parts="crt0.o"
  	;;
++aarch64*-*-aros*)
++	tmake_file="${tmake_file} ${cpu_type}/t-aarch64 ${cpu_type}/t-lse"
++	tmake_file="${tmake_file} ${cpu_type}/t-softfp t-softfp"
++	md_unwind_header=aarch64/aarch64-unwind.h
++	;;
 +*-*-aros*)
 +	tmake_file=
 +	;;

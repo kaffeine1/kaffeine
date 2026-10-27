@@ -1,0 +1,242 @@
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+#include "message_fixture.h"
+static void be32(std::vector<UBYTE> &b,ULONG a,ULONG v)
+{ for(unsigned i=0;i<4;++i)b[a+i]=static_cast<UBYTE>(v>>(24-8*i)); }
+static void fifo()
+{
+    Fixture f;
+    ULONG p=f.exec(666),rp=f.exec(666);
+    check(p && rp && p!=rp,"CreateMsgPort distinct guest identities");
+    check(f.ctx.mem[p+8]==4 && f.ctx.mem[p+14]==0 && f.r(p+16)==f.task,"owned port type, signal action and task");
+    check(f.ctx.mem[p+15]<32 && f.ctx.mem[rp+15]<32 && f.ctx.mem[p+15]!=f.ctx.mem[rp+15],"owned signal bits distinct");
+    pending_signals=1U<<31;
+    f.message(f.msg,rp,44);f.message(f.msg+0x100,rp,36);
+    auto expected=f.bytes();
+    be32(expected,f.msg,p+24);be32(expected,f.msg+4,p+20);expected[f.msg+8]=5;
+    be32(expected,p+20,f.msg);be32(expected,p+28,f.msg);
+    check(f.exec(366,p,f.msg)==0xD0000000 && f.bytes()==expected,"PutMsg exact BE links/type, payload and guards preserved");
+    check(signals==1 && signalled_mask==(1U<<f.ctx.mem[p+15]) && (pending_signals&(1U<<31)),"enqueue signals owned task and preserves unrelated bits");
+    be32(expected,f.msg+0x100,p+24);be32(expected,f.msg+0x104,f.msg);expected[f.msg+0x108]=5;
+    be32(expected,f.msg,f.msg+0x100);be32(expected,p+28,f.msg+0x100);
+    f.exec(366,p,f.msg+0x100);
+    check(f.bytes()==expected && signals==2,"second enqueue is FIFO and signals again");
+    auto before=f.bytes();ULONG pending=pending_signals;
+    check(f.exec(384,p)==f.msg && f.bytes()==before && pending_signals==pending,"nonempty WaitPort peeks and retains signal");
+    check(f.exec(372,p)==f.msg && f.ctx.mem[f.msg+8]==5 && pending_signals==pending,"GetMsg retains type and signal");
+    check(f.exec(378,0,f.msg)==0 && f.ctx.mem[f.msg+8]==7 && f.r(rp+20)==f.msg,"ReplyMsg enqueues type7 at reply port");
+    check(f.exec(372,rp)==f.msg && f.ctx.mem[f.msg+8]==7,"GetMsg retains reply type");
+    check(f.exec(372,p)==f.msg+0x100 && f.r(p+20)==p+24 && f.r(p+28)==p+20,"FIFO drains to exact empty sentinels");
+    check(f.exec(372,p)==0,"empty GetMsg returns NULL");
+    f.exec(366,p,f.msg);check(f.r(p+20)==f.msg && f.ctx.mem[f.msg+8]==5,"dequeued message can be reused with stale links");
+    f.exec(372,p);f.exec(672,p);f.exec(672,rp);
+    check(freed_signals==2 && !f.ctx.guest_signals,"DeleteMsgPort releases owned signals");
+}
+static void ignore_and_null_reply()
+{
+    Fixture f;f.message(f.msg,0,36);
+    auto expected=f.bytes();be32(expected,f.msg,f.port+24);be32(expected,f.msg+4,f.port+20);
+    be32(expected,f.port+20,f.msg);be32(expected,f.port+28,f.msg);expected[f.msg+8]=5;
+    check(f.exec(366,f.port,f.msg)==0xD0000000 && f.bytes()==expected && !signals,"manual PA_IGNORE needs no native task and never signals");
+    f.exec(372,f.port);expected=f.bytes();expected[f.msg+8]=6;
+    check(f.exec(378,0,f.msg)==0 && f.bytes()==expected && !signals,"NULL ReplyMsg changes only type to measured NT_FREEMSG");
+    auto before=f.bytes();check(f.exec(384,f.port)==20 && !f.ctx.running && f.bytes()==before,"empty ordinary WaitPort refuses without mutation or waiting");
+}
+static void invalid()
+{
+    for(ULONG bad:{0U,1U,0x200001U,0xFFFFFFFFU,0x1FFFF0U})
+    { Fixture f;f.rejected(bad,f.msg); }
+    for(ULONG bad:{0U,1U,0x200001U,0xFFFFFFFFU,0x1FFFF0U})
+    { Fixture f;f.rejected(f.port,bad); }
+    for(unsigned which=0;which<16;++which)
+    {
+        Fixture f;
+        switch(which)
+        {
+            case 0:f.ctx.mem[f.port+14]=1;break;
+            case 1:f.ctx.mem[f.port+14]=3;break;
+            case 2:f.ctx.mem[f.port+14]=0x80;break;
+            case 3:f.ctx.mem[f.port+8]=0;break;
+            case 4:f.w(f.port+24,0x123);break;
+            case 5:f.w(f.port+20,0);break;
+            case 6:f.w(f.port+28,f.msg);break;
+            case 7:m68k_write16(&f.ctx,f.msg+18,19);break;
+            case 8:break;
+            case 9:f.ctx.mem[f.port+14]=0;f.ctx.mem[f.port+15]=32;break;
+            case 10:f.ctx.mem[f.port+14]=0;f.ctx.mem[f.port+15]=2;f.w(f.port+16,f.task);break;
+            case 11:f.ctx.mem[f.port+14]=0;f.ctx.guest_signals=4;f.ctx.mem[f.port+15]=2;f.w(f.port+16,f.task+2);break;
+            case 12:f.w(f.port+16,f.task+2);break;
+            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.msg+30,reinterpret_cast<void *>(1),8};break;
+            case 14:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.port+2,reinterpret_cast<void *>(1),4};break;
+            case 15:f.w(f.port+20,f.port+24+2);break;
+        }
+        if(which==8){f.message(f.ctx.mem_size-32,0,20);m68k_write16(&f.ctx,f.ctx.mem_size-14,68);f.rejected(f.port,f.ctx.mem_size-32);}
+        else f.rejected();
+    }
+    { Fixture f;f.message(f.port,0,34);f.rejected(f.port,f.port); }
+    { Fixture f;f.exec(366,f.port,f.msg);f.rejected();f.rejected(f.reply,f.msg); }
+    for(unsigned which=0;which<8;++which)
+    {
+        Fixture f;f.message(f.msg+0x100);f.exec(366,f.port,f.msg);f.exec(366,f.port,f.msg+0x100);
+        switch(which)
+        {
+            case 0:f.w(f.msg,f.msg);break;
+            case 1:f.w(f.msg+0x100,f.msg);break;
+            case 2:f.w(f.msg+0x104,f.port+20);break;
+            case 3:f.w(f.msg,0xFFFFFFFF);break;
+            case 4:f.w(f.msg,f.port+20);break;
+            case 5:f.w(f.port+28,f.msg);break;
+            case 6:f.ctx.mem[f.msg+0x108]=0;break;
+            case 7:m68k_write16(&f.ctx,f.msg+18,0x200);break;
+        }
+        f.rejected(f.port,f.msg+0x200);
+        auto before=f.bytes();check(f.exec(372,f.port)==20 && f.bytes()==before,"GetMsg validates entire malformed queue before removal");
+    }
+    { Fixture f;f.message(f.msg,f.port);f.exec(366,f.port,f.msg);auto b=f.bytes();check(f.exec(378,0,f.msg)==20 && f.bytes()==b,"ReplyMsg refuses a message still queued"); }
+    { Fixture a;Fixture b;a.exec(366,a.port,a.msg);check(b.exec(372,b.port)==0,"queue state is isolated by context"); }
+}
+static void allocation_failures()
+{
+    Fixture f;auto before=f.bytes();allocation_countdown=0;
+    check(f.exec(666)==0 && f.bytes()==before && !f.ctx.guest_signals,"CreateMsgPort heap-record allocation failure is atomic");
+    allocation_countdown=-1;signal_failure=true;
+    check(f.exec(666)==0 && !f.ctx.guest_signals,"CreateMsgPort signal allocation failure releases guest storage");
+    signal_failure=false;
+    std::vector<ULONG> ports;
+    for(unsigned i=0;i<16;++i) ports.push_back(f.exec(666));
+    check(f.exec(666)==0,"owned port table is bounded");
+    for(ULONG p:ports)f.exec(672,p);
+}
+
+static void real_shadows_and_port_lifetimes()
+{
+    Fixture f;
+    // Generated ExecBase and current Task shadows are trusted identities,
+    // while queue/message/buffer storage must remain ordinary guest bytes.
+    f.initialize_shadows();
+    ULONG p=f.exec(666);f.message(f.msg);
+    check(f.exec(366,p,f.msg)==0xD0000000 && signals==1,"PA_SIGNAL works with actual ExecBase/Task shadow registrations");
+    check(f.exec(372,p)==f.msg,"GetMsg works with registered current Task");
+    f.exec(672,p);
+    for(unsigned i=0;i<160;++i)
+    {
+        ULONG local=0xB000+i*40;
+        f.manual_port(local);f.message(f.msg);
+        check(f.exec(366,local,f.msg)==0xD0000000 && f.exec(372,local)==f.msg,"sequential manual ports do not consume cumulative capacity");
+        std::memset(f.ctx.mem+local,0xD7,34);
+    }
+    check(std::all_of(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),[](ULONG v){return v==0;}),"drained manual ports are no longer retained");
+    f.manual_port(f.port);f.exec(366,f.port,f.msg);
+    f.w(f.msg,f.msg);
+    f.message(f.msg+0x100);f.rejected(f.reply,f.msg+0x100);
+}
+
+static void queue_capacity_and_membership()
+{
+    {
+        Fixture f;f.exec(366,f.port,f.msg);
+        for(unsigned i=0;i<160;++i)check(f.exec(384,f.port)==f.msg,"repeated WaitPort peeks do not consume registry capacity");
+        check(std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),f.port)==1,"one active port has exactly one registry entry");
+    }
+    {
+        Fixture f;
+        for(unsigned i=0;i<64;++i)
+        {
+            ULONG p=0xB000+i*40,m=0x14000+i*80;
+            f.manual_port(p);f.message(m);check(f.exec(366,p,m)==0xD0000000,"active manual port capacity is usable");
+        }
+        f.manual_port(f.port);f.message(f.msg);f.rejected();
+        f.exec(372,0xB000);check(f.exec(366,f.port,f.msg)==0xD0000000,"draining one active port restores registry capacity");
+    }
+    {
+        Fixture f;ULONG first=0x14000;
+        for(unsigned i=0;i<256;++i)
+        {
+            ULONG m=first+i*80;f.message(m);f.ctx.mem[m+8]=5;
+            f.w(m,i==255?f.port+24:m+80);f.w(m+4,i?m-80:f.port+20);
+        }
+        f.w(f.port+20,first);f.w(f.port+28,first+255*80);
+        f.rejected();
+        check(f.exec(372,f.port)==first,"full bounded queue still permits dequeue");
+        check(f.exec(366,f.port,f.msg)==0xD0000000,"dequeue restores message capacity");
+    }
+    {
+        Fixture f;f.message(f.msg,0);f.ctx.mem[f.msg+8]=5;
+        f.w(f.port+20,f.msg);f.w(f.port+28,f.msg);f.w(f.msg,f.port+24);f.w(f.msg+4,f.port+20);
+        auto before=f.bytes();check(f.exec(378,0,f.msg)==20 && f.bytes()==before,"NULL ReplyMsg refuses a message linked on an unseen manual port");
+    }
+}
+
+static void manual_port_identity_and_owned_signal()
+{
+    {
+        Fixture f;f.ctx.guest_exec_task=0;f.ctx.m68k_sysbase=0;
+        f.w(f.msg+10,0x6300);std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0x6300),"message name");
+        check(f.exec(366,f.port,f.msg)==0xD0000000 && f.exec(372,f.port)==f.msg && !signals,"manual PA_IGNORE uses no task or native signal");
+        check(f.r(f.msg+10)==0x6300 && !std::strcmp(reinterpret_cast<char *>(f.ctx.mem+0x6300),"message name"),"message node name is preserved verbatim");
+    }
+    {
+        Fixture f;ULONG a=f.exec(666),b=f.exec(666);
+        f.ctx.mem[a+15]=f.ctx.mem[b+15];f.rejected(a);
+    }
+}
+
+static void read_after_arrival_metadata_change()
+{
+    /* The public message and port have the exact adjacent geometry from the
+       application trace. Their arrival action is changed only after enqueue. */
+    Fixture f;
+    f.initialize_shadows();
+    const ULONG p=f.msg+68, task=f.ctx.guest_exec_task;
+    f.manual_port(p);
+    f.message(f.msg,0,68);
+    check(f.exec(366,p,f.msg)==0xD0000000,"enqueue to adjacent manual PA_IGNORE port");
+    f.ctx.mem[p+14]=0;f.ctx.mem[p+15]=4;f.w(p+16,task);
+    check(!f.ctx.guest_signals && !allocated_signals,"reserved SIGB_SINGLE was not allocated");
+    pending_signals=1U<<31;
+    auto native_counts=[] { return std::array<unsigned,8>{signals,reads,writes,buffer_calls,scalar_calls,alloc_calls,free_calls,freed_signals}; };
+    const auto native_before=native_counts();const auto position_before=positions;
+    const ULONG pending_before=pending_signals, sent_before=signalled_mask;
+    const SIPTR error_before=ioerr;
+    auto expected=f.bytes();
+    check(f.exec(384,p)==f.msg && f.ctx.running && f.bytes()==expected,"nonempty WaitPort ignores unallocated arrival bit4 without changing any guest byte");
+    be32(expected,p+20,p+24);be32(expected,p+28,p+20);
+    check(f.exec(372,p)==f.msg && f.ctx.running && f.bytes()==expected,"GetMsg removes the packet-shaped message using only FIFO geometry");
+    check(f.exec(372,p)==0 && f.ctx.running && f.bytes()==expected,"empty GetMsg ignores the unchanged unallocated arrival bit");
+    check(native_counts()==native_before && positions==position_before && pending_signals==pending_before && signalled_mask==sent_before && ioerr==error_before,"queue reads make no native signal, I/O or allocation calls and preserve signal/IoErr state");
+    check(f.exec(384,p)==20 && !f.ctx.running && f.bytes()==expected && native_counts()==native_before,"empty ordinary WaitPort still refuses without native waiting or mutation");
+    f.message(f.msg,0,68);f.rejected(p);
+    f.message(f.msg,p,68);const auto before_reply=f.bytes();
+    check(f.exec(378,0,f.msg)==20 && !f.ctx.running && f.bytes()==before_reply && native_counts()==native_before,"ReplyMsg still refuses enqueue to an unowned reserved signal");
+}
+
+static void inspection_ignores_other_arrival_metadata()
+{
+    /* GetMsg and a nonempty WaitPort do not perform any arrival action,
+       including unsupported ones or metadata referring to another task. */
+    for(UBYTE action:{UBYTE(1),UBYTE(3),UBYTE(0x80)})
+    {
+        Fixture f;f.exec(366,f.port,f.msg);
+        f.ctx.mem[f.port+14]=action;f.ctx.mem[f.port+15]=255;f.w(f.port+16,0xFFFFFFFE);
+        auto before=f.bytes();
+        check(f.exec(384,f.port)==f.msg && f.ctx.running && f.bytes()==before,"nonempty WaitPort does not interpret unsupported arrival metadata");
+        check(f.exec(372,f.port)==f.msg && f.exec(372,f.port)==0 && f.ctx.running && !signals && !reads && !writes,"GetMsg does not consult action, bit or arrival task");
+        f.message(f.msg);f.rejected();
+    }
+    {
+        Fixture f;f.exec(366,f.port,f.msg);
+        f.ctx.mem[f.port+14]=0;f.ctx.mem[f.port+15]=4;f.w(f.port+16,f.task);
+        f.message(f.msg+0x100);
+        check(f.exec(366,f.reply,f.msg+0x100)==0xD0000000,"enqueue validates its destination rather than another active queue's changed arrival metadata");
+        f.rejected(f.reply,f.msg);
+        f.w(f.msg,f.msg);auto before=f.bytes();
+        check(f.exec(384,f.port)==20 && f.exec(372,f.port)==20 && f.bytes()==before,"changed arrival metadata never bypasses corrupt active-queue protection");
+    }
+}
+int main()
+{
+    fifo();ignore_and_null_reply();invalid();allocation_failures();real_shadows_and_port_lifetimes();queue_capacity_and_membership();manual_port_identity_and_owned_signal();read_after_arrival_metadata_change();inspection_ignores_other_arrival_metadata();
+    check(allocated_signals==0,"all owned native signals are released");
+    check(native_blocks.empty(),"all native heap records and allocations are released");
+    std::printf("Guest Exec message boundary: %u/%u checks passed\n",checks-failures,checks);
+    return failures?1:0;
+}

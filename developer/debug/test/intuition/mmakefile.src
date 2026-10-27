@@ -14,7 +14,13 @@ FILES := \
     smallscreen \
     screenclass \
     screentest \
-    scrollerwin 
+    scrollerwin \
+    gadstates \
+    strgstates \
+    propstates \
+    propcalc \
+    strgeditkeys \
+    strgmaxchars
 
 EXEDIR := $(AROS_TESTS)/intuition
 

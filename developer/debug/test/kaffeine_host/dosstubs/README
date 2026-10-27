@@ -1,0 +1,2 @@
+C headers for the host build of rom/dos/internalloadseg_aos.c
+(dos_loadseg_aos.c). They are searched before ../stubs.

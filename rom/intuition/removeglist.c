@@ -19,6 +19,19 @@ struct RemoveGListActionMsg
     BOOL                     success;
 };
 
+/* The gadget help forgets a gadget that comes off the window, which the
+   program may free next. Both paths below hold GadgetLock, which the input
+   handler holds too where it reads these. */
+static void forget_help(struct IIHData *iihdata, struct Gadget *gadget)
+{
+    if (iihdata->LastHelpGadget == gadget)
+    {
+        iihdata->LastHelpGadget = NULL;
+        iihdata->LastHelpWindow = NULL;
+        iihdata->HelpGadgetFindTime = 0;
+    }
+}
+
 static VOID int_removeglist(struct RemoveGListActionMsg *msg,
                             struct IntuitionBase *IntuitionBase);
 
@@ -105,6 +118,7 @@ static VOID int_removeglist(struct RemoveGListActionMsg *msg,
 
         for (last = gadget; last && numGad2--; last = last->NextGadget)
         {
+            forget_help(iihdata, last);
             if ((iihdata->ActiveGadget == last) || (iihdata->ActiveSysGadget == last))
             {
                 done = FALSE;
@@ -219,6 +233,7 @@ static VOID int_removeglist(struct RemoveGListActionMsg *msg,
 
         for (last = gadget; last && numGad2--; last = last->NextGadget)
         {
+            forget_help(iihdata, last);
             if ((iihdata->ActiveGadget == last) || (iihdata->ActiveSysGadget == last))
             {
                 switch(last->GadgetType & GTYP_GTYPEMASK)
@@ -244,6 +259,12 @@ static VOID int_removeglist(struct RemoveGListActionMsg *msg,
 
                         break;
                     }
+
+                    /* a string gadget off the window is edited no more,
+                       as on AmigaOS 3.2.3 */
+                    case GTYP_STRGADGET:
+                        last->Flags &= ~GFLG_SELECTED;
+                        break;
                 }
 
                 last->Activation &= ~GACT_ACTIVEGADGET;

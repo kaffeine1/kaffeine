@@ -772,6 +772,7 @@ static struct Gadget *Process_RawMouse(struct InputEvent *ie, struct IIHData *ii
             else
             {
             gadget->Flags &= ~GFLG_SELECTED;
+            gadget->Activation &= ~GACT_ACTIVEGADGET;
 
             RefreshStrGadget(gadget, w, req, IntuitionBase);
             /* Gadget not active anymore */
@@ -1721,6 +1722,11 @@ static struct Gadget *Process_RawMouse(struct InputEvent *ie, struct IIHData *ii
 
             hw = FindActiveWindow(ie, screen, 0, IntuitionBase);
 
+            /* RemoveGList() makes the help forget a gadget under GadgetLock,
+               taken after FindActiveWindow() has let the layer info go, as
+               RefreshWindowFrame() takes GadgetLock with the layer info
+               locked */
+            LOCKGADGET(IntuitionBase)
             if (hw != w &&
                 (!hw || !(IW(w)->helpflags & HELPF_ISHELPGROUP) ||
                  !(IW(hw)->helpflags & HELPF_ISHELPGROUP) ||
@@ -1772,6 +1778,7 @@ static struct Gadget *Process_RawMouse(struct InputEvent *ie, struct IIHData *ii
                 iihdata->LastHelpGadget = g;
                 iihdata->LastHelpWindow = hw;
             }
+            UNLOCKGADGET(IntuitionBase)
         } else {
             iihdata->LastHelpGadget = NULL;
             iihdata->LastHelpWindow = NULL;
@@ -2369,6 +2376,10 @@ AROS_UFH2(struct InputEvent *, IntuiInputHandler,
                             DEBUG_KEY(dprintf("Handler: Key GTYP_STRGADGET ret 0x%lx\n",ret));
                             if (ret & (SGA_END | SGA_NEXTACTIVE | SGA_PREVACTIVE))
                             {
+                                /* not active any more when the program
+                                   gets the message, as on AmigaOS 3.2.3 */
+                                gadget->Activation &= ~GACT_ACTIVEGADGET;
+
                                 if (gadget->Activation & GACT_RELVERIFY)
                                 {
                                     DEBUG_KEY(dprintf("Handler: GACT_RELVERIFY\n"));
@@ -2750,13 +2761,20 @@ AROS_UFH2(struct InputEvent *, IntuiInputHandler,
 #define SECONDS(x) (x*50)
                 if (iihdata->HelpGadgetFindTime && (currenttime >= iihdata->HelpGadgetFindTime + SECONDS(1)))
                 {
-                    struct Gadget *lhg = iihdata->LastHelpGadget;
-                    fire_intuimessage(iihdata->LastHelpWindow,
-                                      IDCMP_GADGETHELP,
-                                      lhg ? lhg->GadgetID : 0, /* Don't know what it should be */
-                                      lhg,
-                                      IntuitionBase);
-                    iihdata->HelpGadgetFindTime = 0;
+                    /* the gadget stays on its window while it is read, unless
+                       RemoveGList() has made the help forget it meanwhile */
+                    LOCKGADGET(IntuitionBase)
+                    if (iihdata->HelpGadgetFindTime)
+                    {
+                        struct Gadget *lhg = iihdata->LastHelpGadget;
+                        fire_intuimessage(iihdata->LastHelpWindow,
+                                          IDCMP_GADGETHELP,
+                                          lhg ? lhg->GadgetID : 0, /* Don't know what it should be */
+                                          lhg,
+                                          IntuitionBase);
+                        iihdata->HelpGadgetFindTime = 0;
+                    }
+                    UNLOCKGADGET(IntuitionBase)
                 }
             }
             

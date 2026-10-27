@@ -1,0 +1,4 @@
+#ifndef KAFFEINE_TEST_NATIVE_PORTS_H
+#define KAFFEINE_TEST_NATIVE_PORTS_H
+struct MsgPort;
+#endif

@@ -1,8 +1,14 @@
 name: Validate Windows filenames
 
+# Pull requests only, where a new push stops the run of the old one. The
+# check reads the names that Git tracks, so Linux runs it as Windows did,
+# at half the Actions minutes.
 on:
-  push:
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -10,7 +16,7 @@ permissions:
 jobs:
   windows-path-check:
     name: Check Windows-compatible filenames
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository

@@ -35,8 +35,9 @@
         None.
 
     NOTES
-        This function will update the gadget (unlike the original function
-        which would update all gadgets in the window).
+        As the original function, this function refreshes the gadget and
+        every gadget after it in the window, or every gadget of the
+        requester for a requester gadget.
 
     EXAMPLE
 
@@ -72,7 +73,7 @@
         AROS_ATOMIC_OR(gadget->Flags, GFLG_DISABLED);
     }
 
-    RefreshGList (gadget, window, requester, 1);
+    RefreshGList (gadget, window, requester, -2);
 
     AROS_LIBFUNC_EXIT
 } /* OffGadget */

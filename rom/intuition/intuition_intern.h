@@ -1146,6 +1146,13 @@ void int_PrintIText(struct RastPort * rp, struct IntuiText * iText,
             	    LONG leftOffset, LONG topOffset, BOOL ignore_attributes,
 		    struct IntuitionBase *IntuitionBase);
 
+/* drawimagestate.c */
+
+void int_DrawImageState(struct RastPort *rp, struct Image *image,
+                        WORD leftOffset, WORD topOffset, ULONG state,
+                        struct DrawInfo *drawInfo, BOOL invert_selected,
+                        struct IntuitionBase *IntuitionBase);
+
 /* Private extra functions */
 void *FindMonitorNode(ULONG modeid, struct IntuitionBase *IntuitionBase);
 void *FindBestMonitorNode(void *family, const char *name, ULONG modeid, struct IntuitionBase *IntuitionBase);
