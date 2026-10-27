@@ -78,6 +78,8 @@ def module_name(library):
 
 
 CASES = (
+    ("graphics", "openmonitor.c", "OpenMonitor", "thunk_gfx_OpenMonitor"),
+    ("graphics", "closemonitor.c", "CloseMonitor", "thunk_gfx_CloseMonitor"),
     ("graphics", "getdisplayinfodata.c", "GetDisplayInfoData", "thunk_gfx_GetDisplayInfoData"),
     ("graphics", "finddisplayinfo.c", "FindDisplayInfo", "thunk_gfx_FindDisplayInfo"),
     ("icon", "getdiskobject.c", "GetDiskObject", "kaffeine_icon_GetDiskObject"),
@@ -383,6 +385,8 @@ CASES = (
 # Explicit table of manual handlers that intentionally ignore one or more
 # fd arguments, with the exact ignored register set and the reason.
 ALLOWED_IGNORED_REGS = {
+    "thunk_gfx_OpenMonitor": (frozenset({"A1", "D0"}), "owned native monitors are unsupported"),
+    "thunk_gfx_CloseMonitor": (frozenset({"A0"}), "borrowed snapshots cannot close native monitors"),
     "thunk_gfx_FindDisplayInfo": (
         frozenset({"D0"}),
         "FindDisplayInfo() stops20 until native display handles have guest identities",

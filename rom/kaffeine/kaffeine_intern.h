@@ -55,6 +55,8 @@ struct KaffeineWindowGadgets;
 struct KaffeineClassic;
 
 #define KAFFEINE_MAX_ICONS 32
+#define KAFFEINE_MAX_MONITORS 128
+struct MonitorSpec;
 struct KaffeineIcon
 {
     ULONG guest, size;
@@ -291,6 +293,10 @@ struct KaffeineContext
     IPTR (*file_packet)(struct KaffeineContext *, ULONG, ULONG);
     ULONG message_ports[KAFFEINE_MAX_MESSAGE_PORTS];
     struct KaffeineIcon icons[KAFFEINE_MAX_ICONS];
+    /* Borrowed display records: snapshots live until context destruction.
+       Their native identities are never registered as generic shadows. */
+    struct { const struct MonitorSpec *native; ULONG guest, size; }
+        monitors[KAFFEINE_MAX_MONITORS];
     ULONG   guest_signals;
     struct KaffeineIOPort io_ports[KAFFEINE_MAX_IO_PORTS];
     struct KaffeineIORequest io_requests[KAFFEINE_MAX_IO_REQUESTS];

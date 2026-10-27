@@ -6,11 +6,15 @@
 extern "C" {
 #endif
 IPTR thunk_gfx_GetDisplayInfoData(struct KaffeineContext *, void *);
+IPTR thunk_gfx_OpenMonitor(struct KaffeineContext *, void *);
+IPTR thunk_gfx_CloseMonitor(struct KaffeineContext *, void *);
 IPTR thunk_gfx_FindDisplayInfo(struct KaffeineContext *, void *);
 #ifdef __cplusplus
 }
 #endif
 #define KAFFEINE_GRAPHICS_DISPLAY_THUNKS \
+    { 714, thunk_gfx_OpenMonitor }, \
+    { 720, thunk_gfx_CloseMonitor }, \
     { 726, thunk_gfx_FindDisplayInfo }, \
     { 756, thunk_gfx_GetDisplayInfoData }
 #endif

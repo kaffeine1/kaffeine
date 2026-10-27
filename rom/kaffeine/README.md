@@ -419,7 +419,7 @@ The bridge provides generated or manual thunks for the following libraries:
 | exec.library | 81 | 33 | 114 | Memory, tasks, signals, semaphores, messages, devices, libraries |
 | dos.library | 112 | 47 | 159 | File I/O, locks, CLI, pattern matching, ReadArgs, packets |
 | intuition.library | 130 | 8 | 138 | Windows, screens, gadgets, menus, IDCMP, requesters |
-| graphics.library | 172 | 22 | 194 | Rendering, text, blitting, layers, fonts, colors |
+| graphics.library | 172 | 26 | 198 | Rendering, text, blitting, layers, fonts, colors, display metadata |
 | layers.library | 40 | — | 40 | Layer management |
 | utility.library | 42 | — | 42 | TagItem processing, hooks, date functions |
 | gadtools.library | 18 | — | 18 | GadTools gadget toolkit |
@@ -860,13 +860,21 @@ and the [project licensing notes](../../docs/kaffeine/LICENSING.md) for details.
 ### Display metadata queries
 
 `GetDisplayInfoData` accepts a NULL handle and a mode ID for `DTAG_DISP`,
-`DTAG_DIMS` and `DTAG_NAME`. It queries a complete native temporary and writes
-only classic big-endian fields into the validated guest destination. Native
-padding and reserved pointer fields are not exported. Classic transfer counts
-are at most 48, 66 and 48 bytes; partial dimension queries copy complete
-rectangles after their 26-byte prefix, leaving all other bytes untouched.
+`DTAG_DIMS`, `DTAG_NAME` and `DTAG_MNTR`. It queries a complete native temporary
+and writes classic big-endian fields into the validated guest destination.
+Native padding and reserved pointer fields are not exported. Classic transfer
+counts are at most 48, 66, 48 and 88 bytes. Partial dimension queries copy
+complete rectangles after their 26-byte prefix; all other bytes stay intact.
 
-`FindDisplayInfo`, non-NULL query handles, monitor/vector chunks and unknown
-tags stop with return code 20 until their opaque or pointer-rich data has a
-bridge. `NextDisplayInfo` remains a scalar mode-ID query. This subset does not
-claim display-handle or monitor-structure support.
+Monitor queries publish a stable, context-owned 160-byte MonitorSpec snapshot
+and a bounded copied name. Public scalars and geometry are included. Function
+pointers, library pointers, HIDD objects and native synchronization state are
+excluded; the guest list and semaphore headers are empty. These borrowed
+snapshots cannot be released by guest FreeMem and are not generic shadows.
+The cache supports 128 monitor identities. Allocation failure, an oversized
+name or a full cache returns zero without publishing a new record.
+
+`OpenMonitor`, `CloseMonitor`, `FindDisplayInfo`, non-NULL query handles,
+vector chunks and unknown tags stop with return code 20. Owned monitor opens,
+native monitor mutation and display handles remain unsupported.
+`NextDisplayInfo` remains a scalar mode-ID query.
