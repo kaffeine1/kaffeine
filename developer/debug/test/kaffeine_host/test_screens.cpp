@@ -53,6 +53,9 @@ struct NativeScreen
     Screen screen{};
     PubScreenNode node{};
     std::array<char, 256> name{};
+    /* What an opened screen draws into, as a HIDD BitMap of AROS: no
+       planes the guest could reach, and not the obsolete copy. */
+    BitMap drawn{};
 };
 enum Kind { LOCK, UNLOCK, LIST_LOCK, LIST_UNLOCK, DEFAULT, NEXT, FONT_OPEN, FONT_CLOSE, OPEN, CLOSE };
 struct Call
@@ -359,14 +362,18 @@ extern "C" struct Screen *OpenScreenTagList(struct NewScreen *ns, struct TagItem
     s.WBorTop = 6; s.WBorLeft = 4; s.WBorRight = 4; s.WBorBottom = 4;
     s.ViewPort.DWidth = s.Width; s.ViewPort.DHeight = s.Height;
     s.ViewPort.Modes = o.had_ns ? o.ns.ViewModes : 0x8004;
-    s.BitMap_OBSOLETE.BytesPerRow = s.Width / 8; s.BitMap_OBSOLETE.Rows = s.Height;
-    s.BitMap_OBSOLETE.Depth = (UBYTE)o.depth;
+    // the obsolete copy disagrees with the BitMap that the screen draws into
+    s.BitMap_OBSOLETE.BytesPerRow = 0x1357; s.BitMap_OBSOLETE.Rows = 0x2468;
+    s.BitMap_OBSOLETE.Flags = 0x5A; s.BitMap_OBSOLETE.Depth = 0x3C;
+    n.drawn.BytesPerRow = (UWORD)(((s.Width + 15) >> 4) * 2); n.drawn.Rows = (UWORD)s.Height;
+    n.drawn.Depth = (UBYTE)o.depth; n.drawn.Flags = 0x84; n.drawn.pad = 0x4321;
     s.DetailPen = o.detail; s.BlockPen = o.block; s.SaveColor0 = 0x0AAA;
     s.RastPort.Font = native->screen_font;
     // native pointers that never reach the guest
     s.ViewPort.ColorMap = reinterpret_cast<ColorMap *>(&s);
-    s.RastPort.BitMap = &s.BitMap_OBSOLETE;
+    s.RastPort.BitMap = &n.drawn;
     std::memset(s.BitMap_OBSOLETE.Planes, 0x77, sizeof(s.BitMap_OBSOLETE.Planes));
+    for (auto &p : n.drawn.Planes) p = reinterpret_cast<PLANEPTR>(&n.drawn);
     s.NextScreen = &s; s.ExtData = s.UserData = reinterpret_cast<UBYTE *>(&s);
     if (!o.pubname.empty())
     {
@@ -674,8 +681,14 @@ static void screen_image(Fixture &f, ULONG g, Screen &s, ULONG ta, ULONG tf, ULO
     want[RP + 56] = rp.AlgoStyle; want[RP + 57] = rp.TxFlags;
     w(RP + 58, rp.TxHeight); w(RP + 60, rp.TxWidth); w(RP + 62, rp.TxBaseline);
     w(RP + 64, rp.TxSpacing);
-    w(BM, s.BitMap_OBSOLETE.BytesPerRow); w(BM + 2, s.BitMap_OBSOLETE.Rows);
-    want[BM + 4] = s.BitMap_OBSOLETE.Flags; want[BM + 5] = s.BitMap_OBSOLETE.Depth;
+    // the scalars of the BitMap that the screen draws into, never the
+    // obsolete copy, with pad and planes 0; RastPort.BitMap is the handle
+    if (const BitMap *bm = rp.BitMap)
+    {
+        l(RP + 4, g + BM);
+        w(BM, bm->BytesPerRow); w(BM + 2, bm->Rows);
+        want[BM + 4] = bm->Flags; want[BM + 5] = bm->Depth;
+    }
     // Classic SignalSemaphore at Screen.LayerInfo(224).Lock(24), already
     // valid before any native layer snapshot succeeds.
     want[256] = 15;
@@ -743,8 +756,13 @@ static void test_screen_fields_and_relock()
         s.ExtData = s.UserData = f.memory.data();
         s.BitMap_OBSOLETE.pad = 0xBEEF;
         for (auto &p : s.BitMap_OBSOLETE.Planes) p = f.memory.data();
+        // the BitMap that the screen draws into, unlike the obsolete one
+        BitMap drawn{};
+        drawn.BytesPerRow = 0x0A2C; drawn.Rows = 0x01E7; drawn.Flags = 0x8C; drawn.Depth = 24;
+        drawn.pad = 0xFACE;
+        for (auto &p : drawn.Planes) p = f.memory.data() + 0x40;
         auto &rp = s.RastPort;
-        rp.Layer = s.BarLayer; rp.BitMap = &s.BitMap_OBSOLETE;
+        rp.Layer = s.BarLayer; rp.BitMap = &drawn;
         rp.AreaPtrn = reinterpret_cast<UWORD *>(&s); rp.TmpRas = reinterpret_cast<TmpRas *>(&s);
         rp.AreaInfo = reinterpret_cast<AreaInfo *>(&s); rp.GelsInfo = reinterpret_cast<GelsInfo *>(&s);
         rp.RP_User = reinterpret_cast<APTR *>(&s);
@@ -783,10 +801,16 @@ static void test_screen_fields_and_relock()
         Kaffeine_HeapFree(&f.ctx, g + 8, 8);
         assert(f.avail() == heap && std::equal(before.begin(), before.end(), f.memory.begin() + g));
         fill_fields(s, 1);
+        drawn.BytesPerRow = 0x0B00; drawn.Rows = 0x0300; drawn.Flags = 0x0C; drawn.Depth = 8;
         f.attr.ta_YSize = 23; f.attr.ta_Style = FSF_TAGGED | 0x09; f.attr.ta_Flags = 0x57;
         std::strcpy(f.font_name.data(), "changed.font");
+        // a program's edits of the BitMap handle and its RastPort field
+        // give way to the next snapshot
+        m68k_write32(&f.ctx, g + RP + 4, 0x1234);
+        m68k_write32(&f.ctx, g + BM + 8, 0x5678);
         assert(f.lock(a0) == g && f.avail() == heap && f.ctx.num_shadows == 3 && f.entries() == 1);
         screen_image(f, g, s, ta, tf);
+        assert(f.word(g + BM) == 0x0B00 && f.word(g + BM + 2) == 0x0300 && f.memory[g + BM + 5] == 8);
         assert(f.word(ta + 4) == 23 && f.memory[ta + 6] == 9 && f.memory[ta + 7] == 0x57);
         assert(f.string(f.lng(ta)) == "screen.font"); // the TextFont's pinned name
         f.unlock(g); assert(Kaffeine_ScreenGuest(&f.ctx, &s) == g);
@@ -2102,6 +2126,97 @@ static void test_close_ownership()
     f.unlock(pub);
 }
 
+/* Screen.RastPort.BitMap is the 68k BitMap inside the 68k Screen, a typed
+   handle of the BitMap that the screen draws into: published at
+   OpenScreen() and at each LockPubScreen() from the native RastPort's
+   BitMap, not the obsolete copy, with no plane or other native pointer;
+   graphics calls leave it; never a generic shadow. Only its exact address
+   resolves, to the native screen only for a screen that the program opened
+   and has not closed; the program's edits of the snapshot change nothing.
+   CloseScreen() during a blit stops the program before Intuition. */
+static void test_screen_bitmap_handle()
+{
+    static_assert(M68K_SCR_BITMAP == BM);
+    Fixture f;
+    auto &wb = f.add();
+    BitMap wb_drawn{};
+    wb_drawn.BytesPerRow = 80; wb_drawn.Rows = 256; wb_drawn.Depth = 4; wb_drawn.pad = 0x1111;
+    for (auto &p : wb_drawn.Planes) p = reinterpret_cast<PLANEPTR>(&wb_drawn);
+    wb.screen.RastPort.BitMap = &wb_drawn;
+    const ULONG pub = f.lock(); assert(pub);
+    f.put_tags(f.tags_at, { { SA_Width, 320 }, { SA_Height, 200 }, { SA_Depth, 5 } });
+    const ULONG g = f.open(0, f.tags_at); assert(g && g != pub && f.ctx.running);
+    Screen *s = native->opened.back().result;
+    BitMap *drawn = s->RastPort.BitMap;
+    assert(drawn && drawn != &s->BitMap_OBSOLETE);
+
+    // published with the screen: the handle, and the drawn BitMap's scalars
+    assert(f.lng(g + RP + 4) == g + BM && f.lng(pub + RP + 4) == pub + BM);
+    assert(f.word(g + BM) == 40 && f.word(g + BM + 2) == 200);
+    assert(f.memory[g + BM + 4] == 0x84 && f.memory[g + BM + 5] == 5 && f.word(g + BM + 6) == 0);
+    assert(f.word(pub + BM) == 80 && f.word(pub + BM + 2) == 256 && f.memory[pub + BM + 5] == 4);
+    for (ULONG at = 6; at < 40; ++at)
+        assert(f.memory[g + BM + at] == 0 && f.memory[pub + BM + at] == 0);
+    // no native pointer anywhere in either 68k Screen
+    const void *pointers[] = { drawn, drawn->Planes[0], &wb_drawn, s, &wb.screen, &s->RastPort };
+    for (ULONG base : { g, pub })
+        for (ULONG off = 0; off + 4 <= SCREEN_SIZE; off += 2)
+            for (const void *p : pointers)
+                assert(f.lng(base + off) != (ULONG)reinterpret_cast<std::uintptr_t>(p));
+    // never a generic shadow: the generic map gives guest memory for it
+    for (UWORD i = 0; i < f.ctx.num_shadows; ++i)
+        assert(f.ctx.shadow_map[i].m68k_addr != g + BM && f.ctx.shadow_map[i].m68k_addr != pub + BM);
+    assert(f.ctx.num_shadows == 6);
+    assert(m68k_to_host_or_shadow(&f.ctx, g + BM) == f.memory.data() + g + BM);
+
+    // the exact handle of the opened screen alone resolves to it
+    Screen *out = nullptr;
+    assert(Kaffeine_ScreenBitMapOf(&f.ctx, g + BM, &out) == KAFFEINE_SCREEN_BITMAP_OWNED && out == s);
+    assert(Kaffeine_ScreenBitMapOf(&f.ctx, pub + BM, &out) == KAFFEINE_SCREEN_BITMAP_BORROWED && !out);
+    for (ULONG other : { 0u, g, g + RP, g + BM + 2, g + BM - 2, pub, pub + RP, (ULONG)f.text, 0xFFFFFFF0u })
+    {
+        assert(Kaffeine_ScreenBitMapOf(&f.ctx, other, &out) == KAFFEINE_SCREEN_BITMAP_NONE && !out);
+    }
+    // whatever the program writes into the snapshot
+    m68k_write16(&f.ctx, g + BM, 0x7FFE);
+    m68k_write32(&f.ctx, g + BM + 8, f.text);
+    assert(Kaffeine_ScreenBitMapOf(&f.ctx, g + BM, &out) == KAFFEINE_SCREEN_BITMAP_OWNED && out == s);
+
+    // around a graphics call through the 68k RastPort the handle stays
+    assert(Kaffeine_RastPortIn(&f.ctx, g + RP) == &s->RastPort && f.ctx.after_thunk);
+    s->RastPort.FgPen = 3;
+    f.ctx.after_thunk(&f.ctx);
+    f.ctx.after_thunk = nullptr;
+    assert(f.memory[g + RP + 25] == 3 && f.lng(g + RP + 4) == g + BM);
+    // a relock takes the snapshot of the borrowed screen again
+    wb_drawn.Rows = 512;
+    m68k_write32(&f.ctx, pub + RP + 4, 0);
+    assert(f.lock() == pub && f.word(pub + BM + 2) == 512 && f.lng(pub + RP + 4) == pub + BM);
+    f.unlock(pub);
+
+    // CloseScreen() while a blit runs: stopped before Intuition, all stays
+    auto calls = native->calls.size();
+    const ULONG heap = f.avail();
+    f.ctx.bitmap_blits = 1;
+    assert(f.close(g) == 20 && f.stopped() && native->calls.size() == calls);
+    f.ctx.bitmap_blits = 0;
+    assert(f.avail() == heap && Kaffeine_ScreenNative(&f.ctx, g) == s);
+    assert(Kaffeine_ScreenBitMapOf(&f.ctx, g + BM, &out) == KAFFEINE_SCREEN_BITMAP_OWNED && out == s);
+
+    // closed: the handle that the program kept is cleared and names nothing
+    assert(f.close(g) == 1 && f.ctx.running && native->count(CLOSE) == 1);
+    assert(Kaffeine_ScreenBitMapOf(&f.ctx, g + BM, &out) == KAFFEINE_SCREEN_BITMAP_NONE && !out);
+    assert(f.lng(g + RP + 4) == 0);
+    for (ULONG at = 0; at < 40; ++at)
+        assert(f.memory[g + BM + at] == 0);
+    // so is the borrowed one, with the last unlock
+    f.unlock(pub);
+    assert(Kaffeine_ScreenBitMapOf(&f.ctx, pub + BM, &out) == KAFFEINE_SCREEN_BITMAP_NONE && !out);
+    assert(f.lng(pub + RP + 4) == 0);
+    for (ULONG at = 0; at < 40; ++at)
+        assert(f.memory[pub + BM + at] == 0);
+}
+
 /* No room for the 68k Screen: before Intuition when the table of screens
    or the shadows are full, else Intuition's screen closes again. Either way
    SA_ErrorCode gets OSERR_NOMEM and nothing stays. */
@@ -2301,6 +2416,7 @@ int main()
     {
         { "Layer snapshots follow 68k Screens and end before CloseScreen, forget and cleanup unlocks", test_layer_notifications },
         { "Nine ABI registrations override poisoned generated fallbacks", test_registrations },
+        { "Screen.RastPort.BitMap is a typed handle of the drawn BitMap, resolved only for opened screens", test_screen_bitmap_handle },
         { "NULL and named locks expose the NDK fields, font and three shadows; relocks refill in place", test_screen_fields_and_relock },
         { "The last unlock returns the mirror and shadows; the font stays pinned; a later lock allocates anew", test_release_and_recreate },
         { "TextAttr names share the pinned TextFont or use an inline copy; a saved AskFont TextAttr survives reuse", test_textattr_names },

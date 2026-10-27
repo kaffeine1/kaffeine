@@ -60,8 +60,11 @@ DISKFONT_CPPFLAGS := -I$(TEST_DIR)/memory_stubs $(GFX_CPPFLAGS)
 DISKFONT_OBJS := $(addprefix $(BUILD_DIR)/diskfont_,cpu.o dispatch.o thunks_diskfont.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
 WINDOW_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o format.o rastport.o memory.o taglist.o)
 SCREEN_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o rastport.o memory.o taglist.o fontattr.o)
-# The layer bridge with the production run loop, window bridge and heap.
-LAYER_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o format.o rastport.o memory.o taglist.o layers.o)
+# The layer bridge with the production run loop, window bridge and heap,
+# the native hook entry of its private layers and the Region bridge of
+# their clip Regions.
+LAYER_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o format.o rastport.o memory.o taglist.o layers.o hook.o regions.o)
+LAYER_OBJS += $(BUILD_DIR)/layers_private_unused.o
 MENU_CPPFLAGS := -I$(TEST_DIR)/menus_stubs $(GFX_CPPFLAGS)
 MENU_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o mirror.o copy.o rastport.o memory.o taglist.o)
 MENU_OBJS += $(BUILD_DIR)/menus_bridge.o
@@ -105,6 +108,8 @@ TESTS += test_exec_memory
 TESTS += test_heap_scaling
 TESTS += test_screens
 TESTS += test_layers
+TESTS += test_layers_private
+TESTS += test_regions
 TESTS += test_m68klib
 TESTS += test_hosted_jit
 TESTS += test_guest_tasks
@@ -355,6 +360,18 @@ $(BUILD_DIR)/test_screens: $(TEST_DIR)/test_screens.cpp $(SCREEN_OBJS) | $(BUILD
 	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(SCREEN_OBJS) $(LDLIBS)
 
 $(BUILD_DIR)/test_layers: $(TEST_DIR)/test_layers.cpp $(LAYER_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(LAYER_OBJS) $(LDLIBS)
+
+# Poisoned private layer collaborators; test_layers_private overrides them.
+$(BUILD_DIR)/layers_private_unused.o: $(TEST_DIR)/layers_private_unused.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_layers_private: $(TEST_DIR)/test_layers_private.cpp $(LAYER_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(LAYER_OBJS) $(LDLIBS)
+
+# Regions and clip Regions of private layers over recording native graphics
+# Regions and layers, with every generated thunk poisoned.
+$(BUILD_DIR)/test_regions: $(TEST_DIR)/test_regions.cpp $(LAYER_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(LAYER_OBJS) $(LDLIBS)
 
 # Only the menu bridge and its test use this counted AllocVec stub.

@@ -48,6 +48,7 @@
 #include "kaffeine_workbench.h"
 #include "kaffeine_icon.h"
 #include "kaffeine_layers.h"
+#include "kaffeine_regions.h"
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -618,6 +619,7 @@ const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
     KAFFEINE_GRAPHICS_RASTPORT_THUNKS,
     KAFFEINE_GRAPHICS_DISPLAY_THUNKS,
     KAFFEINE_GRAPHICS_LAYER_THUNKS,
+    KAFFEINE_GRAPHICS_REGION_THUNKS,
     { 192, thunk_gfx_LoadRGB4 },
     { 0, NULL }
 };

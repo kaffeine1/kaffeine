@@ -28,6 +28,7 @@
 #include "kaffeine_icon.h"
 #include "kaffeine_layers.h"
 #include "kaffeine_sched.h"
+#include "kaffeine_regions.h"
 
 /* The signals, ports and open devices of the guest belong to the native
    task that runs it, as does a lock of the list of public screens, an Exec
@@ -47,6 +48,8 @@ static LONG execute_owned(struct KaffeineContext *ctx)
     Kaffeine_ScreensCleanup(ctx);
     /* after the windows and screens, which retire their 68k Layers first */
     Kaffeine_LayersCleanup(ctx);
+    /* after the layers, whose clip Regions they may be */
+    Kaffeine_RegionsCleanup(ctx);
     return result;
 }
 
@@ -245,6 +248,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     Kaffeine_FontsCleanup(ctx);
     Kaffeine_IconsCleanup(ctx);
     Kaffeine_LayersCleanup(ctx);
+    Kaffeine_RegionsCleanup(ctx);
     Kaffeine_DestroyContext(ctx);
     return result;
 
@@ -307,6 +311,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     Kaffeine_FontsCleanup(ctx);
     Kaffeine_IconsCleanup(ctx);
     Kaffeine_LayersCleanup(ctx);
+    Kaffeine_RegionsCleanup(ctx);
     Kaffeine_DestroyContext(ctx);
     return result;
 

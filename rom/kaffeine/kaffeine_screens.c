@@ -5,8 +5,10 @@
     has one 68k Screen, which every LockPubScreen() of that screen hands
     out and fills in again: the place, the size, the mouse, the flags, the
     sizes of the bars and borders, the font as a 68k TextAttr, the display
-    fields of the ViewPort, the sizes and depth of the BitMap, and the pens.
-    The embedded ViewPort stands for the native one in calls such as
+    fields of the ViewPort, the sizes and depth of the BitMap that the
+    screen draws into, and the pens. Its RastPort's BitMap is the embedded
+    68k BitMap, without planes, a handle that BltBitMap() takes for a screen
+    that the program opened (kaffeine_layers.c). The embedded ViewPort stands for the native one in calls such as
     GetVPModeID(), and the embedded RastPort is a 68k RastPort, which
     follows the native one around the graphics calls as the RastPort of a
     window does. Its 68k TextFont stays for the whole program, as the font
@@ -87,7 +89,7 @@ enum
     G_SCR_MOUSEY = 16, G_SCR_MOUSEX = 18, G_SCR_BARHEIGHT = 30, G_SCR_BARVBORDER = 31,
     G_SCR_BARHBORDER = 32, G_SCR_MENUVBORDER = 33, G_SCR_MENUHBORDER = 34,
     G_SCR_WBORTOP = 35, G_SCR_WBORLEFT = 36, G_SCR_WBORRIGHT = 37, G_SCR_WBORBOTTOM = 38,
-    G_SCR_FONT = 40, G_SCR_BITMAP = 184, G_SCR_DETAILPEN = 330, G_SCR_BLOCKPEN = 331,
+    G_SCR_FONT = 40, G_SCR_DETAILPEN = 330, G_SCR_BLOCKPEN = 331,
     G_SCR_SAVECOLOR0 = 332,
     G_VP_DWIDTH = 24, G_VP_DHEIGHT = 26, G_VP_DXOFFSET = 28, G_VP_DYOFFSET = 30,
     G_VP_MODES = 32, G_VP_SPRITEPRIORITIES = 34, G_VP_EXTENDEDMODES = 35,
@@ -211,7 +213,8 @@ static int screen_index(struct KaffeineContext *ctx, const struct Screen *native
 static void screen_fill(struct KaffeineContext *ctx, ULONG guest, ULONG font, struct Screen *scr)
 {
     UBYTE *g = ctx->mem + guest;
-    ULONG vp = guest + M68K_SCR_VIEWPORT, bm = guest + G_SCR_BITMAP;
+    ULONG vp = guest + M68K_SCR_VIEWPORT, bm = guest + M68K_SCR_BITMAP;
+    const struct BitMap *draw = scr->RastPort.BitMap;
 
     m68k_write16(ctx, guest + M68K_SCR_LEFTEDGE, (UWORD)scr->LeftEdge);
     m68k_write16(ctx, guest + M68K_SCR_TOPEDGE, (UWORD)scr->TopEdge);
@@ -245,12 +248,22 @@ static void screen_fill(struct KaffeineContext *ctx, ULONG guest, ULONG font, st
     m68k_write16(ctx, vp + G_VP_MODES, scr->ViewPort.Modes);
     ctx->mem[vp + G_VP_SPRITEPRIORITIES] = scr->ViewPort.SpritePriorities;
     ctx->mem[vp + G_VP_EXTENDEDMODES] = scr->ViewPort.ExtendedModes;
-    /* what OpenScreen() of AROS puts into the obsolete BitMap, without the
-       planes */
-    m68k_write16(ctx, bm + G_BM_BYTESPERROW, scr->BitMap_OBSOLETE.BytesPerRow);
-    m68k_write16(ctx, bm + G_BM_ROWS, scr->BitMap_OBSOLETE.Rows);
-    ctx->mem[bm + G_BM_FLAGS] = scr->BitMap_OBSOLETE.Flags;
-    ctx->mem[bm + G_BM_DEPTH] = scr->BitMap_OBSOLETE.Depth;
+    /* The BitMap that the screen draws into, that of its RastPort, not the
+       obsolete copy: its scalars, with pad and planes 0, as the planes of
+       a HIDD BitMap are no guest memory. RastPort.BitMap names it, and
+       graphics calls leave that field as the program wrote it. It is a
+       typed handle: BltBitMap() (kaffeine_layers.c) finds the native
+       BitMap by this address alone (Kaffeine_ScreenBitMapOf()), and only
+       for a screen that the program opened. */
+    memset(g + M68K_SCR_BITMAP, 0, M68K_SIZEOF_BITMAP);
+    if (draw)
+    {
+        m68k_write16(ctx, bm + G_BM_BYTESPERROW, draw->BytesPerRow);
+        m68k_write16(ctx, bm + G_BM_ROWS, draw->Rows);
+        ctx->mem[bm + G_BM_FLAGS] = draw->Flags;
+        ctx->mem[bm + G_BM_DEPTH] = draw->Depth;
+    }
+    m68k_write32(ctx, guest + M68K_SCR_RASTPORT + M68K_RP_BITMAP, draw ? bm : 0);
     g[G_SCR_DETAILPEN] = scr->DetailPen;
     g[G_SCR_BLOCKPEN] = scr->BlockPen;
     m68k_write16(ctx, guest + G_SCR_SAVECOLOR0, scr->SaveColor0);
@@ -432,6 +445,10 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
         ctx->layer_ops->screen_closing(ctx, ctx->pubscreens[i].native);
     if (Kaffeine_ShadowNative(ctx, guest, type))
     {
+        /* a BitMap handle that the program kept names nothing now, and
+           describes no planar BitMap either */
+        memset(ctx->mem + guest + M68K_SCR_BITMAP, 0, M68K_SIZEOF_BITMAP);
+        m68k_write32(ctx, guest + M68K_SCR_RASTPORT + M68K_RP_BITMAP, 0);
         Kaffeine_RastPortDetach(ctx, guest + M68K_SCR_RASTPORT);
         Kaffeine_ShadowForget(ctx, guest + M68K_SCR_VIEWPORT, KAFFEINE_SHADOW_VIEWPORT);
         Kaffeine_ShadowForget(ctx, guest, type);
@@ -1144,7 +1161,8 @@ IPTR Kaffeine_OpenScreenTagList(struct KaffeineContext *ctx, void *cpu)
    and for NULL, as from Intuition; FALSE when Intuition refuses, as with
    windows or visitors on it, and then the 68k Screen stays as it was.
    Intuition gets only a screen that the program opened and has not closed;
-   anything else gives FALSE. */
+   anything else gives FALSE. While a BltBitMap() of the program runs, which
+   may have the BitMap of the screen, the program stops instead. */
 IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG screen = THUNK_A(0);
@@ -1152,6 +1170,8 @@ IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
 
     if (!screen)
         return TRUE;
+    if (ctx->bitmap_blits)
+        return refuse(ctx, "CloseScreen(): during a blit");
     i = screen_index(ctx, NULL, screen);
     if (i < 0 || !ctx->pubscreens[i].owned)
     {
