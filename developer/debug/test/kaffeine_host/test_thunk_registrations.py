@@ -3,9 +3,9 @@
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-The C preprocessor expands the production header macros for all fifteen manual
+The C preprocessor expands the production header macros for all sixteen manual
 thunk tables (exec, dos, intuition, graphics, utility, locale, mathieeedoubbas,
-mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, diskfont, gadtools and workbench). Expected
+mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, diskfont, gadtools, icon and workbench). Expected
 vector numbers come independently from the native AROS entry points and from
 the NDK 3.2 fd files (or AROS fd / .conf files for
 AROS-only AVL functions). Each manual handler and the helpers it delegates to
@@ -33,6 +33,7 @@ TABLES = (
     ("intuition", "kaffeine_thunks.c", "kaffeine_thunks_intuition_manual"),
     ("graphics", "kaffeine_thunks.c", "kaffeine_thunks_graphics_manual"),
     ("diskfont", "kaffeine_thunks_diskfont.c", "kaffeine_thunks_diskfont_manual"),
+    ("icon", "kaffeine_icon.c", "kaffeine_thunks_icon_manual"),
     ("utility", "kaffeine_thunks_utility.c", "kaffeine_thunks_utility_manual"),
     ("locale", "kaffeine_thunks_locale.c", "kaffeine_thunks_locale_manual"),
     ("mathieeedoubbas", "kaffeine_thunks_mathieee.c",
@@ -69,6 +70,7 @@ DEVICES = ("timer", "console")
 
 # These device slots deliberately stop the guest; they claim no native API.
 CONSOLE_REFUSED = frozenset((6, 12, 18, 24, 30, 36, 42, 54, 60, 66, 72))
+ICON_REFUSED = frozenset((54, 72, 84, 108, 126, 138, 150, 156, 162, 168, 180, 186, 192, 198))
 
 
 def module_name(library):
@@ -76,6 +78,14 @@ def module_name(library):
 
 
 CASES = (
+    ("icon", "getdiskobject.c", "GetDiskObject", "kaffeine_icon_GetDiskObject"),
+    ("icon", "freediskobject.c", "FreeDiskObject", "kaffeine_icon_FreeDiskObject"),
+    ("icon", "findtooltype.c", "FindToolType", "kaffeine_icon_FindToolType"),
+    ("icon", "matchtoolvalue.c", "MatchToolValue", "kaffeine_icon_MatchToolValue"),
+    ("icon", "getdefdiskobject.c", "GetDefDiskObject", "kaffeine_icon_GetDefDiskObject"),
+    ("icon", "getdiskobjectnew.c", "GetDiskObjectNew", "kaffeine_icon_GetDiskObjectNew"),
+    ("icon", "newdiskobject.c", "NewDiskObject", "kaffeine_icon_NewDiskObject"),
+
     ("diskfont", "opendiskfont.c", "OpenDiskFont", "thunk_diskfont_OpenDiskFont"),
     ("console", "rawkeyconvert.c", "RawKeyConvert", "kaffeine_console_RawKeyConvert"),
     ("mathffp", "spfix.c", "SPFix", "kaffeine_mathffp_SPFix"),
@@ -503,7 +513,7 @@ ALLOWED_IGNORED_REGS = {
 
 HANDLER_PREFIX_RE = re.compile(
     r"^(?:wb_|thunk_(?:exec|dos|intuition|gfx|graphics|diskfont|utility|locale)_|"
-    r"kaffeine_(?:exec|dos|intuition|gfx|graphics|utility|locale|"
+    r"kaffeine_(?:exec|dos|intuition|gfx|graphics|utility|locale|icon|"
     r"mathieeedoubbas|mathieeedoubtrans|mathieeesingbas|mathffp|timer|console)_|"
     r"Kaffeine_(?:List|MemHeader)?)"
 )
@@ -827,10 +837,10 @@ def main():
             r"AROS_LH\w+\s*\([^,]+,\s*" + re.escape(func_name) + r"\s*,.*?"
             r"struct\s+(?:DosLibrary|ExecBase|IntuitionBase|GfxBase|UtilityBase|"
             r"LocaleBase|Library|LibHeader|MathIeeeDoubBasBase|MathIeeeDoubTransBase|"
-            r"Device|TimerBase|WorkbenchBase)"
+            r"Device|TimerBase|WorkbenchBase|IconBase)"
             r"\s*\*,\s*\w+\s*,\s*(\d+)\s*,\s*"
             r"(?:Dos|Exec|Intuition|Graphics|Utility|Locale|GadTools|"
-            r"MathIeeeDoubBas|MathIeeeDoubTrans|Mathieeesingbas|Mathffp|Timer|Console|Diskfont|Workbench)\s*\)"
+            r"MathIeeeDoubBas|MathIeeeDoubTrans|Mathieeesingbas|Mathffp|Timer|Console|Diskfont|Workbench|Icon)\s*\)"
         )
         location = re.search(pattern, native, re.DOTALL)
         if not location:
@@ -855,6 +865,10 @@ def main():
     total_manual = 0
     seen_ignored = set()
     seen_console_refusals = set()
+    seen_icon_refusals = set()
+    icon_refused = re.findall(r"IPTR kaffeine_icon_Unsupported\([^\n]*\n\{(.*?)\n\}", sources["kaffeine_icon.c"], re.DOTALL)
+    if len(icon_refused) != 1 or not re.fullmatch(r'\s*\(void\)cpu;\s*return stop\(ctx,\s*"unsupported icon.library call"\);\s*', icon_refused[0]):
+        raise ValueError("icon refusal slots must only stop the guest")
     refused_body = re.findall(r"static IPTR unsupported\([^\n]*\n\{(.*?)\n\}",
                               sources["kaffeine_thunks_console.c"], re.DOTALL)
     if len(refused_body) != 1 or not re.fullmatch(
@@ -871,6 +885,12 @@ def main():
                     failures += 1
                     print("FAIL console.device", -vector, "unexpected refusal slot")
                 seen_console_refusals.add(vector)
+                continue
+            if library == "icon" and handler == "kaffeine_icon_Unsupported":
+                if vector not in ICON_REFUSED:
+                    failures += 1
+                    print("FAIL icon.library", -vector, "unexpected refusal slot")
+                seen_icon_refusals.add(vector)
                 continue
             want_func = expected_function_name(handler)
             entry = ndk_spec.get(vector)
@@ -931,6 +951,9 @@ def main():
                           "ignores registers", ",".join(sorted(ignored_regs)),
                           "for", fd_func + "(" + "/".join(fd_regs) + ")")
 
+    if seen_icon_refusals != ICON_REFUSED:
+        failures += 1
+        print("FAIL icon.library explicit refusal slots changed")
     if seen_console_refusals != CONSOLE_REFUSED:
         failures += 1
         print("FAIL console.device explicit refusal slots changed")

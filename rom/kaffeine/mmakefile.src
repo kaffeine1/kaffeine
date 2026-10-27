@@ -42,6 +42,7 @@ KAFFEINE_FILES := \
     kaffeine_thunks_mathffp \
     kaffeine_thunks_gfx \
     kaffeine_thunks_diskfont \
+    kaffeine_icon \
     kaffeine_fontattr \
     kaffeine_rastport \
     kaffeine_window \

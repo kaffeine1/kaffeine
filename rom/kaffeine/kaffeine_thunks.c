@@ -44,6 +44,8 @@
 #include "kaffeine_screens.h"
 #include "kaffeine_tasks.h"
 #include "kaffeine_workbench.h"
+#include "kaffeine_icon.h"
+
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
 extern const struct M68KThunkEntry kaffeine_thunks_gadtools_manual[];
@@ -101,6 +103,9 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
             } else if (strcmp(name, "gadtools.library") == 0) {
                 manual = kaffeine_thunks_gadtools_manual;
                 manual_count = kaffeine_thunks_gadtools_manual_count;
+            } else if (strcmp(name, "icon.library") == 0) {
+                manual = kaffeine_thunks_icon_manual;
+                manual_count = kaffeine_thunks_icon_manual_count;
             }
             return Kaffeine_SetupLibBase(ctx, ctx->num_libs, kaffeine_all_gen_libs[i].name,
                                         KAFFEINE_MAX_LVO,

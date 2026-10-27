@@ -45,6 +45,7 @@ struct MsgPort;
 struct Task;
 struct Device;
 struct TextFont;
+struct DiskObject;
 struct Window;
 struct IntuiMessage;
 struct Screen;
@@ -52,6 +53,13 @@ struct KaffeineMenuStrip;
 struct KaffeineGadgetBatch;
 struct KaffeineWindowGadgets;
 struct KaffeineClassic;
+
+#define KAFFEINE_MAX_ICONS 32
+struct KaffeineIcon
+{
+    ULONG guest, size;
+    struct DiskObject *native;
+};
 
 /* A port from CreateMsgPort() and the native signal bit behind it. */
 #define KAFFEINE_MAX_IO_PORTS 16
@@ -282,6 +290,7 @@ struct KaffeineContext
     ULONG guest_exec_task;
     IPTR (*file_packet)(struct KaffeineContext *, ULONG, ULONG);
     ULONG message_ports[KAFFEINE_MAX_MESSAGE_PORTS];
+    struct KaffeineIcon icons[KAFFEINE_MAX_ICONS];
     ULONG   guest_signals;
     struct KaffeineIOPort io_ports[KAFFEINE_MAX_IO_PORTS];
     struct KaffeineIORequest io_requests[KAFFEINE_MAX_IO_REQUESTS];

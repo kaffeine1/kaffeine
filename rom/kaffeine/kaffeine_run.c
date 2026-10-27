@@ -24,6 +24,7 @@
 #include "kaffeine_menus.h"
 #include "kaffeine_screens.h"
 #include "kaffeine_rastport.h"
+#include "kaffeine_icon.h"
 
 /* The signals, ports and open devices of the guest belong to the native
    task that runs it, as does a lock of the list of public screens, an Exec
@@ -228,6 +229,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     Kaffeine_MenusCleanup(ctx);
     Kaffeine_GadgetsCleanup(ctx);
     Kaffeine_FontsCleanup(ctx);
+    Kaffeine_IconsCleanup(ctx);
     Kaffeine_DestroyContext(ctx);
     return result;
 
@@ -286,6 +288,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     Kaffeine_MenusCleanup(ctx);
     Kaffeine_GadgetsCleanup(ctx);
     Kaffeine_FontsCleanup(ctx);
+    Kaffeine_IconsCleanup(ctx);
     Kaffeine_DestroyContext(ctx);
     return result;
 

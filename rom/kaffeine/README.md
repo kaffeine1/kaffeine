@@ -199,6 +199,17 @@ Other devices fail to open with `IOERR_OPENFAIL`, `TR_SETSYSTIME` and EClock
 delays end with `IOERR_NOCMD`, and `SendIO()` stops the program with rc 20
 until asynchronous I/O exists. See [INTERNALS.md](INTERNALS.md#device-io-path).
 
+### Icon metadata
+
+`icon.library` acquisitions return owned 68k DiskObject metadata snapshots.
+The native object remains private and is released by `FreeDiskObject` only
+for its exact live guest identity, or at program teardown. DefaultTool,
+ToolWindow and ToolTypes are copied into guest memory. FindToolType decodes
+the guest pointer array and returns a guest string address; MatchToolValue
+uses bounded guest strings. Images, DrawerData and other native pointers
+are zero in the snapshot. Drawing, writing icons and other unsupported
+icon operations stop with rc 20 before reaching native code.
+
 ### RastPorts and Fonts
 
 The RastPort of a window or a screen is a 68k RastPort in the guest memory
