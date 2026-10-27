@@ -61,6 +61,7 @@ that requires a Moira interface change. The pinned submodule is unchanged.
 0x000108                 Supervisor trampoline: ADDQ.L #8,SP; JMP (A5)
 0x000120 - 0x00015F      Callback return tokens (16 levels, four bytes each)
 0x000160                 Sentinel: the return address of the program
+0x000168                 Default finalPC of an AddTask child
 0x000400 - 0x0103FF      Library base region (64 KB)
                          Each library: num_vectors × 6 bytes (A-line + 2×NOP)
                          Base address follows jump table (AmigaOS convention)

@@ -55,6 +55,32 @@ for model compatibility and the limits of AROS library exception handling.
 
 **Not emulated**: Interrupts, DMA.
 
+### Guest tasks
+
+`AddTask()` creates up to 16 classic guest children inside the same containment
+arena. Each child has a complete Moira CPU and a separate stack. Children run
+cooperatively between CPU slices, by priority with round-robin turns among
+equals. Guest `Forbid()` and `Disable()` prevent switches; a blocking `Wait()`
+or `WaitPort()` permits another guest task to run and restores the waiter's
+nesting when it resumes. Native interrupts remain enabled.
+
+`FindTask()`, `SetTaskPri()`, signals, and ordinary guest message queues use
+guest identities. IDCMP port events wake waiting guest tasks. Child return or
+`RemTask()` removes that child; faults stop the whole program with the failing
+task's result. Native Exec never executes a guest Task or its code. Task and
+stack ranges, hooks, queue geometry and signal ownership are checked before
+they are used. Child signal allocations are released on removal; signal records
+of abandoned guest ports are retired before a bit can be reused.
+
+This is a bounded compatibility layer. Signal allocations share the native
+owner's namespace. Task exception/switch/launch hooks and foreign-task operations
+are refused. DOS calls, `DoIO()`, `Delay()` and Workbench port waits remain
+synchronous across guest tasks. Task memory lists are freed only when they are
+valid guest-heap `AllocEntry()` records. The backend must provide a complete CPU
+factory; this implementation currently uses Moira.
+Task memory still referenced by active bridge objects stays allocated until
+context cleanup. Applications must delete their guest ports when finished.
+
 ### Containment Memory Model
 
 All m68k code and data lives inside a 32 MB memory block ("containment memory").

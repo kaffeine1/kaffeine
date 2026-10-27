@@ -44,6 +44,7 @@
 #include "kaffeine_gadgets.h"
 #include "kaffeine_screens.h"
 #include "kaffeine_tasks.h"
+#include "kaffeine_sched.h"
 #include "kaffeine_workbench.h"
 #include "kaffeine_icon.h"
 
@@ -212,11 +213,47 @@ static IPTR thunk_exec_CloseLibrary(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
-/* -132: Forbid() */
-static IPTR thunk_exec_Forbid(struct KaffeineContext *ctx, void *cpu) { return 0; }
+/* -120/-126: Disable()/Enable() only affect guest interrupt nesting. */
+static IPTR thunk_exec_Disable(struct KaffeineContext *ctx, void *cpu)
+{
+    return Kaffeine_TaskDisable(ctx, cpu);
+}
 
-/* -138: Permit() */
-static IPTR thunk_exec_Permit(struct KaffeineContext *ctx, void *cpu) { return 0; }
+static IPTR thunk_exec_Enable(struct KaffeineContext *ctx, void *cpu)
+{
+    return Kaffeine_TaskEnable(ctx, cpu);
+}
+
+/* -132: Forbid(), -138: Permit(). No native effect: they count in the guest
+   ExecBase TDNestCnt, which keeps guest tasks from switching. */
+static IPTR thunk_exec_Forbid(struct KaffeineContext *ctx, void *cpu)
+{
+    return Kaffeine_TaskForbid(ctx, cpu);
+}
+
+static IPTR thunk_exec_Permit(struct KaffeineContext *ctx, void *cpu)
+{
+    return Kaffeine_TaskPermit(ctx, cpu);
+}
+
+/* -300: SetTaskPri(task=a1, priority=d0). Validate the root identity even
+   before the first AddTask; guest records never become native Tasks. */
+static IPTR thunk_exec_SetTaskPri(struct KaffeineContext *ctx, void *cpu)
+{
+    if (ctx->task_ops)
+        return ctx->task_ops->set_task_pri(ctx, cpu);
+    Kaffeine_StopGuest(ctx, cpu, 20);
+    return 20;
+}
+
+/* -318: Wait(D0=signalSet) -> D0. With AddTask() children the other guest
+   tasks run while one waits; otherwise the native task waits. */
+static IPTR thunk_exec_Wait(struct KaffeineContext *ctx, void *cpu)
+{
+    if (ctx->sched)
+        return ctx->task_ops->wait(ctx, cpu);
+    return (IPTR)Wait(THUNK_D(0));
+}
 
 /* -534: TypeOfMem(A1=address) -> D0=attributes */
 static IPTR thunk_exec_TypeOfMem(struct KaffeineContext *ctx, void *cpu)
@@ -312,9 +349,12 @@ APTR m68k_to_native_fmt_stream(struct KaffeineContext *ctx, const char *fmt, ULO
 
 
 
-/* exec -306: SetSignal(D0=newSignals, D1=signalSet) -> D0=oldSignals */
+/* exec -306: SetSignal(D0=newSignals, D1=signalSet) -> D0=oldSignals, of
+   the current guest task */
 static IPTR thunk_exec_SetSignal(struct KaffeineContext *ctx, void *cpu)
 {
+    if (ctx->sched)
+        return ctx->task_ops->set_signal(ctx, cpu);
     return (IPTR)SetSignal(THUNK_D(0), THUNK_D(1));
 }
 
@@ -358,8 +398,12 @@ const struct M68KThunkEntry kaffeine_thunks_exec[] = {
     { 408, thunk_exec_OldOpenLibrary },
     { 414, thunk_exec_CloseLibrary },
     KAFFEINE_EXEC_TASK_THUNKS,
+    { 120, thunk_exec_Disable },
+    { 126, thunk_exec_Enable },
     { 132, thunk_exec_Forbid },
     { 138, thunk_exec_Permit },
+    { 300, thunk_exec_SetTaskPri },
+    { 318, thunk_exec_Wait },
     { 534, thunk_exec_TypeOfMem },
     KAFFEINE_EXEC_COMPAT_THUNKS,
     KAFFEINE_EXEC_IO_THUNKS,

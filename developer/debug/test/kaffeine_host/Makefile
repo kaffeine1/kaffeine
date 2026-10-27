@@ -50,6 +50,8 @@ WORKBENCH_SOURCE_DIR ?= $(KAFFEINE_DIR)
 WORKBENCH_CPPFLAGS := -I$(TEST_DIR)/workbench_stubs -I$(TEST_DIR)/gfx_stubs -I$(TEST_DIR)/io_stubs $(TEST_CPPFLAGS)
 WORKBENCH_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/workbench_,cpu.o dispatch.o memory.o rastport.o taglist.o window.o exec_io.o workbench.o)
 TASK_OBJS := $(BUILD_DIR)/file_boundary_unit.o $(addprefix $(BUILD_DIR)/task_,cpu.o dispatch.o shadow.o)
+SCHED_CPPFLAGS := -I$(TEST_DIR)/sched_stubs $(TEST_CPPFLAGS)
+SCHED_OBJS := $(addprefix $(BUILD_DIR)/sched_,cpu.o dispatch.o sched.o messages.o)
 SCALING_OBJS := $(filter-out $(BUILD_DIR)/memory_memory.o,$(MEMORY_OBJS)) $(BUILD_DIR)/heap_scaling_memory.o
 BENCH_OBJS := $(addprefix $(BUILD_DIR)/heap_bench_,memory.o cpu.o)
 GFX_CPPFLAGS := -I$(TEST_DIR)/gfx_stubs $(TEST_CPPFLAGS)
@@ -102,6 +104,7 @@ TESTS += test_heap_scaling
 TESTS += test_screens
 TESTS += test_m68klib
 TESTS += test_hosted_jit
+TESTS += test_guest_tasks
 TEST_BINS := $(addprefix $(BUILD_DIR)/,$(TESTS))
 
 all: $(TEST_BINS)
@@ -265,6 +268,14 @@ $(BUILD_DIR)/task_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 $(BUILD_DIR)/test_exec_tasks: $(TEST_DIR)/test_exec_tasks.cpp $(KAFFEINE_DIR)/kaffeine_moira.cpp $(KAFFEINE_DIR)/Moira/Moira/Moira.cpp $(KAFFEINE_DIR)/Moira/Moira/MoiraDebugger.cpp $(TASK_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(TASK_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(TASK_OBJS) $(LDLIBS)
 
+# AddTask() children: the production scheduler, run loop and dispatcher as
+# C, over a recording native Exec, with mock CPUs and with real Moira CPUs.
+$(BUILD_DIR)/sched_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(SCHED_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_guest_tasks: $(TEST_DIR)/test_guest_tasks.cpp $(KAFFEINE_DIR)/kaffeine_moira.cpp $(KAFFEINE_DIR)/Moira/Moira/Moira.cpp $(KAFFEINE_DIR)/Moira/Moira/MoiraDebugger.cpp $(SCHED_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(SCHED_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(SCHED_OBJS) $(LDLIBS)
+
 # Compile the heap and memory thunks as C and count their native allocations.
 $(BUILD_DIR)/memory_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
@@ -387,10 +398,12 @@ clean:
 	rm -f $(BUILD_DIR)/hosted_jit.o $(BUILD_DIR)/hosted_jit.d
 	rm -f $(SCALING_OBJS) $(SCALING_OBJS:.o=.d) $(BENCH_OBJS) $(BENCH_OBJS:.o=.d) $(BUILD_DIR)/bench_exec_memory $(BUILD_DIR)/bench_exec_memory.d
 	rm -f $(GUEST_BOUNDS_OBJS) $(GUEST_BOUNDS_OBJS:.o=.d)
+	rm -f $(SCHED_OBJS) $(SCHED_OBJS:.o=.d)
 	rm -f $(TEST_BINS) $(addsuffix .d,$(TEST_BINS)) $(DOS_LOADSEG_OBJ) $(DOS_LOADSEG_OBJ:.o=.d) $(EXEC_LISTS_OBJ) $(EXEC_LISTS_OBJ:.o=.d) $(DOS_THUNK_OBJS) $(DOS_THUNK_OBJS:.o=.d) $(MEMHEADER_OBJS) $(MEMHEADER_OBJS:.o=.d) $(UTILITY_THUNK_OBJS) $(UTILITY_THUNK_OBJS:.o=.d) $(LOCALE_THUNK_OBJS) $(LOCALE_THUNK_OBJS:.o=.d) $(MATHIEEE_THUNK_OBJS) $(MATHIEEE_THUNK_OBJS:.o=.d) $(READARGS_OBJS) $(READARGS_OBJS:.o=.d) $(CLI_OBJS) $(CLI_OBJS:.o=.d) $(EXEC_COMPAT_OBJS) $(EXEC_COMPAT_OBJS:.o=.d) $(GFX_THUNK_OBJS) $(GFX_THUNK_OBJS:.o=.d) $(MEMORY_OBJS) $(MEMORY_OBJS:.o=.d) $(TASK_OBJS) $(TASK_OBJS:.o=.d) $(IO_OBJS) $(IO_OBJS:.o=.d)
 
 -include $(addsuffix .d,$(TEST_BINS)) $(DOS_LOADSEG_OBJ:.o=.d) $(EXEC_LISTS_OBJ:.o=.d) $(DOS_THUNK_OBJS:.o=.d) $(MEMHEADER_OBJS:.o=.d) $(UTILITY_THUNK_OBJS:.o=.d) $(LOCALE_THUNK_OBJS:.o=.d) $(MATHIEEE_THUNK_OBJS:.o=.d) $(READARGS_OBJS:.o=.d) $(CLI_OBJS:.o=.d) $(EXEC_COMPAT_OBJS:.o=.d) $(GFX_THUNK_OBJS:.o=.d) $(MEMORY_OBJS:.o=.d) $(TASK_OBJS:.o=.d) $(IO_OBJS:.o=.d)
 -include $(GUEST_BOUNDS_OBJS:.o=.d)
+-include $(SCHED_OBJS:.o=.d)
 -include $(MATHFFP_THUNK_OBJS:.o=.d)
 -include $(LIBRARY_PATHS_OBJS:.o=.d)
 -include $(DISKFONT_OBJS:.o=.d)

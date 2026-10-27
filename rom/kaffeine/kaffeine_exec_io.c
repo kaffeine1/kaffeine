@@ -17,6 +17,7 @@
 #include "kaffeine_thunks_console.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_workbench.h"
+#include "kaffeine_sched.h"
 
 #include <aros/debug.h>
 #include <exec/errors.h>
@@ -80,17 +81,25 @@ IPTR Kaffeine_AllocSignal(struct KaffeineContext *ctx, void *cpu)
     BYTE got = AllocSignal((BYTE)THUNK_D(0));
 
     if (got >= 0)
+    {
         ctx->guest_signals |= 1UL << got;
+        /* with AddTask() children, also the guest task that has it */
+        if (ctx->sched)
+            ctx->task_ops->signal_allocated(ctx, got);
+    }
     return (IPTR)(LONG)got;
 }
 
 /* -336: FreeSignal(D0=signalNum). Only a bit that the guest allocated goes
-   back: the other bits of the native task are not the guest's to free. */
+   back: the other bits of the native task are not the guest's to free. With
+   AddTask() children, only the guest task that allocated it frees it. */
 IPTR Kaffeine_FreeSignal(struct KaffeineContext *ctx, void *cpu)
 {
     BYTE sig = (BYTE)THUNK_D(0);
 
     if (sig < 0)
+        return 0;
+    if (ctx->sched && !ctx->task_ops->signal_freeable(ctx, sig))
         return 0;
     if (sig > 31 || !(ctx->guest_signals & (1UL << sig)))
     {
@@ -106,11 +115,14 @@ IPTR Kaffeine_FreeSignal(struct KaffeineContext *ctx, void *cpu)
 
 /* -324: Signal(A1=task, D0=signalSet). The current guest task stands for
    the native task that runs the guest, which may be a child of the one
-   behind its Task snapshot. Other tasks cannot be signalled yet. */
+   behind its Task snapshot. With AddTask() children the scheduler signals
+   any task of the program; otherwise other tasks cannot be signalled. */
 IPTR Kaffeine_Signal(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG task = THUNK_A(1);
 
+    if (ctx->sched)
+        return ctx->task_ops->signal(ctx, cpu);
     if (!task || task != guest_task(ctx))
     {
         bug("[kaffeine] Signal(%08lx): not the current task\n", (unsigned long)task);
@@ -154,6 +166,8 @@ IPTR Kaffeine_CreateMsgPort(struct KaffeineContext *ctx, void *cpu)
         return 0;
     }
     ctx->guest_signals |= 1UL << sig;
+    if (ctx->sched)
+        ctx->task_ops->signal_allocated(ctx, sig);
     list = port + G_MP_MSGLIST;
     ctx->mem[port + G_LN_TYPE] = NT_MSGPORT;
     ctx->mem[port + G_MP_FLAGS] = PA_SIGNAL;
@@ -183,8 +197,11 @@ IPTR Kaffeine_DeleteMsgPort(struct KaffeineContext *ctx, void *cpu)
             (unsigned long)port);
         return 0;
     }
+    if (ctx->sched && !ctx->task_ops->signal_freeable(ctx, entry->sigbit))
+        return Kaffeine_IORefuse(ctx, "DeleteMsgPort(): signal belongs to another guest task");
     Kaffeine_AppPortGone(ctx, port);
-    if (ctx->guest_signals & (1UL << entry->sigbit))
+    if (entry->sigbit >= 0 && entry->sigbit < 32 &&
+        (ctx->guest_signals & (1UL << entry->sigbit)))
     {
         ctx->guest_signals &= ~(1UL << entry->sigbit);
         FreeSignal(entry->sigbit);

@@ -32,6 +32,7 @@
 #include "kaffeine_taglist.h"
 #include "kaffeine_window.h"
 #include "kaffeine_workbench.h"
+#include "kaffeine_sched.h"
 
 #include <aros/debug.h>
 #include <exec/memory.h>
@@ -556,7 +557,9 @@ static ULONG guest_first(struct KaffeineContext *ctx, ULONG port, ULONG *next)
    native wait, then the 68k message that GetMsg() will give for the first
    message. A port that App objects send to waits for the next AppMessage
    (kaffeine_workbench.c). Any other 68k port with no message stops the
-   program: no message can reach it yet. */
+   program: no message can reach it yet. With AddTask() children, a guest
+   task that waits for an empty IDCMP port lets the others run, and this
+   runs again for it once the port's signal arrives (kaffeine_sched.c). */
 IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG guest = THUNK_A(0), first, next, mw;
@@ -565,6 +568,11 @@ IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
 
     if (port)
     {
+        IPTR blocked;
+
+        if (ctx->sched &&
+            ctx->task_ops->block_port(ctx, cpu, port, Kaffeine_WaitPort, &blocked))
+            return blocked;
         im = (struct IntuiMessage *)WaitPort(port);
         if (!im)
             return 0;
