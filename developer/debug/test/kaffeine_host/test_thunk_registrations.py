@@ -508,21 +508,9 @@ ALLOWED_IGNORED_REGS = {
         frozenset({"D1", "D2", "D3", "D4"}),
         "ExAllEnd() only needs the control: the emulated scan keeps its state there",
     ),
-    "kaffeine_dos_DoPkt": (
-        frozenset({"D1", "D2", "D3", "D4", "D5", "D6", "D7"}),
-        "DoPkt() refuses with ERROR_NOT_IMPLEMENTED outside the owned PutMsg ACTION_READ adapter",
-    ),
-    "kaffeine_dos_SendPkt": (
-        frozenset({"D1", "D2", "D3"}),
-        "SendPkt() refuses with ERROR_NOT_IMPLEMENTED outside the owned PutMsg ACTION_READ adapter",
-    ),
-    "kaffeine_dos_ReplyPkt": (
-        frozenset({"D1", "D2", "D3"}),
-        "ReplyPkt() refuses with ERROR_NOT_IMPLEMENTED outside the owned PutMsg ACTION_READ adapter",
-    ),
     "kaffeine_dos_AbortPkt": (
         frozenset({"D1", "D2"}),
-        "AbortPkt() refuses with ERROR_NOT_IMPLEMENTED outside the owned PutMsg ACTION_READ adapter",
+        "AbortPkt() does nothing, as on AmigaOS V37 to V47",
     ),
     "Kaffeine_OpenWindowTagList": (
         frozenset({"A0"}),
@@ -1075,7 +1063,12 @@ def main():
                 functions[handler]))
             read_regs -= direct_register_reads(discarded)
             if handler in PRESERVED_D0_HANDLERS:
-                if not re.search(r"return\s+THUNK_D\(0\)\s*;", functions[handler]):
+                preserves_d0 = re.search(r"return\s+THUNK_D\(0\)\s*;", functions[handler])
+                if handler == "Kaffeine_PutMsg":
+                    preserves_d0 = re.search(
+                        r"return Kaffeine_RoutePutMsg\(ctx, THUNK_A\(0\), THUNK_A\(1\), THUNK_D\(0\)\);",
+                        functions[handler]) and "return d0;" in functions["Kaffeine_RoutePutMsg"]
+                if not preserves_d0:
                     failures += 1
                     print("FAIL", handler, "does not return its preserved D0")
                 read_regs.discard("D0")

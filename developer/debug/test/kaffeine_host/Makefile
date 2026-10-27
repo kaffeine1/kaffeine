@@ -19,6 +19,7 @@ DOS_THUNK_CPPFLAGS := -I$(TEST_DIR)/dos_thunk_stubs $(TEST_CPPFLAGS)
 DOS_THUNK_CFLAGS := -std=c99 -Wall -Wextra -Wno-unused-parameter
 DOS_THUNK_OBJS := $(addprefix $(BUILD_DIR)/dos_thunk_,cpu.o dispatch.o thunks_dos.o cli.o format.o)
 DOS_THUNK_OBJS += $(BUILD_DIR)/dos_buffers_native.o $(BUILD_DIR)/file_boundary_unit.o
+DOS_THUNK_OBJS += $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o
 MEMHEADER_OBJS := $(addprefix $(BUILD_DIR)/memheader_,cpu.o dispatch.o memheader.o)
 UTILITY_THUNK_OBJS := $(addprefix $(BUILD_DIR)/utility_thunk_,cpu.o dispatch.o thunks_utility.o taglist.o memory.o format.o)
 CALLBACK_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(UTILITY_THUNK_OBJS) $(BUILD_DIR)/utility_thunk_exec_compat.o
@@ -87,6 +88,7 @@ ICON_OBJS := $(MESSAGE_OBJS) $(BUILD_DIR)/icon_boundary_icon.o
 TESTS = test_kaffeine test_moira_exec test_hello_thunks test_dispatch test_hunk_loading
 TESTS += test_exec_lists
 TESTS += test_dos_thunks test_exec_messages test_dos_packets
+TESTS += test_dos_packet_thunks
 TESTS += test_icon test_display test_fbgfx_refresh
 TESTS += test_memheader test_memheader_moira
 TESTS += test_utility_thunks test_locale_thunks test_mathieee_thunks
@@ -452,13 +454,15 @@ $(BUILD_DIR)/file_boundary_unit.o: $(TEST_DIR)/file_boundary_unit.c | $(BUILD_DI
 
 $(BUILD_DIR)/message_boundary_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
-$(BUILD_DIR)/message_entries.c: $(TEST_DIR)/messages_extract.py $(KAFFEINE_DIR)/kaffeine_thunks_dos.c $(KAFFEINE_DIR)/kaffeine_window.c $(KAFFEINE_DIR)/kaffeine_exec_io.c | $(BUILD_DIR)
+$(BUILD_DIR)/message_entries.c: $(TEST_DIR)/messages_extract.py $(KAFFEINE_DIR)/kaffeine_thunks.c $(KAFFEINE_DIR)/kaffeine_thunks_dos.c $(KAFFEINE_DIR)/kaffeine_window.c $(KAFFEINE_DIR)/kaffeine_exec_io.c | $(BUILD_DIR)
 	$(PYTHON) $< $(KAFFEINE_DIR) $@
 $(BUILD_DIR)/message_entries.o: $(BUILD_DIR)/message_entries.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
 $(BUILD_DIR)/test_exec_messages: $(TEST_DIR)/test_exec_messages.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
 $(BUILD_DIR)/test_dos_packets: $(TEST_DIR)/test_dos_packets.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
+$(BUILD_DIR)/test_dos_packet_thunks: $(TEST_DIR)/test_dos_packet_thunks.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
 -include $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_messages.d
 .PHONY: test_exec_messages test_dos_packets

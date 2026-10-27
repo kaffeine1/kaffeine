@@ -53,13 +53,13 @@ Darwin-specific JIT constraints.
 ## Coverage
 
 The Makefile is the authoritative list of executables. The current suite
-has 42 test executables and a thunk-registration audit.
+has 43 test executables and a thunk-registration audit.
 
 | Area | Coverage |
 | --- | --- |
 | CPU and loaders | Real Moira instructions, A-line dispatch, registers and condition codes, HUNK loading and relocations, callback faults and guest bounds |
 | Exec | Heap and pools, lists, signals, task snapshots, embedded ExecBase list headers and bounded Moira callback traversal, semaphores, public ports, guest message queues, I/O requests and timer boundaries |
-| DOS | Handle identities and lifetimes, buffers, read packets, formatting, CLI state, argument parsing, data structures and directory traversal |
+| DOS | Handle identities and lifetimes, buffers, packet thunks and FileHandle actions, formatting, CLI state, argument parsing, data structures and directory traversal |
 | Graphics and Intuition | RastPorts, fonts, screens, windows, IDCMP, requests, menus, gadgets and Workbench objects |
 | Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, no-window console calls and diskfont snapshots |
 | CPU backend extension | Hosted AArch64 translation probe behind the same CPU interface |
@@ -92,6 +92,45 @@ ASAN_OPTIONS=detect_leaks=0 /tmp/exall-asan/test_dos_thunks
 ```
 
 Use fresh build directories.
+
+### DOS packet bridge
+
+`test_dos_packet_thunks` exercises the production AllocDosObject and
+FreeDosObject paths for DOS_STDPKT and all five packet LVOs. The existing
+extractor takes their bodies and private helpers verbatim from production.
+The queue, routing, heap, FileHandle and shadow modules are real objects;
+native DOS calls are recording fakes. Generated LVO fallbacks and unrelated
+object allocators are poisoned.
+
+The groups cover the 32-packet ownership table and layout, SendPkt/WaitPkt,
+ReplyPkt exchanges, AbortPkt, DoPkt's private reply storage and D0/D1/IoErr,
+NIL packet ports, message length normalization and rc20 boundaries.
+`test_dos_packets` also covers reads, writes, seek modes and errors, scalar
+handler actions, classic InfoData conversion and buffer checks, unknown
+actions and FileHandles with no native handler. The task and scheduler
+suites check the Process port layout and reserved DOS signal ownership.
+
+The Process packet port lives inside the registered Task shadow: guest queues
+take exactly that port, and the SIGB_DOS exception holds for it alone, with
+and without the scheduler.
+
+```sh
+make -C developer/debug/test/kaffeine_host BUILD_DIR=/tmp/pkt-host -j4 test
+make -C developer/debug/test/kaffeine_host BUILD_DIR=/tmp/pkt-host-asan -j4 \
+    CFLAGS="-g -fsanitize=address,undefined -fno-sanitize-recover=all" \
+    CXXFLAGS="-g -fsanitize=address,undefined -fno-sanitize-recover=all" \
+    test_dos_thunks test_dos_packets test_dos_packet_thunks test_exec_messages \
+    test_exec_tasks test_guest_tasks test_icon test_display
+for test in test_dos_thunks test_dos_packets test_dos_packet_thunks \
+    test_exec_messages test_exec_tasks test_guest_tasks test_icon test_display; do
+    ASAN_OPTIONS=detect_leaks=0 /tmp/pkt-host-asan/"$test" || exit 1
+done
+```
+
+For disposable mutation sources, pass `KAFFEINE_DIR=/tmp/.../rom/kaffeine`
+on the make command line and use another fresh BUILD_DIR. Keep mutation
+tooling outside this directory and restore the disposable source after
+each mutation. The original rom/kaffeine stays unchanged.
 
 ## Registration audit
 

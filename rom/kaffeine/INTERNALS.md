@@ -848,13 +848,13 @@ classic-system observations recorded by `exec_library_paths`.
 | -192 | DateStamp | Native `DateStamp`, three big-endian longwords, returns the guest pointer |
 | -198 | Delay | Pass-through |
 | -222 | Execute | Bounded command string; the input and output handles pass through |
-| -228 | AllocDosObject | TagList translation; FIB returns shadow; RDArgs and ExAllControl are 68k structures in guest memory |
-| -234 | FreeDosObject | Object from D2 (shadow lookup); a 68k RDArgs goes back to the guest heap, as does a 68k ExAllControl with its native scan state; freeing a control whose MatchFunc runs stops with rc 20 |
-| -240 | DoPkt | Fails with `ERROR_NOT_IMPLEMENTED`: no packet bridge yet (`kaffeine_thunks_dos.c`) |
-| -246 | SendPkt | Fails with `ERROR_NOT_IMPLEMENTED`: no packet bridge yet (`kaffeine_thunks_dos.c`) |
-| -252 | WaitPkt | Fails with `ERROR_NOT_IMPLEMENTED`: no packet bridge yet (`kaffeine_thunks_dos.c`) |
-| -258 | ReplyPkt | Fails with `ERROR_NOT_IMPLEMENTED`: no packet bridge yet (`kaffeine_thunks_dos.c`) |
-| -264 | AbortPkt | Fails with `ERROR_NOT_IMPLEMENTED`: no packet bridge yet (`kaffeine_thunks_dos.c`) |
+| -228 | AllocDosObject | TagList translation; FIB returns shadow; RDArgs, ExAllControl and StandardPacket (its `sp_Pkt`) are 68k structures in guest memory |
+| -234 | FreeDosObject | Object from D2 (shadow lookup); a 68k RDArgs goes back to the guest heap, as does a 68k ExAllControl with its native scan state; freeing a control whose MatchFunc runs stops with rc 20; a StandardPacket from AllocDosObject goes back to the guest heap, others are ignored |
+| -240 | DoPkt | A guest StandardPacket with a private PA_IGNORE reply port, routed as PutMsg; D0 `dp_Res1`, D1 and IoErr `dp_Res2`; NULL port is NIL: (`kaffeine_thunks_dos.c`, see "DOS packets") |
+| -246 | SendPkt | Writes the reply port into `dp_Port` and `mn_ReplyPort`, `mn_Length` 0 becomes 68 or 20, then routes as PutMsg |
+| -252 | WaitPkt | Next message of the guest `pr_MsgPort`, returns its `ln_Name`, leaves IoErr; stops with rc 20 if nothing is queued |
+| -258 | ReplyPkt | Writes the results, `ln_Name` and the guest `pr_MsgPort` into `dp_Port`, then routes to the old `dp_Port` as PutMsg |
+| -264 | AbortPkt | Does nothing, as AmigaOS V37 to V47 |
 | -324 | FRead | Checks unsigned block-count multiplication and the entire guest buffer before buffered I/O; native block count or -1 |
 | -330 | FWrite | As FRead for the source bytes; zero block length or count is a no-op |
 | -336 | FGets | Native `FGets` into the guest buffer after checking the bytes it can write (two for `buflen` 1); `buflen` 0 or a range outside guest memory fails with `ERROR_BAD_NUMBER` before reading; returns the guest buffer (`kaffeine_thunks_dos.c`) |
@@ -3157,6 +3157,74 @@ AROS `ExAll()` calls `CALLHOOKPKT(hook, entry, &type)`, which puts the
 entry in A2 and the type in A1, the other way round from the AmigaOS
 autodoc and from both AmigaOS handlers.
 
+## DOS packets
+
+The packet functions of dos.library work on guest structures, as AmigaOS
+does them, and deliver every message through the routing of `PutMsg()`
+(`Kaffeine_RoutePutMsg()`): guest ports of the program, and the synthetic
+handlers of its FileHandles.
+
+- `AllocDosObject(DOS_STDPKT)` gives a cleared 68-byte StandardPacket from
+  the guest heap and returns its `sp_Pkt`, with `dp_Link` and `ln_Name` set
+  and `mn_Length` 0, as AmigaOS 3.2.3. `stdpkt_map` keeps 32 of them;
+  `FreeDosObject()` frees only those.
+- The guest `pr_MsgPort` of the program's Process is a valid empty queue
+  with the `SIGB_DOS` of the native process, which the bridge neither
+  allocates nor frees; the guest queues accept that one signal on that one
+  port, with and without the scheduler, which does not own it.
+- `SendPkt()` writes the reply port into `dp_Port` and `mn_ReplyPort` and
+  puts the message. The guest queues size a message by its `mn_Length`, so
+  0 becomes 68 for a StandardPacket and 20 for a packet elsewhere.
+- `WaitPkt()` takes the next message of `pr_MsgPort` and returns its
+  `ln_Name`; it leaves IoErr alone.
+- `ReplyPkt()` writes the results, `ln_Name` and `pr_MsgPort` into
+  `dp_Port`, and puts the message to the old `dp_Port`.
+- `AbortPkt()` does nothing.
+- `DoPkt()` sends a StandardPacket of its own with a private `PA_IGNORE`
+  reply port, so it never takes another reply that waits on `pr_MsgPort`.
+  It returns `dp_Res1` in D0 and `dp_Res2` in D1, as the autodoc says, and
+  in IoErr.
+- A NULL port is NIL:, as in AROS: `ACTION_WRITE` returns its length,
+  `ACTION_READ` 0, every other action `DOSTRUE`.
+
+The synthetic handler of a FileHandle answers at once. `ACTION_READ` and
+`ACTION_WRITE` go to native `Read()` and `Write()` through a native buffer;
+in AROS both send the packet straight to the handler. `ACTION_SEEK` goes to
+the native handler with the native `fh_Arg1`, not through `Seek()`, which
+would flush the write buffer of the handle, or drop its read buffer and
+count the bytes still unread there; a NIL: handle has no handler and still
+uses `Seek()`. `ACTION_IS_FILESYSTEM`, `ACTION_SCREEN_MODE` and
+`ACTION_WAIT_CHAR` go to the native handler with their integer argument.
+`ACTION_DISK_INFO` fills the guest InfoData as `Info()` does, with no
+volume node or window pointer; for a console (`CON\0` or `RAW\0`) also
+`id_InUse` is 0, since there it holds the native read IORequest that
+classic programs follow to find the console unit, and the bridge has no
+guest IORequest for it yet. Every other action, `ACTION_END` included,
+gets 0 and `ERROR_ACTION_NOT_KNOWN`, as a handler answers an action it does
+not know. The packet must be a StandardPacket, the message right before
+the DosPacket.
+
+Only replies that come at once are supported: a `WaitPkt()` with nothing on
+`pr_MsgPort`, and a `DoPkt()` to a guest port that no one answers in the
+same call, stop the program with rc 20, as do `pr_PktWait`, packets from a
+task that is not the program's process, and `ReplyPkt()` to no port. The
+ports that `DeviceProc()`, `GetConsoleTask()` and `GetFileSysTask()` return
+are still native and take no packets.
+
+Measured on AmigaOS 3.2.3 with an original probe program:
+
+| Case | AmigaOS 3.2.3 | kaffeine |
+| --- | --- | --- |
+| `WaitPkt()` | `ln_Name` of the next message, IoErr untouched | same |
+| Handler reply | `ln_Type` 5, `dp_Port` the handler | same |
+| `ReplyPkt()` | results, `dp_Port` the caller's `pr_MsgPort` | same |
+| `AbortPkt()` | nothing | nothing |
+| Unknown action | 0, 209 | 0, 209 |
+| `ACTION_SEEK` past the end | -1, 219 | as the native handler |
+| D1 after `DoPkt()` | not `dp_Res2` | `dp_Res2`, as the autodoc says |
+| DOS I/O between `SendPkt()` and `WaitPkt()` | takes the reply from `pr_MsgPort` and loses it | leaves it there: DOS calls go to native DOS, `DoPkt()` uses its own port |
+| `DoPkt()` with a NULL port | hangs | NIL: |
+
 ## Known Bugs
 
 No known bugs at this time.
@@ -3178,8 +3246,9 @@ The ACTION_READ adapter validates a contiguous 68-byte StandardPacket,
 its key, buffer, reply queue and aliases before native Read. It stages the
 native result, copies only the returned bytes and preserves caller IoErr.
 The DOS reply has type 5 and dp_Port becomes the guest handler; generic
-ReplyMsg instead uses type 7, or type 6 with no reply port. Other packet
-actions and DOS packet entry points remain unsupported. The final target candidate
+ReplyMsg instead uses type 7, or type 6 with no reply port. The other
+actions of these handlers and the DOS packet functions are described in
+"DOS packets" below. The final target candidate
 matches the measured 26 message checks, 28 packet checks and 20 raw
 observations in Shell and Run. Personal Paint completes repeated packet
 reads and replies, then stops at a contained CPU callback memory-access

@@ -490,6 +490,9 @@ static IPTR thunk_dos_AllocDosObject(struct KaffeineContext *ctx, void *cpu)
     /* ExAll() keeps its native state on the bridge */
     if (type == DOS_EXALLCONTROL)
         return Kaffeine_ExAllAllocControl(ctx);
+    /* Packets travel through guest queues, so they live in guest memory */
+    if (type == DOS_STDPKT)
+        return Kaffeine_AllocStdPacket(ctx);
     struct TagItem *tags = m68k_to_native_taglist(ctx, THUNK_D(2));
     APTR obj = AllocDosObject(type, tags);
     if (tags) FreeVec(tags);

@@ -32,6 +32,7 @@ extern "C" IPTR kaffeine_dos_Open(KaffeineContext *, void *);
 extern "C" IPTR kaffeine_dos_Read(KaffeineContext *, void *);
 extern "C" IPTR kaffeine_dos_Write(KaffeineContext *, void *);
 extern "C" IPTR kaffeine_dos_SetVBuf(KaffeineContext *, void *);
+extern "C" IPTR message_AllocDosObject(KaffeineContext *, void *);
 
 static unsigned checks, failures, generated_calls;
 static void check(bool condition, const char *label)
@@ -69,9 +70,18 @@ static BPTR native_input, native_output, open_result, seen_handle, seen_lock;
 static LONG read_length, read_override = INT_MIN, close_result = -1;
 static void *read_buffer;
 static std::vector<UBYTE> read_override_bytes;
+static LONG write_override = INT_MIN;
+static std::vector<UBYTE> written_bytes;
+static unsigned native_packets;
+static MsgPort *packet_handler;
+static LONG packet_action, packet_result, packet_error;
+static std::array<SIPTR, 5> packet_args;
+static InfoData packet_info;
 static SIPTR ioerr;
 static bool signal_failure;
 static std::map<BPTR, size_t> positions;
+static FileHandle *fixture_handles;
+static size_t fixture_handle_count;
 static std::array<UBYTE, 208> native_buffer;
 static constexpr char contents[] = "ABCDEFGHIJKL";
 extern "C" BYTE AllocSignal(LONG requested)
@@ -128,17 +138,56 @@ extern "C" LONG Read(BPTR handle, APTR buffer, LONG length)
     position += count;
     return static_cast<LONG>(count);
 }
-extern "C" LONG Write(BPTR handle, const void *, LONG length)
-{ ++writes; seen_handle = handle; read_length = length; return length; }
-extern "C" LONG Seek(BPTR handle, LONG position, LONG mode)
+extern "C" LONG Write(BPTR handle, const void *buffer, LONG length)
 {
-    ++seeks; seen_handle = handle;
+    ++writes; seen_handle = handle; read_buffer = const_cast<void *>(buffer); read_length = length;
+    assert(handle && length >= 0);
+    written_bytes.assign(static_cast<const UBYTE *>(buffer), static_cast<const UBYTE *>(buffer) + length);
+    ioerr = write_override == -1 ? 211 : 909;
+    return write_override == INT_MIN ? length : write_override;
+}
+static LONG seek_position(BPTR handle, LONG position, LONG mode)
+{
+    seen_handle = handle;
     LONG old = static_cast<LONG>(positions[handle]);
-    if (mode == -1) positions[handle] = position;
-    else if (mode == 0) positions[handle] += position;
-    else positions[handle] = sizeof(contents) - 1 + position;
+    LONG next = position + (mode == OFFSET_BEGINNING ? 0 :
+        mode == OFFSET_CURRENT ? old : static_cast<LONG>(sizeof(contents) - 1));
+    if (next < 0 || next > static_cast<LONG>(sizeof(contents) - 1))
+    { ioerr = ERROR_SEEK_ERROR; return -1; }
+    positions[handle] = static_cast<size_t>(next);
     return old;
 }
+extern "C" LONG Seek(BPTR handle, LONG position, LONG mode)
+{
+    ++seeks;
+    LONG old = seek_position(handle, position, mode);
+    if (old != -1) ioerr = 909;
+    return old;
+}
+extern "C" SIPTR DoPkt(MsgPort *handler, LONG action, SIPTR a1, SIPTR a2, SIPTR a3, SIPTR a4, SIPTR a5)
+{
+    ++native_packets; packet_handler=handler; packet_action=action; packet_args={a1,a2,a3,a4,a5};
+    assert(handler);
+    if (action == ACTION_DISK_INFO)
+        *static_cast<InfoData *>(BADDR(reinterpret_cast<BPTR>(a1))) = packet_info;
+    if (action == ACTION_SEEK)
+    {
+        /* The handler moves its own position, found by fh_Arg1, and sets
+           res2 to 0 on success as the AROS handlers do. */
+        FileHandle *fh = std::find_if(fixture_handles, fixture_handles + fixture_handle_count,
+                                      [a1](const FileHandle &n) { return n.fh_Args == a1; });
+        assert(fh != fixture_handles + fixture_handle_count);
+        LONG old = seek_position(MKBADDR(fh), static_cast<LONG>(a2), static_cast<LONG>(a3));
+        if (old != -1) ioerr = 0;
+        return old;
+    }
+    ioerr=packet_error;
+    return packet_result;
+}
+extern "C" ULONG Kaffeine_AllocRDArgs(KaffeineContext *) { std::abort(); }
+extern "C" void Kaffeine_FreeRDArgs(KaffeineContext *, ULONG) { std::abort(); }
+extern "C" ULONG Kaffeine_ExAllAllocControl(KaffeineContext *) { std::abort(); }
+extern "C" BOOL Kaffeine_ExAllFreeControl(KaffeineContext *, ULONG) { std::abort(); }
 extern "C" BPTR SelectInput(BPTR handle)
 { BPTR old = native_input; native_input = handle; ++scalar_calls; return old; }
 extern "C" BPTR SelectOutput(BPTR handle)
@@ -216,6 +265,9 @@ static const M68KThunkEntry exec_manual[]={
     {372,Kaffeine_GetMsg},{378,Kaffeine_ReplyMsg},{384,Kaffeine_WaitPort}
 };
 static const M68KThunkEntry dos_manual[]={KAFFEINE_DOS_FILE_THUNKS,
+    {228,message_AllocDosObject},{234,kaffeine_dos_FreeDosObject},
+    {240,kaffeine_dos_DoPkt},{246,kaffeine_dos_SendPkt},{252,kaffeine_dos_WaitPkt},
+    {258,kaffeine_dos_ReplyPkt},{264,kaffeine_dos_AbortPkt},
     {30,kaffeine_dos_Open},{42,kaffeine_dos_Read},{48,kaffeine_dos_Write},{366,kaffeine_dos_SetVBuf},
     {324,kaffeine_dos_FRead},{330,kaffeine_dos_FWrite},{336,kaffeine_dos_FGets},{342,kaffeine_dos_FPuts},
     {348,kaffeine_dos_VFWritef},{354,kaffeine_dos_VFPrintf},{390,kaffeine_dos_ExamineFH},{408,kaffeine_dos_NameFromFH},
@@ -223,6 +275,7 @@ static const M68KThunkEntry dos_manual[]={KAFFEINE_DOS_FILE_THUNKS,
 static const M68KThunkEntry exec_poison[]={
     {366,poison},{372,poison},{378,poison},{384,poison},{666,poison},{672,poison}};
 static const M68KThunkEntry dos_poison[]={
+    {228,poison},{234,poison},{240,poison},{246,poison},{252,poison},{258,poison},{264,poison},
     {30,poison},{36,poison},{42,poison},{48,poison},{54,poison},{60,poison},{66,poison},
     {204,poison},{216,poison},{270,poison},{276,poison},{282,poison},{288,poison},
     {294,poison},{300,poison},{306,poison},{312,poison},{318,poison},{360,poison},
@@ -254,8 +307,11 @@ struct Fixture
         allocated_signals=pending_signals=signals=freed_signals=signalled_mask=0;
         reads=writes=closes=seeks=buffer_calls=scalar_calls=0;
         read_override=INT_MIN; read_override_bytes.clear(); signal_failure=false; generated_calls=0; ioerr=137;
+        write_override=INT_MIN; written_bytes.clear(); native_packets=0; packet_handler=nullptr;
+        packet_action=0; packet_result=-1; packet_error=37; packet_args={}; packet_info={};
         close_frees=nullptr;native_task.tc_Node.ln_Type=NT_PROCESS;native_process.pr_CES=nullptr;
-        for (auto &n:native) { n.fh_Pos=n.fh_End=-1; n.fh_Type=reinterpret_cast<MsgPort *>(0x123456789ABCDEF0ULL); n.fh_Args=0xFEDCBA9876543210ULL; }
+        for (auto &n:native) { n.fh_Pos=n.fh_End=-1; n.fh_Type=reinterpret_cast<MsgPort *>(0x123456789ABCDEF0ULL); n.fh_Args=0xFEDCBA9876543210ULL+16*(&n-native.data()); }
+        fixture_handles=native.data();fixture_handle_count=native.size();
         native_input=MKBADDR(&native[0]);native_output=MKBADDR(&native[1]);open_result=MKBADDR(&native[2]);
         positions.clear();
         ctx.m68k_sysbase=exec_base;ctx.guest_exec_task=task;ctx.exec_task=&native_task;
@@ -266,7 +322,8 @@ struct Fixture
         auto &d=ctx.libs[1];d.m68k_addr=dos_base;d.jt_start=dos_base-3072;
         d.thunks=dos_manual;d.num_thunks=std::size(dos_manual);d.gen_thunks=dos_poison;d.num_gen_thunks=std::size(dos_poison);
         std::strcpy(reinterpret_cast<char *>(ctx.mem+0x6200),"fixture");
-        manual_port(port);manual_port(reply);message(msg);w(stack,0x1234ABCD);
+        manual_port(port);manual_port(reply);manual_port(process_port(),PA_SIGNAL,task,SIGB_DOS);
+        message(msg);w(stack,0x1234ABCD);
     }
     ~Fixture()
     {
@@ -285,6 +342,7 @@ struct Fixture
     }
     void w(ULONG a,ULONG v) { m68k_write32(&ctx,a,v); }
     ULONG r(ULONG a) { return m68k_read32(&ctx,a); }
+    ULONG process_port() { return ctx.guest_exec_task+M68K_PR_MSGPORT; }
     void manual_port(ULONG p,UBYTE flags=2,ULONG owner=0,UBYTE bit=0)
     {
         std::memset(ctx.mem+p,0,34);ctx.mem[p+8]=4;ctx.mem[p+14]=flags;ctx.mem[p+15]=bit;
@@ -296,24 +354,27 @@ struct Fixture
         w(m+10,0);w(m+14,rp);m68k_write16(&ctx,m+18,len);
     }
     ULONG call(bool dos,ULONG lvo,ULONG a0=0xFFFF0000,ULONG a1=0xFFFF0002,
-               ULONG d1=0xD0000001,ULONG d2=0xD0000002,ULONG d3=0xD0000003,ULONG d4=0xD0000004)
+               ULONG d1=0xD0000001,ULONG d2=0xD0000002,ULONG d3=0xD0000003,ULONG d4=0xD0000004,
+               ULONG d5=0xD0000005,ULONG d6=0xD0000006,ULONG d7=0xD0000007)
     {
         for(unsigned i=0;i<8;++i){state.d[i]=0xD0000000+i;state.a[i]=0xA0000000+i;}
         state.sr=0xA715;state.pc=0x12345678;state.a[7]=stack;
         state.a[0]=a0;state.a[1]=a1;state.d[1]=d1;state.d[2]=d2;state.d[3]=d3;state.d[4]=d4;
+        state.d[5]=d5;state.d[6]=d6;state.d[7]=d7;
         w(stack,0x1234ABCD);auto before=state;
         ctx.running=TRUE;ctx.exit_code=0;
         KaffeineDispatchResult result={};
         assert(Kaffeine_DispatchLibraryCall(&ctx,&cpu,(dos?dos_base:exec_base)-lvo,&result));
         check(result.return_pc==0x1234ABCD && state.a[7]==stack+4,"dispatcher stack and return PC");
         check(state.sr==before.sr && state.pc==before.pc,"SR and PC preserved");
-        for(unsigned i=1;i<8;++i) check(state.d[i]==before.d[i],"non-result data register preserved");
+        for(unsigned i=1;i<8;++i)
+            if (!(dos && lvo==240 && i==1)) check(state.d[i]==before.d[i],"non-result data register preserved");
         for(unsigned i=0;i<7;++i) check(state.a[i]==before.a[i],"address register preserved");
         check(!generated_calls,"unsafe generated fallback was not reached");
         return state.d[0];
     }
-    ULONG dos(ULONG lvo,ULONG d1=0,ULONG d2=0,ULONG d3=0,ULONG d4=0)
-    { return call(true,lvo,0xFFFF0000,0xFFFF0002,d1,d2,d3,d4); }
+    ULONG dos(ULONG lvo,ULONG d1=0,ULONG d2=0,ULONG d3=0,ULONG d4=0,ULONG d5=0,ULONG d6=0,ULONG d7=0)
+    { return call(true,lvo,0xFFFF0000,0xFFFF0002,d1,d2,d3,d4,d5,d6,d7); }
     ULONG exec(ULONG lvo,ULONG a0=0,ULONG a1=0) { return call(false,lvo,a0,a1); }
     std::vector<UBYTE> bytes() { return {ctx.mem,ctx.mem+ctx.mem_size+KAFFEINE_MEM_GUARD}; }
     void rejected(ULONG destination=port,ULONG message=msg)

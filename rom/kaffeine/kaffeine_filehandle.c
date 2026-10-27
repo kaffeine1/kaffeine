@@ -292,31 +292,105 @@ void Kaffeine_FileCleanup(struct KaffeineContext *ctx)
     ctx->file_packet = NULL;
 }
 
+/* A guest range that native I/O fills or reads must stay clear of the
+   packet, its reply queue and every owned file structure. */
+static BOOL file_range(struct KaffeineContext *ctx, ULONG msg, const struct KaffeineQueue *reply,
+                       ULONG addr, ULONG length)
+{
+    unsigned i;
+    if (length > INT32_MAX || !Kaffeine_MessageMemory(ctx, addr, length) ||
+        Kaffeine_Overlap(msg, 68, addr, length) || !Kaffeine_QueueDisjoint(reply, addr, length))
+        return FALSE;
+    for (i = 0; i < KAFFEINE_MAX_FILES; ++i)
+    {
+        const struct KaffeineFile *other = &ctx->files[i];
+        if (other->guest &&
+            (Kaffeine_Overlap(addr, length, other->guest, 86) ||
+             (other->mirror && Kaffeine_Overlap(addr, length, other->mirror, KAFFEINE_FILE_BUFFER_LIMIT))))
+            return FALSE;
+    }
+    return TRUE;
+}
+
+/* The DOS reply: PutMsg, not ReplyMsg, so type 5, packet identity kept and
+   dp_Port the handler. */
+static void file_reply(struct KaffeineContext *ctx, ULONG port, ULONG msg,
+                       const struct KaffeineQueue *reply, LONG res1, LONG res2)
+{
+    m68k_write32(ctx, msg + 10, msg + 20);
+    m68k_write32(ctx, msg + 24, port);
+    m68k_write32(ctx, msg + 32, (ULONG)res1);
+    m68k_write32(ctx, msg + 36, (ULONG)res2);
+    Kaffeine_MessageAppend(ctx, reply, msg, 5);
+}
+
+/* ACTION_READ and ACTION_WRITE on the native file through a native buffer;
+   only the transferred bytes reach guest memory. */
+static IPTR file_transfer(struct KaffeineContext *ctx, struct KaffeineFile *f, ULONG port,
+                          ULONG msg, const struct KaffeineQueue *reply, BOOL write)
+{
+    const char *op = write ? "ACTION_WRITE" : "ACTION_READ";
+    ULONG buffer = m68k_read32(ctx, msg + 44), length = m68k_read32(ctx, msg + 48);
+    LONG result, error;
+    SIPTR caller_error;
+    UBYTE *temporary;
+    /* Handlers ignore the arguments an action does not use: DoPkt1() to
+       DoPkt4() leave the other argument registers as they were. */
+    if (m68k_read32(ctx, msg + 40) != f->key)
+        return Kaffeine_MessageFailure(ctx, write ? "ACTION_WRITE packet" : "ACTION_READ packet");
+    if (!file_range(ctx, msg, reply, buffer, length))
+        return Kaffeine_MessageFailure(ctx, write ? "ACTION_WRITE buffer" : "ACTION_READ buffer");
+    caller_error = IoErr();
+    temporary = AllocVec(length ? length : 1, MEMF_PUBLIC);
+    if (!temporary) return Kaffeine_MessageFailure(ctx, write ? "ACTION_WRITE allocation" : "ACTION_READ allocation");
+    if (write)
+    {
+        memcpy(temporary, ctx->mem + buffer, length);
+        result = Write(f->native, temporary, (LONG)length);
+    }
+    else
+        result = Read(f->native, temporary, (LONG)length);
+    error = result < 0 ? (LONG)IoErr() : 0;
+    SetIoErr(caller_error);
+    if (result < -1 || (result >= 0 && (ULONG)result > length))
+    {
+        FreeVec(temporary);
+        return Kaffeine_MessageFailure(ctx, write ? "ACTION_WRITE native result" : "ACTION_READ native result");
+    }
+    if (!write && result > 0) memcpy(ctx->mem + buffer, temporary, (ULONG)result);
+    FreeVec(temporary);
+    file_reply(ctx, port, msg, reply, result, error);
+    /* Keep useful application-boundary evidence without unbounded serial I/O.
+       This is private diagnostic state, independent for every context. */
+    if (ctx->packet_trace_count < 16)
+    {
+        ++ctx->packet_trace_count;
+        bug("[kaffeine] %s message=%08lx handler=%08lx reply=%08lx requested=%lu result=%ld error=%ld\n",
+            op, (unsigned long)msg, (unsigned long)port, (unsigned long)reply->port,
+            (unsigned long)length, (long)result, (long)error);
+    }
+    return 0;
+}
+
 IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
 {
     struct KaffeineFile *f = NULL;
     struct KaffeineQueue reply;
-    ULONG buffer, length, i;
-    LONG result, error;
+    struct MsgPort *handler;
+    LONG action, res1 = 0, res2 = 0;
     SIPTR caller_error;
-    UBYTE *temporary;
+    ULONG i;
     for (i = 0; i < KAFFEINE_MAX_FILES; ++i)
         if (ctx->files[i].guest && ctx->files[i].handler == port) f = &ctx->files[i];
+    /* A contiguous 68-byte StandardPacket; SendPkt() sets mn_Length 68 when
+       the program left it 0, as AmigaOS AllocDosObject() does. */
     if (!identity(ctx, f) || (msg & 1) || !Kaffeine_GuestBytes(ctx, msg, 68) ||
         m68k_read16(ctx, msg + 18) != 68 || m68k_read32(ctx, msg + 20) != msg ||
-        m68k_read32(ctx, msg + 28) != 82 || m68k_read32(ctx, msg + 40) != f->key ||
         (m68k_read32(ctx, msg + 10) && m68k_read32(ctx, msg + 10) != msg + 20) ||
         (m68k_read32(ctx, msg + 14) && m68k_read32(ctx, msg + 14) != m68k_read32(ctx, msg + 24)) ||
-        m68k_read32(ctx, msg + 52) || m68k_read32(ctx, msg + 56) ||
-        m68k_read32(ctx, msg + 60) || m68k_read32(ctx, msg + 64) ||
         !Kaffeine_QueueRead(ctx, m68k_read32(ctx, msg + 24), &reply) ||
         !Kaffeine_MessagePreflight(ctx, &reply, msg, 68))
-        return Kaffeine_MessageFailure(ctx, "ACTION_READ packet");
-    buffer = m68k_read32(ctx, msg + 44);
-    length = m68k_read32(ctx, msg + 48);
-    if (length > INT32_MAX || !Kaffeine_MessageMemory(ctx, buffer, length) ||
-        Kaffeine_Overlap(msg, 68, buffer, length) || !Kaffeine_QueueDisjoint(&reply, buffer, length))
-        return Kaffeine_MessageFailure(ctx, "ACTION_READ buffer");
+        return Kaffeine_MessageFailure(ctx, "file handler packet");
     /* Handler identities are immutable, private protocols. Reject reuse as
        queues, forged fields, and aliases with any owned file storage. */
     for (i = 0; i < KAFFEINE_MAX_FILES; ++i)
@@ -324,12 +398,10 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
         struct KaffeineFile *other = &ctx->files[i];
         if (other->guest &&
             (Kaffeine_Overlap(msg, 68, other->guest, 86) ||
-             Kaffeine_Overlap(buffer, length, other->guest, 86) ||
              !Kaffeine_QueueDisjoint(&reply, other->guest, 86) ||
              (other->mirror && (Kaffeine_Overlap(msg, 68, other->mirror, KAFFEINE_FILE_BUFFER_LIMIT) ||
-              Kaffeine_Overlap(buffer, length, other->mirror, KAFFEINE_FILE_BUFFER_LIMIT) ||
               !Kaffeine_QueueDisjoint(&reply, other->mirror, KAFFEINE_FILE_BUFFER_LIMIT)))))
-            return Kaffeine_MessageFailure(ctx, "ACTION_READ overlap");
+            return Kaffeine_MessageFailure(ctx, "file handler packet overlap");
     }
     /* Check the synthetic handler itself has not been repurposed. */
     if (m68k_read32(ctx, port) || m68k_read32(ctx, port + 4) ||
@@ -337,38 +409,99 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
         ctx->mem[port + 14] != 2 || ctx->mem[port + 15] || m68k_read16(ctx, port + 32) ||
         m68k_read32(ctx, port + 16) || m68k_read32(ctx, port + 20) != port + 24 ||
         m68k_read32(ctx, port + 24) || m68k_read32(ctx, port + 28) != port + 20)
-        return Kaffeine_MessageFailure(ctx, "ACTION_READ handler");
+        return Kaffeine_MessageFailure(ctx, "file handler");
     if (!ctx->guest_exec_task || !ctx->m68k_sysbase ||
         m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK) != ctx->guest_exec_task)
-        return Kaffeine_MessageFailure(ctx, "ACTION_READ foreign task");
+        return Kaffeine_MessageFailure(ctx, "file handler packet from a foreign task");
+
+    action = (LONG)m68k_read32(ctx, msg + 28);
+    if (action == ACTION_READ || action == ACTION_WRITE)
+        return file_transfer(ctx, f, port, msg, &reply, action == ACTION_WRITE);
+
+    handler = (struct MsgPort *)((struct FileHandle *)BADDR(f->native))->fh_Type;
     caller_error = IoErr();
-    temporary = AllocVec(length ? length : 1, MEMF_PUBLIC);
-    if (!temporary) return Kaffeine_MessageFailure(ctx, "ACTION_READ allocation");
-    result = Read(f->native, temporary, (LONG)length);
-    error = result < 0 ? (LONG)IoErr() : 0;
+    switch (action)
+    {
+        /* The packet goes to the handler as it is: Seek() would also flush
+           the write buffer of the handle, or drop its read buffer and count
+           the bytes still unread there. A NIL: handle has no handler, and
+           native Seek() answers for it. */
+        case ACTION_SEEK:
+        {
+            LONG mode = (LONG)m68k_read32(ctx, msg + 48);
+            LONG offset = (LONG)m68k_read32(ctx, msg + 44);
+            if (m68k_read32(ctx, msg + 40) != f->key || mode < OFFSET_BEGINNING || mode > OFFSET_END)
+                return Kaffeine_MessageFailure(ctx, "ACTION_SEEK packet");
+            if (handler)
+            {
+                res1 = (LONG)DoPkt(handler, ACTION_SEEK,
+                    ((struct FileHandle *)BADDR(f->native))->fh_Args, offset, mode, 0, 0);
+                res2 = (LONG)IoErr();
+            }
+            else
+            {
+                res1 = Seek(f->native, offset, mode);
+                res2 = res1 == -1 ? (LONG)IoErr() : 0;
+            }
+            break;
+        }
+        /* Actions with integer arguments go to the native handler as they
+           are; a NIL: handle has none. */
+        case ACTION_IS_FILESYSTEM:
+        case ACTION_SCREEN_MODE:
+        case ACTION_WAIT_CHAR:
+            if (!handler)
+            {
+                res2 = ERROR_ACTION_NOT_KNOWN;
+                break;
+            }
+            res1 = (LONG)DoPkt(handler, action, action == ACTION_IS_FILESYSTEM ? 0 :
+                (SIPTR)(LONG)m68k_read32(ctx, msg + 40), 0, 0, 0, 0);
+            res2 = (LONG)IoErr();
+            break;
+        /* The InfoData of the handler, as Info() gives it: no native volume
+           node or window pointer reaches the program. A console handler
+           ('CON\0' or 'RAW\0') puts its native read IORequest in id_InUse,
+           which classic programs follow to find the console unit; there is
+           no guest IORequest for it yet, so the program gets 0. */
+        case ACTION_DISK_INFO:
+        {
+            struct InfoData info;
+            ULONG out = m68k_read32(ctx, msg + 40) << 2;
+            if ((m68k_read32(ctx, msg + 40) >> 30) || !file_range(ctx, msg, &reply, out, 36))
+                return Kaffeine_MessageFailure(ctx, "ACTION_DISK_INFO buffer");
+            if (!handler)
+            {
+                res2 = ERROR_ACTION_NOT_KNOWN;
+                break;
+            }
+            memset(&info, 0, sizeof(info));
+            res1 = (LONG)DoPkt(handler, ACTION_DISK_INFO, (SIPTR)MKBADDR(&info), 0, 0, 0, 0);
+            res2 = (LONG)IoErr();
+            if (res1)
+            {
+                m68k_write32(ctx, out, (ULONG)info.id_NumSoftErrors);
+                m68k_write32(ctx, out + 4, (ULONG)info.id_UnitNumber);
+                m68k_write32(ctx, out + 8, (ULONG)info.id_DiskState);
+                m68k_write32(ctx, out + 12, (ULONG)info.id_NumBlocks);
+                m68k_write32(ctx, out + 16, (ULONG)info.id_NumBlocksUsed);
+                m68k_write32(ctx, out + 20, (ULONG)info.id_BytesPerBlock);
+                m68k_write32(ctx, out + 24, (ULONG)info.id_DiskType);
+                m68k_write32(ctx, out + 28, 0);
+                m68k_write32(ctx, out + 32, (info.id_DiskType == 0x434F4E00 ||
+                    info.id_DiskType == 0x52415700) ? 0 : (ULONG)info.id_InUse);
+            }
+            break;
+        }
+        /* Every other action is answered as a handler answers one it does
+           not know. ACTION_END in particular would close the native file
+           behind the program's FileHandle, which Close() owns. */
+        default:
+            res2 = ERROR_ACTION_NOT_KNOWN;
+            break;
+    }
     SetIoErr(caller_error);
-    if (result < -1 || (result >= 0 && (ULONG)result > length))
-    {
-        FreeVec(temporary);
-        return Kaffeine_MessageFailure(ctx, "ACTION_READ native result");
-    }
-    if (result > 0) memcpy(ctx->mem + buffer, temporary, (ULONG)result);
-    FreeVec(temporary);
-    m68k_write32(ctx, msg + 10, msg + 20);
-    m68k_write32(ctx, msg + 24, port);
-    m68k_write32(ctx, msg + 32, (ULONG)result);
-    m68k_write32(ctx, msg + 36, (ULONG)error);
-    /* DOS replies use PutMsg, not ReplyMsg, and retain packet identity. */
-    Kaffeine_MessageAppend(ctx, &reply, msg, 5);
-    /* Keep useful application-boundary evidence without unbounded serial I/O.
-       This is private diagnostic state, independent for every context. */
-    if (ctx->packet_trace_count < 16)
-    {
-        ++ctx->packet_trace_count;
-        bug("[kaffeine] ACTION_READ message=%08lx handler=%08lx reply=%08lx requested=%lu result=%ld error=%ld\n",
-            (unsigned long)msg, (unsigned long)port, (unsigned long)reply.port,
-            (unsigned long)length, (long)result, (long)error);
-    }
+    file_reply(ctx, port, msg, &reply, res1, res2);
     return 0;
 }
 

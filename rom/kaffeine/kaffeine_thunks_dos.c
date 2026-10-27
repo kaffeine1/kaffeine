@@ -13,6 +13,7 @@
 #include <dos/rdargs.h>
 #include <dos/stdio.h>
 #include <exec/memory.h>
+#include <exec/ports.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <string.h>
@@ -21,6 +22,8 @@
 
 #include "kaffeine_intern.h"
 #include "kaffeine_callback.h"
+#include "kaffeine_exec_compat.h"
+#include "kaffeine_messages.h"
 #include "kaffeine_cli.h"
 #include "kaffeine_format.h"
 #include "kaffeine_offsets.h"
@@ -2178,52 +2181,228 @@ IPTR kaffeine_dos_ExAllEnd(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
-/* DOS packet calls take a 68k DosPacket and MsgPort, and packet arguments
-   are often BPTRs to guest buffers that the native handler writes through.
-   Refuse them until a packet bridge exists. */
+/* DOS packets follow AmigaOS dos.library on the guest structures: SendPkt()
+   sets dp_Port and mn_ReplyPort to the reply port and puts the message,
+   WaitPkt() takes the next message from pr_MsgPort and returns its ln_Name,
+   ReplyPkt() writes the results, puts pr_MsgPort in dp_Port and puts the
+   message back, and AbortPkt() does nothing, as in V37 to V47. Messages go
+   through the same routing as PutMsg(): guest ports, and the handlers of
+   the program's FileHandles (kaffeine_filehandle.c). DoPkt() sends a packet
+   of its own with a private PA_IGNORE reply port, so it never takes a reply
+   that is waiting on pr_MsgPort; AmigaOS 3.2.3 does take it and loses it.
+   It returns dp_Res1 and, as the autodoc says, dp_Res2 in D1 and IoErr();
+   AmigaOS 3.2.3 leaves D1 alone. A packet whose reply comes later from
+   another guest task, and a WaitPkt() with nothing on pr_MsgPort, stop the
+   program: only replies that the handlers give at once are supported.
 
-/* -240: DoPkt(D1=port, D2=action, D3=arg1, D4=arg2, D5=arg3, D6=arg4, D7=arg5) -> D0=res1 */
+   A NULL port is NIL:, as in AROS: it writes everything and reads nothing,
+   and answers every other action with DOSTRUE. AmigaOS 3.2.3 hangs. */
+#define GUEST_MSG_SIZE 20
+#define GUEST_DP_SIZE 48
+#define GUEST_STDPKT_SIZE (GUEST_MSG_SIZE + GUEST_DP_SIZE)
+#define GUEST_MN_NAME 10
+#define GUEST_MN_REPLYPORT 14
+#define GUEST_MN_LENGTH 18
+#define GUEST_DP_LINK 0
+#define GUEST_DP_PORT 4
+#define GUEST_DP_TYPE 8
+#define GUEST_DP_RES1 12
+#define GUEST_DP_RES2 16
+#define GUEST_DP_ARG1 20
+#define GUEST_PORT_SIZE 34
+/* DoPkt(): a StandardPacket and its reply port in one guest block */
+#define GUEST_DOPKT_BLOCK (GUEST_STDPKT_SIZE + GUEST_PORT_SIZE + 2)
+
+/* pr_MsgPort of the program, if the program's process is running */
+static ULONG process_port(struct KaffeineContext *ctx)
+{
+    ULONG task;
+
+    if (!ctx->guest_exec_task || !guest_range(ctx, ctx->m68k_sysbase, M68K_EXECBASE_THISTASK + 4))
+        return 0;
+    task = m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK);
+    return task == ctx->guest_exec_task ? task + M68K_PR_MSGPORT : 0;
+}
+
+/* The packet and its message. The guest queues size a message by its
+   mn_Length, which AmigaOS AllocDosObject() leaves 0: 0 becomes the size of
+   the StandardPacket, or of a bare Message when the packet is elsewhere. */
+static BOOL guest_packet(struct KaffeineContext *ctx, ULONG dp, ULONG *msg)
+{
+    if ((dp & 1) || !guest_range(ctx, dp, GUEST_DP_SIZE))
+        return FALSE;
+    *msg = m68k_read32(ctx, dp + GUEST_DP_LINK);
+    if ((*msg & 1) || !guest_range(ctx, *msg, GUEST_MSG_SIZE))
+        return FALSE;
+    if (m68k_read16(ctx, *msg + GUEST_MN_LENGTH) < GUEST_MSG_SIZE)
+        m68k_write16(ctx, *msg + GUEST_MN_LENGTH,
+                     dp == *msg + GUEST_MSG_SIZE ? GUEST_STDPKT_SIZE : GUEST_MSG_SIZE);
+    return TRUE;
+}
+
+static LONG nil_result(LONG action, LONG arg3)
+{
+    if (action == ACTION_WRITE)
+        return arg3;
+    return action == ACTION_READ ? 0 : DOSTRUE;
+}
+
+/* AllocDosObject(DOS_STDPKT): a cleared StandardPacket in guest memory, with
+   ln_Name and dp_Link set; the result is its DosPacket, sp_Pkt */
+ULONG Kaffeine_AllocStdPacket(struct KaffeineContext *ctx)
+{
+    ULONG block;
+    int i;
+
+    for (i = 0; i < KAFFEINE_MAX_STDPKTS; i++)
+        if (!ctx->stdpkt_map[i])
+            break;
+    block = i < KAFFEINE_MAX_STDPKTS ? Kaffeine_HeapAlloc(ctx, GUEST_STDPKT_SIZE, 0) : 0;
+    if (!block)
+    {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return 0;
+    }
+    memset(ctx->mem + block, 0, GUEST_STDPKT_SIZE);
+    m68k_write32(ctx, block + GUEST_MN_NAME, block + GUEST_MSG_SIZE);
+    m68k_write32(ctx, block + GUEST_MSG_SIZE + GUEST_DP_LINK, block);
+    ctx->stdpkt_map[i] = block;
+    return block + GUEST_MSG_SIZE;
+}
+
+/* FreeDosObject(DOS_STDPKT): only packets that came from it */
+void Kaffeine_FreeStdPacket(struct KaffeineContext *ctx, ULONG dp)
+{
+    int i;
+
+    for (i = 0; dp > GUEST_MSG_SIZE && i < KAFFEINE_MAX_STDPKTS; i++)
+        if (ctx->stdpkt_map[i] == dp - GUEST_MSG_SIZE)
+        {
+            Kaffeine_HeapFree(ctx, ctx->stdpkt_map[i], GUEST_STDPKT_SIZE);
+            ctx->stdpkt_map[i] = 0;
+            return;
+        }
+}
+
+/* -240: DoPkt(D1=port, D2=action, D3=arg1, D4=arg2, D5=arg3, D6=arg4, D7=arg5) -> D0=res1, D1=res2 */
 IPTR kaffeine_dos_DoPkt(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)ctx;
-    (void)cpu;
-    SetIoErr(ERROR_NOT_IMPLEMENTED);
-    return 0;
+    ULONG port = THUNK_D(1), block, msg, dp, reply, task;
+    LONG action = (LONG)THUNK_D(2), res1, res2;
+
+    if (!port)
+    {
+        res1 = nil_result(action, (LONG)THUNK_D(5));
+        SetIoErr(0);
+        Kaffeine_SetD(cpu, 1, 0);
+        return (IPTR)(ULONG)res1;
+    }
+    if (!guest_range(ctx, ctx->m68k_sysbase, M68K_EXECBASE_THISTASK + 4))
+        return Kaffeine_MessageFailure(ctx, "DoPkt task");
+    task = m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK);
+    block = Kaffeine_HeapAlloc(ctx, GUEST_DOPKT_BLOCK, 0);
+    if (!block)
+    {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        Kaffeine_SetD(cpu, 1, ERROR_NO_FREE_STORE);
+        return 0;
+    }
+    memset(ctx->mem + block, 0, GUEST_DOPKT_BLOCK);
+    msg = block;
+    dp = block + GUEST_MSG_SIZE;
+    reply = block + GUEST_STDPKT_SIZE;
+    m68k_write32(ctx, msg + GUEST_MN_NAME, dp);
+    m68k_write32(ctx, msg + GUEST_MN_REPLYPORT, reply);
+    m68k_write16(ctx, msg + GUEST_MN_LENGTH, GUEST_STDPKT_SIZE);
+    m68k_write32(ctx, dp + GUEST_DP_LINK, msg);
+    m68k_write32(ctx, dp + GUEST_DP_PORT, reply);
+    m68k_write32(ctx, dp + GUEST_DP_TYPE, (ULONG)action);
+    m68k_write32(ctx, dp + GUEST_DP_ARG1, THUNK_D(3));
+    m68k_write32(ctx, dp + GUEST_DP_ARG1 + 4, THUNK_D(4));
+    m68k_write32(ctx, dp + GUEST_DP_ARG1 + 8, THUNK_D(5));
+    m68k_write32(ctx, dp + GUEST_DP_ARG1 + 12, THUNK_D(6));
+    m68k_write32(ctx, dp + GUEST_DP_ARG1 + 16, THUNK_D(7));
+    ctx->mem[reply + 8] = NT_MSGPORT;
+    ctx->mem[reply + 14] = PA_IGNORE;
+    m68k_write32(ctx, reply + 16, task);
+    m68k_write32(ctx, reply + 20, reply + 24);
+    m68k_write32(ctx, reply + 28, reply + 20);
+
+    Kaffeine_RoutePutMsg(ctx, port, msg, 0);
+    if (!ctx->running)
+        return (IPTR)ctx->exit_code;
+    if ((ULONG)Kaffeine_GuestGetMsg(ctx, reply, FALSE) != msg)
+        return ctx->running ? Kaffeine_MessageFailure(ctx, "DoPkt without an immediate reply")
+                            : (IPTR)ctx->exit_code;
+    res1 = (LONG)m68k_read32(ctx, dp + GUEST_DP_RES1);
+    res2 = (LONG)m68k_read32(ctx, dp + GUEST_DP_RES2);
+    Kaffeine_HeapFree(ctx, block, GUEST_DOPKT_BLOCK);
+    SetIoErr(res2);
+    Kaffeine_SetD(cpu, 1, (ULONG)res2);
+    return (IPTR)(ULONG)res1;
 }
 
 /* -246: SendPkt(D1=dp, D2=port, D3=replyport) */
 IPTR kaffeine_dos_SendPkt(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)ctx;
-    (void)cpu;
-    SetIoErr(ERROR_NOT_IMPLEMENTED);
-    return 0;
+    ULONG dp = THUNK_D(1), port = THUNK_D(2), reply = THUNK_D(3), msg;
+
+    if (!guest_packet(ctx, dp, &msg))
+        return Kaffeine_MessageFailure(ctx, "SendPkt packet");
+    m68k_write32(ctx, dp + GUEST_DP_PORT, reply);
+    m68k_write32(ctx, msg + GUEST_MN_REPLYPORT, reply);
+    if (port)
+        return Kaffeine_RoutePutMsg(ctx, port, msg, 0);
+    /* NIL: replies at once, as a handler would */
+    m68k_write32(ctx, dp + GUEST_DP_PORT, 0);
+    m68k_write32(ctx, dp + GUEST_DP_RES1, (ULONG)nil_result((LONG)m68k_read32(ctx, dp + GUEST_DP_TYPE),
+                                                            (LONG)m68k_read32(ctx, dp + GUEST_DP_ARG1 + 8)));
+    m68k_write32(ctx, dp + GUEST_DP_RES2, 0);
+    return Kaffeine_GuestPutMsg(ctx, reply, msg, 0);
 }
 
-/* -252: WaitPkt() -> D0=packet */
+/* -252: WaitPkt() -> D0=packet. It leaves IoErr() alone, as AmigaOS 3.2.3. */
 IPTR kaffeine_dos_WaitPkt(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)ctx;
+    ULONG port = process_port(ctx), msg;
+
     (void)cpu;
-    SetIoErr(ERROR_NOT_IMPLEMENTED);
-    return 0;
+    if (!port)
+        return Kaffeine_MessageFailure(ctx, "WaitPkt outside the program's process");
+    if (m68k_read32(ctx, ctx->guest_exec_task + M68K_PR_PKTWAIT))
+        return Kaffeine_MessageFailure(ctx, "WaitPkt with pr_PktWait");
+    msg = (ULONG)Kaffeine_GuestGetMsg(ctx, port, FALSE);
+    if (!ctx->running)
+        return (IPTR)ctx->exit_code;
+    if (!msg)
+        return Kaffeine_MessageFailure(ctx, "WaitPkt with no packet on pr_MsgPort");
+    return m68k_read32(ctx, msg + GUEST_MN_NAME);
 }
 
 /* -258: ReplyPkt(D1=dp, D2=res1, D3=res2) */
 IPTR kaffeine_dos_ReplyPkt(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)ctx;
-    (void)cpu;
-    SetIoErr(ERROR_NOT_IMPLEMENTED);
-    return 0;
+    ULONG dp = THUNK_D(1), mine = process_port(ctx), msg, port;
+
+    if (!mine)
+        return Kaffeine_MessageFailure(ctx, "ReplyPkt outside the program's process");
+    if (!guest_packet(ctx, dp, &msg))
+        return Kaffeine_MessageFailure(ctx, "ReplyPkt packet");
+    port = m68k_read32(ctx, dp + GUEST_DP_PORT);
+    if (!port)
+        return Kaffeine_MessageFailure(ctx, "ReplyPkt to no port");
+    m68k_write32(ctx, msg + GUEST_MN_NAME, dp);
+    m68k_write32(ctx, dp + GUEST_DP_PORT, mine);
+    m68k_write32(ctx, dp + GUEST_DP_RES1, THUNK_D(2));
+    m68k_write32(ctx, dp + GUEST_DP_RES2, THUNK_D(3));
+    return Kaffeine_RoutePutMsg(ctx, port, msg, 0);
 }
 
-/* -264: AbortPkt(D1=port, D2=pkt) */
+/* -264: AbortPkt(D1=port, D2=pkt): nothing, as in AmigaOS V37 to V47 */
 IPTR kaffeine_dos_AbortPkt(struct KaffeineContext *ctx, void *cpu)
 {
     (void)ctx;
     (void)cpu;
-    SetIoErr(ERROR_NOT_IMPLEMENTED);
     return 0;
 }
 
@@ -2401,6 +2580,8 @@ IPTR kaffeine_dos_FreeDosObject(struct KaffeineContext *ctx, void *cpu)
     /* AllocDosObject() gave the program its RDArgs in guest memory */
     if (THUNK_D(1) == DOS_RDARGS)
         Kaffeine_FreeRDArgs(ctx, THUNK_D(2));
+    else if (THUNK_D(1) == DOS_STDPKT)
+        Kaffeine_FreeStdPacket(ctx, THUNK_D(2));
     /* and its ExAllControl, whose scan state is native */
     else if (THUNK_D(1) == DOS_EXALLCONTROL)
     {

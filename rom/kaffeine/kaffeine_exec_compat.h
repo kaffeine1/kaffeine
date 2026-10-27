@@ -19,6 +19,7 @@ IPTR Kaffeine_AddPort(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_RemPort(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_FindPort(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_PutMsg(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_RoutePutMsg(struct KaffeineContext *ctx, ULONG port, ULONG msg, ULONG d0);
 IPTR Kaffeine_FindResident(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_OpenResource(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_AddResource(struct KaffeineContext *ctx, void *cpu);

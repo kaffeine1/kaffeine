@@ -348,6 +348,11 @@ struct KaffeineContext
     #define KAFFEINE_MAX_EXALL 8
     struct { ULONG guest; struct FileInfoBlock *fib; BOOL owned, started, pending, ended, active; } exall_map[KAFFEINE_MAX_EXALL];
 
+    /* StandardPackets that AllocDosObject(DOS_STDPKT) gave the program, by
+       the guest address of their Message */
+    #define KAFFEINE_MAX_STDPKTS 32
+    ULONG stdpkt_map[KAFFEINE_MAX_STDPKTS];
+
     /* Exec I/O of the guest: the native task that runs it, which owns the
        native signal bits the guest allocated, its ports and requests, and
        guest Device identities and the native TimerBase behind timer.device */

@@ -31,6 +31,7 @@
 #include "kaffeine_dispatch.h"
 #include "kaffeine_intern.h"
 #include "kaffeine_thunks_dos.h"
+#include "kaffeine_messages.h"
 #include "kaffeine_cli.h"
 #include "kaffeine_offsets.h"
 
@@ -1554,6 +1555,13 @@ extern "C" LONG Strnicmp(CONST_STRPTR a, CONST_STRPTR b, LONG n)
     return 0;
 }
 
+/* This unit fixture has no FileHandle handlers. Queue validation is real;
+   packet routing through owned handlers is covered by test_dos_packet_thunks. */
+extern "C" IPTR Kaffeine_RoutePutMsg(KaffeineContext *ctx, ULONG port, ULONG msg, ULONG d0)
+{
+    return Kaffeine_GuestPutMsg(ctx, port, msg, d0);
+}
+
 struct Fixture
 {
     static constexpr ULONG format_addr = 0x200;
@@ -2422,58 +2430,33 @@ static void test_process_launch()
     }
 }
 
-/* DoPkt(), SendPkt(), WaitPkt(), ReplyPkt() and AbortPkt() use 68k DosPacket
-   and MsgPort structures. Earlier manual thunks also read A2/A5 or A1..A3
-   instead of D1..D5. Verify that the five LVOs refuse without calling native
-   DOS or touching guest/shadow objects placed at either the D or A register
-   addresses. */
-static void test_packets_refused()
+/* Invalid guest packet boundaries stop before native DOS sees a pointer.
+   AbortPkt is deliberately a no-op even with unusable arguments. */
+static void test_packet_boundaries()
 {
-    const struct { ULONG lvo; const char *name; bool sets_ioerr; } cases[] =
-    {
-        { 240, "DoPkt", true },
-        { 246, "SendPkt", true },
-        { 252, "WaitPkt", true },
-        { 258, "ReplyPkt", true },
-        { 264, "AbortPkt", true }
-    };
-    for (const auto &item : cases)
+    for (ULONG lvo : { 240U, 246U, 252U, 258U, 264U })
     {
         Fixture f;
-        UBYTE d_shadow[64], a_shadow[64];
-        std::memset(d_shadow, 0x5A, sizeof(d_shadow));
-        std::memset(a_shadow, 0xA5, sizeof(a_shadow));
-        f.ctx.num_shadows = 2;
-        f.ctx.shadow_map[0].m68k_addr = 0x400;
-        f.ctx.shadow_map[0].native_ptr = d_shadow;
-        f.ctx.shadow_map[1].m68k_addr = 0x500;
-        f.ctx.shadow_map[1].native_ptr = a_shadow;
-        f.state.d[1] = 0x400;
-        f.state.d[2] = 0x400;
-        f.state.d[3] = 256;
-        f.state.d[4] = 1;
-        f.state.d[5] = 0x480;
-        f.state.a[1] = 0x500;
-        f.state.a[2] = 0x500;
-        f.state.a[3] = 0x500;
-        f.state.a[5] = 0x580;
+        f.ctx.running = TRUE;
+        f.state.d[1] = 0xFFFFFFFF;
+        f.state.d[2] = 0xFFFFFFFE;
+        f.state.d[3] = 0xFFFFFFFC;
         UBYTE before[sizeof(f.memory)];
         std::memcpy(before, f.memory, sizeof(before));
         const SIPTR initial_ioerr = IoErr();
 
-        f.dispatch(item.lvo);
+        f.dispatch(lvo);
 
-        check(f.state.d[0] == 0,
-            (std::string(item.name) + " returns zero in D0").c_str());
-        check(IoErr() == (item.sets_ioerr ? ERROR_NOT_IMPLEMENTED : initial_ioerr),
-            (std::string(item.name) + " sets or preserves IoErr as expected").c_str());
-        check(calls.exall_calls == 0 && calls.exallend_calls == 0 &&
-            calls.dopkt_calls == 0 && calls.sendpkt_calls == 0 &&
-            calls.waitpkt_calls == 0 && calls.replypkt_calls == 0 &&
-            calls.abortpkt_calls == 0,
-            (std::string(item.name) + " never calls native DOS").c_str());
+        check(f.state.d[0] == (lvo == 264 ? 0U : 20U),
+            "packet calls reject invalid boundaries; AbortPkt returns zero");
+        check(lvo == 264 ? f.ctx.running : (!f.ctx.running && f.ctx.exit_code == 20),
+            "only AbortPkt keeps running with invalid packet arguments");
+        check(IoErr() == initial_ioerr, "packet boundary failures and AbortPkt preserve IoErr");
+        check(calls.dopkt_calls == 0 && calls.sendpkt_calls == 0 &&
+            calls.waitpkt_calls == 0 && calls.replypkt_calls == 0 && calls.abortpkt_calls == 0,
+            "guest packet calls never forward guest pointers to native DOS");
         check(std::memcmp(f.memory, before, sizeof(before)) == 0,
-            (std::string(item.name) + " leaves guest memory untouched").c_str());
+            "invalid boundaries and AbortPkt leave guest memory untouched");
     }
 }
 
@@ -5637,7 +5620,7 @@ int main(int argc, char **argv)
     test_examine_lock();
     test_exnext_end();
     test_process_launch();
-    test_packets_refused();
+    test_packet_boundaries();
     test_system_taglist_lvo();
     test_buffer_dispatch();
     /* The valid-only mode can demonstrate regressions against the old raw

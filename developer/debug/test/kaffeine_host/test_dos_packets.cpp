@@ -51,7 +51,13 @@ static void packet_failures()
             case 1:handler+=2;break;
             case 2:f.w(f.msg+20,f.msg+20);break;
             case 3:m68k_write16(&f.ctx,f.msg+18,67);break;
-            case 4:f.w(f.msg+28,83);break;
+            case 4:
+                f.w(f.msg+28,83);
+                check(f.exec(366,handler,f.msg)==0xD0000000 && f.ctx.running &&
+                      !f.r(f.msg+32) && f.r(f.msg+36)==209 && ioerr==137 && !reads,
+                      "an unknown packet action now replies 0/209 without native I/O or stopping");
+                check(f.exec(372,f.reply)==f.msg,"unknown action reply is queued normally");
+                continue;
             case 5:f.w(f.msg+40,0);break;
             case 6:f.w(f.msg+40,f.r(f.msg+40)+1);break;
             case 7:f.w(f.msg+24,0);break;
@@ -66,7 +72,14 @@ static void packet_failures()
             case 16:f.w(f.msg+44,handler+32);break;
             case 17:f.w(f.msg+14,handler);break;
             case 18:f.w(f.msg+10,f.msg+22);break;
-            case 19:f.w(f.msg+52,1);break;
+            case 19:
+                /* DoPkt1() to DoPkt4() leave the other argument registers as
+                   they were, and handlers ignore what an action does not use. */
+                for(ULONG a=52;a<=64;a+=4)f.w(f.msg+a,1);
+                check(f.exec(366,handler,f.msg)==0xD0000000 && f.ctx.running && reads==1,
+                      "ACTION_READ ignores dp_Arg4 to dp_Arg7");
+                check(f.exec(372,f.reply)==f.msg,"ACTION_READ with unused arguments replies normally");
+                continue;
             case 20:f.ctx.mem[f.reply+14]=1;break;
             case 21:f.ctx.mem[f.reply+14]=0;f.w(f.reply+16,f.task);f.ctx.mem[f.reply+15]=4;break;
             case 22:f.w(f.reply+20,f.reply+20);break;
@@ -311,9 +324,213 @@ static void application_read_then_reserved_waitport()
     f.packet(t,4096,f.buffer,f.msg,p);f.rejected(h);
     check(reads==1 && positions==positions_before && native_counts()==native_before && ioerr==137,"invalid reply arrival metadata is refused before a second native Read, allocation or guest write");
 }
+
+static void action_packet(Fixture &f,ULONG token,LONG action,ULONG a1,ULONG a2=0,ULONG a3=0)
+{
+    f.packet(token);f.w(f.msg+28,action);f.w(f.msg+40,a1);f.w(f.msg+44,a2);f.w(f.msg+48,a3);
+}
+static void action_reply(Fixture &f,ULONG handler,LONG res1,LONG res2)
+{
+    check(f.dos(246,f.msg+20,handler,f.reply)==0 && f.ctx.running,
+          "SendPkt delivers a supported FileHandle action synchronously");
+    check(f.r(f.msg+32)==static_cast<ULONG>(res1) && f.r(f.msg+36)==static_cast<ULONG>(res2) && ioerr==137,
+          "FileHandle action returns its signed results and preserves caller IoErr");
+    check(f.r(f.msg+24)==handler && f.r(f.msg+14)==f.reply && f.r(f.msg+10)==f.msg+20 &&
+          f.ctx.mem[f.msg+8]==5 && f.exec(372,f.reply)==f.msg,
+          "FileHandle action uses the common type5 packet reply and handler identity");
+}
+static void packet_writes()
+{
+    for(LONG result:{5,3,0,-1})
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+        std::memcpy(f.ctx.mem+f.buffer,"abcde",5);
+        action_packet(f,token,ACTION_WRITE,f.r(token*4+36),f.buffer,5);
+        auto before=f.bytes();write_override=result;
+        action_reply(f,handler,result,result==-1?211:0);
+        check(writes==1 && !reads && seen_handle==open_result && read_length==5 &&
+              written_bytes==std::vector<UBYTE>({'a','b','c','d','e'}),
+              "ACTION_WRITE passes exact bytes and length through a private native buffer");
+        check(!std::memcmp(before.data()+f.buffer-1,f.ctx.mem+f.buffer-1,7) &&
+              (reinterpret_cast<uintptr_t>(read_buffer)<reinterpret_cast<uintptr_t>(f.ctx.mem) ||
+               reinterpret_cast<uintptr_t>(read_buffer)>=reinterpret_cast<uintptr_t>(f.ctx.mem)+f.ctx.mem_size),
+              "ACTION_WRITE preserves guest data and guards and exposes no guest pointer to native DOS");
+    }
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+        action_packet(f,token,ACTION_WRITE,f.r(token*4+36),0xFFFFFFFF,0);
+        action_reply(f,handler,0,0);
+        check(writes==1 && written_bytes.empty(),"zero-byte ACTION_WRITE ignores its unused buffer");
+    }
+    for(LONG action:{ACTION_READ,ACTION_WRITE})
+        for(LONG result:{-2,6})
+        {
+            Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+            action_packet(f,token,action,f.r(token*4+36),f.buffer,5);
+            read_override=write_override=result;
+            auto before=f.bytes();
+            check(f.exec(366,handler,f.msg)==20 && !f.ctx.running && f.ctx.exit_code==20,
+                  "an impossible native transfer result stops with rc20");
+            check(f.bytes()==before && (action==ACTION_READ?reads:writes)==1 && ioerr==137,
+                  "impossible native transfer counts stop with rc20 before guest data or reply writes");
+        }
+    for(unsigned which=0;which<11;++which)
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+        action_packet(f,token,ACTION_WRITE,f.r(token*4+36),f.buffer,5);
+        switch(which)
+        {
+            case 0:f.w(f.msg+40,0);break;
+            case 1:case 2:case 3:case 4:
+                f.w(f.msg+48+4*which,1);
+                check(f.exec(366,handler,f.msg)==0xD0000000 && f.ctx.running && writes==1,
+                      "ACTION_WRITE ignores dp_Arg4 to dp_Arg7");
+                continue;
+            case 5:f.w(f.msg+44,f.msg+44);break;
+            case 6:f.w(f.msg+44,f.reply);break;
+            case 7:f.w(f.msg+44,token*4);break;
+            case 8:f.w(f.msg+44,0xFFFFFFFF);break;
+            case 9:f.w(f.msg+48,0x80000000);break;
+            case 10:allocation_countdown=0;break;
+        }
+        f.rejected(handler);allocation_countdown=-1;
+    }
+}
+static void packet_seeks()
+{
+    Fixture f;ULONG token=f.open(),handler=f.r(token*4+8),key=f.r(token*4+36);
+    struct { LONG offset,mode,result,error,next; } cases[]={
+        {3,OFFSET_BEGINNING,0,0,3},{2,OFFSET_CURRENT,3,0,5},{-2,OFFSET_END,5,0,10},
+        {0,OFFSET_END,10,0,12},{1,OFFSET_CURRENT,-1,219,12},{-13,OFFSET_END,-1,219,12},
+        {0,OFFSET_BEGINNING,12,0,0}
+    };
+    for(auto c:cases)
+    {
+        action_packet(f,token,ACTION_SEEK,key,c.offset,c.mode);
+        action_reply(f,handler,c.result,c.error);
+        check(positions[open_result]==static_cast<size_t>(c.next) && seen_handle==open_result,
+              "ACTION_SEEK returns the old position and leaves position unchanged on -1/219");
+        check(packet_handler==f.native[2].fh_Type && packet_action==ACTION_SEEK &&
+              packet_args[0]==f.native[2].fh_Args && packet_args[1]==c.offset && packet_args[2]==c.mode &&
+              !packet_args[3] && !packet_args[4],
+              "ACTION_SEEK goes to the native handler with its fh_Arg1, offset and mode");
+    }
+    check(!seeks && native_packets==std::size(cases),
+          "every valid ACTION_SEEK reaches the native handler exactly once, never the buffered Seek()");
+    for(unsigned which=0;which<7;++which)
+    {
+        Fixture bad;ULONG t=bad.open(),h=bad.r(t*4+8);
+        action_packet(bad,t,ACTION_SEEK,bad.r(t*4+36),0,OFFSET_CURRENT);
+        if(which<2)bad.w(bad.msg+48,which?2:static_cast<ULONG>(-2));
+        else if(which==2)bad.w(bad.msg+40,0);
+        else
+        {
+            bad.w(bad.msg+52+4*(which-3),1);
+            check(bad.exec(366,h,bad.msg)==0xD0000000 && bad.ctx.running && native_packets==1,
+                  "ACTION_SEEK ignores dp_Arg4 to dp_Arg7");
+            continue;
+        }
+        bad.rejected(h);
+        check(!seeks && !native_packets,"invalid seek modes and keys stop before the native handler");
+    }
+}
+static void packet_scalar_actions()
+{
+    for(LONG action:{ACTION_IS_FILESYSTEM,ACTION_SCREEN_MODE,ACTION_WAIT_CHAR})
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+        action_packet(f,token,action,static_cast<ULONG>(-7),0x12345678,0x87654321);
+        action_reply(f,handler,-1,37);
+        check(native_packets==1 && packet_handler==f.native[2].fh_Type && packet_action==action &&
+              packet_args[0]==(action==ACTION_IS_FILESYSTEM?0:-7) && !packet_args[1] &&
+              !packet_args[2] && !packet_args[3] && !packet_args[4],
+              "scalar packet actions preserve the full-width handler and sign-extend only their integer argument");
+    }
+    for(LONG action:{0,83,1007,0x7FFFFFFF})
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+        action_packet(f,token,action,0xFFFFFFFF);
+        action_reply(f,handler,0,209);
+        check(!reads && !writes && !seeks && !closes && !native_packets,
+              "unknown actions, including ACTION_END, answer 0/209 without closing or invoking native DOS");
+    }
+}
+static void packet_disk_info()
+{
+    constexpr ULONG out=0xA100;
+    for(bool success:{true,false})
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+        packet_info={-7,2,3,400,51,512,0x444F5301,reinterpret_cast<BPTR>(0xFEDCBA9876543210ULL),-1};
+        std::memset(f.ctx.mem+out-1,0xA5,38);
+        action_packet(f,token,ACTION_DISK_INFO,out/4);
+        packet_result=success?-1:0;action_reply(f,handler,packet_result,37);
+        const ULONG expected[]={static_cast<ULONG>(-7),2,3,400,51,512,0x444F5301,0,0xFFFFFFFF};
+        for(unsigned i=0;i<9;++i)
+            check(f.r(out+4*i)==(success?expected[i]:0xA5A5A5A5),
+                  "ACTION_DISK_INFO writes classic big-endian InfoData with no volume node, only on success");
+        check(f.ctx.mem[out-1]==0xA5 && f.ctx.mem[out+36]==0xA5 && native_packets==1 &&
+              packet_handler==f.native[2].fh_Type && packet_action==ACTION_DISK_INFO &&
+              !packet_args[1] && !packet_args[2] && !packet_args[3] && !packet_args[4],
+              "ACTION_DISK_INFO uses a private native InfoData and preserves both guest buffer guards");
+    }
+    for(LONG type:{0x434F4E00,0x52415700,0x434F4E01,0x444F5300})
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+        const bool console=type==0x434F4E00 || type==0x52415700;
+        packet_info={0,0,0,0,0,0,type,reinterpret_cast<BPTR>(0x12345678),0x13579BDF};
+        action_packet(f,token,ACTION_DISK_INFO,out/4);
+        packet_result=-1;action_reply(f,handler,packet_result,37);
+        check(f.r(out+24)==static_cast<ULONG>(type) && !f.r(out+28) &&
+              f.r(out+32)==(console?0:0x13579BDFU),
+              "ACTION_DISK_INFO gives 0 for the native IORequest of a CON: or RAW: console in id_InUse, and copies it for other handlers");
+    }
+    for(unsigned which=0;which<11;++which)
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8),addr=out;
+        switch(which)
+        {
+            case 0:addr=0;break;
+            case 1:addr=f.ctx.mem_size-32;break;
+            case 2:addr=f.msg+32;break;
+            case 3:addr=f.reply;break;
+            case 4:addr=token*4;break;
+            case 5:addr=handler;break;
+            case 6:f.dos(306,token);addr=f.r(token*4+12)*4;break;
+            case 7:f.message(f.msg+0x100);f.exec(366,f.reply,f.msg+0x100);addr=f.msg+0x100;break;
+            case 8:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={out,reinterpret_cast<void *>(1),8};break;
+            case 9:f.ctx.io_requests[0].guest=out;f.ctx.io_requests[0].capacity=48;break;
+            case 10:f.ctx.app_ports[0].guest=out;f.ctx.app_ports[0].native=reinterpret_cast<MsgPort *>(1);break;
+        }
+        action_packet(f,token,ACTION_DISK_INFO,addr/4);f.rejected(handler);
+        check(!native_packets,"bad ACTION_DISK_INFO buffers stop before native DoPkt");
+    }
+    for(ULONG bptr:{0x40000000U,0xFFFFFFFFU})
+    {
+        Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+        action_packet(f,token,ACTION_DISK_INFO,bptr);f.rejected(handler);
+        check(!native_packets,"ACTION_DISK_INFO rejects BPTR shift overflow before native DoPkt");
+    }
+}
+static void nil_filehandle()
+{
+    Fixture f;f.native[2].fh_Type=nullptr;
+    ULONG token=f.open(),handler=f.r(token*4+8),key=f.r(token*4+36);
+    for(LONG action:{ACTION_IS_FILESYSTEM,ACTION_SCREEN_MODE,ACTION_WAIT_CHAR,ACTION_DISK_INFO,83})
+    {
+        action_packet(f,token,action,0xA100/4);
+        action_reply(f,handler,0,209);
+    }
+    check(!native_packets,"a NIL FileHandle with no native handler answers scalar and disk actions without native DoPkt");
+    action_packet(f,token,ACTION_READ,key,f.buffer,5);action_reply(f,handler,5,0);
+    action_packet(f,token,ACTION_WRITE,key,f.buffer,5);action_reply(f,handler,5,0);
+    action_packet(f,token,ACTION_SEEK,key,0,OFFSET_BEGINNING);action_reply(f,handler,5,0);
+    check(reads==1 && writes==1 && seeks==1,"a FileHandle without a native port still routes Read, Write and Seek through native DOS");
+}
 int main()
 {
     measured_reads();packet_failures();identities();buffering();ownership_failures();sequential_handles_and_selected_close();all_handle_entry_points();packet_reply_queue_preflight();bounded_packet_diagnostics();application_read_then_reserved_waitport();
+    packet_writes();packet_seeks();packet_scalar_actions();packet_disk_info();nil_filehandle();
     check(allocated_signals==0,"all owned native signals are released");
     check(native_blocks.empty(),"all native heap records, mirrors and packet temporaries are released");
     std::printf("Guest DOS packet boundary: %u/%u checks passed\n",checks-failures,checks);

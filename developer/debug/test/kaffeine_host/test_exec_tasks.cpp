@@ -15,6 +15,7 @@
 #include <cstring>
 
 #include <exec/execbase.h>
+#include <exec/ports.h>
 #include <dos/dosextens.h>
 #include <proto/exec.h>
 #include "kaffeine_intern.h"
@@ -294,6 +295,15 @@ static void test_current_identity()
           "the error stream included");
     check(f.named("current") == task && allocations == prepared_allocs,
           "a named lookup of the initial native task reuses ThisTask");
+    const ULONG packet_port = task + 92;
+    check(f.memory[packet_port + 8] == NT_MSGPORT && f.memory[packet_port + 14] == PA_SIGNAL &&
+          f.memory[packet_port + 15] == SIGB_DOS && m68k_read32(&f.ctx, packet_port + 16) == task,
+          "the current Process has a SIGB_DOS packet port owned by its guest task");
+    check(m68k_read32(&f.ctx, packet_port + 20) == packet_port + 24 &&
+          m68k_read32(&f.ctx, packet_port + 24) == 0 &&
+          m68k_read32(&f.ctx, packet_port + 28) == packet_port + 20 &&
+          m68k_read32(&f.ctx, task + 180) == 0 && !f.ctx.guest_signals,
+          "the Process packet list is empty, pr_PktWait is zero and SIGB_DOS is never allocated");
     m68k_write32(&f.ctx, task + 172, 0xBEEF);
     const auto edited = f.memory;
     native_current = &worker_task;
