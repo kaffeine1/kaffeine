@@ -23,8 +23,9 @@ probe is a step toward the Kaffeine JIT, separate from the production AROS
 execution path.
 
 Personal Paint is the first substantial graphical application target.
-Startup reaches font loading and DOS packet reads, then stops at a
-contained callback memory-access fault. Reaching the editor, loading and
+Startup passes font loading, DOS packet reads and the blitter library's
+Exec memory-list scan, then stops when a later DOS read packet is rejected
+by the bridge's boundary checks. Reaching the editor, loading and
 saving images, correct shutdown, desktop startup and responsiveness remain
 milestones to verify.
 

@@ -19,6 +19,7 @@ at the end.
 | `dos_lvo.c` | Isolated regressions for historically misplaced DOS thunks, selected by `fprintf`, `cli`, `freedosobject`, `launch` or `system`. The CLI case checks the shared guest identity returned by `Cli()`, `ThisTask.pr_CLI` and `FindTask(NULL)->pr_CLI`, and the command line in `pr_Arguments` of both. The launch case checks that `CreateNewProc()` and `CreateProc()` with 68k code fail with `ERROR_NOT_IMPLEMENTED` instead of running it natively. The system case checks `SystemTagList()` without tags and with `NP_StackSize`. |
 | `exec_memory.c` | `AllocMem()`, `AllocVec()` and pools with and without `MEMF_CLEAR`, reuse and alignment, `AvailMem()` free/largest/total queries and query precedence, `DeletePool(NULL)` and deletion with outstanding allocations restoring the free total, cleared pool requests above puddle and threshold sizes, `CopyMem()`, signals, `FindTask(NULL)` returning `SysBase->ThisTask` every time, and semaphores in 68k memory: `InitSemaphore()`, exclusive and shared obtains and attempts with nesting, release to zero, `ObtainSemaphoreList()` and `ReleaseSemaphoreList()`, and `AddSemaphore()`, `FindSemaphore()` and `RemSemaphore()` on the public list of the guest ExecBase, which other programs do not see. With `procure` or `vacate` it only calls that function, which must end the program with rc 20. |
 | `exec_lists.c` | exec list functions (`AddTail()`, `AddHead()`, `RemHead()`, `RemTail()`, `Insert()`, `Remove()`, `Enqueue()`, `FindName()`) on a list in 68k memory. |
+| `exec_syslists.c` | Read-only bounded successor walks over the seven embedded Exec lists, checking header, tail and predecessor links. Node counts can differ between native AmigaOS and the guest view, which exposes empty headers for native lists without guest nodes. |
 | `exec_public.c` | AddPort/FindPort/RemPort on the guest ExecBase list, native-only name invisibility, refused residents/resources, CacheClearE, AllocAbs inside a freed block and FreeMem, AllocEntry/FreeEntry and partial-failure cleanup. With the argument `putmsg` it only sends a message to its published port, which must end the program with rc 20. Compiling the same source with KAFFEINE_NATIVE_PORT_FIXTURE produces the optional native port companion. |
 | `exec_timer.c` | timer.device through Exec, as C programs use it: `CreateMsgPort()`, `CreateIORequest()` of a timerequest, `OpenDevice()`, `DoIO()` with `TR_GETSYSTIME` and `TR_ADDREQUEST`, `AddTime()`, `SubTime()`, `CmpTime()`, `ReadEClock()` and `GetSysTime()` through `TimerBase`, `CloseDevice()` and the deletes, twice, with the guest memory back each time; units VBLANK, WAITUNTIL and ECLOCK; `AllocSignal()`, `Signal()` of the current task and `Wait()`; the errors for `TR_SETSYSTIME`, an EClock delay, another device and a small request. Delays are measured with the timer itself. With `sendio` it only calls `SendIO()`, which must end the program with rc 20. |
 | `exec_libraries.c` | 68k libraries from disk (`emu68test_lib.c`, built as `emu68test.library` with a WORD offset function table and with `-DLONG_TABLE` as `emu68test_l.library` with LONG function pointers, whose `Expunge()` removes the node, frees the base and gives the seglist back unless the library is open; the WORD library takes its `lib_Version`, `ln_Name` and `lib_IdString` from its resident tag alone, which `InitResident()` copies before the init), each through the same life, as on AmigaOS 3.2.3: `OpenLibrary()` from `PROGDIR:` with version 2 making the library from its `RTF_AUTOINIT` resident tag, the fields set by its `InitStruct()` table (`ln_Type`, `lib_Version`, `lib_Revision` and a WORD and a LONG in the extension of the base) and by its init function (`ln_Name`, `lib_IdString`, `seglist`, `SysBase` and the count of inits), `lib_NegSize` rounded up to a multiple of four from the ten vectors, `lib_PosSize` and `lib_OpenCnt`; calls to `TestAdd()`, `TestInits()`, `TestOpens()`, `TestSysBase()` and `TestSegList()` with the size of the first hunk before `BADDR()` of the seglist; a second `OpenLibrary()` of the name alone returning the same base with `lib_OpenCnt` 2, `TestInits()` 1 and one more open in `TestOpens()`; a third one with `0x12340002` in D0 returning it too, since Exec takes the low word as the version; version 3 refused, which calls the `Expunge()` of the open library and so sets `LIBF_DELEXP`; the last of the two `CloseLibrary()` calls expunging it, after which the name alone finds none, since the library is not in `LIBS:`. Then both loaded afresh from `PROGDIR:` (`TestInits()` and `TestOpens()` 1, no `LIBF_DELEXP`, bases of their own), closed, which keeps them, version 3 refused again, which leaves a closed library as it is, opened again from the cache with `TestOpens()` 2, and expunged at the last close, which `TestExpunge()` asks for, so that the name alone finds none and a later run starts afresh. Needs `--files exec_libraries BUILD_DIR/exec_libraries-files`. |
@@ -149,9 +150,10 @@ not a regression verdict. Valid ordinary queues are positive tests in
 
 ## Verified results and limits
 
-The current combined library completed 57 separate boots and 114 Shell/Run
-executions. Six bzip2 boots added twelve executions with byte-exact compressed
-and decompressed outputs. All 63 VMs completed normally without input errors.
+The combined message/packet compatibility baseline completed 57 separate
+boots and 114 Shell/Run executions. Six bzip2 boots added twelve executions
+with byte-exact compressed and decompressed outputs. All 63 VMs completed
+normally without input errors.
 The expected containment/exit cases above account for sixteen executions.
 
 Focused native AmigaOS reference results and AROS results agree on 26
@@ -159,14 +161,19 @@ message checks, 28 packet checks and all 20 raw observation rows. The
 message reference includes a nonempty queue whose unused arrival metadata
 changes before WaitPort/GetMsg. The read-side calls preserve signal state.
 
+The embedded-list regression adds 28 checks on native AmigaOS and in each
+AROS Shell/Run execution. The old library fails 21 of these checks in each
+mode; corrected guest headers pass all 28 without exposing native nodes.
+
 `exec_memory` passes 62 checks. It reads exactly `$DEAD00` to detect the old
 return-sentinel trap, and checks AllocAbs/writes in a known freed block;
 fixed addresses can belong to live allocations. Custom-chip window and
 `$1DFF000` alias checks remain separate.
 
 The sampled mathffp SPDiv cases retain eight one-ULP differences from
-AmigaOS. Personal Paint progresses through packet reads and replies, then
-stops at a contained callback memory-access fault. Complete application
+AmigaOS. Personal Paint progresses through packet reads and replies and
+the blitter library's memory-list scan, then stops at a later DOS read packet
+rejected by the bridge's boundary checks. Complete application
 startup, an FPU, general asynchronous/cross-task messaging and physical
 hardware have not been established.
 

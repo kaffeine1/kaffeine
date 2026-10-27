@@ -1,7 +1,8 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    FindTask identity through dispatch and the real ExecBase shadow engine.
+    FindTask identity and embedded ExecBase lists through the real shadow
+    engine, including an original bounded successor walk through Moira.
 */
 
 #ifdef NDEBUG
@@ -20,6 +21,27 @@
 #include "kaffeine_dispatch.h"
 #include "kaffeine_tasks.h"
 #include "kaffeine_shadow.h"
+#include "kaffeine_callback.h"
+
+#include "Moira/Moira.cpp"
+#include "Moira/MoiraDebugger.cpp"
+#include "kaffeine_moira.cpp"
+
+/* Literal classic and native List offsets, independent of the shadow table. */
+static constexpr struct EmbeddedList
+{
+    const char *name;
+    ULONG guest_offset, native_offset;
+    UBYTE type;
+} embedded_lists[] = {
+    { "MemList",      322, 624, 10 },
+    { "ResourceList", 336, 656,  8 },
+    { "DeviceList",   350, 688,  3 },
+    { "IntrList",     364, 720,  2 },
+    { "LibList",      378, 752,  9 },
+    { "TaskReady",    406, 816,  1 },
+    { "TaskWait",     420, 848,  1 }
+};
 
 static unsigned checks, failures, native_calls, allocations, frees, generated_calls;
 static bool allocation_fails;
@@ -32,6 +54,13 @@ static void check(bool ok, const char *what)
 {
     ++checks;
     if (!ok) { ++failures; std::printf("FAIL: %s\n", what); }
+}
+
+static void check_list(bool ok, const EmbeddedList &list, const char *what)
+{
+    char message[192];
+    std::snprintf(message, sizeof(message), "%s: %s", list.name, what);
+    check(ok, message);
 }
 
 extern "C" Task *FindTask(CONST_STRPTR name)
@@ -104,10 +133,24 @@ struct Fixture
         memory.fill(0xA5);
         ctx.mem = memory.data();
         ctx.mem_size = memory.size();
+        ctx.stack_top = ctx.mem_size;
+        ctx.stack_bottom = ctx.stack_top - 0x1000;
         ctx.m68k_sysbase = base;
         ctx.m68k_argptr = 0x700;
         native.LibNode.lib_Version = 47;
         native.LibNode.lib_Revision = 12;
+        /* A native empty List has 64-bit links. Leave every native header
+           intact while publishing independent classic guest sentinels. */
+        static_assert(sizeof(void *) == 8);
+        static_assert(sizeof(List) == 32 && offsetof(List, lh_Type) == 24);
+        for (const auto &list : embedded_lists)
+        {
+            UBYTE *header = reinterpret_cast<UBYTE *>(&native) + list.native_offset;
+            void *links[] = { header + 8, nullptr, header };
+            std::memcpy(header, links, sizeof(links));
+            header[24] = list.type;
+            header[25] = 0;
+        }
         ctx.num_libs = 1;
         auto &lib = ctx.libs[0];
         lib.m68k_addr = base;
@@ -117,6 +160,9 @@ struct Fixture
         lib.num_thunks = sizeof(manual) / sizeof(manual[0]);
         lib.gen_thunks = generated;
         lib.num_gen_thunks = sizeof(generated) / sizeof(generated[0]);
+        /* A zero guest list head must never turn the reset stack pointer
+           at address zero into a fictitious successor outside the arena. */
+        m68k_write32(&ctx, 0, ctx.mem_size);
         m68k_write32(&ctx, stack, 0x76543210);
         if (initialize) init();
     }
@@ -150,6 +196,80 @@ struct Fixture
         return call(name);
     }
 };
+
+static void test_embedded_exec_lists()
+{
+    Fixture f(false);
+    const auto native_before = f.native;
+    check(f.init() == f.base, "ExecBase initialization succeeds with real native list headers");
+    check(!std::memcmp(&f.native, &native_before, sizeof(f.native)),
+          "ExecBase initialization preserves every native header byte");
+    check(m68k_read32(&f.ctx, 0) == f.ctx.mem_size,
+          "ExecBase initialization preserves the zero-page reset stack pointer");
+    for (const auto &list : embedded_lists)
+    {
+        const ULONG guest = f.base + list.guest_offset;
+        const ULONG head = m68k_read32(&f.ctx, guest);
+        check_list(head == guest + 4 && !m68k_read32(&f.ctx, guest + 4) &&
+                   m68k_read32(&f.ctx, guest + 8) == guest,
+                   list, "classic empty head, tail and predecessor sentinels");
+        check_list(f.memory[guest + 12] == list.type && !f.memory[guest + 13],
+                   list, "complete guest header replaces dirty bytes");
+        check_list(shadow_lookup(&f.ctx, guest) ==
+                   reinterpret_cast<UBYTE *>(&f.native) + list.native_offset,
+                   list, "native shadow identity remains available to intercepted lookups");
+        check_list(head && head < f.ctx.mem_size && !m68k_read32(&f.ctx, head),
+                   list, "empty traversal exposes no fictitious guest node");
+    }
+}
+
+static void test_embedded_list_callbacks()
+{
+    for (const auto &list : embedded_lists)
+    {
+        Fixture f;
+        constexpr ULONG code = 0x1800, marker = 0x5A;
+        /* Original fixture instructions, using the public List ABI:
+           MOVEQ #7,D1; MOVEQ #0,D2; MOVEA.L list(A6),A0;
+           loop: TST.L (A0); BEQ empty; ADDQ.L #1,D2;
+                 MOVEA.L (A0),A0; DBRA D1,loop;
+           MOVEQ #-1,D0; RTS;
+           empty: MOVEQ #$5A,D0; RTS.
+           D2 counts visited nodes; the DBRA budget also bounds bad cycles. */
+        const UWORD words[] = {
+            0x7207, 0x7400, 0x206E, static_cast<UWORD>(list.guest_offset),
+            0x4A90, 0x670C, 0x5282, 0x2050, 0x51C9, 0xFFF6,
+            0x70FF, 0x4E75, 0x705A, 0x4E75
+        };
+        for (unsigned i = 0; i < sizeof(words) / sizeof(words[0]); ++i)
+            m68k_write16(&f.ctx, code + 2 * i, words[i]);
+
+        AROSMoira cpu(&f.ctx);
+        m68k_write32(&f.ctx, 4, code);
+        cpu.reset();
+        m68k_write32(&f.ctx, 4, f.base);
+        cpu.setA(7, f.ctx.stack_top - 256);
+        f.ctx.running = TRUE;
+        const auto native_before = f.native;
+        const ULONG original_sp = cpu.getA(7);
+        KaffeineGuestCall call = {};
+        call.a[6] = f.base;
+        call.a_mask = 1u << 6;
+        const BOOL returned = Kaffeine_CallGuest(&f.ctx, &cpu.cpu_handle, code, &call);
+        if (!returned)
+            std::printf("List callback %s: returned=%d A0=%08x arena=%08x "
+                        "PC=%08x failed=%d depth=%u\n", list.name, returned,
+                        cpu.getA(0), f.ctx.mem_size, cpu.instructionPC,
+                        f.ctx.callback_failed, f.ctx.callback_depth);
+        check_list(returned && call.d[0] == marker && !call.d[2], list,
+                   "bounded Moira callback returns its empty-list marker without false nodes");
+        check_list(returned && f.ctx.running && !f.ctx.callback_failed &&
+                   !f.ctx.callback_depth && cpu.getA(7) == original_sp,
+                   list, "successful callback restores the caller and keeps it running");
+        check_list(!std::memcmp(&f.native, &native_before, sizeof(f.native)),
+                   list, "guest traversal leaves native list storage untouched");
+    }
+}
 
 static void test_current_identity()
 {
@@ -291,6 +411,8 @@ static void test_fallback_control()
 
 int main(int argc, char **argv)
 {
+    test_embedded_exec_lists();
+    test_embedded_list_callbacks();
     test_current_identity();
     test_named_identity_and_foreign_fields();
     /* Also permits a focused comparison with the old production handler,

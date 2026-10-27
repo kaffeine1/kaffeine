@@ -368,10 +368,20 @@ ULONG shadow_init_execbase(struct KaffeineContext *ctx, ULONG m68k_base, void *n
     m68k_write16(ctx, m68k_base + M68K_EXECBASE_LIBVERSION, lib->lib_Version);
     m68k_write16(ctx, m68k_base + M68K_EXECBASE_LIBREVISION, lib->lib_Revision);
 
-    /* Embedded lists: register each native list as a shadow */
+    /* The native nodes have no guest representation. Direct guest walks
+       must see an empty Exec list, whose head points at its tail sentinel,
+       rather than follow an untranslated NULL head through address zero.
+       Retain each native list's identity for intercepted named lookups. */
     for (int i = 0; execbase_lists[i].name; i++) {
         struct List *native_list = (struct List *)((UBYTE *)native_sysbase + execbase_lists[i].native_off);
-        shadow_register(ctx, m68k_base + execbase_lists[i].m68k_off, native_list, 17);
+        ULONG list = m68k_base + execbase_lists[i].m68k_off;
+
+        m68k_write32(ctx, list, list + 4);
+        m68k_write32(ctx, list + 4, 0);
+        m68k_write32(ctx, list + 8, list);
+        ctx->mem[list + 12] = native_list->lh_Type;
+        ctx->mem[list + 13] = 0;
+        shadow_register(ctx, list, native_list, 17);
     }
 
     return m68k_base;

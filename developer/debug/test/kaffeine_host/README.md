@@ -58,7 +58,7 @@ has 38 test executables and a thunk-registration audit.
 | Area | Coverage |
 | --- | --- |
 | CPU and loaders | Real Moira instructions, A-line dispatch, registers and condition codes, HUNK loading and relocations, callback faults and guest bounds |
-| Exec | Heap and pools, lists, signals, task snapshots, semaphores, public ports, guest message queues, I/O requests and timer boundaries |
+| Exec | Heap and pools, lists, signals, task snapshots, embedded ExecBase list headers and bounded Moira callback traversal, semaphores, public ports, guest message queues, I/O requests and timer boundaries |
 | DOS | Handle identities and lifetimes, buffers, read packets, formatting, CLI state, argument parsing, data structures and directory traversal |
 | Graphics and Intuition | RastPorts, fonts, screens, windows, IDCMP, requests, menus, gadgets and Workbench objects |
 | Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, no-window console calls and diskfont snapshots |
