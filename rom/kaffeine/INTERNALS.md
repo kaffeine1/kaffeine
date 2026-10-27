@@ -1051,9 +1051,9 @@ validation work.
 
 **graphics.library (22 manual thunks, all but LoadRGB4 in `kaffeine_thunks_gfx.c`):**
 
-Every thunk with a RastPort takes only the 68k RastPort of a window or a
-screen (see RastPorts and Fonts below); any other RastPort stops the
-program with rc 20 before native graphics.library. A thunk that stops the
+RastPort thunks use the registered 68k RastPort of a window or a screen
+(see RastPorts and Fonts below). ReadPixel also reads bounded guest planar
+bitmaps directly; unsupported RastPorts stop with rc 20. A thunk that stops the
 program returns 20, so that the code reaches D0, from which the CPU loop
 takes the exit code.
 
@@ -1068,7 +1068,7 @@ takes the exit code.
 | -240 | Move | WORD coordinates |
 | -246 | Draw | WORD coordinates, from the pen position the program may have written |
 | -306 | RectFill | WORD coordinates |
-| -318 | ReadPixel | WORD coordinates; the native LONG, -1 outside the RastPort |
+| -318 | ReadPixel | WORD coordinates; native LONG for registered window/screen RastPorts. Guest-built unlayered planar bitmaps use checked guest bytes; unsupported layouts, planes or coordinates stop with rc 20 |
 | -324 | WritePixel | WORD coordinates; the native LONG |
 | -342 | SetAPen | Pen to the native RastPort |
 | -348 | SetBPen | Pen to the native RastPort |
@@ -2737,9 +2737,17 @@ m68k: SetAPen(rp, 2); rp->cp_x = 10; Draw(rp, 50, 10)
   and the next call does not move the native pen back. For any other
   address it still returns the native object of another shadow or the guest
   bytes themselves.
-- The manual thunks take only the 68k RastPort of a window or a screen;
-  any other RastPort, such as one that the program set up with
-  `InitRastPort()` or copied from a window, stops the program with rc 20.
+- The manual drawing thunks require a registered window or screen RastPort.
+  ReadPixel also accepts a complete, even-addressed 100-byte guest RastPort
+  with Layer == NULL and an even-addressed 40-byte guest BitMap. Both headers
+  must have addresses distinct from registered native shadows. BytesPerRow must be
+  positive and even, Rows positive, Depth 1..8, Flags 0 or BMF_STANDARD and
+  pad zero. Every active plane must span BytesPerRow * Rows real guest bytes;
+  NULL and all-one plane pointers are unsupported. Signed WORD coordinates
+  must lie within BytesPerRow * 8 by Rows. The read combines MSB-first plane
+  bits into a pen without changing guest memory or calling native graphics.
+  Unsupported inputs stop with rc 20. InitRastPort, InitBitMap and other
+  guest-built drawing operations require separate adapters.
 - `Layer`, `BitMap`, `AreaPtrn`, `TmpRas`, `AreaInfo`, `GelsInfo` and
   `RP_User` are native pointers: they stay as the program left them, 0 in a
   new RastPort, and never reach native code.

@@ -175,7 +175,8 @@ and native AROS C functions. There are two kinds:
     window or a screen: `Move`/`Draw`/`RectFill`/`ReadPixel`/`WritePixel`,
     the pens and the drawing mode, `ScrollRaster`, and
     `Text`/`TextLength`/`TextExtent`/`TextFit` with checked text and 68k
-    TextExtents
+    TextExtents. `ReadPixel` also reads bounded guest planar bitmaps without a
+    layer, using guest bytes directly
 
 ### Device I/O
 
@@ -205,8 +206,11 @@ The RastPort of a window or a screen is a 68k RastPort in the guest memory
 may write, such as the pens, the drawing mode and the pen position, go to
 the native RastPort; right after it, the dispatcher copies the native fields
 back, also after a generated thunk. The font is a 68k TextFont with the
-metrics and the name of the native one. Any other RastPort stops the program
-with rc 20 before native graphics.library. See
+metrics and the name of the native one. `ReadPixel` also accepts a guest-built
+RastPort with no layer and a classic planar BitMap: depth 1..8, Flags 0 or
+BMF_STANDARD, and real planes entirely inside guest memory. Coordinates must
+lie within BytesPerRow * 8 by Rows. Unsupported inputs stop with rc 20.
+Other drawing calls require the registered window or screen RastPort. See
 [INTERNALS.md](INTERNALS.md#rastports-and-fonts).
 
 ### IDCMP Messages
