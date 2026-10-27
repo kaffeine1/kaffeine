@@ -508,6 +508,42 @@ static BOOL heap_release_valid(struct KaffeineContext *ctx, struct M68KHeapAlloc
            heap_free_valid(ctx, heap_free_neighbor(node, TRUE));
 }
 
+/* A guest may drain a manual port with inline list operations, then release
+   its containing allocation without calling GetMsg or DeleteMsgPort. Retire
+   only a complete, canonically empty port while its bytes still exist.
+   Malformed and nonempty queues retain their ownership checks. */
+static void heap_forget_empty_ports(struct KaffeineContext *ctx,
+                                    const struct M68KHeapAllocation *allocation)
+{
+    ULONG header = allocation->kind == HEAP_ABSOLUTE ? 0 : KAFFEINE_HEAP_HDR;
+    ULONG block = allocation->block + header, size = allocation->size - header;
+    unsigned i;
+
+    /* heap_release has already validated this native interval. Exclude its
+       private header and alignment slack beyond the requested payload. */
+    if (allocation->requested < size) size = allocation->requested;
+    for (i = 0; i < KAFFEINE_MAX_MESSAGE_PORTS; ++i)
+    {
+        ULONG port = ctx->message_ports[i];
+        unsigned j;
+
+        if (!port || (port & 1) || size < 34 || port < block ||
+            port - block > size - 34)
+            continue;
+        /* CreateMsgPort storage has a separate signal/port owner; its
+           supported release path is DeleteMsgPort. */
+        for (j = 0; j < KAFFEINE_MAX_IO_PORTS; ++j)
+            if (ctx->io_ports[j].guest == port) break;
+        if (j != KAFFEINE_MAX_IO_PORTS) continue;
+        /* Keep the empty FIFO geometry in sync with Kaffeine_QueueRead. */
+        if (ctx->mem[port + 8] == 4 &&
+            m68k_read32(ctx, port + 20) == port + 24 &&
+            m68k_read32(ctx, port + 24) == 0 &&
+            m68k_read32(ctx, port + 28) == port + 20)
+            ctx->message_ports[i] = 0;
+    }
+}
+
 static BOOL heap_release(struct KaffeineContext *ctx, struct M68KHeapAllocation *allocation,
                           struct M68KHeapAllocation *pool)
 {
@@ -518,6 +554,7 @@ static BOOL heap_release(struct KaffeineContext *ctx, struct M68KHeapAllocation 
     if (!heap_span_valid(ctx, allocation) || !heap_free_valid(ctx, previous) ||
         !heap_free_valid(ctx, following))
         return FALSE;
+    heap_forget_empty_ports(ctx, allocation);
     if (pool)
     {
         if (allocation->prev) allocation->prev->next = allocation->next;
