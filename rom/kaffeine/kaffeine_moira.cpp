@@ -488,12 +488,15 @@ const struct KaffeineCPUOps moira_cpu_ops =
    supervisor mode; the scheduler sets SR, A7 and PC. */
 struct KaffeineCPU *moira_task_create(struct KaffeineContext *ctx) noexcept
 {
-    AROSMoira *cpu = new (std::nothrow) AROSMoira(ctx);
-
-    if (!cpu)
-        return nullptr;
+    AROSMoira *cpu = nullptr;
     try
     {
+        /* nothrow covers allocation of this object, but its constructor
+           can also allocate backend state and throw. Keep both inside
+           the C++ boundary before returning to the C scheduler. */
+        cpu = new (std::nothrow) AROSMoira(ctx);
+        if (!cpu)
+            return nullptr;
         cpu->reset();
     }
     catch (...)
