@@ -848,8 +848,8 @@ classic-system observations recorded by `exec_library_paths`.
 | -192 | DateStamp | Native `DateStamp`, three big-endian longwords, returns the guest pointer |
 | -198 | Delay | Pass-through |
 | -222 | Execute | Bounded command string; the input and output handles pass through |
-| -228 | AllocDosObject | TagList translation; FIB returns shadow; RDArgs is a 68k structure in guest memory |
-| -234 | FreeDosObject | Object from D2 (shadow lookup); a 68k RDArgs goes back to the guest heap |
+| -228 | AllocDosObject | TagList translation; FIB returns shadow; RDArgs and ExAllControl are 68k structures in guest memory |
+| -234 | FreeDosObject | Object from D2 (shadow lookup); a 68k RDArgs goes back to the guest heap, as does a 68k ExAllControl with its native scan state; freeing a control whose MatchFunc runs stops with rc 20 |
 | -240 | DoPkt | Fails with `ERROR_NOT_IMPLEMENTED`: no packet bridge yet (`kaffeine_thunks_dos.c`) |
 | -246 | SendPkt | Fails with `ERROR_NOT_IMPLEMENTED`: no packet bridge yet (`kaffeine_thunks_dos.c`) |
 | -252 | WaitPkt | Fails with `ERROR_NOT_IMPLEMENTED`: no packet bridge yet (`kaffeine_thunks_dos.c`) |
@@ -867,7 +867,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -402 | NameFromLock | Checks positive capacity and the whole guest output; zero lock keeps native boot-volume semantics |
 | -408 | NameFromFH | Checks positive capacity, nonzero handle and the whole guest output |
 | -414 | SplitName | Bounded name, oldpos within its string, positive output capacity and no source/output overlap |
-| -432 | ExAll | Fails with `ERROR_NOT_IMPLEMENTED`: `ExAllData` and `ExAllControl` are not converted yet (`kaffeine_thunks_dos.c`) |
+| -432 | ExAll | Emulated with native `Examine()`/`ExNext()` and a native FIB per guest `ExAllControl`; 68k `ExAllData` written into the guest buffer, longword aligned; `eac_MatchString` through a native copy, `eac_MatchFunc` called with A0 hook, A1 entry, A2 type as on AmigaOS (`kaffeine_thunks_dos.c`, see below) |
 | -462 | SetIoErr | Pass-through |
 | -468 | Fault | Nullable bounded header, nonoverlapping output, positive capacity and native write footprint (including unconditional header punctuation); returns the native spare-capacity value |
 | -474 | PrintFault | Nullable bounded header; native result and error code in `IoErr()` |
@@ -917,7 +917,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -954 | VPrintf | As VFPrintf, to `Output()` |
 | -966 | ParsePatternNoCase | As ParsePattern, with native case folding |
 | -972 | MatchPatternNoCase | As MatchPattern, with native case folding |
-| -990 | ExAllEnd | No-op paired with refused `ExAll` (`kaffeine_thunks_dos.c`) |
+| -990 | ExAllEnd | Drops the scan of the control in D5; the next `ExAll` starts again (`kaffeine_thunks_dos.c`) |
 | -996 | SetOwner | Bounded name and unchanged scalar UID/GID packed in D2 |
 
 The sixteen byte-buffer/string overrides from FRead through the pattern
@@ -2978,6 +2978,58 @@ Two generators exist:
 - Longword bus accesses crossing the arena or 2^32 are split by Moira;
   callback bounds are tested, but whole-access refusal needs a backend change
 - Makefile builds and runs all host tests (`test_kaffeine`, `test_moira_exec`, `test_hello_thunks`) via `make test`
+
+## ExAll() emulation
+
+Native `ExAll()` writes AROS `ExAllData` with 64-bit `ed_Next`, `ed_Name`
+and `ed_Comment`, and keeps native state in the private part of its
+`ExAllControl`. The bridge therefore emulates `ExAll()` itself, as AmigaOS
+dos.library and AROS do for a handler without `ACTION_EXAMINE_ALL`:
+
+- `AllocDosObject(DOS_EXALLCONTROL)` gives a cleared 16-byte 68k
+  `ExAllControl` from the guest heap. `exall_map` in the context pairs it
+  with a native `FileInfoBlock`, which holds the scan position. A control
+  that the program made itself also gets a slot, but `FreeDosObject()`
+  never frees guest memory that the bridge did not allocate. There are 8
+  slots; `Kaffeine_ExAllCleanup()` frees the native FIBs at the end.
+- `eac_LastKey` 0, or a control without a started scan, runs `Examine()`;
+  a lock on a file fails with `ERROR_OBJECT_WRONG_TYPE`. While a scan runs,
+  `eac_LastKey` is a non-zero token.
+- Each `ExNext()` entry is matched against a native copy of
+  `eac_MatchString` (after the token check of `MatchPattern()`), then
+  written in the NDK 3.2 layout: the fixed part for the type (8, 12, 16, 20,
+  32, 36 or 40 bytes), the name, and from `ED_COMMENT` on the comment, or
+  `ed_Comment` NULL without one, as the autodoc says. The next entry starts
+  on the next longword. `eac_MatchFunc` then gets A0 the hook, A1 the
+  entry and A2 a guest longword with the type, and FALSE reuses the space.
+- An entry that does not fit stays in the native FIB and comes first in
+  the next call. If not even one entry fits, `ExAll()` returns FALSE with
+  `ERROR_BUFFER_OVERFLOW`. The end of the directory returns FALSE with
+  `ERROR_NO_MORE_ENTRIES`, also from a call that delivered entries, and the
+  calls after it do the same until `eac_LastKey` is 0 again.
+- `ExAllEnd()` drops the scan, so the next `ExAll()` starts again.
+  `ExAll()` on a control, or `FreeDosObject()` of it, while its own
+  `MatchFunc` runs stops the program with rc 20.
+
+Measured on AmigaOS 3.2.3 with an original probe program, ram-handler and
+the FastFileSystem agree on the end, on `eac_LastKey`, on the pattern and on
+the registers of the hook, and differ elsewhere:
+
+| Case | ram-handler | FFS | kaffeine |
+| --- | --- | --- | --- |
+| Buffer too small for one entry | FALSE, 103 | TRUE with no entries, forever | FALSE, 303 |
+| Type 0, 8 or -1 | FALSE, 115 | accepted, all entries | FALSE, 115 |
+| Lock on a file | FALSE, 212 | FALSE, 232 | FALSE, 212 |
+| Calls after the end | start again | FALSE, 232 | FALSE, 232 |
+| `eac_Entries` after an error | left as it was | not measured | 0 |
+| No comment | empty string | NULL | NULL |
+| Order of name and comment | comment first | name first | name first |
+| Alignment of `ed_Next` | word | longword, word after a comment | longword |
+| `MatchFunc` registers | A1 entry, A2 type | A1 entry, A2 type | A1 entry, A2 type |
+
+AROS `ExAll()` calls `CALLHOOKPKT(hook, entry, &type)`, which puts the
+entry in A2 and the type in A1, the other way round from the AmigaOS
+autodoc and from both AmigaOS handlers.
 
 ## Known Bugs
 

@@ -235,6 +235,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     Kaffeine_ReadArgsCleanup(ctx);
     Kaffeine_LocaleCleanup(ctx);
     Kaffeine_MatchCleanup(ctx);
+    Kaffeine_ExAllCleanup(ctx);
     Kaffeine_MenusCleanup(ctx);
     Kaffeine_GadgetsCleanup(ctx);
     Kaffeine_FontsCleanup(ctx);
@@ -294,6 +295,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     Kaffeine_ReadArgsCleanup(ctx);
     Kaffeine_LocaleCleanup(ctx);
     Kaffeine_MatchCleanup(ctx);
+    Kaffeine_ExAllCleanup(ctx);
     Kaffeine_MenusCleanup(ctx);
     Kaffeine_GadgetsCleanup(ctx);
     Kaffeine_FontsCleanup(ctx);

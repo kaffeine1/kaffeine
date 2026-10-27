@@ -477,6 +477,9 @@ static IPTR thunk_dos_AllocDosObject(struct KaffeineContext *ctx, void *cpu)
     /* The program fills in its RDArgs itself, so it gets a 68k one */
     if (type == DOS_RDARGS)
         return Kaffeine_AllocRDArgs(ctx);
+    /* ExAll() keeps its native state on the bridge */
+    if (type == DOS_EXALLCONTROL)
+        return Kaffeine_ExAllAllocControl(ctx);
     struct TagItem *tags = m68k_to_native_taglist(ctx, THUNK_D(2));
     APTR obj = AllocDosObject(type, tags);
     if (tags) FreeVec(tags);

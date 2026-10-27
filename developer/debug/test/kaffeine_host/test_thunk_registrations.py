@@ -456,13 +456,9 @@ ALLOWED_IGNORED_REGS = {
         frozenset({"D1"}),
         "CreateNewProc() refuses with ERROR_NOT_IMPLEMENTED",
     ),
-    "kaffeine_dos_ExAll": (
-        frozenset({"D1", "D2", "D3", "D4", "D5"}),
-        "ExAll() refuses with ERROR_NOT_IMPLEMENTED until ExAllData is bridged",
-    ),
     "kaffeine_dos_ExAllEnd": (
-        frozenset({"D1", "D2", "D3", "D4", "D5"}),
-        "ExAllEnd() is a no-op paired with refused ExAll()",
+        frozenset({"D1", "D2", "D3", "D4"}),
+        "ExAllEnd() only needs the control: the emulated scan keeps its state there",
     ),
     "kaffeine_dos_DoPkt": (
         frozenset({"D1", "D2", "D3", "D4", "D5", "D6", "D7"}),

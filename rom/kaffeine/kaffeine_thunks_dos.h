@@ -107,6 +107,9 @@ BOOL Kaffeine_FIBToGuest(struct KaffeineContext *ctx, ULONG guest,
                       const struct FileInfoBlock *native);
 /* Ends the matches a program left open, which hold native locks. */
 void Kaffeine_MatchCleanup(struct KaffeineContext *ctx);
+ULONG Kaffeine_ExAllAllocControl(struct KaffeineContext *ctx);
+BOOL Kaffeine_ExAllFreeControl(struct KaffeineContext *ctx, ULONG control);
+void Kaffeine_ExAllCleanup(struct KaffeineContext *ctx);
 
 /* The base calls that used to pass unchecked guest pointers from
    kaffeine_thunks.c, in LVO order. */
