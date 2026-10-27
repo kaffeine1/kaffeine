@@ -3,6 +3,7 @@
 #include <dos/bptr.h>
 
 #define DOS_FILEHANDLE 0
+#define DOS_EXALLCONTROL 1
 #define DOS_FIB 2
 #define DOS_RDARGS 5
 #define DOSTRUE (-1)

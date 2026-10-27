@@ -18,6 +18,7 @@
 
 #include <dos/dostags.h>
 #include <dos/dosasl.h>
+#include <dos/exall.h>
 #include <dos/var.h>
 #include <dos/datetime.h>
 #include <dos/rdargs.h>
@@ -26,6 +27,7 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include "kaffeine_cpu.h"
+#include "kaffeine_callback.h"
 #include "kaffeine_dispatch.h"
 #include "kaffeine_intern.h"
 #include "kaffeine_thunks_dos.h"
@@ -217,6 +219,7 @@ struct Batch2Calls
     bool source_null = false;
     bool cli_present = true, heap_fails = false;
     unsigned heap_calls = 0;
+    unsigned heap_frees = 0;
 };
 
 /* The base calls moved from kaffeine_thunks.c. Their stubs copy only bytes
@@ -275,11 +278,47 @@ struct MatchCalls
     bool achain_double_free = false;
 };
 
+struct DirectoryEntry
+{
+    std::string name;
+    LONG type = -3, size = 0x12345678, protection = static_cast<LONG>(0x87654321U);
+    struct DateStamp date = { 0x01020304, 0x11223344, -7 };
+    std::string comment = "";
+    UWORD uid = 0x1234, gid = 0xABCD;
+};
+
+/* The position belongs to the caller's FIB, not this fake. Interleaved
+   scans must work just as they do with a real directory handler. */
+struct DirectoryCalls
+{
+    bool enabled = false;
+    std::vector<DirectoryEntry> entries;
+    LONG type = 2;
+    SIPTR examine_error = 0, next_error = 0;
+    IPTR next_error_at = static_cast<IPTR>(-1);
+    std::vector<IPTR> keys;
+    std::vector<struct FileInfoBlock *> fibs;
+};
+
+struct HeapBlock
+{
+    ULONG address, size;
+};
+
+struct HeapCalls
+{
+    ULONG next = 0x900;
+    std::vector<HeapBlock> live, freed;
+    bool bad_free = false;
+};
+
 struct Calls
 {
     Batch2Calls dos2;
     BaseCalls base;
     MatchCalls match;
+    DirectoryCalls directory;
+    HeapCalls heap;
 
     KaffeineContext *converter_context = nullptr;
     const char *converter_format = nullptr;
@@ -332,6 +371,9 @@ struct Calls
     bool allocate_without_tags = false;
     bool allocation_fails = false;
     struct FileInfoBlock *allocated_fib = nullptr;
+    std::vector<struct FileInfoBlock *> fib_live;
+    unsigned fib_allocs = 0, fib_frees = 0;
+    bool fib_bad_free = false;
     unsigned examinefh_calls = 0;
     struct FileInfoBlock fib_value = {};
     bool examine_received_temporary = false;
@@ -467,6 +509,8 @@ extern "C" APTR AllocDosObject(ULONG type, const struct TagItem *tags)
         std::calloc(1, sizeof(struct FileInfoBlock)));
     if (!calls.allocated_fib)
         std::abort();
+    calls.fib_live.push_back(calls.allocated_fib);
+    ++calls.fib_allocs;
     return calls.allocated_fib;
 }
 
@@ -495,6 +539,15 @@ static LONG examine_native(BPTR lock, struct FileInfoBlock *fib)
 extern "C" LONG Examine(BPTR lock, struct FileInfoBlock *fib)
 {
     ++calls.examine_calls;
+    if (calls.directory.enabled)
+    {
+        calls.lock = lock;
+        calls.directory.fibs.push_back(fib);
+        *fib = {};
+        fib->fib_DirEntryType = calls.directory.type;
+        calls.ioerr = calls.directory.examine_error;
+        return calls.ioerr ? DOSFALSE : DOSTRUE;
+    }
     return examine_native(lock, fib);
 }
 
@@ -503,6 +556,37 @@ extern "C" LONG ExNext(BPTR lock, struct FileInfoBlock *fib)
     ++calls.exnext_calls;
     calls.exnext_key = fib->fib_DiskKey;
     calls.exnext_type = fib->fib_DirEntryType;
+    if (calls.directory.enabled)
+    {
+        auto &dir = calls.directory;
+        calls.lock = lock;
+        dir.keys.push_back(fib->fib_DiskKey);
+        dir.fibs.push_back(fib);
+        if (fib->fib_DiskKey == dir.next_error_at)
+        {
+            calls.ioerr = dir.next_error;
+            return DOSFALSE;
+        }
+        if (fib->fib_DiskKey >= dir.entries.size())
+        {
+            calls.ioerr = ERROR_NO_MORE_ENTRIES;
+            return DOSFALSE;
+        }
+        const auto &entry = dir.entries[fib->fib_DiskKey];
+        ++fib->fib_DiskKey;
+        fib->fib_DirEntryType = entry.type;
+        fib->fib_Size = entry.size;
+        fib->fib_Protection = entry.protection;
+        fib->fib_Date = entry.date;
+        fib->fib_OwnerUID = entry.uid;
+        fib->fib_OwnerGID = entry.gid;
+        std::snprintf(reinterpret_cast<char *>(fib->fib_FileName), sizeof(fib->fib_FileName),
+            "%s", entry.name.c_str());
+        std::snprintf(reinterpret_cast<char *>(fib->fib_Comment), sizeof(fib->fib_Comment),
+            "%s", entry.comment.c_str());
+        calls.ioerr = 0;
+        return DOSTRUE;
+    }
     return examine_native(lock, fib);
 }
 
@@ -1222,13 +1306,22 @@ extern "C" void FreeDosObject(ULONG type, APTR object)
     ++calls.free_object_calls;
     calls.object_type = type;
     calls.object = object;
-    if (object && object == calls.allocated_fib)
+    if (type == DOS_FIB && object)
     {
-        calls.freed_temporary_fib = true;
-        std::free(calls.allocated_fib);
-        calls.allocated_fib = nullptr;
-        /* Make error preservation observable across DOS cleanup. */
-        calls.ioerr = 0x7777;
+        for (size_t i = 0; i < calls.fib_live.size(); ++i)
+            if (calls.fib_live[i] == object)
+            {
+                calls.fib_live.erase(calls.fib_live.begin() + static_cast<long>(i));
+                ++calls.fib_frees;
+                calls.freed_temporary_fib = true;
+                if (object == calls.allocated_fib)
+                    calls.allocated_fib = nullptr;
+                std::free(object);
+                /* Make error preservation observable across DOS cleanup. */
+                calls.ioerr = 0x7777;
+                return;
+            }
+        calls.fib_bad_free = true;
     }
 }
 
@@ -1269,9 +1362,28 @@ extern "C" CommandLineInterface *Cli(void)
 extern "C" ULONG Kaffeine_HeapAlloc(KaffeineContext *ctx, ULONG size, ULONG)
 {
     ++calls.dos2.heap_calls;
-    if (calls.dos2.heap_fails || size > ctx->mem_size - 0x900)
+    ULONG address = calls.heap.next;
+    if (calls.dos2.heap_fails || !size || address >= ctx->mem_size ||
+        size > ctx->mem_size - address)
         return 0;
-    return 0x900;
+    calls.heap.next = (address + size + 3) & ~3U;
+    calls.heap.live.push_back({ address, size });
+    /* The allocator need not clear memory. AllocControl must do that. */
+    std::memset(ctx->mem + address, 0xA5, size);
+    return address;
+}
+
+extern "C" void Kaffeine_HeapFree(KaffeineContext *, ULONG address, ULONG size)
+{
+    ++calls.dos2.heap_frees;
+    for (size_t i = 0; i < calls.heap.live.size(); ++i)
+        if (calls.heap.live[i].address == address && calls.heap.live[i].size == size)
+        {
+            calls.heap.freed.push_back(calls.heap.live[i]);
+            calls.heap.live.erase(calls.heap.live.begin() + static_cast<long>(i));
+            return;
+        }
+    calls.heap.bad_free = true;
 }
 
 extern "C" LONG Info(BPTR lock, InfoData *info)
@@ -1483,9 +1595,16 @@ struct Fixture
 
     ~Fixture()
     {
+        if (calls.directory.enabled)
+        {
+            Kaffeine_ExAllCleanup(&ctx);
+            check(calls.fib_live.empty() && calls.fib_allocs == calls.fib_frees && !calls.fib_bad_free,
+                "ExAll fixture cleanup releases every native FIB exactly once");
+            check(!calls.heap.bad_free, "ExAll frees only live guest allocations with their exact size");
+        }
         /* A failed ownership assertion must not leak into the next case. */
-        if (calls.allocated_fib)
-            std::free(calls.allocated_fib);
+        for (auto *fib : calls.fib_live)
+            std::free(fib);
         for (void *memory : calls.vec_live)
             std::free(memory);
         if (calls.last_alloc)
@@ -1514,11 +1633,13 @@ struct Fixture
         KaffeineDispatchResult result = {};
         check(Kaffeine_DispatchLibraryCall(&ctx, &cpu, 0x1000 - lvo, &result),
             "DOS LVO is dispatched");
-        check(state.a[7] == 0x84 && result.return_pc == return_pc && !result.supervisor,
+        check((ctx.callback_failed || state.a[7] == 0x84) &&
+            result.return_pc == return_pc && !result.supervisor,
             "dispatch consumes exactly one guest return address");
         check(calls.generated_calls == 0, "manual DOS thunk wins over generated fallback");
-        check(std::memcmp(state.d + 1, before.d + 1, 7 * sizeof(ULONG)) == 0 &&
-            std::memcmp(state.a, before.a, 7 * sizeof(ULONG)) == 0 && state.sr == before.sr,
+        /* CallGuest deliberately leaves live registers on a guest stop. */
+        check(ctx.callback_failed || (std::memcmp(state.d + 1, before.d + 1, 7 * sizeof(ULONG)) == 0 &&
+            std::memcmp(state.a, before.a, 7 * sizeof(ULONG)) == 0 && state.sr == before.sr),
             "DOS data calls preserve guest input registers and status");
     }
 };
@@ -2301,18 +2422,15 @@ static void test_process_launch()
     }
 }
 
-/* ExAll() writes 64-bit native ExAllData and uses an ExAllControl; DoPkt(),
-   SendPkt(), WaitPkt(), ReplyPkt() and AbortPkt() use 68k DosPacket and
-   MsgPort structures. Earlier manual thunks also read A2/A5 or A1..A3 instead
-   of D1..D5. Verify that all seven LVOs refuse or no-op without calling
-   native DOS or touching guest/shadow objects placed at either the D or A
-   register addresses. */
-static void test_exall_and_packets_refused()
+/* DoPkt(), SendPkt(), WaitPkt(), ReplyPkt() and AbortPkt() use 68k DosPacket
+   and MsgPort structures. Earlier manual thunks also read A2/A5 or A1..A3
+   instead of D1..D5. Verify that the five LVOs refuse without calling native
+   DOS or touching guest/shadow objects placed at either the D or A register
+   addresses. */
+static void test_packets_refused()
 {
     const struct { ULONG lvo; const char *name; bool sets_ioerr; } cases[] =
     {
-        { 432, "ExAll", true },
-        { 990, "ExAllEnd", false },
         { 240, "DoPkt", true },
         { 246, "SendPkt", true },
         { 252, "WaitPkt", true },
@@ -3185,6 +3303,7 @@ static ULONG call2(Fixture &f, ULONG lvo, std::initializer_list<ULONG> args = {}
 {
     unsigned reg = 1;
     f.state.a[7] = 0x80;
+    m68k_write32(&f.ctx, f.state.a[7], Fixture::return_pc);
     for (ULONG arg : args)
         f.state.d[reg++] = arg;
     f.dispatch(lvo);
@@ -4717,6 +4836,745 @@ static void test_dos_match()
     test_match_lifecycle();
 }
 
+static constexpr ULONG exall_buffer = 0x402, exall_hook = 0x700;
+static constexpr ULONG exall_code = 0x740, exall_pattern = 0x780;
+
+static std::vector<DirectoryEntry> exall_directory()
+{
+    return {
+        { "One", -3, 0x12345678, static_cast<LONG>(0x87654321U), { 0x01020304, 1234, -7 }, "note" },
+        { "two", 2, 0x10203040, 0x13579BDF, { -2, 59, 2999 }, "", 0xBEEF, 0x5678 },
+        { "THREE", -4, 17, 0x2468ACE0, { 380, 754, 1150 }, "longer", 0x4321, 0xDCBA },
+        { "four", -3, 0, 0, { 0, 0, 0 }, "" }
+    };
+}
+
+static ULONG prepare_exall(Fixture &f, const std::vector<DirectoryEntry> &entries = exall_directory())
+{
+    f.isolate_arena();
+    f.ctx.running = TRUE;
+    calls.directory.enabled = true;
+    calls.directory.entries = entries;
+    ULONG control = Kaffeine_ExAllAllocControl(&f.ctx);
+    const UBYTE zero[16] = {};
+    check(control != 0 && control <= f.ctx.mem_size - 16 &&
+        std::memcmp(f.ctx.mem + control, zero, sizeof(zero)) == 0,
+        "ExAllAllocControl clears all 16 guest bytes even with a dirty heap");
+    return control;
+}
+
+static ULONG exall(Fixture &f, ULONG control, ULONG size = 256,
+                   ULONG type = ED_OWNER, ULONG buffer = exall_buffer)
+{
+    return call2(f, 432, { Fixture::file_handle, buffer, size, type, control });
+}
+
+/* Literal NDK sizes and byte encoders keep the expected layout independent
+   of the bridge's private offsets and native structure packing. */
+static const ULONG exall_fixed_size[] = { 0, 8, 12, 16, 20, 32, 36, 40 };
+
+static ULONG exall_size(const DirectoryEntry &entry, ULONG type)
+{
+    return exall_fixed_size[type] + entry.name.size() + 1 +
+        (type >= ED_COMMENT && !entry.comment.empty() ? entry.comment.size() + 1 : 0);
+}
+
+static void expected_be(std::vector<UBYTE> &bytes, ULONG offset, ULONG value, ULONG size = 4)
+{
+    for (ULONG i = 0; i < size; ++i)
+        bytes.at(offset + i) = static_cast<UBYTE>(value >> (8 * (size - i - 1)));
+}
+
+static void expect_exall_buffer(const Fixture &f, const std::vector<UBYTE> &before,
+                                ULONG buffer, ULONG size, ULONG type,
+                                const std::vector<DirectoryEntry> &entries)
+{
+    auto expected = before;
+    ULONG address = buffer;
+    for (size_t i = 0; i < entries.size(); ++i)
+    {
+        const auto &entry = entries[i];
+        ULONG name = address + exall_fixed_size[type];
+        ULONG next = (address + exall_size(entry, type) + 3) & ~3U;
+        expected_be(expected, address, i + 1 < entries.size() ? next : 0);
+        expected_be(expected, address + 4, name);
+        std::memcpy(expected.data() + name, entry.name.c_str(), entry.name.size() + 1);
+        if (type >= ED_TYPE) expected_be(expected, address + 8, entry.type);
+        if (type >= ED_SIZE) expected_be(expected, address + 12, entry.size);
+        if (type >= ED_PROTECTION) expected_be(expected, address + 16, entry.protection);
+        if (type >= ED_DATE)
+        {
+            expected_be(expected, address + 20, entry.date.ds_Days);
+            expected_be(expected, address + 24, entry.date.ds_Minute);
+            expected_be(expected, address + 28, entry.date.ds_Tick);
+        }
+        if (type >= ED_COMMENT)
+        {
+            ULONG comment = name + entry.name.size() + 1;
+            expected_be(expected, address + 32, entry.comment.empty() ? 0 : comment);
+            if (!entry.comment.empty())
+                std::memcpy(expected.data() + comment, entry.comment.c_str(), entry.comment.size() + 1);
+        }
+        if (type >= ED_OWNER)
+        {
+            expected_be(expected, address + 36, entry.uid, 2);
+            expected_be(expected, address + 38, entry.gid, 2);
+        }
+        address = next;
+    }
+    check(std::memcmp(f.ctx.mem + buffer, expected.data() + buffer, size) == 0,
+        "ExAll buffer has the exact NDK bytes, absolute alignment, links, strings and untouched padding");
+}
+
+static void free_exall(Fixture &f, ULONG control)
+{
+    check(call2(f, 234, { DOS_EXALLCONTROL, control }) == 0,
+        "FreeDosObject(DOS_EXALLCONTROL) dispatches and returns zero");
+}
+
+static void test_exall_layouts()
+{
+    for (ULONG type = ED_NAME; type <= ED_OWNER; ++type)
+        for (ULONG buffer : { 0x400U, exall_buffer })
+        {
+            Fixture f;
+            ULONG control = prepare_exall(f);
+            std::memset(f.ctx.mem + buffer - 4, 0xCD, 264);
+            auto before = snapshot2(f);
+            check(exall(f, control, 256, type, buffer) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES &&
+                read32(f, control) == 4 && read32(f, control + 4) != 0,
+                "every ExAll type ends with FALSE and 232 even when it delivers entries");
+            expect_exall_buffer(f, before, buffer, 256, type, calls.directory.entries);
+            expected_be(before, control, 4);
+            expected_be(before, control + 4, read32(f, control + 4));
+            std::memcpy(before.data() + buffer, f.ctx.mem + buffer, 256);
+            check(snapshot2(f) == before, "ExAll writes only its buffer, eac_Entries and eac_LastKey");
+            check(calls.examine_calls == 1 && calls.exnext_calls == 5 && calls.fib_allocs == 1 &&
+                calls.allocate_type == DOS_FIB && calls.allocate_without_tags &&
+                calls.directory.keys == std::vector<IPTR>({ 0, 1, 2, 3, 4 }) &&
+                calls.lock == base_handle(Fixture::file_handle),
+                "ExAll uses one native DOS_FIB and advances the handler's disk key with the D1 lock");
+            bool same_fib = true;
+            for (auto *fib : calls.directory.fibs)
+                same_fib &= fib == calls.fib_live.front();
+            check(same_fib && calls.exall_calls == 0 && calls.exallend_calls == 0,
+                "ExAll keeps the same native FIB and never calls native ExAll or ExAllEnd");
+            free_exall(f, control);
+            check(calls.fib_frees == 1 && calls.fib_live.empty() && calls.heap.live.empty() &&
+                calls.heap.freed.size() == 1 && calls.heap.freed[0].address == control &&
+                calls.heap.freed[0].size == 16,
+                "freeing an allocated control releases its native FIB and its own guest allocation");
+        }
+}
+
+static void test_exall_batches()
+{
+    for (ULONG type = ED_NAME; type <= ED_OWNER; ++type)
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        ULONG size = 0;
+        for (const auto &entry : calls.directory.entries)
+            if (exall_size(entry, type) > size)
+                size = exall_size(entry, type);
+        /* One entry fits per call. The next one is already in the native
+           FIB when the bridge returns, so ExNext must not fetch it again. */
+        for (size_t i = 0; i < calls.directory.entries.size(); ++i)
+        {
+            std::memset(f.ctx.mem + exall_buffer, 0xCD, size);
+            auto before = snapshot2(f);
+            ULONG result = exall(f, control, size, type);
+            bool last = i + 1 == calls.directory.entries.size();
+            check(result == (last ? 0U : 0xFFFFFFFFU) && IoErr() == (last ? ERROR_NO_MORE_ENTRIES : 0) &&
+                read32(f, control) == 1 && read32(f, control + 4) != 0,
+                "a small-buffer scan delivers each entry exactly once in order with per-call counts");
+            expect_exall_buffer(f, before, exall_buffer, size, type, { calls.directory.entries[i] });
+            if (i == 0)
+                m68k_write32(&f.ctx, control + 4, 0x13579BDF);
+        }
+        unsigned next = calls.exnext_calls;
+        auto before = snapshot2(f);
+        expected_be(before, control, 0);
+        for (unsigned i = 0; i < 2; ++i)
+            check(exall(f, control, size, type) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES &&
+                read32(f, control) == 0 && snapshot2(f) == before && calls.exnext_calls == next &&
+                calls.examine_calls == 1,
+                "calls after the end return FALSE, 232 and zero entries without rescanning or writing the buffer");
+        check(calls.directory.keys == std::vector<IPTR>({ 0, 1, 2, 3, 4 }) && calls.fib_allocs == 1,
+            "small-buffer retries reuse pending entries and allocate only one FIB for the scan");
+    }
+}
+
+static void test_exall_overflow()
+{
+    for (ULONG type = ED_NAME; type <= ED_OWNER; ++type)
+    {
+        Fixture f;
+        const auto entry = exall_directory()[0];
+        ULONG control = prepare_exall(f, { entry });
+        ULONG size = exall_size(entry, type);
+        for (ULONG small : { size - 1, 0U, size - 1 })
+        {
+            std::memset(f.ctx.mem + exall_buffer, 0xCD, size + 4);
+            auto before = snapshot2(f);
+            check(exall(f, control, small, type) == 0 && IoErr() == ERROR_BUFFER_OVERFLOW &&
+                read32(f, control) == 0 && read32(f, control + 4) != 0,
+                "a buffer one byte too small or size zero returns FALSE, 303 and zero entries");
+            check(calls.examine_calls == 1 && calls.exnext_calls == 1,
+                "overflow keeps the first entry pending across repeated and zero-size calls");
+            expected_be(before, control + 4, read32(f, control + 4));
+            check(snapshot2(f) == before, "overflow does not write any entry or buffer byte");
+        }
+        auto before = snapshot2(f);
+        check(exall(f, control, size, type) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES &&
+            read32(f, control) == 1 && calls.exnext_calls == 2,
+            "an exact-fit retry delivers the pending entry and then reports the end");
+        expect_exall_buffer(f, before, exall_buffer, size + 4, type, { entry });
+    }
+    Fixture empty;
+    ULONG control = prepare_exall(empty, {});
+    check(exall(empty, control, 0) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(empty, control) == 0,
+        "a zero-size call on an empty directory reports the end rather than overflow");
+}
+
+static void test_exall_restarts()
+{
+    Fixture f;
+    ULONG control = prepare_exall(f);
+    ULONG size = exall_size(calls.directory.entries[0], ED_OWNER);
+    for (unsigned restart = 0; restart < 3; ++restart)
+    {
+        auto before = snapshot2(f);
+        check(exall(f, control, size) == 0xFFFFFFFFU && read32(f, control) == 1 &&
+            calls.examine_calls == restart + 1,
+            "a restarted scan examines the directory again and starts with its first entry");
+        expect_exall_buffer(f, before, exall_buffer, size, ED_OWNER, { calls.directory.entries[0] });
+        if (restart == 0)
+            m68k_write32(&f.ctx, control + 4, 0);
+        else if (restart == 1)
+        {
+            auto before_end = snapshot2(f);
+            check(call2(f, 990, { 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, control }) == 0 &&
+                snapshot2(f) == before_end && calls.fib_frees == 0 && calls.exallend_calls == 0,
+                "ExAllEnd uses only D5 and drops a pending scan without guest writes or a native call");
+        }
+    }
+    check(exall(f, control) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, control) == 3,
+        "continuing the restarted scan still delivers the remaining entries");
+    m68k_write32(&f.ctx, control + 4, 0);
+    check(exall(f, control) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, control) == 4 &&
+        calls.examine_calls == 4, "eac_LastKey zero also restarts a completed scan");
+    call2(f, 990, { 0, 0, 0, 0, control });
+    check(exall(f, control) == 0 && read32(f, control) == 4 && calls.examine_calls == 5 && calls.fib_allocs == 1,
+        "ExAllEnd also restarts a completed scan while reusing its native FIB");
+}
+
+static void refuse_exall(Fixture &f, ULONG control, ULONG buffer = exall_buffer,
+                         ULONG size = 256, ULONG type = ED_OWNER,
+                         bool clears_entries = true, SIPTR error = ERROR_BAD_NUMBER)
+{
+    if (control && control <= f.ctx.mem_size - 16)
+        m68k_write32(&f.ctx, control, 0xDEADBEEF);
+    auto before = snapshot2(f);
+    if (clears_entries)
+        expected_be(before, control, 0);
+    check(exall(f, control, size, type, buffer) == 0 && IoErr() == error,
+        "invalid ExAll arguments return FALSE with the specified DOS error");
+    check(snapshot2(f) == before,
+        "invalid ExAll arguments leave guest memory unchanged except permitted eac_Entries clearing");
+    check(calls.examine_calls == 0 && calls.exnext_calls == 0 && calls.fib_allocs == 0 &&
+        calls.exall_calls == 0 && calls.buffer_calls[match_nocase] == 0 &&
+        calls.buffer_calls[match_case] == 0,
+        "invalid ExAll arguments never reach the filesystem or native pattern matcher");
+}
+
+static void test_exall_refusals()
+{
+    for (ULONG type : { 0U, 8U, 0xFFFFFFFFU, 0x80000000U })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        m68k_write32(&f.ctx, control, 0xDEADBEEF);
+        refuse_exall(f, control, exall_buffer, 256, type);
+    }
+    for (ULONG control : { 0U, 4096U, 4081U, 0xFFFFFFF0U, 0xFFFFFFFFU })
+    {
+        Fixture f;
+        prepare_exall(f);
+        refuse_exall(f, control, exall_buffer, 256, ED_OWNER, false);
+    }
+    for (const auto &range : { HeapBlock{ 0, 256 }, { 4096, 256 }, { 4095, 2 },
+                              { 0xFFFFFFFEU, 4 }, { exall_buffer, 0xFFFFFFFFU },
+                              { exall_buffer, 0x80000000U }, { exall_buffer, 0x7FFFFFFFU } })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        m68k_write32(&f.ctx, control, 0xDEADBEEF);
+        refuse_exall(f, control, range.address, range.size, ED_OWNER, false);
+    }
+    for (ULONG pattern : { 4096U, 4095U, 0xFFFFFFFFU, 0xFFFFFFFEU })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        f.ctx.mem[4095] = 'X';
+        m68k_write32(&f.ctx, control, 0xDEADBEEF);
+        m68k_write32(&f.ctx, control + 8, pattern);
+        refuse_exall(f, control);
+    }
+    for (const std::vector<UBYTE> &tokens : { std::vector<UBYTE>{ P_REPBEG, 0 },
+           { P_OREND, 0 }, { P_CLASS, 'a', 0 }, { P_NOT, P_REPEND, 0 },
+           { P_CLASS, P_REPBEG, P_CLASS, 0 } })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        std::memcpy(f.ctx.mem + exall_pattern, tokens.data(), tokens.size());
+        m68k_write32(&f.ctx, control + 8, exall_pattern);
+        refuse_exall(f, control, exall_buffer, 256, ED_OWNER, true, ERROR_BAD_TEMPLATE);
+        check(calls.vec_live.empty() && !calls.vec_double_free,
+            "ExAll releases the pattern token validation stack on malformed input");
+    }
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        std::strcpy(guest(f, exall_pattern), "One");
+        m68k_write32(&f.ctx, control + 8, exall_pattern);
+        calls.alloc_vec_fails = true;
+        refuse_exall(f, control, exall_buffer, 256, ED_OWNER, true, ERROR_NO_FREE_STORE);
+        check(calls.vec_live.empty(), "pattern validation allocation failure leaves no native scratch allocation");
+    }
+    for (ULONG hook : { exall_hook + 1, 4096U, 4077U, 0xFFFFFFFEU, 0xFFFFFFFFU })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        m68k_write32(&f.ctx, control + 12, hook);
+        refuse_exall(f, control);
+    }
+    for (ULONG entry : { 0U, exall_code + 1, 4096U, 4095U, 0xFFFFFFFEU,
+                         KAFFEINE_CALLBACK_RETURN_BASE, KAFFEINE_CALLBACK_RETURN_BASE + 2 })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        m68k_write32(&f.ctx, control + 12, exall_hook);
+        m68k_write32(&f.ctx, exall_hook + 8, entry);
+        refuse_exall(f, control);
+    }
+    /* Both guest structures may end exactly at mem_size. Their addresses
+       do not need to be heap-owned to be accepted by the bridge. */
+    for (bool control_at_end : { false, true })
+    {
+        Fixture f;
+        auto entry = exall_directory()[0];
+        ULONG allocated = prepare_exall(f, { entry });
+        ULONG control = control_at_end ? 4080 : allocated;
+        ULONG size = exall_size(entry, ED_OWNER);
+        ULONG buffer = control_at_end ? exall_buffer : 4096 - size;
+        auto before = snapshot2(f);
+        check(exall(f, control, size, ED_OWNER, buffer) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES &&
+            read32(f, control) == 1, "ExAll accepts a complete control or buffer ending exactly at guest memory's edge");
+        expect_exall_buffer(f, before, buffer, size, ED_OWNER, { entry });
+    }
+}
+
+static void test_exall_native_errors()
+{
+    for (bool file : { false, true })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        calls.directory.type = file ? -3 : 2;
+        calls.directory.examine_error = file ? 0 : ERROR_OBJECT_NOT_FOUND;
+        auto before = snapshot2(f);
+        check(exall(f, control) == 0 && IoErr() == (file ? ERROR_OBJECT_WRONG_TYPE : ERROR_OBJECT_NOT_FOUND) &&
+            read32(f, control) == 0 && read32(f, control + 4) == 0 && calls.exnext_calls == 0 &&
+            snapshot2(f) == before, "a file lock or failed Examine returns its error without starting or writing entries");
+        calls.directory.type = 2;
+        calls.directory.examine_error = 0;
+        check(exall(f, control) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, control) == 4 &&
+            calls.examine_calls == 2 && calls.fib_allocs == 1,
+            "a failed Examine can be retried with the same control and native FIB");
+    }
+    for (IPTR position : { 0UL, 1UL })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        calls.directory.next_error_at = position;
+        calls.directory.next_error = ERROR_OBJECT_NOT_FOUND;
+        auto before = snapshot2(f);
+        check(exall(f, control) == 0 && IoErr() == ERROR_OBJECT_NOT_FOUND && read32(f, control) == position &&
+            read32(f, control + 4) != 0,
+            "ExNext errors other than 232 pass through with the entries already delivered");
+        std::vector<DirectoryEntry> first(calls.directory.entries.begin(), calls.directory.entries.begin() + position);
+        expect_exall_buffer(f, before, exall_buffer, 256, ED_OWNER, first);
+        calls.directory.next_error_at = static_cast<IPTR>(-1);
+        before = snapshot2(f);
+        check(exall(f, control) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, control) == 4 - position &&
+            calls.examine_calls == 1, "a non-end ExNext error does not mark the control ended or lose its position");
+        std::vector<DirectoryEntry> rest(calls.directory.entries.begin() + position, calls.directory.entries.end());
+        expect_exall_buffer(f, before, exall_buffer, 256, ED_OWNER, rest);
+    }
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        calls.allocation_fails = true;
+        check(exall(f, control) == 0 && IoErr() == ERROR_NO_FREE_STORE && read32(f, control) == 0 &&
+            calls.examine_calls == 0 && calls.fib_live.empty(),
+            "native FIB allocation failure returns 103 before examining the lock");
+        calls.allocation_fails = false;
+        check(exall(f, control) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, control) == 4 &&
+            calls.fib_allocs == 1, "native FIB allocation can be retried without losing the control slot");
+    }
+    {
+        Fixture f;
+        prepare_exall(f);
+        calls.dos2.heap_fails = true;
+        auto before = snapshot2(f);
+        check(Kaffeine_ExAllAllocControl(&f.ctx) == 0 && IoErr() == ERROR_NO_FREE_STORE && snapshot2(f) == before,
+            "guest control allocation failure returns 103 without guest writes");
+    }
+}
+
+enum class ExAllHookAction { accept, stop, reenter, free_control };
+
+static struct
+{
+    Fixture *fixture = nullptr;
+    ULONG control = 0, type = ED_OWNER, hook = exall_hook, code = exall_code;
+    ExAllHookAction action = ExAllHookAction::accept;
+    std::string reject;
+    std::vector<std::string> names;
+    std::vector<ULONG> addresses, typeptrs;
+    ULONG nested_result = 0;
+    LONG stop_code = 7;
+    unsigned stop_at = 1;
+    bool active_fib_preserved = false;
+} exall_callback;
+
+static std::string exall_guest_string(const Fixture &f, ULONG address)
+{
+    if (!address || address >= f.ctx.mem_size)
+        return "<invalid guest string>";
+    const char *text = reinterpret_cast<const char *>(f.ctx.mem + address);
+    if (!std::memchr(text, 0, f.ctx.mem_size - address))
+        return "<unterminated guest string>";
+    return text;
+}
+
+/* Run through the production CallGuest, including its saved registers,
+   guest stack token and stop path. Only the guest instruction is faked. */
+static void execute_exall_hook(void *)
+{
+    auto &h = exall_callback;
+    auto &f = *h.fixture;
+    auto &state = f.state;
+    check(state.pc == h.code && state.a[0] == h.hook,
+        "ExAll CallGuest enters the hook's h_Entry with the hook in A0");
+    bool entry_valid = state.a[1] >= exall_buffer && state.a[1] < exall_hook &&
+        state.a[1] <= f.ctx.mem_size - exall_fixed_size[h.type];
+    bool type_valid = false;
+    for (const auto &block : calls.heap.live)
+        type_valid |= block.address == state.a[2] && block.size == 4;
+    check(entry_valid && type_valid && read32(f, state.a[2]) == h.type,
+        "ExAll CallGuest puts the filled entry in A1 and a guest type longword pointer in A2");
+    ULONG name = entry_valid ? read32(f, state.a[1] + 4) : 0;
+    h.names.push_back(exall_guest_string(f, name));
+    h.addresses.push_back(state.a[1]);
+    h.typeptrs.push_back(state.a[2]);
+    check(entry_valid && name == state.a[1] + exall_fixed_size[h.type] && read32(f, state.a[1]) == 0 &&
+        (h.type < ED_OWNER || m68k_read16(&f.ctx, state.a[1] + 36) != 0),
+        "the hook sees the filled name and owner fields before the entry is linked");
+    if (h.names.size() > calls.directory.entries.size() + 1)
+    {
+        check(false, "a hook must not recurse without the same-control guard");
+        Kaffeine_StopGuest(&f.ctx, &f.cpu, 99);
+        return;
+    }
+    if (h.action == ExAllHookAction::stop && h.names.size() == h.stop_at)
+    {
+        Kaffeine_StopGuest(&f.ctx, &f.cpu, h.stop_code);
+        return;
+    }
+    if (h.action == ExAllHookAction::reenter || h.action == ExAllHookAction::free_control)
+    {
+        auto *fib = calls.fib_live.empty() ? nullptr : calls.fib_live.front();
+        unsigned freed = calls.dos2.heap_frees;
+        ULONG lvo = h.action == ExAllHookAction::reenter ? 432 : 234;
+        state.d[1] = lvo == 432 ? Fixture::file_handle : DOS_EXALLCONTROL;
+        state.d[2] = lvo == 432 ? exall_buffer : h.control;
+        state.d[3] = 256;
+        state.d[4] = h.type;
+        state.d[5] = h.control;
+        state.a[7] -= 4;
+        m68k_write32(&f.ctx, state.a[7], h.code + 2);
+        KaffeineDispatchResult result = {};
+        check(Kaffeine_DispatchLibraryCall(&f.ctx, &f.cpu, 0x1000 - lvo, &result) &&
+            result.return_pc == h.code + 2, "the guest hook dispatches its nested DOS call");
+        h.nested_result = state.d[0];
+        h.active_fib_preserved = calls.fib_live.size() == 1 && calls.fib_live[0] == fib &&
+            calls.dos2.heap_frees == freed;
+        return;
+    }
+    bool keep = h.reject != "*" && h.names.back() != h.reject;
+    /* The bridge must refresh this longword for every hook invocation. */
+    if (type_valid)
+        m68k_write32(&f.ctx, state.a[2], 0xDEADBEEF);
+    state.d[0] = keep ? 1 : 0;
+    state.d[1] = 0xBADF00D;
+    state.a[3] = 0xBADCAFE;
+    state.sr = 0;
+    state.pc = read32(f, state.a[7]);
+    state.a[7] += 4;
+}
+
+static void prepare_exall_hook(Fixture &f, ULONG control, ULONG type = ED_OWNER,
+                                ULONG hook = exall_hook, ULONG code = exall_code)
+{
+    exall_callback = {};
+    exall_callback.fixture = &f;
+    exall_callback.control = control;
+    exall_callback.type = type;
+    exall_callback.hook = hook;
+    exall_callback.code = code;
+    static const KaffeineCPUOps ops = [] {
+        auto result = cpu_ops;
+        result.execute = execute_exall_hook;
+        return result;
+    }();
+    f.cpu.ops = &ops;
+    m68k_write32(&f.ctx, hook + 8, code);
+    m68k_write32(&f.ctx, control + 12, hook);
+}
+
+static void test_exall_patterns_and_hooks()
+{
+    const std::vector<DirectoryEntry> entries = { { "Alpha.TXT" }, { "beta.bin" },
+                                                 { "gAmMa.tXt" }, { "delta.Txt" } };
+    for (bool hook : { false, true })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f, entries);
+        check(ParsePatternNoCase("#?.TxT", guest(f, exall_pattern), 128) == 1,
+            "the ExAll case-insensitive filter uses real native compiled pattern tokens");
+        m68k_write32(&f.ctx, control + 8, exall_pattern);
+        if (hook)
+        {
+            prepare_exall_hook(f, control);
+            exall_callback.reject = "gAmMa.tXt";
+        }
+        auto before = snapshot2(f);
+        check(exall(f, control) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES &&
+            read32(f, control) == (hook ? 2U : 3U),
+            "ExAll matches mixed-case names with or without a subsequent rejecting hook");
+        std::vector<DirectoryEntry> expected = hook ? std::vector<DirectoryEntry>{ entries[0], entries[3] } :
+                                                    std::vector<DirectoryEntry>{ entries[0], entries[2], entries[3] };
+        expect_exall_buffer(f, before, exall_buffer, 256, ED_OWNER, expected);
+        check(calls.buffer_calls[match_nocase] == 4 && calls.buffer_calls[match_case] == 0 &&
+            calls.vec_live.empty() && !calls.vec_double_free,
+            "ExAll uses MatchPatternNoCase for every candidate and frees its token validation stack");
+        if (hook)
+        {
+            check(exall_callback.names == std::vector<std::string>({ "Alpha.TXT", "gAmMa.tXt", "delta.Txt" }) &&
+                exall_callback.addresses[1] == exall_callback.addresses[2],
+                "pattern filtering precedes the hook and a rejected entry's space is reused");
+            check(calls.heap.live.size() == 1 && calls.heap.live[0].address == control &&
+                calls.heap.freed.size() == 1 && calls.heap.freed[0].size == 4 &&
+                f.ctx.running && !f.ctx.callback_failed && f.ctx.callback_depth == 0,
+                "a completed hook call frees its type longword and restores the callback runner");
+        }
+    }
+    for (ULONG type = ED_NAME; type <= ED_OWNER; ++type)
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        prepare_exall_hook(f, control, type);
+        exall_callback.reject = "two";
+        auto before = snapshot2(f);
+        check(exall(f, control, 256, type) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, control) == 3,
+            "a hook without a pattern can reject an entry for every ExAll type");
+        expect_exall_buffer(f, before, exall_buffer, 256, type,
+            { calls.directory.entries[0], calls.directory.entries[2], calls.directory.entries[3] });
+        check(exall_callback.names == std::vector<std::string>({ "One", "two", "THREE", "four" }) &&
+            exall_callback.addresses[1] == exall_callback.addresses[2],
+            "the hook sees every candidate in order and FALSE does not advance the output address");
+    }
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        prepare_exall_hook(f, control);
+        exall_callback.reject = "*";
+        check(exall(f, control, 56) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, control) == 0 &&
+            exall_callback.names.size() == 4 && calls.exnext_calls == 5,
+            "rejecting every candidate reaches the end with zero entries even in a one-entry buffer");
+        bool same_address = true;
+        for (ULONG address : exall_callback.addresses)
+            same_address &= address == exall_buffer;
+        check(same_address, "all hook rejections reuse the start of the guest buffer");
+    }
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f, { entries[0] });
+        prepare_exall_hook(f, control, ED_OWNER, 4076, 4094);
+        check(exall(f, control) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, control) == 1 &&
+            exall_callback.names == std::vector<std::string>{ "Alpha.TXT" },
+            "a complete hook and its even code pointer may end exactly at guest memory's edge");
+    }
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        prepare_exall_hook(f, control);
+        calls.dos2.heap_fails = true;
+        check(exall(f, control) == 0 && IoErr() == ERROR_NO_FREE_STORE && read32(f, control) == 0 &&
+            calls.examine_calls == 1 && calls.exnext_calls == 0 && exall_callback.names.empty(),
+            "hook type-longword allocation failure returns 103 without advancing the scan");
+        calls.dos2.heap_fails = false;
+        check(exall(f, control) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, control) == 4 &&
+            calls.fib_allocs == 1 && calls.heap.freed.size() == 1 && calls.heap.freed[0].size == 4,
+            "retrying a hook allocation failure enumerates every entry and frees the type longword");
+    }
+}
+
+static void test_exall_hook_stops()
+{
+    for (LONG code : { 7, 20, -9 })
+        for (unsigned stop_at : { 1U, 2U })
+        {
+            Fixture f;
+            ULONG control = prepare_exall(f);
+            prepare_exall_hook(f, control);
+            exall_callback.action = ExAllHookAction::stop;
+            exall_callback.stop_code = code;
+            exall_callback.stop_at = stop_at;
+            check(exall(f, control) == static_cast<ULONG>(code) && f.ctx.exit_code == code &&
+                !f.ctx.running && f.ctx.callback_failed && f.ctx.callback_depth == 0 &&
+                exall_callback.names.size() == stop_at,
+                "a guest stop in the hook returns its exact exit code through ExAll and D0");
+            check(calls.heap.live.size() == 1 && calls.heap.freed.size() == 1 && calls.heap.freed[0].size == 4 &&
+                calls.fib_live.size() == 1 && calls.fib_frees == 0,
+                "a hook stop releases the temporary type longword and retains the FIB for native cleanup");
+            f.ctx.callback_failed = FALSE;
+            free_exall(f, control);
+            check(calls.fib_live.empty() && calls.heap.live.empty(),
+                "the active-hook guard is cleared after a stop so normal control disposal can release both allocations");
+        }
+    for (auto action : { ExAllHookAction::reenter, ExAllHookAction::free_control })
+    {
+        Fixture f;
+        ULONG control = prepare_exall(f);
+        prepare_exall_hook(f, control);
+        exall_callback.action = action;
+        check(exall(f, control) == 20 && f.ctx.exit_code == 20 && !f.ctx.running && f.ctx.callback_failed &&
+            exall_callback.nested_result == 20 && exall_callback.names.size() == 1 &&
+            exall_callback.active_fib_preserved && calls.examine_calls == 1 && calls.exnext_calls == 1,
+            "ExAll reentry or FreeDosObject on the active control stops with 20 and preserves its live allocations");
+        check(calls.heap.freed.size() == 1 && calls.heap.freed[0].size == 4 && calls.fib_live.size() == 1,
+            "a forbidden nested call still frees the outer type longword without freeing the active FIB");
+        f.ctx.callback_failed = FALSE;
+        free_exall(f, control);
+        check(calls.heap.live.empty() && calls.fib_frees == 1,
+            "an active control can be freed once the stopped hook has unwound");
+    }
+}
+
+static void test_exall_controls_and_cleanup()
+{
+    {
+        Fixture f;
+        ULONG owned = prepare_exall(f);
+        ULONG borrowed = 0x820;
+        m68k_write32(&f.ctx, borrowed + 4, 0x13579BDF);
+        check(exall(f, borrowed) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, borrowed) == 4 &&
+            calls.fib_allocs == 1 && calls.dos2.heap_calls == 1,
+            "an unknown control gets a native scan even with a nonzero initial LastKey and no guest allocation");
+        auto before = snapshot2(f);
+        free_exall(f, borrowed);
+        check(calls.fib_frees == 1 && calls.dos2.heap_frees == 0 && snapshot2(f) == before,
+            "FreeDosObject frees a borrowed control's FIB without freeing or changing its guest memory");
+        free_exall(f, borrowed);
+        free_exall(f, 0);
+        free_exall(f, 0xFFFFFFFEU);
+        for (ULONG control : { borrowed, 0U, 0xFFFFFFFEU })
+            call2(f, 990, { 0xFFFFFFFFU, 0, 0xFFFFFFFFU, 0, control });
+        check(snapshot2(f) == before && calls.free_object_calls == 1 && calls.dos2.heap_frees == 0 &&
+            calls.examine_calls == 1 && calls.exallend_calls == 0,
+            "free and ExAllEnd of an untracked or NULL control are harmless and do not reach native DOS");
+        free_exall(f, owned);
+        check(calls.fib_frees == 1 && calls.heap.live.empty(),
+            "freeing an allocated but unstarted control needs no FIB free");
+    }
+    {
+        Fixture f;
+        std::vector<ULONG> controls = { prepare_exall(f) };
+        for (unsigned i = 1; i < 8; ++i)
+            controls.push_back(Kaffeine_ExAllAllocControl(&f.ctx));
+        bool distinct = true;
+        for (size_t i = 0; i < controls.size(); ++i)
+        {
+            distinct &= controls[i] != 0 && (i == 0 || controls[i] >= controls[i - 1] + 16);
+            check(exall(f, controls[i], 0) == 0 && IoErr() == ERROR_BUFFER_OVERFLOW,
+                "each of eight controls gets a separate native FIB and pending entry");
+        }
+        check(distinct && calls.fib_allocs == 8 && calls.fib_live.size() == 8 && calls.heap.live.size() == 8,
+            "the heap returns eight distinct non-overlapping control allocations and eight live FIBs");
+        check(Kaffeine_ExAllAllocControl(&f.ctx) == 0 && IoErr() == ERROR_NO_FREE_STORE &&
+            calls.heap.freed.size() == 1 && calls.heap.freed[0].size == 16 && calls.heap.live.size() == 8,
+            "the ninth allocated control fails with 103 and returns its unused guest allocation to the heap");
+        ULONG borrowed = 0x820;
+        check(exall(f, borrowed) == 0 && IoErr() == ERROR_NO_FREE_STORE && read32(f, borrowed) == 0 &&
+            calls.fib_allocs == 8, "an unknown control also obeys the eight-slot limit before allocating a FIB");
+        free_exall(f, controls[3]);
+        check(exall(f, borrowed, 0) == 0 && IoErr() == ERROR_BUFFER_OVERFLOW && calls.fib_allocs == 9 &&
+            calls.fib_frees == 1, "freeing a control makes its slot available to a borrowed control");
+        unsigned heap_frees = calls.dos2.heap_frees;
+        Kaffeine_ExAllCleanup(&f.ctx);
+        check(calls.fib_frees == 9 && calls.fib_live.empty() && calls.dos2.heap_frees == heap_frees,
+            "ExAllCleanup releases every native FIB in owned and borrowed slots without freeing guest memory");
+        bool empty = true;
+        for (const auto &slot : f.ctx.exall_map)
+            empty &= slot.guest == 0 && slot.fib == nullptr;
+        Kaffeine_ExAllCleanup(&f.ctx);
+        check(empty && calls.fib_frees == 9 && !calls.fib_bad_free,
+            "cleanup clears every slot and repeated cleanup does not free FIBs twice");
+        check(exall(f, borrowed) == 0 && IoErr() == ERROR_NO_MORE_ENTRIES && read32(f, borrowed) == 4 &&
+            calls.fib_allocs == 10, "a guest control can start a fresh native scan after cleanup");
+    }
+    {
+        Fixture f;
+        ULONG first = prepare_exall(f);
+        ULONG second = Kaffeine_ExAllAllocControl(&f.ctx);
+        ULONG size = exall_size(calls.directory.entries[0], ED_OWNER);
+        const ULONG order[] = { first, second, first, second };
+        for (unsigned i = 0; i < 4; ++i)
+        {
+            auto before = snapshot2(f);
+            check(exall(f, order[i], size) == 0xFFFFFFFFU && read32(f, order[i]) == 1,
+                "interleaved ExAll controls each deliver one entry per small-buffer call");
+            /* Each call after the first two resumes its own pending second
+               entry, independently of the other control's FIB. */
+            expect_exall_buffer(f, before, exall_buffer, size, ED_OWNER, { calls.directory.entries[i / 2] });
+        }
+        check(calls.examine_calls == 2 && calls.fib_allocs == 2 &&
+            calls.directory.keys == std::vector<IPTR>({ 0, 1, 0, 1, 2, 2 }),
+            "interleaved scans use their own fib_DiskKey rather than one global directory cursor");
+        free_exall(f, first);
+        check(calls.fib_frees == 1 && calls.fib_live.size() == 1,
+            "freeing the older control releases its own FIB rather than the latest allocation");
+        free_exall(f, second);
+        check(calls.fib_frees == 2 && calls.heap.live.empty(), "both interleaved controls are released exactly once");
+    }
+}
+
+static void test_dos_exall()
+{
+    test_exall_layouts();
+    test_exall_batches();
+    test_exall_overflow();
+    test_exall_restarts();
+    test_exall_refusals();
+    test_exall_native_errors();
+    test_exall_patterns_and_hooks();
+    test_exall_hook_stops();
+    test_exall_controls_and_cleanup();
+}
+
 static void test_dos_batch2()
 {
     test_dos2_named_calls();
@@ -4732,6 +5590,12 @@ static void test_dos_batch2()
 int main(int argc, char **argv)
 {
     bool valid_only = argc == 2 && std::strcmp(argv[1], "--valid-data-only") == 0;
+    if (argc == 2 && std::strcmp(argv[1], "--exall-only") == 0)
+    {
+        test_dos_exall();
+        std::printf("DOS ExAll regressions: %u/%u checks passed\n", checks - failures, checks);
+        return failures ? 1 : 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--dos2-only") == 0)
     {
         test_dos_batch2();
@@ -4757,6 +5621,7 @@ int main(int argc, char **argv)
         test_dos_batch2();
         test_dos_base();
         test_dos_match();
+        test_dos_exall();
     }
     test_vfprintf();
     test_vfwritef();
@@ -4772,7 +5637,7 @@ int main(int argc, char **argv)
     test_examine_lock();
     test_exnext_end();
     test_process_launch();
-    test_exall_and_packets_refused();
+    test_packets_refused();
     test_system_taglist_lvo();
     test_buffer_dispatch();
     /* The valid-only mode can demonstrate regressions against the old raw

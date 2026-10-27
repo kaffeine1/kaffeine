@@ -7,6 +7,7 @@
 #include <aros/debug.h>
 #include <dos/dostags.h>
 #include <dos/dosasl.h>
+#include <dos/exall.h>
 #include <dos/var.h>
 #include <dos/datetime.h>
 #include <dos/rdargs.h>
@@ -19,6 +20,7 @@
 #include <utility/tagitem.h>
 
 #include "kaffeine_intern.h"
+#include "kaffeine_callback.h"
 #include "kaffeine_cli.h"
 #include "kaffeine_format.h"
 #include "kaffeine_offsets.h"
@@ -1788,25 +1790,391 @@ IPTR kaffeine_dos_CreateProc(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
-/* ExAll() writes native ExAllData (64-bit ed_Next and ed_Name) into the
-   caller's buffer and updates an ExAllControl. Until those structures are
-   converted, ExAll() fails with ERROR_NOT_IMPLEMENTED and ExAllEnd() is a
-   no-op. */
+/* ExAll() and ExAllEnd() are emulated on the bridge with native Examine()
+   and ExNext(), as AmigaOS dos.library and AROS emulate them for handlers
+   without ACTION_EXAMINE_ALL: native DOS would write ExAllData with 64-bit
+   pointers and keep native state in the private part of its ExAllControl.
+   Each guest ExAllControl has a native FileInfoBlock that holds the scan
+   position. The entries are written in the NDK 3.2 layout straight into the
+   guest buffer: the fixed part that the type selects, then the name and,
+   from ED_COMMENT on, the comment, or NULL without one, as the autodoc
+   says; the next entry starts on a longword. An entry that does not fit
+   stays in the native FileInfoBlock and comes first in the next call.
+
+   Measured on AmigaOS 3.2.3, ram-handler and FFS agree that the scan ends
+   with FALSE and ERROR_NO_MORE_ENTRIES also when that call delivered
+   entries, that eac_LastKey 0 starts again, that eac_MatchString matches
+   without case, and that eac_MatchFunc gets the hook in A0, the filled
+   entry in A1 and a pointer to the type longword in A2. Where they differ,
+   the bridge follows the autodoc and AROS: a buffer too small for one
+   entry gives FALSE and ERROR_BUFFER_OVERFLOW, never TRUE with no entries
+   (FFS repeats that forever), a type outside ED_NAME..ED_OWNER gives
+   ERROR_BAD_NUMBER, and a lock on a file ERROR_OBJECT_WRONG_TYPE. */
+#define GUEST_EXALLCONTROL_SIZE 16
+#define GUEST_EAC_ENTRIES 0
+#define GUEST_EAC_LASTKEY 4
+#define GUEST_EAC_MATCHSTRING 8
+#define GUEST_EAC_MATCHFUNC 12
+#define GUEST_ED_NEXT 0
+#define GUEST_ED_NAME 4
+#define GUEST_ED_TYPE 8
+#define GUEST_ED_SIZE 12
+#define GUEST_ED_PROT 16
+#define GUEST_ED_DATE 20
+#define GUEST_ED_COMMENT 32
+#define GUEST_ED_OWNERUID 36
+#define GUEST_ED_OWNERGID 38
+/* Any non-zero eac_LastKey: the guest only tests it against zero */
+#define GUEST_EXALL_SCANNING 1
+
+/* Size of the fixed part of an entry for ED_NAME..ED_OWNER */
+static const UBYTE exall_fixed[ED_OWNER + 1] = { 0, 8, 12, 16, 20, 32, 36, 40 };
+
+static int find_exall(struct KaffeineContext *ctx, ULONG guest)
+{
+    int i;
+
+    for (i = 0; i < KAFFEINE_MAX_EXALL; i++)
+        if (ctx->exall_map[i].guest == guest)
+            return i;
+    return -1;
+}
+
+static int new_exall(struct KaffeineContext *ctx, ULONG guest, BOOL owned)
+{
+    int i;
+
+    for (i = 0; i < KAFFEINE_MAX_EXALL; i++)
+        if (!ctx->exall_map[i].guest)
+        {
+            memset(&ctx->exall_map[i], 0, sizeof(ctx->exall_map[i]));
+            ctx->exall_map[i].guest = guest;
+            ctx->exall_map[i].owned = owned;
+            return i;
+        }
+    return -1;
+}
+
+static void release_exall(struct KaffeineContext *ctx, int slot)
+{
+    if (ctx->exall_map[slot].fib)
+        FreeDosObject(DOS_FIB, ctx->exall_map[slot].fib);
+    memset(&ctx->exall_map[slot], 0, sizeof(ctx->exall_map[slot]));
+}
+
+/* AllocDosObject(DOS_EXALLCONTROL): a cleared 68k ExAllControl */
+ULONG Kaffeine_ExAllAllocControl(struct KaffeineContext *ctx)
+{
+    ULONG control = Kaffeine_HeapAlloc(ctx, GUEST_EXALLCONTROL_SIZE, 0);
+
+    if (control && new_exall(ctx, control, TRUE) < 0)
+    {
+        Kaffeine_HeapFree(ctx, control, GUEST_EXALLCONTROL_SIZE);
+        control = 0;
+    }
+    if (!control)
+    {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return 0;
+    }
+    memset(ctx->mem + control, 0, GUEST_EXALLCONTROL_SIZE);
+    return control;
+}
+
+/* FreeDosObject(DOS_EXALLCONTROL): the guest memory only if it came from
+   Kaffeine_ExAllAllocControl(), and never while its MatchFunc runs */
+BOOL Kaffeine_ExAllFreeControl(struct KaffeineContext *ctx, ULONG control)
+{
+    int slot = control ? find_exall(ctx, control) : -1;
+    BOOL owned;
+
+    if (slot < 0)
+        return TRUE;
+    if (ctx->exall_map[slot].active)
+        return FALSE;
+    owned = ctx->exall_map[slot].owned;
+    release_exall(ctx, slot);
+    if (owned)
+        Kaffeine_HeapFree(ctx, control, GUEST_EXALLCONTROL_SIZE);
+    return TRUE;
+}
+
+void Kaffeine_ExAllCleanup(struct KaffeineContext *ctx)
+{
+    int i;
+
+    for (i = 0; i < KAFFEINE_MAX_EXALL; i++)
+        if (ctx->exall_map[i].guest)
+            release_exall(ctx, i);
+}
+
+/* Write the entry of the native FIB at guest address entry. need is the
+   whole size of the entry without the alignment after it. */
+static ULONG exall_entry_size(const struct FileInfoBlock *fib, LONG data)
+{
+    ULONG need = exall_fixed[data] + (ULONG)strlen((const char *)fib->fib_FileName) + 1;
+
+    if (data >= ED_COMMENT && fib->fib_Comment[0])
+        need += (ULONG)strlen((const char *)fib->fib_Comment) + 1;
+    return need;
+}
+
+static void exall_write_entry(struct KaffeineContext *ctx, ULONG entry,
+                              const struct FileInfoBlock *fib, LONG data)
+{
+    ULONG next = entry + exall_fixed[data];
+    ULONG length;
+
+    m68k_write32(ctx, entry + GUEST_ED_NEXT, 0);
+    switch (data)
+    {
+        case ED_OWNER:
+            m68k_write16(ctx, entry + GUEST_ED_OWNERUID, fib->fib_OwnerUID);
+            m68k_write16(ctx, entry + GUEST_ED_OWNERGID, fib->fib_OwnerGID);
+            /* Fall through */
+        case ED_COMMENT:
+            m68k_write32(ctx, entry + GUEST_ED_COMMENT, 0);
+            /* Fall through */
+        case ED_DATE:
+            write_date(ctx, entry + GUEST_ED_DATE, &fib->fib_Date);
+            /* Fall through */
+        case ED_PROTECTION:
+            m68k_write32(ctx, entry + GUEST_ED_PROT, (ULONG)fib->fib_Protection);
+            /* Fall through */
+        case ED_SIZE:
+            m68k_write32(ctx, entry + GUEST_ED_SIZE, (ULONG)fib->fib_Size);
+            /* Fall through */
+        case ED_TYPE:
+            m68k_write32(ctx, entry + GUEST_ED_TYPE, (ULONG)fib->fib_DirEntryType);
+            /* Fall through */
+        default:
+            length = (ULONG)strlen((const char *)fib->fib_FileName) + 1;
+            memcpy(ctx->mem + next, fib->fib_FileName, length);
+            m68k_write32(ctx, entry + GUEST_ED_NAME, next);
+            next += length;
+    }
+    if (data >= ED_COMMENT && fib->fib_Comment[0])
+    {
+        length = (ULONG)strlen((const char *)fib->fib_Comment) + 1;
+        memcpy(ctx->mem + next, fib->fib_Comment, length);
+        m68k_write32(ctx, entry + GUEST_ED_COMMENT, next);
+    }
+}
+
+/* Call the guest MatchFunc for the filled entry: A0 the hook, A1 the entry,
+   A2 the type longword. code is h_Entry, taken once before the scan. TRUE
+   in *stopped if the guest stopped. */
+static BOOL exall_match_func(struct KaffeineContext *ctx, void *cpu, ULONG hook,
+                             ULONG code, ULONG entry, ULONG typeptr, BOOL *stopped)
+{
+    struct KaffeineGuestCall call;
+
+    memset(&call, 0, sizeof(call));
+    call.a[0] = hook;
+    call.a[1] = entry;
+    call.a[2] = typeptr;
+    call.a_mask = (1u << 0) | (1u << 1) | (1u << 2);
+    if (!Kaffeine_CallGuest(ctx, cpu, code, &call))
+    {
+        *stopped = TRUE;
+        return FALSE;
+    }
+    return call.d[0] != 0;
+}
+
+static BOOL valid_guest_hook(struct KaffeineContext *ctx, ULONG hook)
+{
+    ULONG entry;
+
+    if ((hook & 1) || !guest_range(ctx, hook, 20))
+        return FALSE;
+    entry = m68k_read32(ctx, hook + 8);
+    return entry && !(entry & 1) && guest_range(ctx, entry, 2) &&
+           !Kaffeine_IsCallbackReturn(entry);
+}
 
 /* -432: ExAll(D1=lock, D2=buffer, D3=size, D4=data, D5=control) -> D0=continue */
 IPTR kaffeine_dos_ExAll(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)ctx;
-    (void)cpu;
-    SetIoErr(ERROR_NOT_IMPLEMENTED);
-    return 0;
+    BPTR lock = (BPTR)(IPTR)THUNK_D(1);
+    ULONG buffer = THUNK_D(2);
+    LONG size = (LONG)THUNK_D(3);
+    LONG data = (LONG)THUNK_D(4);
+    ULONG control = THUNK_D(5);
+    ULONG pattern_addr, hook, code = 0, typeptr = 0, entry, end, last = 0, entries = 0;
+    const char *guest_pattern;
+    char *pattern = NULL;
+    struct FileInfoBlock *fib;
+    BOOL stopped = FALSE;
+    SIPTR err = 0;
+    int slot;
+
+    if (!guest_range(ctx, control, GUEST_EXALLCONTROL_SIZE) ||
+        size < 0 || (size > 0 && !guest_range(ctx, buffer, (ULONG)size)))
+        return bad_dos_buffer(0);
+    m68k_write32(ctx, control + GUEST_EAC_ENTRIES, 0);
+    if (data < ED_NAME || data > ED_OWNER)
+        return bad_dos_buffer(0);
+    hook = m68k_read32(ctx, control + GUEST_EAC_MATCHFUNC);
+    if (hook && !valid_guest_hook(ctx, hook))
+        return bad_dos_buffer(0);
+    if (hook)
+        code = m68k_read32(ctx, hook + 8);
+    /* The MatchFunc may change guest memory: match against a native copy
+       of the pattern, checked once */
+    pattern_addr = m68k_read32(ctx, control + GUEST_EAC_MATCHSTRING);
+    if (pattern_addr)
+    {
+        guest_pattern = guest_string(ctx, pattern_addr);
+        if (!guest_pattern)
+            return bad_dos_buffer(0);
+        pattern = (char *)AllocVec(strlen(guest_pattern) + 1, MEMF_ANY);
+        if (!pattern)
+        {
+            SetIoErr(ERROR_NO_FREE_STORE);
+            return 0;
+        }
+        strcpy(pattern, guest_pattern);
+        if (!safe_pattern_tokens(pattern))
+        {
+            FreeVec(pattern);
+            return 0;
+        }
+    }
+
+    slot = find_exall(ctx, control);
+    if (slot < 0)
+        slot = new_exall(ctx, control, FALSE);
+    if (slot >= 0 && ctx->exall_map[slot].active)
+    {
+        bug("[kaffeine] ExAll: control in use by its own MatchFunc, stopping (20)\n");
+        FreeVec(pattern);
+        Kaffeine_StopGuest(ctx, cpu, 20);
+        return 20;
+    }
+    if (slot >= 0 && !ctx->exall_map[slot].fib)
+        ctx->exall_map[slot].fib = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
+    if (slot < 0 || !ctx->exall_map[slot].fib)
+    {
+        FreeVec(pattern);
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return 0;
+    }
+    fib = ctx->exall_map[slot].fib;
+
+    /* eac_LastKey 0 starts a scan, as does a control the bridge has not
+       started; after the end the scan stays ended until then */
+    if (!m68k_read32(ctx, control + GUEST_EAC_LASTKEY) || !ctx->exall_map[slot].started)
+    {
+        ctx->exall_map[slot].started = FALSE;
+        ctx->exall_map[slot].ended = FALSE;
+        ctx->exall_map[slot].pending = FALSE;
+        if (!Examine(lock, fib))
+        {
+            FreeVec(pattern);
+            return 0;
+        }
+        if (fib->fib_DirEntryType <= 0)
+        {
+            FreeVec(pattern);
+            SetIoErr(ERROR_OBJECT_WRONG_TYPE);
+            return 0;
+        }
+        ctx->exall_map[slot].started = TRUE;
+        m68k_write32(ctx, control + GUEST_EAC_LASTKEY, GUEST_EXALL_SCANNING);
+    }
+    else if (ctx->exall_map[slot].ended)
+    {
+        FreeVec(pattern);
+        SetIoErr(ERROR_NO_MORE_ENTRIES);
+        return 0;
+    }
+
+    if (hook)
+    {
+        typeptr = Kaffeine_HeapAlloc(ctx, 4, 0);
+        if (!typeptr)
+        {
+            FreeVec(pattern);
+            SetIoErr(ERROR_NO_FREE_STORE);
+            return 0;
+        }
+    }
+    entry = buffer;
+    end = buffer + (ULONG)size;
+    for (;;)
+    {
+        ULONG need;
+
+        if (!ctx->exall_map[slot].pending)
+        {
+            if (!ExNext(lock, fib))
+            {
+                err = IoErr();
+                if (err == ERROR_NO_MORE_ENTRIES)
+                    ctx->exall_map[slot].ended = TRUE;
+                break;
+            }
+            ctx->exall_map[slot].pending = TRUE;
+        }
+        if (pattern && !MatchPatternNoCase(pattern, (CONST_STRPTR)fib->fib_FileName))
+        {
+            ctx->exall_map[slot].pending = FALSE;
+            continue;
+        }
+        need = exall_entry_size(fib, data);
+        if (entry >= end || end - entry < need)
+        {
+            if (!entries)
+                err = ERROR_BUFFER_OVERFLOW;
+            break;
+        }
+        exall_write_entry(ctx, entry, fib, data);
+        if (hook)
+        {
+            BOOL keep;
+
+            m68k_write32(ctx, typeptr, (ULONG)data);
+            ctx->exall_map[slot].active = TRUE;
+            keep = exall_match_func(ctx, cpu, hook, code, entry, typeptr, &stopped);
+            ctx->exall_map[slot].active = FALSE;
+            if (stopped)
+                break;
+            if (!keep)
+            {
+                ctx->exall_map[slot].pending = FALSE;
+                continue;
+            }
+        }
+        if (last)
+            m68k_write32(ctx, last + GUEST_ED_NEXT, entry);
+        last = entry;
+        entries++;
+        ctx->exall_map[slot].pending = FALSE;
+        entry = (entry + need + 3) & ~3u;
+    }
+    if (typeptr)
+        Kaffeine_HeapFree(ctx, typeptr, 4);
+    FreeVec(pattern);
+    if (stopped)
+        return (IPTR)ctx->exit_code;
+    m68k_write32(ctx, control + GUEST_EAC_ENTRIES, entries);
+    SetIoErr(err);
+    return err ? 0 : (IPTR)DOSTRUE;
 }
 
-/* -990: ExAllEnd(D1=lock, D2=buffer, D3=size, D4=data, D5=control) */
+/* -990: ExAllEnd(D1=lock, D2=buffer, D3=size, D4=data, D5=control). The
+   next ExAll() on the control starts a new scan. */
 IPTR kaffeine_dos_ExAllEnd(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)ctx;
-    (void)cpu;
+    int slot = find_exall(ctx, THUNK_D(5));
+
+    if (slot >= 0 && !ctx->exall_map[slot].active)
+    {
+        ctx->exall_map[slot].started = FALSE;
+        ctx->exall_map[slot].ended = FALSE;
+        ctx->exall_map[slot].pending = FALSE;
+    }
     return 0;
 }
 
@@ -2033,6 +2401,17 @@ IPTR kaffeine_dos_FreeDosObject(struct KaffeineContext *ctx, void *cpu)
     /* AllocDosObject() gave the program its RDArgs in guest memory */
     if (THUNK_D(1) == DOS_RDARGS)
         Kaffeine_FreeRDArgs(ctx, THUNK_D(2));
+    /* and its ExAllControl, whose scan state is native */
+    else if (THUNK_D(1) == DOS_EXALLCONTROL)
+    {
+        if (!Kaffeine_ExAllFreeControl(ctx, THUNK_D(2)))
+        {
+            bug("[kaffeine] FreeDosObject: ExAllControl in use by its MatchFunc, stopping (20)\n");
+            ctx->running = FALSE;
+            ctx->exit_code = 20;
+            return 20;
+        }
+    }
     else
         FreeDosObject(THUNK_D(1), THUNK_DPTR(2));
     return 0;
