@@ -66,6 +66,7 @@ at the end.
 | `exec_packets.c` | Read-only ACTION_READ packets and shared DOS file position. |
 | `gfx_planar_read.c` | Original 32 by 3 planar images at depths 1, 2 and 8. Manually initialized public RastPort/BitMap structures, all 288 in-range pixel values, Flags 0/BMF_STANDARD, and byte-for-byte preservation of both structures, planes and guards. |
 | `gfx_display_info.c` | NULL-handle display queries by native mode ID: classic DISP/DIMS/NAME/MNTR layouts, headers, every requested length0..104 (monitors0..120), partial rectangles, reserved-tail/guard preservation, unavailable modes and stable monitor names/scalars/identities. |
+| `gfx_framebuffer_palette_native.c` | Native AArch64 Raspberry driver probe: enumerates truecolor and LUT8 modes, verifies actual eight-bit bitmap storage, pre-renders an indexed screen behind Workbench, checks the physical RGBX pixels after showing it, and changes a live palette entry without rewriting the source indices. Requires kernel framebuffer attributes. |
 | `icon_objects.c` | Owned DiskObject acquisition/free, NULL free, 96 sequential allocation cycles, exact guest FindToolType result pointers, case-insensitive MatchToolValue and preservation of original strings/arrays. The optional `leave` argument is an AROS bridge teardown probe that leaves three objects for context cleanup. Scalar metadata observations may differ between native backends; no icon images are copied or tested. |
 
 ## Building the test programs
@@ -189,3 +190,43 @@ python3 developer/debug/test/kaffeine_target/test_run_raspi_qemu.py
 
 These checks exercise parsing, completion markers, input scripts and output
 comparison without booting QEMU or using a 68k cross compiler.
+
+
+## Raspberry framebuffer palette validation — 27 October 2026
+
+The framebuffer driver keeps its original truecolor format and adds a second,
+real LUT8 format. Each indexed bitmap owns one byte per pixel and a 256-entry
+RGB palette. Refresh converts the requested, clipped rectangle to the hardware
+RGBX framebuffer; a palette change refreshes a visible bitmap immediately.
+Showing a previously rendered bitmap also refreshes it, even if its position
+has not changed. This does not alter the depth reported for truecolor modes.
+
+Build the native probe with the configured AArch64 AROS SDK, separately from
+the 68k compatibility tests:
+
+```sh
+make -C developer/debug/test/kaffeine_target \
+    NATIVE_CC='aarch64-aros-gcc --sysroot=/path/to/AROS/Developer' \
+    BUILD_DIR=/path/to/native-tests \
+    /path/to/native-tests/gfx_framebuffer_palette_native
+```
+
+Rebuild the BSP's `fbgfx.hidd` module with `hidd-fbgfx-quick` in a configured
+raspi-aarch64 build and package it with the matching kernel and other BSP
+modules. Passing the native probe to the QEMU runner uses the same isolated
+image and Shell/Run launch paths as other target programs; its code itself
+runs natively, rather than through the 68k CPU backend.
+
+In QEMU the native probe passed **14 checks with zero failures**, in both
+Shell and Run. It observed the retained 24-bit mode and an additional 8-bit
+mode, verified bitmap depth and 256 palette entries, checked red/green/blue
+pixels in the actual hardware framebuffer after the first show, and changed
+red to yellow through the palette while the source index remained unchanged.
+The portable refresh helper passed **11,042 host checks**, including clipped
+rectangles, positive/negative offsets, extreme coordinates, row padding,
+source preservation, invalid surfaces and RGBX copies. The same checks passed
+with AddressSanitizer and UndefinedBehaviorSanitizer.
+
+These results establish indexed framebuffer storage and conversion on QEMU.
+Physical Raspberry Pi validation and full application startup remain separate
+gates.

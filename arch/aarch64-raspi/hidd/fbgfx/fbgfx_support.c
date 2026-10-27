@@ -22,6 +22,7 @@
 
 #include "fbgfx_intern.h"
 #include "fbgfx_hidd.h"
+#include "fbgfx_refresh.h"
 
 BOOL initFBGfxHW(struct HWData *data)
 {
@@ -76,52 +77,58 @@ BOOL initFBGfxHW(struct HWData *data)
     return TRUE;
 }
 
-/* Copy the (possibly partial) bitmap buffer to the visible framebuffer. */
+/*
+ * Copy the (possibly partial) bitmap area [x1, x2) x [y1, y2), in bitmap
+ * coordinates, to the visible framebuffer. Truecolor bitmaps are copied
+ * as is, LUT8 bitmaps are expanded through their software palette.
+ */
 void fbDoRefreshArea(struct HWData *hwdata, struct FBGfxBitMapData *data,
                        LONG x1, LONG y1, LONG x2, LONG y2)
 {
-    UBYTE *src, *dst;
-    ULONG srcmod, dstmod;
-    LONG y, w, h, sx, sy;
+    FBGfxSurface src, dst;
+    ULONG dst_width, dst_height;
 
-    x1 += data->xoffset; y1 += data->yoffset;
-    x2 += data->xoffset; y2 += data->yoffset;
-
-    if ((x1 >= data->disp_width) || (x2 < 1) ||
-        (y1 >= data->disp_height) || (y2 < 1))
+    if (!hwdata || !data)
         return;
-    if (x1 < 0) x1 = 0;
-    if (y1 < 0) y1 = 0;
-    if (x2 > data->disp_width)  x2 = data->disp_width;
-    if (y2 > data->disp_height) y2 = data->disp_height;
+    if ((data->width <= 0) || (data->height <= 0) ||
+        (data->disp_width <= 0) || (data->disp_height <= 0))
+        return;
+    /* The framebuffer is RGBX, which is all the helper writes */
+    if (hwdata->bytesperpixel != 4)
+        return;
+    if ((size_t)data->bytesperline > SIZE_MAX / (size_t)data->height)
+        return;
 
-    w = x2 - x1;
-    h = y2 - y1;
-    sx = x1 - data->xoffset;
-    sy = y1 - data->yoffset;
-    w *= data->bytesperpix;
+    src.pixels          = data->VideoData;
+    src.bytes           = (size_t)data->bytesperline * (size_t)data->height;
+    src.width           = (uint32_t)data->width;
+    src.height          = (uint32_t)data->height;
+    src.pitch           = data->bytesperline;
+    src.bytes_per_pixel = data->bytesperpix;
 
-    srcmod = data->bytesperline;
-    dstmod = hwdata->bytesperline;
-    src = data->VideoData + sy * data->bytesperline + sx * data->bytesperpix;
-    dst = (UBYTE *)hwdata->framebuffer + y1 * hwdata->bytesperline + x1 * hwdata->bytesperpixel;
+    /* Never draw outside either the physical surface or the display mode */
+    dst_width  = hwdata->width;
+    dst_height = hwdata->height;
+    if ((ULONG)data->disp_width < dst_width)
+        dst_width = data->disp_width;
+    if ((ULONG)data->disp_height < dst_height)
+        dst_height = data->disp_height;
 
-    if ((srcmod != dstmod) || (srcmod != (ULONG)w))
-    {
-        for (y = 0; y < h; y++)
-        {
-            CopyMem(src, dst, w);
-            src += srcmod;
-            dst += dstmod;
-        }
-    }
-    else
-    {
-        CopyMem(src, dst, w * h);
-    }
+    dst.pixels          = hwdata->framebuffer;
+    dst.bytes           = hwdata->fbsize;
+    dst.width           = dst_width;
+    dst.height          = dst_height;
+    dst.pitch           = hwdata->bytesperline;
+    dst.bytes_per_pixel = 4;
+
+    fbgfx_refresh_rect(&src, &dst, data->DAC, data->xoffset, data->yoffset,
+                       x1, y1, x2, y2);
 }
 
-/* Truecolor only: no hardware palette to load. */
+/*
+ * The hardware is truecolor only: there is no palette to load. LUT8
+ * bitmaps are converted in software by fbDoRefreshArea().
+ */
 void DACLoad(struct FBGfx_staticdata *xsd, UBYTE *DAC, unsigned char first, int num)
 {
     (void)xsd; (void)DAC; (void)first; (void)num;
