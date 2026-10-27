@@ -156,6 +156,18 @@ int main(void)
     check_long("DoPkt(12345) unknown action return", res, 0);
     check_long("DoPkt(12345) unknown action IoErr()", err, ERROR_ACTION_NOT_KNOWN);
 
+    /* A packet goes to the handler and does not see the DOS buffer of the
+       handle: after FGetC() has buffered the rest of the file the handler
+       is at its end, where Seek() counts the bytes still unread. */
+    res = DoPkt(fh->fh_Type, ACTION_SEEK, fh->fh_Arg1, 0, OFFSET_BEGINNING, 0, 0);
+    check_long("FGetC() after seeking to 0", FGetC(file), '0');
+    res = DoPkt(fh->fh_Type, ACTION_SEEK, fh->fh_Arg1, 0, OFFSET_CURRENT, 0, 0);
+    check_long("DoPkt(ACTION_SEEK, 0, OFFSET_CURRENT) after FGetC() is the handler position", res, 10);
+    res = Seek(file, 0, OFFSET_CURRENT);
+    check_long("Seek(0, OFFSET_CURRENT) after FGetC() counts the buffer", res, 1);
+    res = DoPkt(fh->fh_Type, ACTION_SEEK, fh->fh_Arg1, 0, OFFSET_CURRENT, 0, 0);
+    check_long("DoPkt(ACTION_SEEK, 0, OFFSET_CURRENT) after Seek()", res, 1);
+
     /* 3. MODE_NEWFILE: ACTION_WRITE of "abc" returns 3; 3 bytes after Close(). */
     wfile = Open((CONST_STRPTR)WRITE_FILE_NAME, MODE_NEWFILE);
     if (!check(wfile != 0, "Open(RAM:dos_packets-write, MODE_NEWFILE)"))

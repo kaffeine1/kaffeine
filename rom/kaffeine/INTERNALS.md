@@ -3188,9 +3188,13 @@ handlers of its FileHandles.
   `ACTION_READ` 0, every other action `DOSTRUE`.
 
 The synthetic handler of a FileHandle answers at once. `ACTION_READ` and
-`ACTION_WRITE` go to native `Read()` and `Write()` through a native buffer,
-`ACTION_SEEK` to `Seek()`, and `ACTION_IS_FILESYSTEM`, `ACTION_SCREEN_MODE`
-and `ACTION_WAIT_CHAR` to the native handler with their integer argument.
+`ACTION_WRITE` go to native `Read()` and `Write()` through a native buffer;
+in AROS both send the packet straight to the handler. `ACTION_SEEK` goes to
+the native handler with the native `fh_Arg1`, not through `Seek()`, which
+would flush the write buffer of the handle, or drop its read buffer and
+count the bytes still unread there; a NIL: handle has no handler and still
+uses `Seek()`. `ACTION_IS_FILESYSTEM`, `ACTION_SCREEN_MODE` and
+`ACTION_WAIT_CHAR` go to the native handler with their integer argument.
 `ACTION_DISK_INFO` fills the guest InfoData as `Info()` does, with no
 volume node or window pointer; for a console (`CON\0` or `RAW\0`) also
 `id_InUse` is 0, since there it holds the native read IORequest that

@@ -410,8 +410,13 @@ static void packet_seeks()
         action_reply(f,handler,c.result,c.error);
         check(positions[open_result]==static_cast<size_t>(c.next) && seen_handle==open_result,
               "ACTION_SEEK returns the old position and leaves position unchanged on -1/219");
+        check(packet_handler==f.native[2].fh_Type && packet_action==ACTION_SEEK &&
+              packet_args[0]==f.native[2].fh_Args && packet_args[1]==c.offset && packet_args[2]==c.mode &&
+              !packet_args[3] && !packet_args[4],
+              "ACTION_SEEK goes to the native handler with its fh_Arg1, offset and mode");
     }
-    check(seeks==std::size(cases),"every valid ACTION_SEEK reaches native Seek exactly once");
+    check(!seeks && native_packets==std::size(cases),
+          "every valid ACTION_SEEK reaches the native handler exactly once, never the buffered Seek()");
     for(unsigned which=0;which<7;++which)
     {
         Fixture bad;ULONG t=bad.open(),h=bad.r(t*4+8);
@@ -421,12 +426,12 @@ static void packet_seeks()
         else
         {
             bad.w(bad.msg+52+4*(which-3),1);
-            check(bad.exec(366,h,bad.msg)==0xD0000000 && bad.ctx.running && seeks==1,
+            check(bad.exec(366,h,bad.msg)==0xD0000000 && bad.ctx.running && native_packets==1,
                   "ACTION_SEEK ignores dp_Arg4 to dp_Arg7");
             continue;
         }
         bad.rejected(h);
-        check(!seeks,"invalid seek modes and keys stop before native Seek");
+        check(!seeks && !native_packets,"invalid seek modes and keys stop before the native handler");
     }
 }
 static void packet_scalar_actions()

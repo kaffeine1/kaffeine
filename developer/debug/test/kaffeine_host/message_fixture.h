@@ -80,6 +80,8 @@ static InfoData packet_info;
 static SIPTR ioerr;
 static bool signal_failure;
 static std::map<BPTR, size_t> positions;
+static FileHandle *fixture_handles;
+static size_t fixture_handle_count;
 static std::array<UBYTE, 208> native_buffer;
 static constexpr char contents[] = "ABCDEFGHIJKL";
 extern "C" BYTE AllocSignal(LONG requested)
@@ -144,16 +146,22 @@ extern "C" LONG Write(BPTR handle, const void *buffer, LONG length)
     ioerr = write_override == -1 ? 211 : 909;
     return write_override == INT_MIN ? length : write_override;
 }
-extern "C" LONG Seek(BPTR handle, LONG position, LONG mode)
+static LONG seek_position(BPTR handle, LONG position, LONG mode)
 {
-    ++seeks; seen_handle = handle;
+    seen_handle = handle;
     LONG old = static_cast<LONG>(positions[handle]);
     LONG next = position + (mode == OFFSET_BEGINNING ? 0 :
         mode == OFFSET_CURRENT ? old : static_cast<LONG>(sizeof(contents) - 1));
     if (next < 0 || next > static_cast<LONG>(sizeof(contents) - 1))
     { ioerr = ERROR_SEEK_ERROR; return -1; }
     positions[handle] = static_cast<size_t>(next);
-    ioerr = 909;
+    return old;
+}
+extern "C" LONG Seek(BPTR handle, LONG position, LONG mode)
+{
+    ++seeks;
+    LONG old = seek_position(handle, position, mode);
+    if (old != -1) ioerr = 909;
     return old;
 }
 extern "C" SIPTR DoPkt(MsgPort *handler, LONG action, SIPTR a1, SIPTR a2, SIPTR a3, SIPTR a4, SIPTR a5)
@@ -162,6 +170,17 @@ extern "C" SIPTR DoPkt(MsgPort *handler, LONG action, SIPTR a1, SIPTR a2, SIPTR 
     assert(handler);
     if (action == ACTION_DISK_INFO)
         *static_cast<InfoData *>(BADDR(reinterpret_cast<BPTR>(a1))) = packet_info;
+    if (action == ACTION_SEEK)
+    {
+        /* The handler moves its own position, found by fh_Arg1, and sets
+           res2 to 0 on success as the AROS handlers do. */
+        FileHandle *fh = std::find_if(fixture_handles, fixture_handles + fixture_handle_count,
+                                      [a1](const FileHandle &n) { return n.fh_Args == a1; });
+        assert(fh != fixture_handles + fixture_handle_count);
+        LONG old = seek_position(MKBADDR(fh), static_cast<LONG>(a2), static_cast<LONG>(a3));
+        if (old != -1) ioerr = 0;
+        return old;
+    }
     ioerr=packet_error;
     return packet_result;
 }
@@ -291,7 +310,8 @@ struct Fixture
         write_override=INT_MIN; written_bytes.clear(); native_packets=0; packet_handler=nullptr;
         packet_action=0; packet_result=-1; packet_error=37; packet_args={}; packet_info={};
         close_frees=nullptr;native_task.tc_Node.ln_Type=NT_PROCESS;native_process.pr_CES=nullptr;
-        for (auto &n:native) { n.fh_Pos=n.fh_End=-1; n.fh_Type=reinterpret_cast<MsgPort *>(0x123456789ABCDEF0ULL); n.fh_Args=0xFEDCBA9876543210ULL; }
+        for (auto &n:native) { n.fh_Pos=n.fh_End=-1; n.fh_Type=reinterpret_cast<MsgPort *>(0x123456789ABCDEF0ULL); n.fh_Args=0xFEDCBA9876543210ULL+16*(&n-native.data()); }
+        fixture_handles=native.data();fixture_handle_count=native.size();
         native_input=MKBADDR(&native[0]);native_output=MKBADDR(&native[1]);open_result=MKBADDR(&native[2]);
         positions.clear();
         ctx.m68k_sysbase=exec_base;ctx.guest_exec_task=task;ctx.exec_task=&native_task;

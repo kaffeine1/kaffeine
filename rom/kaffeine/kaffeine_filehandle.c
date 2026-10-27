@@ -422,13 +422,27 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
     caller_error = IoErr();
     switch (action)
     {
+        /* The packet goes to the handler as it is: Seek() would also flush
+           the write buffer of the handle, or drop its read buffer and count
+           the bytes still unread there. A NIL: handle has no handler, and
+           native Seek() answers for it. */
         case ACTION_SEEK:
         {
             LONG mode = (LONG)m68k_read32(ctx, msg + 48);
+            LONG offset = (LONG)m68k_read32(ctx, msg + 44);
             if (m68k_read32(ctx, msg + 40) != f->key || mode < OFFSET_BEGINNING || mode > OFFSET_END)
                 return Kaffeine_MessageFailure(ctx, "ACTION_SEEK packet");
-            res1 = Seek(f->native, (LONG)m68k_read32(ctx, msg + 44), mode);
-            res2 = res1 == -1 ? (LONG)IoErr() : 0;
+            if (handler)
+            {
+                res1 = (LONG)DoPkt(handler, ACTION_SEEK,
+                    ((struct FileHandle *)BADDR(f->native))->fh_Args, offset, mode, 0, 0);
+                res2 = (LONG)IoErr();
+            }
+            else
+            {
+                res1 = Seek(f->native, offset, mode);
+                res2 = res1 == -1 ? (LONG)IoErr() : 0;
+            }
             break;
         }
         /* Actions with integer arguments go to the native handler as they
