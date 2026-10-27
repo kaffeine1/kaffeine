@@ -7,7 +7,9 @@
     visitor-count rules of rom/intuition, the tag precedence and SA_Width
     check of rom/intuition/openscreen.c, the window and visitor refusals of
     closescreen.c, and records every call, including nested native list
-    locks.
+    locks. GetScreenDrawInfo() hands out the DrawInfo that the screen keeps,
+    as rom/intuition/getscreendrawinfo.c, and FreeScreenDrawInfo(), a no-op
+    there, must get the pair of an outstanding get.
 */
 #ifdef NDEBUG
 #undef NDEBUG
@@ -56,8 +58,16 @@ struct NativeScreen
     /* What an opened screen draws into, as a HIDD BitMap of AROS: no
        planes the guest could reach, and not the obsolete copy. */
     BitMap drawn{};
+    /* The DrawInfo that Intuition keeps in the screen (IntScreen.DInfo),
+       filled in at the first GetScreenDrawInfo() unless a test did, and a
+       second one that use_alt hands out instead, as another native
+       identity of the same screen */
+    DrawInfo dinfo{}, alt{};
+    bool dri_ready = false, use_alt = false;
+    std::array<UWORD, 80> pens{};
 };
-enum Kind { LOCK, UNLOCK, LIST_LOCK, LIST_UNLOCK, DEFAULT, NEXT, FONT_OPEN, FONT_CLOSE, OPEN, CLOSE };
+enum Kind { LOCK, UNLOCK, LIST_LOCK, LIST_UNLOCK, DEFAULT, NEXT, FONT_OPEN, FONT_CLOSE, OPEN, CLOSE,
+            DRI_GET, DRI_FREE };
 struct Call
 {
     Kind kind;
@@ -105,6 +115,10 @@ struct NativeIntuition
     ULONG open_error = 0;
     Screen *default_screen = nullptr, *workbench = nullptr;
     unsigned list_depth = 0;
+    /* GetScreenDrawInfo() gives NULL; the gets of each native DrawInfo
+       that have not been freed */
+    bool dri_fail = false;
+    std::map<const DrawInfo *, unsigned> dri_out;
     KaffeineContext *ctx = nullptr;
 
     NativeIntuition()
@@ -157,6 +171,12 @@ struct NativeIntuition
         for (auto &s : screens)
             if (&s.screen == screen) return &s.node;
         assert(false);
+        return nullptr;
+    }
+    NativeScreen *find(Screen *screen)
+    {
+        for (auto &s : screens)
+            if (&s.screen == screen) return &s;
         return nullptr;
     }
     size_t count(Kind kind) const
@@ -395,6 +415,9 @@ extern "C" BOOL CloseScreen(struct Screen *screen)
     auto at = std::find_if(native->opened.begin(), native->opened.end(),
                            [screen](const Opened &o) { return o.result == screen; });
     assert(at != native->opened.end() && !at->closed); // only screens that were opened, once
+    // the bridge never lets a screen with DrawInfo gets of the program close
+    auto *ns = native->find(screen);
+    assert(ns && !native->dri_out.count(&ns->dinfo) && !native->dri_out.count(&ns->alt));
     if (screen->FirstWindow || native->close_refuse) return FALSE;
     auto *n = native->node(screen);
     if (n->psn_Node.ln_Succ)
@@ -406,6 +429,51 @@ extern "C" BOOL CloseScreen(struct Screen *screen)
     // whatever still reads it reads garbage
     std::memset(static_cast<void *>(screen), 0xEE, sizeof(*screen));
     return TRUE;
+}
+/* As rom/intuition/getscreendrawinfo.c: the DrawInfo that the screen keeps,
+   only for a native screen that is open; the gets are counted here only to
+   prove that each one is freed as its exact pair. Every pointer that the
+   bridge must not show (Images, dri_Screen, dri_Prefs, reserved) is set. */
+static void drawinfo_defaults(NativeScreen &n)
+{
+    n.dri_ready = true;
+    for (unsigned i = 0; i < n.pens.size(); ++i) n.pens[i] = (UWORD)(0x0A01 + 0x0101 * i);
+    DrawInfo &d = n.dinfo;
+    d.dri_Version = DRI_VERSION; d.dri_NumPens = NUMDRIPENS; d.dri_Pens = n.pens.data();
+    d.dri_Font = n.screen.RastPort.Font; d.dri_Depth = 0x1E05;
+    d.dri_Resolution.X = 0xA044; d.dri_Resolution.Y = 0x0B22; d.dri_Flags = 0xC3000000 | DRIF_NEWLOOK;
+    d.dri_CheckMark = d.dri_AmigaKey = reinterpret_cast<Image *>(&n.screen);
+    d.dri_Screen = &n.screen; d.dri_Prefs = &n.screen;
+    for (auto &r : d.dri_Reserved) r = ~static_cast<IPTR>(0);
+    n.alt = d;
+    n.alt.dri_Depth = 3;
+}
+extern "C" struct DrawInfo *GetScreenDrawInfo(struct Screen *screen)
+{
+    auto *n = native->find(screen);
+    assert(n && !in_guest(screen));
+    for (const auto &o : native->opened) assert(o.result != screen || !o.closed);
+    if (native->dri_fail)
+    {
+        native->calls.push_back({ DRI_GET, nullptr, screen });
+        return nullptr;
+    }
+    if (!n->dri_ready) drawinfo_defaults(*n);
+    DrawInfo *d = n->use_alt ? &n->alt : &n->dinfo;
+    native->calls.push_back({ DRI_GET, d, screen });
+    ++native->dri_out[d];
+    return d;
+}
+/* A no-op in rom/intuition/freescreendrawinfo.c; here it must get the pair
+   of an outstanding get. */
+extern "C" void FreeScreenDrawInfo(struct Screen *screen, struct DrawInfo *d)
+{
+    native->calls.push_back({ DRI_FREE, d, screen });
+    auto *n = native->find(screen);
+    assert(n && (d == &n->dinfo || d == &n->alt));
+    auto at = native->dri_out.find(d);
+    assert(at != native->dri_out.end() && at->second);
+    if (!--at->second) native->dri_out.erase(at);
 }
 extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *, const char *)
 {
@@ -435,7 +503,8 @@ static IPTR poison(KaffeineContext *, void *) { ++generated_calls; return 0xBAD0
 static const M68KThunkEntry manual[] = { KAFFEINE_INTUITION_PUBSCREEN_THUNKS, KAFFEINE_INTUITION_SCREEN_THUNKS };
 static const M68KThunkEntry generated[] =
     { { 510, poison }, { 516, poison }, { 522, poison }, { 528, poison }, { 534, poison }, { 582, poison },
-      { 66, poison }, { 198, poison }, { 612, poison } };
+      { 66, poison }, { 198, poison }, { 612, poison }, { 618, poison }, { 690, poison },
+      { 696, poison }, { 936, poison } };
 
 /* Literal NDK offsets, independent of the bridge's private enums. */
 enum
@@ -493,7 +562,7 @@ struct Fixture
     {
         native = &intuition_native;
         Kaffeine_ScreensCleanup(&ctx);
-        assert(native->list_depth == 0 && native->font_opens.empty());
+        assert(native->list_depth == 0 && native->font_opens.empty() && native->dri_out.empty());
         native = previous;
     }
     ULONG avail() { return Kaffeine_HeapAvail(&ctx, 0); }
@@ -614,6 +683,19 @@ struct Fixture
     ULONG open(ULONG ns, ULONG tags) { return call(612, { ns, tags }); }
     ULONG open_ns(ULONG ns) { return call(198, { ns }); }
     ULONG close(ULONG screen) { return call(66, { screen }); }
+    ULONG get_dri(ULONG screen) { return call(690, { screen }); }
+    ULONG free_dri(ULONG screen, ULONG dri) { return call(696, { screen, dri }); }
+    unsigned drawinfos() const
+    {
+        return std::count_if(std::begin(ctx.drawinfos), std::end(ctx.drawinfos),
+                             [](const auto &d) { return d.guest != 0; });
+    }
+    int dri_entry(ULONG d) const
+    {
+        for (int i = 0; i < KAFFEINE_MAX_DRAWINFOS; ++i)
+            if (d && ctx.drawinfos[i].guest == d) return i;
+        return -1;
+    }
     int entry(ULONG g) const
     {
         for (int i = 0; i < KAFFEINE_MAX_PUBSCREENS; ++i)
@@ -701,10 +783,12 @@ static void screen_image(Fixture &f, ULONG g, Screen &s, ULONG ta, ULONG tf, ULO
 static void test_registrations()
 {
     static_assert(KAFFEINE_SHADOW_SCREEN == 5 && KAFFEINE_SHADOW_PUBSCREEN == 13);
-    const ULONG slots[] = { 510, 516, 522, 528, 534, 582, 66, 198, 612 };
+    const ULONG slots[] = { 510, 516, 522, 528, 534, 582, 66, 198, 612, 618, 690, 696, 936 };
     IPTR (*const functions[])(KaffeineContext *, void *) = { Kaffeine_LockPubScreen, Kaffeine_UnlockPubScreen,
         Kaffeine_LockPubScreenList, Kaffeine_UnlockPubScreenList, Kaffeine_NextPubScreen,
-        Kaffeine_GetDefaultPubScreen, Kaffeine_CloseScreen, Kaffeine_OpenScreen, Kaffeine_OpenScreenTagList };
+        Kaffeine_GetDefaultPubScreen, Kaffeine_CloseScreen, Kaffeine_OpenScreen, Kaffeine_OpenScreenTagList,
+        Kaffeine_DrawImageState, Kaffeine_GetScreenDrawInfo, Kaffeine_FreeScreenDrawInfo,
+        Kaffeine_GetDrawInfoAttr };
     assert(std::size(manual) == std::size(slots));
     for (size_t i = 0; i < std::size(slots); ++i)
     { assert(manual[i].lvo == slots[i] && manual[i].thunk == functions[i]); }
@@ -722,6 +806,11 @@ static void test_registrations()
     f.put_ns(f.ns_at, 0, 0, 320, 200, 2, 0, 1, 0, CUSTOMSCREEN, 0, 0);
     const ULONG old = f.open_ns(f.ns_at); assert(old && native->count(OPEN) == 2);
     assert(f.close(old) == 1 && native->count(CLOSE) == 2);
+    // GetScreenDrawInfo() and FreeScreenDrawInfo() through 690 and 696
+    const ULONG drawn = f.open(0, 0); assert(drawn);
+    const ULONG dri = f.get_dri(drawn); assert(dri && native->count(DRI_GET) == 1 && f.drawinfos() == 1);
+    assert(f.free_dri(drawn, dri) == 0 && native->count(DRI_FREE) == 1 && !f.drawinfos());
+    assert(f.close(drawn) == 1 && native->count(CLOSE) == 3);
     // Prove that every fallback is reachable when its manual registration is absent.
     f.ctx.libs[0].num_thunks = 0;
     for (ULONG lvo : slots)
@@ -2410,12 +2499,439 @@ static void test_layer_notifications()
     f.ctx.layer_ops = nullptr;
 }
 
+/* ── DrawInfo ────────────────────────────────────────────────────── */
+
+/* The classic 68k DrawInfo at literal NDK 3.x offsets: Version 0, NumPens
+   2, Pens 4, Font 8, Depth 12, Resolution 14/16, Flags 18, CheckMark 22,
+   AmigaKey 26, Reserved[5] 30..49; then the pens as BE UWORDs and ~0. */
+enum { DRI_SIZE = 50 };
+static void drawinfo_image(Fixture &f, ULONG d, const DrawInfo &n, UWORD version, UWORD pens, ULONG font)
+{
+    std::array<UBYTE, DRI_SIZE> want{};
+    auto w = [&](unsigned at, UWORD v) { want[at] = v >> 8; want[at + 1] = v; };
+    auto l = [&](unsigned at, ULONG v) { w(at, v >> 16); w(at + 2, v); };
+    w(0, version); w(2, pens); l(4, n.dri_Pens ? d + DRI_SIZE : 0); l(8, font);
+    w(12, n.dri_Depth); w(14, n.dri_Resolution.X); w(16, n.dri_Resolution.Y); l(18, n.dri_Flags);
+    // dri_CheckMark, dri_AmigaKey and the reserved longwords: 0, never native
+    assert(d && d + DRI_SIZE <= f.memory.size());
+    assert(std::equal(want.begin(), want.end(), f.memory.begin() + d));
+    if (!n.dri_Pens) return;
+    for (unsigned i = 0; i < pens; ++i) assert(f.word(d + DRI_SIZE + 2 * i) == n.dri_Pens[i]);
+    assert(f.word(d + DRI_SIZE + 2 * pens) == 0xFFFF);
+}
+static size_t dri_calls(Kind kind, const DrawInfo *d, Screen *s)
+{
+    return std::count_if(native->calls.begin(), native->calls.end(),
+                         [&](const Call &c) { return c.kind == kind && c.pointer == d && c.screen == s; });
+}
+
+/* A copy for an opened and for a locked screen: the full classic image,
+   the screen's own 68k TextFont, a protected mirror, one copy across
+   nested gets with one native get and free each, retired by the last. */
+static void test_drawinfo_copy()
+{
+    for (bool owned : { true, false })
+    {
+        Fixture f;
+        Screen *s;
+        ULONG g;
+        if (owned) { g = f.open(0, 0); assert(g); s = native->opened.back().result; }
+        else { s = &f.add("Workbench", true).screen; g = f.lock(); assert(g); }
+        NativeScreen *n = native->find(s);
+        const ULONG tf = f.lng(g + RP + RP_FONT); assert(tf);
+        const ULONG heap = f.avail();
+        const UWORD shadows = f.ctx.num_shadows;
+        const auto opens = native->count(FONT_OPEN);
+        const ULONG d = f.get_dri(g);
+        assert(d && !f.stopped() && f.drawinfos() == 1 && dri_calls(DRI_GET, &n->dinfo, s) == 1);
+        // no generic shadow record stands for the copy
+        assert(f.ctx.num_shadows == shadows);
+        drawinfo_image(f, d, n->dinfo, 1, NUMDRIPENS, tf);
+        // the font of the screen is held already and keeps its 68k TextFont
+        assert(Kaffeine_FontNative(&f.ctx, tf) == &f.font && f.held_fonts() == 1);
+        assert(native->count(FONT_OPEN) == opens);
+        // a locked screen gets a visitor lock of the bridge, an opened one none
+        if (owned) assert(native->count(LOCK) == 0);
+        else assert(native->count(LOCK) == 2 && n->node.psn_VisitorCount == 2);
+        const ULONG used = f.avail(); assert(used < heap);
+        // guest FreeMem cannot give back the copy or its pens
+        Kaffeine_HeapFree(&f.ctx, d, DRI_SIZE); Kaffeine_HeapFree(&f.ctx, d + DRI_SIZE, 2);
+        assert(f.avail() == used);
+        // nested gets: the same copy, one native get each
+        assert(f.get_dri(g) == d && f.get_dri(g) == d && f.avail() == used && f.drawinfos() == 1);
+        assert(f.ctx.drawinfos[f.dri_entry(d)].refs == 3 && native->dri_out[&n->dinfo] == 3);
+        // what the program writes into its copy is never read back
+        std::fill_n(f.memory.begin() + d, DRI_SIZE + 2 * (NUMDRIPENS + 1), 0x5A);
+        assert(n->dinfo.dri_Version == DRI_VERSION && n->pens[0] == 0x0A01 && n->dinfo.dri_Font == &f.font);
+        assert(f.free_dri(g, d) == 0 && f.free_dri(g, d) == 0 && !f.stopped());
+        assert(f.drawinfos() == 1 && dri_calls(DRI_FREE, &n->dinfo, s) == 2 && f.avail() == used);
+        // the last free retires the copy, and only the copy
+        assert(f.free_dri(g, d) == 0 && !f.stopped() && !f.drawinfos());
+        assert(dri_calls(DRI_FREE, &n->dinfo, s) == 3 && !native->dri_out.count(&n->dinfo));
+        assert(f.avail() == heap && f.ctx.num_shadows == shadows && Kaffeine_ScreenGuest(&f.ctx, s) == g);
+        assert(std::any_of(std::begin(f.ctx.fonts), std::end(f.ctx.fonts),
+                           [tf](const auto &font) { return font.guest == tf && font.pinned; }));
+        if (!owned)
+        {
+            assert(n->node.psn_VisitorCount == 1);
+            f.unlock(g); f.absent(g, s);
+            f.native_unlocks(s, 2);
+        }
+        else
+        {
+            // a later get makes a fresh copy, left for the end of the program
+            const ULONG again = f.get_dri(g);
+            assert(again && f.drawinfos() == 1);
+            drawinfo_image(f, again, n->dinfo, 1, NUMDRIPENS, tf);
+        }
+    }
+}
+
+/* Each native DrawInfo of a screen has its own copy; a font of its own is
+   held and gets its own pinned 68k TextFont; at most 64 pens; the version
+   at most 1; no pens and no font leave their pointers 0. */
+static void test_drawinfo_fields()
+{
+    std::array<char, 16> other_name{};
+    TextFont other{};
+    std::strcpy(other_name.data(), "other.font");
+    other.tf_Message.mn_Node.ln_Type = NT_FONT; other.tf_Message.mn_Node.ln_Name = other_name.data();
+    other.tf_YSize = 9; other.tf_XSize = 7; other.tf_Baseline = 6; other.tf_Style = 0x02;
+    other.tf_Flags = 0x40; other.tf_LoChar = 32; other.tf_HiChar = 126; other.tf_Accessors = 1;
+    Fixture f;
+    const ULONG g = f.open(0, 0); assert(g);
+    Screen *s = native->opened.back().result;
+    NativeScreen *n = native->find(s);
+    drawinfo_defaults(*n);
+    const ULONG tf = f.lng(g + RP + RP_FONT);
+    const ULONG d = f.get_dri(g); assert(d);
+    // another native DrawInfo of the same screen: another copy
+    n->use_alt = true;
+    const ULONG da = f.get_dri(g);
+    assert(da && da != d && f.drawinfos() == 2);
+    drawinfo_image(f, da, n->alt, 1, NUMDRIPENS, tf);
+    assert(f.free_dri(g, da) == 0 && dri_calls(DRI_FREE, &n->alt, s) == 1 && f.drawinfos() == 1);
+    n->use_alt = false;
+    assert(f.get_dri(g) == d && f.free_dri(g, d) == 0 && f.free_dri(g, d) == 0 && !f.drawinfos());
+    // a font of its own, 70 native pens, version 3
+    n->dinfo.dri_Font = &other; native->font_result = &other;
+    n->dinfo.dri_NumPens = 70;
+    const auto opens = native->count(FONT_OPEN);
+    const ULONG c = f.get_dri(g); assert(c && !f.stopped());
+    const ULONG of = f.lng(c + 8);
+    assert(of && of != tf && Kaffeine_FontNative(&f.ctx, of) == &other && Kaffeine_FontFind(&f.ctx, &other) == of);
+    assert(f.string(f.lng(of + LN_NAME)) == "other.font" && f.word(of + 20) == 9 && f.word(of + 24) == 7);
+    assert(native->count(FONT_OPEN) == opens + 1 && f.held_fonts() == 2 && native->font_opens[&other] == 1);
+    drawinfo_image(f, c, n->dinfo, 1, 64, of);
+    assert(f.free_dri(g, c) == 0 && !f.drawinfos());
+    // the 68k TextFont stays pinned and the native font held until the end
+    assert(Kaffeine_FontFind(&f.ctx, &other) == of && f.held_fonts() == 2);
+    assert(std::any_of(std::begin(f.ctx.fonts), std::end(f.ctx.fonts),
+                       [of](const auto &font) { return font.guest == of && font.pinned; }));
+    // the same font again: the same 68k TextFont, no second hold
+    const ULONG c2 = f.get_dri(g);
+    assert(c2 && f.lng(c2 + 8) == of && native->count(FONT_OPEN) == opens + 1);
+    assert(f.free_dri(g, c2) == 0);
+    // an older version as it is; no pens and no font: no pointers and no hold
+    n->dinfo.dri_Version = 1; n->dinfo.dri_Pens = nullptr; n->dinfo.dri_Font = nullptr;
+    const ULONG bare = f.get_dri(g); assert(bare && !f.stopped());
+    drawinfo_image(f, bare, n->dinfo, 1, 0, 0);
+    assert(native->count(FONT_OPEN) == opens + 1 && f.free_dri(g, bare) == 0);
+    // pens without a count: only the ~0
+    n->dinfo.dri_Version = 2; n->dinfo.dri_Pens = n->pens.data(); n->dinfo.dri_NumPens = 0;
+    const ULONG none = f.get_dri(g); assert(none);
+    drawinfo_image(f, none, n->dinfo, 1, 0, 0);
+    assert(f.lng(none + 4) == none + DRI_SIZE && f.free_dri(g, none) == 0 && !f.drawinfos());
+    native->font_result = &f.font;
+}
+
+/* NULL is nothing; a screen that is not a 68k Screen of the program, a
+   DrawInfo that is no copy that it holds, a stale one, and a pair of a copy
+   with another screen stop the program before Intuition, changing nothing. */
+static void test_drawinfo_refusals()
+{
+    Fixture f;
+    f.add("Workbench", true);
+    const ULONG pub = f.lock(); assert(pub);
+    const ULONG g = f.open(0, 0); assert(g);
+    const ULONG d = f.get_dri(g); assert(d);
+    const ULONG e = f.get_dri(pub); assert(e && e != d);
+    auto calls = native->calls.size();
+    assert(f.get_dri(0) == 0 && !f.stopped());
+    assert(f.free_dri(g, 0) == 0 && !f.stopped() && f.free_dri(0xFFFFFFF0, 0) == 0 && !f.stopped());
+    assert(native->calls.size() == calls);
+    for (ULONG bad : std::initializer_list<ULONG>{ f.text, g + VP, g + RP, g + BM, g + 1, d, 0xFFFFFFF0 })
+    {
+        const auto before = f.memory;
+        assert(f.get_dri(bad) == 20 && f.stopped());
+        assert(native->calls.size() == calls && f.memory == before && f.drawinfos() == 2);
+    }
+    const std::pair<ULONG, ULONG> frees[] = {
+        { g, f.text }, { g, d + 2 }, { g, d + DRI_SIZE }, { g, g }, { g, g + RP }, { g, 0xFFFFFFF0 },
+        { g, e }, { pub, d }, { 0, d }, { g + VP, d }, { f.text, d } };
+    for (const auto &[screen, dri] : frees)
+    {
+        const auto before = f.memory;
+        assert(f.free_dri(screen, dri) == 20 && f.stopped());
+        assert(native->calls.size() == calls && f.memory == before && f.drawinfos() == 2);
+    }
+    assert(f.ctx.drawinfos[f.dri_entry(d)].refs == 1 && f.ctx.drawinfos[f.dri_entry(e)].refs == 1);
+    // a stale copy: freed, then freed again
+    assert(f.free_dri(g, d) == 0 && !f.stopped() && f.drawinfos() == 1);
+    calls = native->calls.size();
+    assert(f.free_dri(g, d) == 20 && f.stopped() && native->calls.size() == calls);
+    // a closed screen's 68k Screen names nothing any more
+    assert(f.close(g) == 1);
+    calls = native->calls.size();
+    assert(f.get_dri(g) == 20 && f.stopped() && native->calls.size() == calls);
+    assert(f.free_dri(pub, e) == 0 && !f.stopped() && !f.drawinfos());
+}
+
+/* Every failure after Intuition's get gives that get back as its pair and
+   keeps nothing: no copy, no memory, no visitor lock, no font hold or 68k
+   TextFont. The 32767th nested get and a full table of 16 copies give the
+   excess get back. */
+static void test_drawinfo_failures()
+{
+    std::array<char, 16> other_name{}, colour_name{};
+    TextFont other{}, colour{};
+    std::array<UBYTE, 16> glyphs{};
+    std::array<ULONG, 2> locs{};
+    std::strcpy(other_name.data(), "other.font"); std::strcpy(colour_name.data(), "colour.font");
+    other.tf_Message.mn_Node.ln_Name = other_name.data(); other.tf_YSize = 9; other.tf_Accessors = 1;
+    colour = other; colour.tf_Message.mn_Node.ln_Name = colour_name.data();
+    colour.tf_Style = FSF_COLORFONT; colour.tf_CharData = glyphs.data(); colour.tf_CharLoc = locs.data();
+    colour.tf_Modulo = 2; colour.tf_LoChar = 32; colour.tf_HiChar = 32;
+    Fixture f;
+    auto &wb = f.add("Workbench", true);
+    const ULONG pub = f.lock(); assert(pub);
+    drawinfo_defaults(wb);
+    const ULONG heap = f.avail();
+    const UWORD shadows = f.ctx.num_shadows;
+    auto nothing_kept = [&]()
+    {
+        assert(!f.stopped() && !f.drawinfos() && native->dri_out.empty() && f.avail() == heap);
+        assert(f.ctx.num_shadows == shadows && wb.node.psn_VisitorCount == 1 && f.held_fonts() == 1);
+        for (const auto &d : f.ctx.drawinfos)
+            assert(!d.screen && !d.native && !d.guest && !d.refs && !d.public_lock);
+    };
+    // Intuition gives none: nothing to give back
+    native->dri_fail = true;
+    auto locks = native->count(LOCK);
+    assert(f.get_dri(pub) == 0); nothing_kept();
+    assert(native->count(DRI_GET) == 1 && !native->count(DRI_FREE) && native->count(LOCK) == locks);
+    native->dri_fail = false;
+    // no memory for the copy, after the visitor lock
+    std::vector<std::pair<ULONG, ULONG>> taken;
+    for (ULONG size; (size = Kaffeine_HeapAvail(&f.ctx, MEMF_LARGEST)) != 0;)
+    {
+        const ULONG block = Kaffeine_HeapAlloc(&f.ctx, size, MEMF_ANY);
+        if (!block) break;
+        taken.push_back({ block, size });
+    }
+    assert(f.get_dri(pub) == 0 && !f.stopped() && !f.drawinfos());
+    for (const auto &[block, size] : taken) Kaffeine_HeapFree(&f.ctx, block, size);
+    nothing_kept();
+    assert(native->count(LOCK) == locks + 1);
+    assert(dri_calls(DRI_GET, &wb.dinfo, &wb.screen) == 1 && dri_calls(DRI_FREE, &wb.dinfo, &wb.screen) == 1);
+    // Intuition's get goes back before the visitor lock of the bridge
+    size_t last_free = 0, last_unlock = 0;
+    for (size_t i = 0; i < native->calls.size(); ++i)
+    {
+        if (native->calls[i].kind == DRI_FREE) last_free = i;
+        if (native->calls[i].kind == UNLOCK) last_unlock = i;
+    }
+    assert(last_free && last_free < last_unlock);
+    // the font of the DrawInfo cannot be held: OpenFont gives none, or another font
+    for (TextFont *given : std::initializer_list<TextFont *>{ nullptr, &f.font })
+    {
+        wb.dinfo.dri_Font = &other; native->font_result = given;
+        const auto opens = native->count(FONT_OPEN), closes = native->count(FONT_CLOSE);
+        const auto frees = native->count(DRI_FREE);
+        assert(f.get_dri(pub) == 0); nothing_kept();
+        assert(native->count(FONT_OPEN) == opens + 1 && native->count(FONT_CLOSE) == closes + (given ? 1 : 0));
+        assert(native->count(DRI_FREE) == frees + 1 && !Kaffeine_FontFind(&f.ctx, &other));
+        assert(!native->font_opens.count(&other) && other.tf_Accessors == 1);
+    }
+    // a color font has no 68k TextFont: its hold goes back
+    wb.dinfo.dri_Font = &colour; native->font_result = &colour;
+    const auto frees = native->count(DRI_FREE);
+    assert(f.get_dri(pub) == 0); nothing_kept();
+    assert(native->count(DRI_FREE) == frees + 1 && !Kaffeine_FontFind(&f.ctx, &colour));
+    assert(!native->font_opens.count(&colour) && colour.tf_Accessors == 1);
+    wb.dinfo.dri_Font = &f.font; native->font_result = &f.font;
+    assert(native->count(DRI_FREE) + 1 == native->count(DRI_GET));
+    // 32767 gets of one copy: the next one goes back to Intuition at once
+    const ULONG c = f.get_dri(pub); assert(c);
+    const int k = f.dri_entry(c); assert(k >= 0);
+    f.ctx.drawinfos[k].refs = 0x7FFE; native->dri_out[&wb.dinfo] = 0x7FFE;
+    assert(f.get_dri(pub) == c && f.ctx.drawinfos[k].refs == 0x7FFF);
+    const auto before_excess = native->count(DRI_FREE);
+    assert(f.get_dri(pub) == 0 && !f.stopped() && f.ctx.drawinfos[k].refs == 0x7FFF);
+    assert(native->count(DRI_FREE) == before_excess + 1 && native->dri_out[&wb.dinfo] == 0x7FFF);
+    // 16 copies fill the table; a 17th native DrawInfo gets none, before any visitor lock
+    static_assert(KAFFEINE_MAX_DRAWINFOS == 16 && KAFFEINE_MAX_PUBSCREENS == 16);
+    for (int i = 1; i < KAFFEINE_MAX_DRAWINFOS; ++i)
+    {
+        const ULONG s = f.open(0, 0); assert(s);
+        assert(f.get_dri(s) && !f.stopped());
+    }
+    assert(f.drawinfos() == KAFFEINE_MAX_DRAWINFOS && f.entries() == KAFFEINE_MAX_PUBSCREENS);
+    wb.use_alt = true;
+    const ULONG full = f.avail();
+    locks = native->count(LOCK);
+    assert(f.get_dri(pub) == 0 && !f.stopped() && f.avail() == full && native->count(LOCK) == locks);
+    assert(dri_calls(DRI_GET, &wb.alt, &wb.screen) == 1 && dri_calls(DRI_FREE, &wb.alt, &wb.screen) == 1);
+    assert(f.drawinfos() == KAFFEINE_MAX_DRAWINFOS && !native->dri_out.count(&wb.alt));
+    wb.use_alt = false;
+    // the end of the program gives back all 32767 + 15 gets as their pairs
+}
+
+/* A locked screen stays, 68k Screen and native screen, while the program
+   holds a copy, after its locks, windows and VisualInfos have gone; the
+   last free retires the copy, then the 68k Screen, then the visitor lock.
+   A screen that the bridge cannot hold gets no copy. */
+static void test_drawinfo_borrowed_lifetime()
+{
+    Fixture f;
+    auto &wb = f.add("Workbench", true);
+    const ULONG g = f.lock(); assert(g);
+    const ULONG d = f.get_dri(g); assert(d && wb.node.psn_VisitorCount == 2);
+    Window w{}; w.WScreen = &wb.screen;
+    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &w, KAFFEINE_SHADOW_WINDOW));
+    f.ctx.visualinfos[0].native = reinterpret_cast<APTR>(0x12345678);
+    f.ctx.visualinfos[0].screen = &wb.screen;
+    f.unlock(g);
+    Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
+    f.ctx.screen_release(&f.ctx, &wb.screen);
+    f.ctx.visualinfos[0] = {};
+    f.ctx.screen_release(&f.ctx, &wb.screen);
+    // only the copy keeps it now
+    assert(wb.node.psn_VisitorCount == 1 && Kaffeine_ScreenNative(&f.ctx, g) == &wb.screen);
+    assert(Kaffeine_ShadowNative(&f.ctx, g + RP, KAFFEINE_SHADOW_RASTPORT) == &wb.screen.RastPort);
+    assert(Kaffeine_ShadowNative(&f.ctx, g + VP, KAFFEINE_SHADOW_VIEWPORT) == &wb.screen.ViewPort);
+    drawinfo_image(f, d, wb.dinfo, 1, NUMDRIPENS, f.lng(g + RP + RP_FONT));
+    // still a screen of the program: a nested get and a free
+    assert(f.get_dri(g) == d && f.free_dri(g, d) == 0 && f.drawinfos() == 1 && wb.node.psn_VisitorCount == 1);
+    const size_t mark = native->calls.size();
+    assert(f.free_dri(g, d) == 0 && !f.stopped());
+    f.absent(g, &wb.screen);
+    assert(wb.node.psn_VisitorCount == 0 && !f.drawinfos() && !f.entries() && f.ctx.num_shadows == 0);
+    assert(native->calls[mark].kind == DRI_FREE && native->calls[mark].pointer == &wb.dinfo);
+    assert(std::any_of(native->calls.begin() + mark + 1, native->calls.end(),
+                       [&](const Call &c) { return c.kind == UNLOCK && c.screen == &wb.screen; }));
+    f.native_unlocks(&wb.screen, 2);
+    // a screen that is not in the list of public screens cannot be held
+    const ULONG g2 = f.lock(); assert(g2);
+    // Intuition's signed WORD visitor count must not wrap when the
+    // bridge takes its own lease, even if other tasks filled the count.
+    wb.node.psn_VisitorCount = 0x7FFF;
+    auto lease_locks = native->count(LOCK);
+    assert(f.get_dri(g2) == 0 && !f.stopped() && !f.drawinfos());
+    assert(native->count(LOCK) == lease_locks && native->dri_out.empty());
+    assert(wb.node.psn_VisitorCount == 0x7FFF);
+    wb.node.psn_VisitorCount = 1;
+    native->remove(&wb.node.psn_Node);
+    auto locks = native->count(LOCK);
+    const ULONG heap = f.avail();
+    assert(f.get_dri(g2) == 0 && !f.stopped() && !f.drawinfos() && f.avail() == heap);
+    assert(native->count(LOCK) == locks && native->dri_out.empty() && wb.node.psn_VisitorCount == 1);
+    assert(native->calls.back().kind == DRI_FREE && native->calls.back().screen == &wb.screen);
+    native->append(&wb.node.psn_Node);
+    f.unlock(g2);
+    // nor a private one, which LockPubScreen() refuses
+    auto &priv = f.add("Private", true);
+    const ULONG gp = f.lock(f.name("Private")); assert(gp && priv.node.psn_VisitorCount == 1);
+    priv.node.psn_Flags |= PSNF_PRIVATE;
+    locks = native->count(LOCK);
+    assert(f.get_dri(gp) == 0 && !f.stopped() && !f.drawinfos() && native->dri_out.empty());
+    assert(native->count(LOCK) == locks + 1 && priv.node.psn_VisitorCount == 1);
+    priv.node.psn_Flags &= ~PSNF_PRIVATE;
+    f.unlock(gp);
+}
+
+/* An opened screen needs no visitor lock; CloseScreen() refuses it before
+   Intuition while any get of a copy is left, and closes it after the last. */
+static void test_drawinfo_owned_lifetime()
+{
+    Fixture f;
+    const ULONG g = f.open(0, 0); assert(g);
+    Screen *s = native->opened.back().result;
+    NativeScreen *n = native->find(s);
+    const ULONG d = f.get_dri(g); assert(d && f.get_dri(g) == d && native->count(LOCK) == 0);
+    const auto closes = native->count(CLOSE);
+    assert(f.close(g) == 0 && !f.stopped() && native->count(CLOSE) == closes);
+    assert(Kaffeine_ScreenNative(&f.ctx, g) == s && f.owned() == 1);
+    assert(f.free_dri(g, d) == 0);
+    assert(f.close(g) == 0 && native->count(CLOSE) == closes);
+    drawinfo_image(f, d, n->dinfo, 1, NUMDRIPENS, f.lng(g + RP + RP_FONT));
+    assert(f.free_dri(g, d) == 0 && !f.drawinfos() && Kaffeine_ScreenNative(&f.ctx, g) == s);
+    assert(f.close(g) == 1 && native->count(CLOSE) == closes + 1);
+    f.absent(g, s);
+    assert(!native->count(LOCK) && !native->count(UNLOCK));
+}
+
+/* The end of the program: every get that the program left is freed as its
+   pair before any lock of that screen goes back, before any screen closes
+   and before any font goes; a second cleanup does nothing. */
+static void test_drawinfo_cleanup()
+{
+    Fixture f;
+    auto &wb = f.add("Workbench", true);
+    const ULONG pub = f.lock(); assert(pub);
+    const ULONG g = f.open(0, 0); assert(g);
+    Screen *s = native->opened.back().result;
+    NativeScreen *n = native->find(s);
+    const ULONG d = f.get_dri(g); assert(d && f.get_dri(g) == d);
+    const ULONG e = f.get_dri(pub); assert(e);
+    const size_t mark = native->calls.size();
+    Kaffeine_ScreensCleanup(&f.ctx);
+    size_t frees = 0, last_free = 0, wb_free = 0, wb_unlock = SIZE_MAX, first_close = SIZE_MAX,
+           first_font = SIZE_MAX;
+    for (size_t i = mark; i < native->calls.size(); ++i)
+    {
+        const auto &c = native->calls[i];
+        assert(c.kind != DRI_GET);
+        if (c.kind == DRI_FREE) { ++frees; last_free = i; if (c.screen == &wb.screen) wb_free = i; }
+        if (c.kind == UNLOCK && c.screen == &wb.screen) wb_unlock = std::min(wb_unlock, i);
+        if (c.kind == CLOSE) first_close = std::min(first_close, i);
+        if (c.kind == FONT_CLOSE) first_font = std::min(first_font, i);
+    }
+    assert(frees == 3 && dri_calls(DRI_FREE, &n->dinfo, s) == 2 && dri_calls(DRI_FREE, &wb.dinfo, &wb.screen) == 1);
+    assert(wb_free && wb_free < wb_unlock && wb_unlock != SIZE_MAX);
+    assert(last_free < first_close && first_close != SIZE_MAX && last_free < first_font && first_font != SIZE_MAX);
+    // the visitor lock of the bridge and the program's lock both went back
+    assert(wb.node.psn_VisitorCount == 0 && native->dri_out.empty() && !f.drawinfos());
+    assert(native->opened.back().closed && !f.owned() && native->font_opens.empty());
+    f.absent(g, s);
+    const auto calls = native->calls.size();
+    Kaffeine_ScreensCleanup(&f.ctx); assert(native->calls.size() == calls);
+}
+
+/* Both remaining DrawInfo consumers must override their generated
+   fallbacks, even for NULL, a live copy or an invalid guest address. */
+static void test_drawinfo_consumer_refusals()
+{
+    Fixture f;
+    const ULONG screen = f.open(0, 0); assert(screen);
+    const ULONG dri = f.get_dri(screen); assert(dri);
+    const auto calls = native->calls.size();
+    for (ULONG pointer : { 0U, dri, 0xFFFFFFF0U })
+        for (ULONG lvo : { 618U, 936U })
+        {
+            const auto memory = f.memory;
+            assert(f.call(lvo, { pointer, pointer, pointer }) == 20 && f.stopped());
+            assert(native->calls.size() == calls && memory == f.memory && f.drawinfos() == 1);
+        }
+    assert(f.free_dri(screen, dri) == 0 && f.close(screen) == 1);
+}
+
 int main()
 {
     const struct Test { const char *name; void (*run)(); } tests[] =
     {
         { "Layer snapshots follow 68k Screens and end before CloseScreen, forget and cleanup unlocks", test_layer_notifications },
-        { "Nine ABI registrations override poisoned generated fallbacks", test_registrations },
+        { "Thirteen ABI registrations override poisoned generated fallbacks", test_registrations },
         { "Screen.RastPort.BitMap is a typed handle of the drawn BitMap, resolved only for opened screens", test_screen_bitmap_handle },
         { "NULL and named locks expose the NDK fields, font and three shadows; relocks refill in place", test_screen_fields_and_relock },
         { "The last unlock returns the mirror and shadows; the font stays pinned; a later lock allocates anew", test_release_and_recreate },
@@ -2452,7 +2968,15 @@ int main()
         { "SA_Font keeps style, flags and TA_DeviceDPI tags natively; the 68k TextAttr drops FSF_TAGGED", test_open_font_flags },
         { "CloseScreen only of opened screens; refusals keep everything; one identity across locks, list and windows", test_close_ownership },
         { "Full tables refuse before Intuition; missing memory or font closes Intuition's screen again", test_open_bridge_failures },
-        { "Teardown releases locks, then closes window-free opened screens, then fonts", test_teardown }
+        { "Teardown releases locks, then closes window-free opened screens, then fonts", test_teardown },
+        { "GetScreenDrawInfo: a complete classic BE copy with the screen's 68k TextFont, nested gets, last-free retirement", test_drawinfo_copy },
+        { "One copy per native DrawInfo; own fonts held and pinned; 64 pens and ~0; version 1 at most; NULL pens and font", test_drawinfo_fields },
+        { "Invalid screens and invalid, foreign, stale or mismatched frees stop the program before Intuition", test_drawinfo_refusals },
+        { "Native, memory, font and table failures and the 32767-get guard give Intuition's get back and keep nothing", test_drawinfo_failures },
+        { "A copy keeps a locked screen after its locks, windows and VisualInfos; unholdable screens get none", test_drawinfo_borrowed_lifetime },
+        { "CloseScreen refuses an opened screen while a get of its copy is left", test_drawinfo_owned_lifetime },
+        { "Cleanup frees every left get before unlocks, closes and fonts, once", test_drawinfo_cleanup },
+        { "DrawImageState and GetDrawInfoAttr stop before generated consumers or native pointer reads", test_drawinfo_consumer_refusals }
     };
     for (const auto &test : tests)
     {

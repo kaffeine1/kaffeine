@@ -78,10 +78,19 @@ at the end.
 | `gfx_private_regions.c` | Owned Regions and big-endian rectangle lists, exact union geometry and relative bounds, installing/replacing/clearing clip Regions, and clipped drawing checked directly in the planar storage over two lifetimes. |
 | `gfx_bitmap_transfer.c` | Standalone planar BitMaps and an owned indexed screen, with two-way native bitmap transfers, exact guest-plane pixels, native return values and bitmap identity after RastPort drawing. Built for ARM as an independent native reference as well as for 68k. |
 | `gfx_bitmap_guard.c` | Expected containment: literal cybergraphics GetCyberMapAttr LVO with no converted bitmap support must stop with return code 20 before returning to guest code; the STEP line distinguishes successful setup from a missing library. |
+| `gfx_drawinfo.c` | Original DrawInfo scalar/font/pen snapshots, stable nested gets, exact pen values and surviving references, followed by text metrics and screen retirement; ARM native reference and classic68k target use the same source. |
 | `gfx_owned_screen.c` | Owned indexed screens through OpenScreenTagList/OpenScreen, chained tags, classic fonts and clip rectangles, native error output guards, drawing, window/screen identity, refused close and extended NewScreen. Optional `leave` mode leaves a named public screen and a window for context cleanup. |
 | `gfx_screen_cleanup_native.c` | Native AArch64 observer after `gfx_owned_screen leave` in the same boot; the named screen must no longer be lockable. |
 | `gfx_framebuffer_palette_native.c` | Native AArch64 Raspberry driver probe: enumerates truecolor and LUT8 modes, verifies actual eight-bit bitmap storage, pre-renders an indexed screen behind Workbench, checks the physical RGBX pixels after showing it, and changes a live palette entry without rewriting the source indices. Requires kernel framebuffer attributes. |
 | `icon_objects.c` | Owned DiskObject acquisition/free, NULL free, 96 sequential allocation cycles, exact guest FindToolType result pointers, case-insensitive MatchToolValue and preservation of original strings/arrays. The optional `leave` argument is an AROS bridge teardown probe that leaves three objects for context cleanup. Scalar metadata observations may differ between native backends; no icon images are copied or tested. |
+
+The DrawInfo bridge exposes a classic version-1 snapshot with copied pen
+values and a retained, typed TextFont. Nested gets share one identity until
+the last matching free. It holds the screen for that lifetime, including a
+native visitor lock for borrowed public screens. Native menu image objects
+are not exposed; `dri_CheckMark` and `dri_AmigaKey` remain NULL.
+`DrawImageState` and `GetDrawInfoAttr` stop with return code 20 until their
+Image and attribute conversions are implemented.
 
 ## Building the test programs
 

@@ -336,6 +336,10 @@ CASES = (
     ("intuition", "openscreen.c", "OpenScreen", "Kaffeine_OpenScreen"),
     ("intuition", "openscreentaglist.c", "OpenScreenTagList", "Kaffeine_OpenScreenTagList"),
     ("intuition", "closescreen.c", "CloseScreen", "Kaffeine_CloseScreen"),
+    ("intuition", "getscreendrawinfo.c", "GetScreenDrawInfo", "Kaffeine_GetScreenDrawInfo"),
+    ("intuition", "freescreendrawinfo.c", "FreeScreenDrawInfo", "Kaffeine_FreeScreenDrawInfo"),
+    ("intuition", "drawimagestate.c", "DrawImageState", "Kaffeine_DrawImageState"),
+    ("intuition", "getdrawinfoattr.c", "GetDrawInfoAttr", "Kaffeine_GetDrawInfoAttr"),
     ("exec", "addtask.c", "AddTask", "Kaffeine_AddTask"),
     ("exec", "remtask.c", "RemTask", "Kaffeine_RemTask"),
     ("utility", "callhookpkt.c", "CallHookPkt", "kaffeine_utility_CallHookPkt"),
@@ -443,6 +447,14 @@ ALLOWED_IGNORED_REGS = {
     "Kaffeine_GetVisualInfoA": (
         frozenset({"A1"}),
         "GetVisualInfoA() takes no tags; GadTools of AROS does not read them either",
+    ),
+    "Kaffeine_DrawImageState": (
+        frozenset({"A0", "A1", "A2", "D0", "D1", "D2"}),
+        "DrawImageState() stops with rc 20 until Image/DrawInfo inputs have typed conversions",
+    ),
+    "Kaffeine_GetDrawInfoAttr": (
+        frozenset({"A0", "D0", "A1"}),
+        "GetDrawInfoAttr() stops with rc 20 until its attributes and result storage have typed conversions",
     ),
     "thunk_exec_TypeOfMem": (
         frozenset({"A1"}),

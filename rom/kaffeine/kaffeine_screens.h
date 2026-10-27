@@ -70,11 +70,20 @@ IPTR Kaffeine_OpenScreenTagList(struct KaffeineContext *ctx, void *cpu);
 /* CloseScreen() stops the program while a BltBitMap() of it runs
    (ctx->bitmap_blits), before Intuition gets the screen. */
 IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu);
+/* GetScreenDrawInfo() gives a 68k copy of the native DrawInfo of a screen
+   of the program, the same for nested gets; FreeScreenDrawInfo() takes
+   back one get of exactly that pair. */
+IPTR Kaffeine_GetScreenDrawInfo(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_FreeScreenDrawInfo(struct KaffeineContext *ctx, void *cpu);
+/* These consumers stop with 20 until Images and DrawInfo attributes have
+   typed conversions; no classic structure reaches a native API. */
+IPTR Kaffeine_DrawImageState(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_GetDrawInfoAttr(struct KaffeineContext *ctx, void *cpu);
 
-/* At the end of the program, in the task that ran it: the screen locks
-   and the list lock that the program left go back to Intuition, then the
-   screens that it opened and left close, those without a window of the
-   program on them. */
+/* At the end of the program, in the task that ran it: the DrawInfos that
+   the program left go back to Intuition, then the screen locks and the
+   list lock that it left, then the screens that it opened and left close,
+   those without a window of the program on them, and last the fonts. */
 void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx);
 
 #ifdef __cplusplus
@@ -93,6 +102,10 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx);
 #define KAFFEINE_INTUITION_SCREEN_THUNKS \
     { 66, Kaffeine_CloseScreen }, \
     { 198, Kaffeine_OpenScreen }, \
-    { 612, Kaffeine_OpenScreenTagList }
+    { 612, Kaffeine_OpenScreenTagList }, \
+    { 618, Kaffeine_DrawImageState }, \
+    { 690, Kaffeine_GetScreenDrawInfo }, \
+    { 696, Kaffeine_FreeScreenDrawInfo }, \
+    { 936, Kaffeine_GetDrawInfoAttr }
 
 #endif /* KAFFEINE_SCREENS_H */

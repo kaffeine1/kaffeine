@@ -44,6 +44,30 @@ struct PubScreenNode
     UBYTE psn_SigBit;
 };
 
+/* The DrawInfo of GetScreenDrawInfo(), as compiler/include/intuition/screens.h
+   declares it (dri_Version 3 of AROS); host pointers have host width. */
+#ifndef KAFFEINE_STUB_DRAWINFO
+#define KAFFEINE_STUB_DRAWINFO
+struct Image;
+struct DrawInfo
+{
+    UWORD dri_Version;
+    UWORD dri_NumPens;
+    UWORD *dri_Pens;
+    struct TextFont *dri_Font;
+    UWORD dri_Depth;
+    struct { UWORD X; UWORD Y; } dri_Resolution;
+    ULONG dri_Flags;
+    struct Image *dri_CheckMark;
+    struct Image *dri_AmigaKey;
+    struct Screen *dri_Screen;
+    APTR dri_Prefs;
+    IPTR dri_Reserved[3];
+};
+#define DRI_VERSION  3
+#define DRIF_NEWLOOK (1L << 0)
+#endif
+
 #define PSNF_PRIVATE (1 << 0)
 #define MAXPUBSCREENNAME 139
 
