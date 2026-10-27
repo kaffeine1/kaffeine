@@ -24,6 +24,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <deque>
 #include <initializer_list>
 #include <map>
@@ -755,7 +756,7 @@ static void test_window_bitmap_handle()
         if (scenario != 3)
         {
             f.ctx.pubscreens[0].native = scenario == 5
-                ? reinterpret_cast<Screen *>(static_cast<uintptr_t>(0xDEAD0000)) : &screen;
+                ? reinterpret_cast<Screen *>(static_cast<std::uintptr_t>(0xDEAD0000)) : &screen;
             f.ctx.pubscreens[0].guest = gs;
             f.ctx.pubscreens[0].owned = scenario != 2;
         }
