@@ -31,6 +31,30 @@ BZIP2_SOURCES := $(addprefix $(BZIP2_SRC)/,blocksort.c huffman.c crctable.c rand
 ifneq ($(BZIP2_SRC),)
 PROGRAMS += bzip2
 endif
+
+# cjpeg, djpeg and jpegtran of the IJG JPEG library 9f, from the source the
+# AROS build fetches for its Ports: set JPEG_SRC to the unpacked jpeg-9f
+# directory to build them. The sources are copied to $(JPEG_BUILD) with
+# jpeg_jconfig.h as their jconfig.h, since the jconfig.h of the tree is the
+# one of the AROS host and a quoted include finds it first. The battery runs
+# the seven steps of the library's own "make test" and compares the outputs
+# with its reference files.
+JPEG_SRC ?=
+JPEG_BUILD := $(BUILD_DIR)/jpeg-src
+JPEG_LIB := jaricom jcomapi jutils jerror jmemmgr jmemnobs \
+            jcapimin jcapistd jcarith jctrans jcparam jdatadst jcinit \
+            jcmaster jcmarker jcmainct jcprepct jccoefct jccolor jcsample \
+            jchuff jcdctmgr jfdctfst jfdctflt jfdctint \
+            jdapimin jdapistd jdarith jdtrans jdatasrc jdmaster jdinput \
+            jdmarker jdhuff jdmainct jdcoefct jdpostct jddctmgr jidctfst \
+            jidctflt jidctint jdsample jdcolor jquant1 jquant2 jdmerge
+JPEG_CJPEG := cjpeg rdppm rdgif rdtarga rdrle rdbmp rdswitch cdjpeg
+JPEG_DJPEG := djpeg wrppm wrgif wrtarga wrrle wrbmp rdcolmap cdjpeg
+JPEG_JPEGTRAN := jpegtran rdswitch cdjpeg transupp
+jpeg_c = $(addprefix $(JPEG_BUILD)/,$(addsuffix .c,$(1)))
+ifneq ($(JPEG_SRC),)
+PROGRAMS += cjpeg djpeg jpegtran
+endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
@@ -78,8 +102,26 @@ $(BUILD_DIR)/c_stdio: EXTRA_LINK = $(STDIO_FLOAT)
 $(BUILD_DIR)/c_stdio_vec: $(TEST_DIR)/c_stdio.c $(TEST_DIR)/libgcc_ieee.c | $(BUILD_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -DMALLOC_ON_ALLOCVEC $(M68K_LDFLAGS) -o $@ $< $(STDIO_FLOAT)
 
-$(BUILD_DIR)/bzip2: $(BZIP2_SOURCES) $(TEST_DIR)/bzip2_amiga.c $(TEST_DIR)/libgcc_ieee.c | $(BUILD_DIR)
+$(BUILD_DIR)/bzip2: $(BZIP2_SOURCES) $(TEST_DIR)/bzip2_amiga.c $(TEST_DIR)/libgcc_ieee.c \
+                   $(TEST_DIR)/libgcc_ieee_ports.c | $(BUILD_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $^ -lm
+
+$(JPEG_BUILD)/stamp: $(wildcard $(JPEG_SRC)/*.c $(JPEG_SRC)/*.h) $(TEST_DIR)/jpeg_jconfig.h | $(BUILD_DIR)
+	rm -rf $(JPEG_BUILD)
+	mkdir -p $(JPEG_BUILD)
+	cp $(JPEG_SRC)/*.c $(JPEG_SRC)/*.h $(JPEG_BUILD)/
+	cp $(TEST_DIR)/jpeg_jconfig.h $(JPEG_BUILD)/jconfig.h
+	touch $@
+
+JPEG_FLOAT := $(TEST_DIR)/libgcc_ieee.c $(TEST_DIR)/libgcc_ieee_ports.c
+$(BUILD_DIR)/cjpeg: $(JPEG_BUILD)/stamp $(JPEG_FLOAT)
+	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $(call jpeg_c,$(JPEG_CJPEG) $(JPEG_LIB)) $(JPEG_FLOAT) -lm
+
+$(BUILD_DIR)/djpeg: $(JPEG_BUILD)/stamp $(JPEG_FLOAT)
+	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $(call jpeg_c,$(JPEG_DJPEG) $(JPEG_LIB)) $(JPEG_FLOAT) -lm
+
+$(BUILD_DIR)/jpegtran: $(JPEG_BUILD)/stamp $(JPEG_FLOAT)
+	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $(call jpeg_c,$(JPEG_JPEGTRAN) $(JPEG_LIB)) $(JPEG_FLOAT) -lm
 
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
@@ -96,9 +138,12 @@ $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LI
 $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
-# bzip2 too, also when it was built with a BZIP2_SRC that this make lacks
+# bzip2 and the JPEG programs too, also when they were built with a
+# BZIP2_SRC or JPEG_SRC that this make lacks
 clean:
 	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BUILD_DIR)/exec_public_native
+	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
+	rm -rf $(JPEG_BUILD)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
