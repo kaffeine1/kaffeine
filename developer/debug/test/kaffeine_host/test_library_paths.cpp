@@ -38,6 +38,7 @@ MANUAL_TABLE(utility_manual);
 MANUAL_TABLE(locale_manual);
 MANUAL_TABLE(gadtools_manual);
 MANUAL_TABLE(icon_manual);
+MANUAL_TABLE(layers_manual);
 MANUAL_TABLE(mathffp);
 MANUAL_TABLE(workbench);
 MANUAL_TABLE(mathieeedoubbas);
@@ -159,6 +160,7 @@ static const Manual manuals[] = {
     {"locale.library", kaffeine_thunks_locale_manual, kaffeine_thunks_locale_manual_count},
     {"gadtools.library", kaffeine_thunks_gadtools_manual, kaffeine_thunks_gadtools_manual_count},
     {"icon.library", kaffeine_thunks_icon_manual, kaffeine_thunks_icon_manual_count},
+    {"layers.library", kaffeine_thunks_layers_manual, kaffeine_thunks_layers_manual_count},
     {"mathffp.library", kaffeine_thunks_mathffp, kaffeine_thunks_mathffp_count},
     {"workbench.library", kaffeine_thunks_workbench, kaffeine_thunks_workbench_count},
     {"mathieeedoubbas.library", kaffeine_thunks_mathieeedoubbas, kaffeine_thunks_mathieeedoubbas_count},

@@ -53,6 +53,10 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w);
    screen that the program no longer holds goes after. Call it while the
    native window is still open. */
 void Kaffeine_WindowDelete(struct KaffeineContext *ctx, ULONG guest);
+/* CloseWindow and FreeSysRequest release layer locks before menu/gadget
+   teardown, then delete without repeating the layer callback. */
+void Kaffeine_WindowPrepareClose(struct KaffeineContext *ctx, ULONG guest);
+void Kaffeine_WindowDeletePrepared(struct KaffeineContext *ctx, ULONG guest);
 
 /* In the task that ran the guest, before screen and I/O cleanup. */
 void Kaffeine_WindowsCleanup(struct KaffeineContext *ctx);

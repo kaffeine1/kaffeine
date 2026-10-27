@@ -34,6 +34,8 @@ ULONG GetDrMd(struct RastPort *rp);
 ULONG GetOutlinePen(struct RastPort *rp);
 void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy,
                   WORD xMin, WORD yMin, WORD xMax, WORD yMax);
+struct Layer;
+BOOL AttemptLockLayerRom(struct Layer *layer);
 
 #ifdef __cplusplus
 }

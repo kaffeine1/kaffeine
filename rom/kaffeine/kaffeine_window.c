@@ -27,6 +27,7 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_gadgets.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_taglist.h"
@@ -271,7 +272,10 @@ void Kaffeine_WindowSync(struct KaffeineContext *ctx, ULONG mw, struct Window *w
     m68k_write16(ctx, mw + M68K_WIN_MINHEIGHT, (UWORD)w->MinHeight);
     m68k_write16(ctx, mw + M68K_WIN_MAXWIDTH, w->MaxWidth);
     m68k_write16(ctx, mw + M68K_WIN_MAXHEIGHT, w->MaxHeight);
-    m68k_write32(ctx, mw + M68K_WIN_FLAGS, w->Flags);
+    /* a WFLG_BACKDROP that the program changed for its next depth call
+       stays (kaffeine_layers.c) */
+    m68k_write32(ctx, mw + M68K_WIN_FLAGS,
+                 ctx->layer_ops ? ctx->layer_ops->window_flags(ctx, mw, w->Flags) : w->Flags);
     ctx->mem[mw + M68K_WIN_BORDERLEFT] = (UBYTE)w->BorderLeft;
     ctx->mem[mw + M68K_WIN_BORDERTOP] = (UBYTE)w->BorderTop;
     ctx->mem[mw + M68K_WIN_BORDERRIGHT] = (UBYTE)w->BorderRight;
@@ -428,6 +432,11 @@ static ULONG message_guest(struct KaffeineContext *ctx, struct IntuiMessage *im,
     m68k_write32(ctx, guest + G_IM_IDCMPWINDOW, window);
     if (window)
         Kaffeine_WindowSync(ctx, window, im->IDCMPWindow);
+    /* the layers of its screen as they are now; not for a VERIFY message,
+       whose reply Intuition may be waiting for (kaffeine_layers.c) */
+    if (window && ctx->layer_ops &&
+        !(im->Class & (IDCMP_SIZEVERIFY | IDCMP_REQVERIFY | IDCMP_MENUVERIFY)))
+        ctx->layer_ops->window_synced(ctx, window, im->IDCMPWindow);
     return guest;
 }
 
@@ -681,15 +690,29 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w)
        has no 68k Screen of */
     m68k_write32(ctx, mw + M68K_WIN_WSCREEN, Kaffeine_ScreenGuest(ctx, w->WScreen));
     m68k_write32(ctx, mw + M68K_WIN_TITLE, guest_address(ctx, w->Title));
+    /* WLayer and the Layer of the RastPort: the 68k Layer of the window's
+       layer, without which the window does not come either */
+    if (ctx->layer_ops && !ctx->layer_ops->window_opened(ctx, mw, w))
+    {
+        Kaffeine_UserPortDelete(ctx, port);
+        Kaffeine_RastPortDelete(ctx, rp);
+        Kaffeine_ShadowForget(ctx, mw, KAFFEINE_SHADOW_WINDOW);
+        Kaffeine_HeapFree(ctx, mw, M68K_SIZEOF_WINDOW);
+        return 0;
+    }
     return mw;
 }
 
-void Kaffeine_WindowDelete(struct KaffeineContext *ctx, ULONG mw)
+static void window_delete(struct KaffeineContext *ctx, ULONG mw, BOOL layers_done)
 {
     struct Window *w = Kaffeine_ShadowNative(ctx, mw, KAFFEINE_SHADOW_WINDOW);
 
     if (!w)
         return;
+    /* the program's layer locks and its 68k Layer go while the native
+       layer is still there */
+    if (!layers_done && ctx->layer_ops)
+        ctx->layer_ops->window_closing(ctx, mw, w);
     window_reply_messages(ctx, mw);
     Kaffeine_RastPortDelete(ctx, Kaffeine_ShadowGuest(ctx, w->RPort, KAFFEINE_SHADOW_RASTPORT));
     Kaffeine_UserPortDelete(ctx, Kaffeine_ShadowGuest(ctx, w->UserPort, KAFFEINE_SHADOW_USERPORT));
@@ -702,6 +725,24 @@ void Kaffeine_WindowDelete(struct KaffeineContext *ctx, ULONG mw)
         ctx->screen_release(ctx, w->WScreen);
 }
 
+void Kaffeine_WindowDelete(struct KaffeineContext *ctx, ULONG mw)
+{
+    window_delete(ctx, mw, FALSE);
+}
+
+void Kaffeine_WindowPrepareClose(struct KaffeineContext *ctx, ULONG mw)
+{
+    struct Window *w = Kaffeine_ShadowNative(ctx, mw, KAFFEINE_SHADOW_WINDOW);
+
+    if (w && ctx->layer_ops)
+        ctx->layer_ops->window_closing(ctx, mw, w);
+}
+
+void Kaffeine_WindowDeletePrepared(struct KaffeineContext *ctx, ULONG mw)
+{
+    window_delete(ctx, mw, TRUE);
+}
+
 /* intuition -72: CloseWindow(A0=window). The messages that the program has
    not replied go back, and the 68k Window, its RastPort, its IDCMP port and
    the 68k messages go, while the native window still names them. */
@@ -712,11 +753,14 @@ static void close_window(struct KaffeineContext *ctx, ULONG mw)
 
     if (!w)
         return;
+    /* Menu and gadget removal may wait on Intuition. Release the guest's
+       native layer locks before any of those native teardown calls. */
+    Kaffeine_WindowPrepareClose(ctx, mw);
     if (ctx->menu_closing)
         ctx->menu_closing(ctx, w);
     if (ctx->window_gadgets)
         ctx->window_gadgets->closing(ctx, w);
-    Kaffeine_WindowDelete(ctx, mw);
+    Kaffeine_WindowDeletePrepared(ctx, mw);
     if (requester)
         FreeSysRequest(w);
     else

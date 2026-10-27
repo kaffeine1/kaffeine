@@ -57,6 +57,7 @@
 
 #include "kaffeine_intern.h"
 #include "kaffeine_fontattr.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_screens.h"
@@ -360,6 +361,7 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
         font_unhold(ctx, held);
         return 0;
     }
+    Kaffeine_LayerSemaphoreInit(ctx, guest + M68K_SCR_LAYERINFO + M68K_LI_LOCK);
     if (scr->Font)
     {
         *font = guest + M68K_SIZEOF_SCREEN;
@@ -424,6 +426,10 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
     ULONG guest = ctx->pubscreens[i].guest;
     UWORD type = ctx->pubscreens[i].owned ? KAFFEINE_SHADOW_SCREEN : KAFFEINE_SHADOW_PUBSCREEN;
 
+    /* the layer snapshot of the screen goes with its last holder, before
+       the 68k Screen that holds its LayerInfo */
+    if (ctx->layer_ops)
+        ctx->layer_ops->screen_closing(ctx, ctx->pubscreens[i].native);
     if (Kaffeine_ShadowNative(ctx, guest, type))
     {
         Kaffeine_RastPortDetach(ctx, guest + M68K_SCR_RASTPORT);
@@ -544,6 +550,8 @@ IPTR Kaffeine_LockPubScreen(struct KaffeineContext *ctx, void *cpu)
     /* a 68k Screen that the bridge did not make stays as it is */
     if (screen_mirrored(ctx, i))
         screen_fill(ctx, ctx->pubscreens[i].guest, ctx->pubscreens[i].font, scr);
+    if (ctx->layer_ops)
+        ctx->layer_ops->screen_mirrored(ctx, scr);
     return ctx->pubscreens[i].guest;
 }
 
@@ -1106,6 +1114,8 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
     ctx->pubscreens[i].owned = TRUE;
     ctx->pubscreens[i].keep = keep;
     ctx->screen_release = screen_release;
+    if (ctx->layer_ops)
+        ctx->layer_ops->screen_mirrored(ctx, scr);
     return guest;
 }
 
@@ -1149,9 +1159,18 @@ IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
             (unsigned long)screen);
         return FALSE;
     }
-    if (screen_visuals(ctx, ctx->pubscreens[i].native) ||
-        !CloseScreen(ctx->pubscreens[i].native))
+    if (screen_visuals(ctx, ctx->pubscreens[i].native))
         return FALSE;
+    /* no 68k Layer may stand for a layer of a screen that closes; when
+       Intuition refuses, the next snapshot is taken afresh */
+    if (ctx->layer_ops)
+        ctx->layer_ops->screen_closing(ctx, ctx->pubscreens[i].native);
+    if (!CloseScreen(ctx->pubscreens[i].native))
+    {
+        if (ctx->layer_ops)
+            ctx->layer_ops->screen_mirrored(ctx, ctx->pubscreens[i].native);
+        return FALSE;
+    }
     screen_closed(ctx, i);
     return TRUE;
 }
@@ -1163,6 +1182,9 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
     ULONG left = 0;
     int i;
 
+    /* every layer snapshot goes before the locks that keep screens open */
+    if (ctx->layer_ops)
+        ctx->layer_ops->screen_closing(ctx, NULL);
     for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
         for (; ctx->pubscreens[i].locks; ctx->pubscreens[i].locks--, left++)
             UnlockPubScreen(NULL, ctx->pubscreens[i].native);

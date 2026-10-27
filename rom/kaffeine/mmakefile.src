@@ -51,6 +51,7 @@ KAFFEINE_FILES := \
     kaffeine_menus \
     kaffeine_gadgets \
     kaffeine_screens \
+    kaffeine_layers \
     kaffeine_mirror \
     kaffeine_copy \
     kaffeine_classic \

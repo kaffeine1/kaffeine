@@ -26,6 +26,7 @@
 #include "kaffeine_window.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_icon.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_sched.h"
 
 /* The signals, ports and open devices of the guest belong to the native
@@ -44,6 +45,8 @@ static LONG execute_owned(struct KaffeineContext *ctx)
     Kaffeine_FileCleanup(ctx);
     Kaffeine_IOCleanup(ctx);
     Kaffeine_ScreensCleanup(ctx);
+    /* after the windows and screens, which retire their 68k Layers first */
+    Kaffeine_LayersCleanup(ctx);
     return result;
 }
 
@@ -220,6 +223,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     if (!ctx)
         return -1;
     Kaffeine_GadgetsSetup(ctx);
+    Kaffeine_LayersSetup(ctx);
 
     entry = Kaffeine_LoadHunks(ctx, segList, (const struct HunkRelocTable *)relocs);
     if (entry)
@@ -240,6 +244,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     Kaffeine_GadgetsCleanup(ctx);
     Kaffeine_FontsCleanup(ctx);
     Kaffeine_IconsCleanup(ctx);
+    Kaffeine_LayersCleanup(ctx);
     Kaffeine_DestroyContext(ctx);
     return result;
 
@@ -284,6 +289,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     ctx = Kaffeine_CreateContext(KaffeineBase);
     if (!ctx) { FreeMem(fileData, fileSize); return -1; }
     Kaffeine_GadgetsSetup(ctx);
+    Kaffeine_LayersSetup(ctx);
 
     entry = Kaffeine_LoadHunksFromMemory(ctx, fileData, fileSize);
     FreeMem(fileData, fileSize);
@@ -300,6 +306,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     Kaffeine_GadgetsCleanup(ctx);
     Kaffeine_FontsCleanup(ctx);
     Kaffeine_IconsCleanup(ctx);
+    Kaffeine_LayersCleanup(ctx);
     Kaffeine_DestroyContext(ctx);
     return result;
 

@@ -47,6 +47,7 @@
 #include "kaffeine_sched.h"
 #include "kaffeine_workbench.h"
 #include "kaffeine_icon.h"
+#include "kaffeine_layers.h"
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -108,6 +109,9 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
             } else if (strcmp(name, "icon.library") == 0) {
                 manual = kaffeine_thunks_icon_manual;
                 manual_count = kaffeine_thunks_icon_manual_count;
+            } else if (strcmp(name, "layers.library") == 0) {
+                manual = kaffeine_thunks_layers_manual;
+                manual_count = kaffeine_thunks_layers_manual_count;
             }
             return Kaffeine_SetupLibBase(ctx, ctx->num_libs, kaffeine_all_gen_libs[i].name,
                                         KAFFEINE_MAX_LVO,
@@ -574,6 +578,7 @@ const struct M68KThunkEntry kaffeine_thunks_intuition_manual[] = {
     KAFFEINE_INTUITION_GADGET_THUNKS,
     KAFFEINE_INTUITION_PUBSCREEN_THUNKS,
     KAFFEINE_INTUITION_SCREEN_THUNKS,
+    KAFFEINE_INTUITION_LAYER_THUNKS,
     { 0, NULL }
 };
 const ULONG kaffeine_thunks_intuition_manual_count =
@@ -612,6 +617,7 @@ const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
     KAFFEINE_GRAPHICS_COMPAT_THUNKS,
     KAFFEINE_GRAPHICS_RASTPORT_THUNKS,
     KAFFEINE_GRAPHICS_DISPLAY_THUNKS,
+    KAFFEINE_GRAPHICS_LAYER_THUNKS,
     { 192, thunk_gfx_LoadRGB4 },
     { 0, NULL }
 };

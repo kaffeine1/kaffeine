@@ -74,6 +74,14 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
     {
         current = ctx->cpu;
         current->ops->execute(current->backend_state);
+        /* A completed slice of the outermost loop: no thunk or callback is
+           in flight, so a GUI snapshot may change under the guest here. */
+        if (!outer && ctx->gui_poll && ctx->running &&
+            ++ctx->gui_poll_slices >= KAFFEINE_GUI_POLL_SLICES)
+        {
+            ctx->gui_poll_slices = 0;
+            ctx->gui_poll(ctx);
+        }
         if (ctx->sched && !outer)
             ctx->task_ops->boundary(ctx);
     }

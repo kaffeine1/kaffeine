@@ -57,6 +57,12 @@ struct KaffeineGadgetBatch;
 struct KaffeineWindowGadgets;
 struct KaffeineClassic;
 struct KaffeineScreenKeep;
+struct KaffeineLayers;
+struct KaffeineLayerOps;
+
+/* Completed slices of the outermost Kaffeine_RunCPU() between two calls of
+   ctx->gui_poll */
+#define KAFFEINE_GUI_POLL_SLICES 4096
 
 #define KAFFEINE_MAX_ICONS 32
 #define KAFFEINE_MAX_MONITORS 128
@@ -209,6 +215,12 @@ struct KaffeineContext
     struct KaffeineScheduler *sched;
     const struct KaffeineTaskOps *task_ops;
     const struct KaffeineCPUFactory *cpu_factory;
+    /* Optional: the outermost Kaffeine_RunCPU() calls it after every
+       KAFFEINE_GUI_POLL_SLICES completed slices, between slices, where no
+       thunk and no guest callback runs, also without guest tasks. It
+       brings native GUI snapshots up to date (kaffeine_layers.c). */
+    void (*gui_poll)(struct KaffeineContext *ctx);
+    ULONG gui_poll_slices;
     /* Shadow struct mapping: m68k addr <-> native ptr */
     #define KAFFEINE_MAX_SHADOWS 1024
     struct { ULONG m68k_addr; void *native_ptr; UWORD type; } shadow_map[KAFFEINE_MAX_SHADOWS];
@@ -248,6 +260,12 @@ struct KaffeineContext
     struct KaffeineGadgetBatch *gadgets;
     const struct KaffeineWindowGadgets *window_gadgets;
     struct KaffeineClassic *classic;
+
+    /* Layers (kaffeine_layers.c): the 68k snapshots of native layers, and
+       what the window and screen bridges tell them; both NULL without the
+       module. */
+    struct KaffeineLayers *layers;
+    const struct KaffeineLayerOps *layer_ops;
 
     /* Screens of the program (kaffeine_screens.c): one 68k Screen for each
        native screen, with its 68k TextAttr, kept while the program holds a

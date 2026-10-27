@@ -36,6 +36,7 @@
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_screens.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_dispatch.h"
 
 /* The native side. Names have backing storage for the bridge's bounded
@@ -675,6 +676,10 @@ static void screen_image(Fixture &f, ULONG g, Screen &s, ULONG ta, ULONG tf, ULO
     w(RP + 64, rp.TxSpacing);
     w(BM, s.BitMap_OBSOLETE.BytesPerRow); w(BM + 2, s.BitMap_OBSOLETE.Rows);
     want[BM + 4] = s.BitMap_OBSOLETE.Flags; want[BM + 5] = s.BitMap_OBSOLETE.Depth;
+    // Classic SignalSemaphore at Screen.LayerInfo(224).Lock(24), already
+    // valid before any native layer snapshot succeeds.
+    want[256] = 15;
+    l(264, g + 268); l(272, g + 264); w(292, 0xFFFF);
     want[330] = s.DetailPen; want[331] = s.BlockPen; w(332, s.SaveColor0);
     assert(g && g + want.size() <= f.memory.size());
     assert(std::equal(want.begin(), want.end(), f.memory.begin() + g));
@@ -733,7 +738,7 @@ static void test_screen_fields_and_relock()
         s.ViewPort.DspIns = s.ViewPort.SprIns = s.ViewPort.ClrIns = reinterpret_cast<CopList *>(&s);
         s.ViewPort.UCopIns = reinterpret_cast<UCopList *>(&s);
         s.ViewPort.RasInfo = reinterpret_cast<RasInfo *>(&s);
-        s.LayerInfo.unused = &s;
+        s.LayerInfo.Lock.opaque = 0xDEADBEEF;
         s.FirstGadget = &pointer_gadget; s.BarLayer = reinterpret_cast<Layer *>(&s);
         s.ExtData = s.UserData = f.memory.data();
         s.BitMap_OBSOLETE.pad = 0xBEEF;
@@ -2198,10 +2203,103 @@ static void test_teardown()
     assert(native->count(CLOSE) == 3 && native->calls.back().screen == sb && !f.owned());
 }
 
+/* What the layer bridge hears (kaffeine_layers.c, not linked here): a
+   snapshot for each screen that gets or refills a 68k Screen; its end
+   before Intuition may close the screen and while the 68k Screen that
+   holds its LayerInfo is still there; and the end of all of them before the
+   cleanup gives back the locks that keep screens open. */
+struct LayerOpCall
+{
+    std::string name;
+    Screen *screen;
+    size_t native_calls;
+    ULONG guest;
+};
+static std::vector<LayerOpCall> layer_op_calls;
+static void op_mirrored(KaffeineContext *ctx, Screen *s)
+{
+    const ULONG guest = Kaffeine_ScreenGuest(ctx, s);
+    const ULONG ss = guest + M68K_SCR_LAYERINFO + M68K_LI_LOCK;
+    const ULONG queue = ss + M68K_SS_WAITQUEUE;
+    /* Screen construction initializes this before a snapshot callback can
+       fail or skip because Intuition is busy. A held semaphore also keeps
+       this empty queue intact across a refused close. */
+    assert(guest && ctx->mem[ss + M68K_SS_LN_TYPE] == 15);
+    assert(m68k_read32(ctx, queue) == queue + 4 && !m68k_read32(ctx, queue + 4));
+    assert(m68k_read32(ctx, queue + 8) == queue);
+    layer_op_calls.push_back({ "mirrored", s, native->calls.size(), guest });
+}
+static void op_closing(KaffeineContext *ctx, Screen *s)
+{
+    // only a pointer comparison: the screen may be gone already
+    layer_op_calls.push_back({ "closing", s, native->calls.size(), s ? Kaffeine_ScreenGuest(ctx, s) : 0 });
+}
+static BOOL op_window_opened(KaffeineContext *, ULONG, Window *) { assert(false); return FALSE; }
+static void op_window_closing(KaffeineContext *, ULONG, Window *) { assert(false); }
+static ULONG op_window_flags(KaffeineContext *, ULONG, ULONG flags) { assert(false); return flags; }
+static void op_window_synced(KaffeineContext *, ULONG, Window *) { assert(false); }
+static const KaffeineLayerOps recording_layer_ops =
+    { op_window_opened, op_window_closing, op_window_flags, op_window_synced, op_mirrored, op_closing };
+
+static void test_layer_notifications()
+{
+    Fixture f;
+    f.ctx.layer_ops = &recording_layer_ops;
+    layer_op_calls.clear();
+    f.add();
+    const ULONG pub = f.lock(); assert(pub);
+    Screen *ws = Kaffeine_ScreenNative(&f.ctx, pub);
+    assert(layer_op_calls.size() == 1 && layer_op_calls[0].name == "mirrored");
+    assert(layer_op_calls[0].screen == ws && layer_op_calls[0].guest == pub);
+    // a relock takes the snapshot again; an unlock that is not the last does nothing
+    assert(f.lock() == pub && layer_op_calls.size() == 2 && layer_op_calls[1].name == "mirrored");
+    f.unlock(pub);
+    assert(layer_op_calls.size() == 2);
+    // the last unlock: the snapshot goes while the 68k Screen is still there
+    f.unlock(pub);
+    assert(layer_op_calls.size() == 3 && layer_op_calls[2].name == "closing");
+    assert(layer_op_calls[2].screen == ws && layer_op_calls[2].guest == pub);
+    assert(!Kaffeine_ScreenGuest(&f.ctx, ws));
+    // an opened screen
+    const ULONG g = f.open(0, 0); assert(g);
+    Screen *s = native->opened.back().result;
+    assert(layer_op_calls.size() == 4 && layer_op_calls[3].name == "mirrored");
+    assert(layer_op_calls[3].screen == s && layer_op_calls[3].guest == g);
+    // CloseScreen(): the snapshot goes before Intuition gets the screen;
+    // after a refusal the snapshot is restored immediately
+    native->close_refuse = true;
+    size_t calls = native->calls.size();
+    assert(f.close(g) == 0);
+    assert(layer_op_calls.size() == 6 && layer_op_calls[4].name == "closing");
+    assert(layer_op_calls[4].screen == s && layer_op_calls[4].native_calls == calls);
+    assert(layer_op_calls[4].guest == g && native->calls.back().kind == CLOSE);
+    assert(Kaffeine_ScreenGuest(&f.ctx, s) == g);
+    assert(layer_op_calls[5].name == "mirrored" && layer_op_calls[5].guest == g);
+    native->close_refuse = false;
+    calls = native->calls.size();
+    assert(f.close(g) == 1);
+    assert(layer_op_calls.size() == 8);
+    assert(layer_op_calls[6].name == "closing" && layer_op_calls[6].native_calls == calls);
+    // and again as the 68k Screen goes after Intuition closed the screen
+    assert(layer_op_calls[7].name == "closing" && layer_op_calls[7].screen == s);
+    assert(layer_op_calls[7].native_calls == calls + 1 && layer_op_calls[7].guest == g);
+    f.absent(g, s);
+    // the cleanup ends every snapshot before it gives back any lock
+    assert(f.lock());
+    const size_t mark = layer_op_calls.size();
+    calls = native->calls.size();
+    Kaffeine_ScreensCleanup(&f.ctx);
+    assert(layer_op_calls.size() > mark && layer_op_calls[mark].name == "closing");
+    assert(!layer_op_calls[mark].screen && layer_op_calls[mark].native_calls == calls);
+    assert(native->calls.size() > calls);
+    f.ctx.layer_ops = nullptr;
+}
+
 int main()
 {
     const struct Test { const char *name; void (*run)(); } tests[] =
     {
+        { "Layer snapshots follow 68k Screens and end before CloseScreen, forget and cleanup unlocks", test_layer_notifications },
         { "Nine ABI registrations override poisoned generated fallbacks", test_registrations },
         { "NULL and named locks expose the NDK fields, font and three shadows; relocks refill in place", test_screen_fields_and_relock },
         { "The last unlock returns the mirror and shadows; the font stays pinned; a later lock allocates anew", test_release_and_recreate },
