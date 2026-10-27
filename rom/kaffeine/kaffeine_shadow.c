@@ -19,6 +19,7 @@
 #include "kaffeine_shadow.h"
 #include "kaffeine_cli.h"
 #include "kaffeine_tasks.h"
+#include "kaffeine_sched.h"
 #include "kaffeine_filehandle.h"
 
 /* Keep registry ownership with the engine that creates and destroys shadows. */
@@ -313,6 +314,14 @@ IPTR Kaffeine_FindTask(struct KaffeineContext *ctx, void *cpu)
         !memchr(ctx->mem + name_addr, 0, ctx->mem_size - name_addr))
         return 0;
     name = (const char *)ctx->mem + name_addr;
+    /* The program's own AddTask() children come first; none is native. */
+    if (ctx->sched)
+    {
+        ULONG child = ctx->task_ops->find_named(ctx, name);
+
+        if (child)
+            return child;
+    }
     return shadow_task(ctx, FindTask(name), FALSE);
 }
 
@@ -344,6 +353,11 @@ ULONG shadow_init_execbase(struct KaffeineContext *ctx, ULONG m68k_base, void *n
        Publish the same registered snapshot that named FindTask lookups reuse. */
     ctx->guest_exec_task = shadow_task(ctx, FindTask(NULL), TRUE);
     m68k_write32(ctx, m68k_base + M68K_EXECBASE_THISTASK, ctx->guest_exec_task);
+
+    /* This snapshot starts outside any guest critical section, regardless
+       of the native nesting while the snapshot is constructed. */
+    ctx->mem[m68k_base + KAFFEINE_EXECBASE_IDNESTCNT] = 0xff;
+    ctx->mem[m68k_base + KAFFEINE_EXECBASE_TDNESTCNT] = 0xff;
 
     /* Public guest objects cannot share links with native Exec lists. */
     {

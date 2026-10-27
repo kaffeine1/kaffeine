@@ -26,6 +26,7 @@
 #include "kaffeine_window.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_icon.h"
+#include "kaffeine_sched.h"
 
 /* The signals, ports and open devices of the guest belong to the native
    task that runs it, as does a lock of the list of public screens, an Exec
@@ -112,6 +113,9 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
 
     /* Init ExecBase shadow data fields */
     shadow_init_execbase(ctx, m68k_sysbase, SysBase);
+
+    /* AddTask() children run on the guest task scheduler */
+    ctx->task_ops = &Kaffeine_GuestTaskOps;
 
     /* Auto-open libraries referenced by C startup tables */
     Kaffeine_AutoOpenLibs(ctx);

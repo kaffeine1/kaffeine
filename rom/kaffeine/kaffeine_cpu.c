@@ -7,6 +7,7 @@
 #include "kaffeine_cpu.h"
 #include "kaffeine_intern.h"
 #include "kaffeine_callback.h"
+#include "kaffeine_sched.h"
 
 ULONG Kaffeine_GetD(void *cpu, int reg)
 {
@@ -58,7 +59,7 @@ void Kaffeine_SetPC(void *cpu, ULONG value)
 
 LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
 {
-    struct KaffeineCPU *outer = ctx->cpu;
+    struct KaffeineCPU *outer = ctx->cpu, *current;
 
     ctx->running = TRUE;
     ctx->exit_code = 0;
@@ -66,11 +67,25 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
     ctx->callback_failed = FALSE;
     ctx->cpu = cpu;
 
+    /* With AddTask() children, ctx->cpu is the CPU of the current guest
+       task. It changes only here, between slices of the outermost loop,
+       where no callback or thunk of any task is in flight. */
     while (ctx->running)
-        cpu->ops->execute(cpu->backend_state);
+    {
+        current = ctx->cpu;
+        current->ops->execute(current->backend_state);
+        if (ctx->sched && !outer)
+            ctx->task_ops->boundary(ctx);
+    }
 
+    /* A stop in a child ends the whole program with that child's D0. */
+    current = ctx->cpu;
+    ctx->exit_code = (LONG)Kaffeine_GetD(current, 0);
+    if (current != cpu)
+        Kaffeine_SetD(cpu, 0, (ULONG)ctx->exit_code);
+    if (ctx->sched && !outer)
+        ctx->task_ops->end(ctx);
     ctx->cpu = outer;
-    ctx->exit_code = (LONG)Kaffeine_GetD(cpu, 0);
     return ctx->exit_code;
 }
 
@@ -130,7 +145,9 @@ BOOL Kaffeine_CallGuest(struct KaffeineContext *ctx, void *cpu, ULONG entry,
             Kaffeine_StopGuest(ctx, cpu, 20);
             break;
         }
-        if ((current_sp & 1) || current_sp >= ctx->mem_size ||
+        /* A child that returns inside a callback cannot end there. */
+        if (current_pc == KAFFEINE_TASK_EXIT_ADDR ||
+            (current_sp & 1) || current_sp >= ctx->mem_size ||
             ctx->mem_size - current_sp < 2)
         {
             Kaffeine_StopGuest(ctx, cpu, 20);

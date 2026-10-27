@@ -53,7 +53,7 @@ Darwin-specific JIT constraints.
 ## Coverage
 
 The Makefile is the authoritative list of executables. The current suite
-has 41 test executables and a thunk-registration audit.
+has 42 test executables and a thunk-registration audit.
 
 | Area | Coverage |
 | --- | --- |
@@ -63,6 +63,7 @@ has 41 test executables and a thunk-registration audit.
 | Graphics and Intuition | RastPorts, fonts, screens, windows, IDCMP, requests, menus, gadgets and Workbench objects |
 | Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, no-window console calls and diskfont snapshots |
 | CPU backend extension | Hosted AArch64 translation probe behind the same CPU interface |
+| Guest scheduling | Separate complete Moira CPUs, task identity/priority, deferred Wait/WaitPort, Forbid/Disable, message exchange, native signal routing, removal, bounds, allocation rollback and cleanup |
 
 Tests compile production adapters as C and use recording native API
 collaborators. Literal LVO dispatch, big-endian layouts, bounds, aliases,

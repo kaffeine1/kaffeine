@@ -25,6 +25,7 @@ text = '''/* Generated from production. Native IDCMP and App paths are poisoned.
 #include "kaffeine_intern.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_messages.h"
+#include "kaffeine_sched.h"
 #include "kaffeine_filehandle.h"
 #include "kaffeine_format.h"
 #include "kaffeine_shadow.h"
@@ -60,7 +61,7 @@ for name in ['guest_string','bad_dos_buffer','transfer_buffer','kaffeine_dos_Ope
 start = (core / 'kaffeine_thunks_dos.c').read_text().index('struct PrintOutput\n')
 source = (core / 'kaffeine_thunks_dos.c').read_text()
 text += source[start:source.index('IPTR kaffeine_dos_VFWritef(', start)]
-for name in ['guest_task','port_entry','Kaffeine_CreateMsgPort','Kaffeine_DeleteMsgPort']:
+for name in ['guest_task','Kaffeine_IORefuse','port_entry','Kaffeine_CreateMsgPort','Kaffeine_DeleteMsgPort']:
     text += function('kaffeine_exec_io.c',name) + '\n'
 for name in ['guest_first','Kaffeine_GetMsg','Kaffeine_WaitPort','Kaffeine_ReplyMsg']:
     text += function('kaffeine_window.c',name) + '\n'

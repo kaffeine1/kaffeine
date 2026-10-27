@@ -39,6 +39,9 @@ struct M68KHeapBlock
 struct M68KThunkEntry;
 struct M68KHeapAllocation;
 struct KaffeineCPU;
+struct KaffeineScheduler;
+struct KaffeineTaskOps;
+struct KaffeineCPUFactory;
 struct IORequest;
 struct Message;
 struct MsgPort;
@@ -199,6 +202,13 @@ struct KaffeineContext
     /* The CPU in Kaffeine_RunCPU(), NULL outside it: the loaders of 68k
        code have no CPU handle to tell its backend that code changed. */
     struct KaffeineCPU *cpu;
+    /* Guest tasks (kaffeine_sched.c): the scheduler while the program has
+       AddTask() children, else NULL; its entry points, without which
+       AddTask() stops the program; and the backend's CPU factory while its
+       Kaffeine_Execute() runs. Children are never native Exec tasks. */
+    struct KaffeineScheduler *sched;
+    const struct KaffeineTaskOps *task_ops;
+    const struct KaffeineCPUFactory *cpu_factory;
     /* Shadow struct mapping: m68k addr <-> native ptr */
     #define KAFFEINE_MAX_SHADOWS 1024
     struct { ULONG m68k_addr; void *native_ptr; UWORD type; } shadow_map[KAFFEINE_MAX_SHADOWS];

@@ -9,6 +9,7 @@
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_messages.h"
+#include "kaffeine_sched.h"
 
 #include <aros/debug.h>
 #include <proto/exec.h>
@@ -571,11 +572,11 @@ IPTR Kaffeine_CacheClearE(struct KaffeineContext *ctx, void *cpu)
 }
 
 /* Classic tasks contain BE32 links, stack and code addresses. They must
-   never be installed in native Exec's ready/wait lists. A guest task
-   scheduler is required before these entry points can be supported. */
+   never be installed in native Exec's ready/wait lists: only the guest
+   task scheduler (kaffeine_sched.c) runs them, on CPUs of their own. */
 static IPTR task_unsupported(struct KaffeineContext *ctx, const char *operation)
 {
-    bug("[kaffeine] %s: guest task scheduling is not implemented, stopping (20)\n", operation);
+    bug("[kaffeine] %s: no guest task scheduler, stopping (20)\n", operation);
     ctx->running = FALSE;
     ctx->exit_code = 20;
     return 20;
@@ -584,14 +585,17 @@ static IPTR task_unsupported(struct KaffeineContext *ctx, const char *operation)
 /* -282: AddTask(A1=task, A2=initialPC, A3=finalPC). */
 IPTR Kaffeine_AddTask(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)cpu;
+    if (ctx->task_ops)
+        return ctx->task_ops->add_task(ctx, cpu);
     return task_unsupported(ctx, "AddTask");
 }
 
-/* -288: RemTask(A1=task), including NULL for the current task. */
+/* -288: RemTask(A1=task), including NULL for the current task. Without
+   children there is no task that it could remove. */
 IPTR Kaffeine_RemTask(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)cpu;
+    if (ctx->sched)
+        return ctx->task_ops->rem_task(ctx, cpu);
     return task_unsupported(ctx, "RemTask");
 }
 

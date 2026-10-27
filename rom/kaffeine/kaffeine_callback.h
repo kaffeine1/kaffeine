@@ -14,6 +14,11 @@
 #define KAFFEINE_CALLBACK_RETURN_BASE 0x000120u
 #define KAFFEINE_CALLBACK_RETURN_SIZE (4u * KAFFEINE_CALLBACK_DEPTH)
 
+/* The return address that AddTask() gives a child for a NULL finalPC, past
+   the root's sentinel (kaffeine_moira.cpp): reaching it ends that child
+   alone (kaffeine_sched.c). The scheduler keeps two NOP words there. */
+#define KAFFEINE_TASK_EXIT_ADDR 0x000168u
+
 struct KaffeineGuestCall
 {
     ULONG d[8];

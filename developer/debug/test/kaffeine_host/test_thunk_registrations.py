@@ -390,14 +390,6 @@ CASES = (
 # Explicit table of manual handlers that intentionally ignore one or more
 # fd arguments, with the exact ignored register set and the reason.
 ALLOWED_IGNORED_REGS = {
-    "Kaffeine_AddTask": (
-        {"A1", "A2", "A3"},
-        "AddTask() stops with rc20 until guest task scheduling has a bridge",
-    ),
-    "Kaffeine_RemTask": (
-        {"A1"},
-        "RemTask() stops with rc20; native Exec must not remove a guest task record",
-    ),
     "thunk_gfx_OpenMonitor": (frozenset({"A1", "D0"}), "owned native monitors are unsupported"),
     "thunk_gfx_CloseMonitor": (frozenset({"A0"}), "borrowed snapshots cannot close native monitors"),
     "thunk_gfx_FindDisplayInfo": (
@@ -740,7 +732,24 @@ def direct_register_reads(body):
     return regs
 
 
-def handler_register_reads(name, functions, seen=None):
+def parse_task_delegates(core, functions):
+    """Follow the actual production vtable, rather than waive ABI arguments."""
+    header = strip_c_comments((core / "kaffeine_sched.h").read_text())
+    source = strip_c_comments((core / "kaffeine_sched.c").read_text())
+    structure = re.search(r"struct KaffeineTaskOps\s*\{(.*?)\n\};", header, re.S)
+    initializer = re.search(r"\bKaffeine_GuestTaskOps\s*=\s*\{(.*?)\n\};", source, re.S)
+    if not structure or not initializer:
+        raise ValueError("missing guest task operation declarations")
+    members = re.findall(r"\(\s*\*\s*(\w+)\s*\)", structure.group(1))
+    targets = [x.strip() for x in initializer.group(1).split(",") if x.strip()]
+    if len(members) != len(targets) or len(set(members)) != len(members):
+        raise ValueError("guest task operation table does not match its structure")
+    if any(target not in functions for target in targets):
+        raise ValueError("guest task operation has no auditable production body")
+    return dict(zip(members, targets))
+
+
+def handler_register_reads(name, functions, seen=None, task_ops=None):
     if seen is None:
         seen = set()
     if name in seen or name not in functions:
@@ -754,7 +763,11 @@ def handler_register_reads(name, functions, seen=None):
         if callee in {"Kaffeine_CallGuest", "Kaffeine_StopGuest"}:
             continue
         if callee in functions and callee != name:
-            regs |= handler_register_reads(callee, functions, seen)
+            regs |= handler_register_reads(callee, functions, seen, task_ops)
+    for member in re.findall(r"\bctx->task_ops->(\w+)\s*\(", body):
+        if not task_ops or member not in task_ops:
+            raise ValueError("unresolved guest task operation: " + member)
+        regs |= handler_register_reads(task_ops[member], functions, seen, task_ops)
     return regs
 
 
@@ -881,6 +894,7 @@ def main():
                   "expected", expected, "found", actual)
 
     functions = parse_c_functions(core)
+    task_ops = parse_task_delegates(core, functions)
     total_manual = 0
     seen_ignored = set()
     seen_console_refusals = set()
@@ -938,7 +952,7 @@ def main():
                       "definition not found in rom/kaffeine")
                 continue
 
-            read_regs = handler_register_reads(handler, functions)
+            read_regs = handler_register_reads(handler, functions, task_ops=task_ops)
             # Reading a register only to discard its value does not implement
             # that argument. Explicit refusal bodies must account for it as
             # ignored, just like handlers that do not read it at all.

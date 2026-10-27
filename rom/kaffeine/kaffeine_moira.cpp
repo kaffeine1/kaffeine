@@ -10,7 +10,10 @@
 #include "kaffeine_cpu.h"
 #include "kaffeine_dispatch.h"
 #include "kaffeine_callback.h"
+#include "kaffeine_sched.h"
 #include "Moira/Moira.h"
+
+#include <new>
 
 using namespace moira;
 
@@ -24,6 +27,11 @@ using namespace moira;
 static_assert(SENTINEL_ADDR >= KAFFEINE_CALLBACK_RETURN_BASE + KAFFEINE_CALLBACK_RETURN_SIZE &&
               SENTINEL_ADDR + 2 <= KAFFEINE_VECTORS_SIZE,
               "the sentinel must stay in the free vector space, below the heap");
+/* The root returns to the sentinel, a child to its own end address, whose
+   prefetch must not read the sentinel. */
+static_assert(KAFFEINE_TASK_EXIT_ADDR >= SENTINEL_ADDR + 2 &&
+              KAFFEINE_TASK_EXIT_ADDR + 4 <= KAFFEINE_VECTORS_SIZE,
+              "a child's end address must not be the root's sentinel");
 
 namespace
 {
@@ -475,6 +483,37 @@ const struct KaffeineCPUOps moira_cpu_ops =
     nullptr
 };
 
+/* A complete Moira for each AddTask() child (kaffeine_sched.c), so that no
+   register, FPU or exception state is shared. Reset leaves it in
+   supervisor mode; the scheduler sets SR, A7 and PC. */
+struct KaffeineCPU *moira_task_create(struct KaffeineContext *ctx) noexcept
+{
+    AROSMoira *cpu = nullptr;
+    try
+    {
+        /* nothrow covers allocation of this object, but its constructor
+           can also allocate backend state and throw. Keep both inside
+           the C++ boundary before returning to the C scheduler. */
+        cpu = new (std::nothrow) AROSMoira(ctx);
+        if (!cpu)
+            return nullptr;
+        cpu->reset();
+    }
+    catch (...)
+    {
+        delete cpu;
+        return nullptr;
+    }
+    return &cpu->cpu_handle;
+}
+
+void moira_task_destroy(struct KaffeineContext *, struct KaffeineCPU *handle) noexcept
+{
+    delete static_cast<AROSMoira *>(handle->backend_state);
+}
+
+const struct KaffeineCPUFactory moira_cpu_factory = { moira_task_create, moira_task_destroy };
+
 } /* anonymous namespace */
 
 extern "C" {
@@ -514,7 +553,11 @@ try
     cpu.setD(0, ctx->m68k_argsize);
     cpu.setA(6, ctx->m68k_sysbase);
 
+    /* AddTask() children get CPUs of their own while this one runs; the
+       loop destroys them before it returns. */
+    ctx->cpu_factory = &moira_cpu_factory;
     LONG result = Kaffeine_RunCPU(ctx, &cpu.cpu_handle);
+    ctx->cpu_factory = nullptr;
     /* RunCPU returns guest D0 even after a halt. A fault takes precedence. */
     ctx->exit_code = cpu.faulted ? RETURN_FAIL : result;
     return ctx->exit_code;
