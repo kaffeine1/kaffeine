@@ -65,7 +65,7 @@ at the end.
 | `exec_message_lifetime.c` | Manual ports drained by RemHead, RemTail, Remove and inline Node links, followed by FreeVec or FreeMem. Reacquires the freed bytes with AllocAbs before reusing them, then checks an unrelated message roundtrip, payload guards and the reused buffer. |
 | `exec_packets.c` | Read-only ACTION_READ packets and shared DOS file position. |
 | `gfx_planar_read.c` | Original 32 by 3 planar images at depths 1, 2 and 8. Manually initialized public RastPort/BitMap structures, all 288 in-range pixel values, Flags 0/BMF_STANDARD, and byte-for-byte preservation of both structures, planes and guards. |
-| `gfx_display_info.c` | NULL-handle display queries by native mode ID: classic DISP/DIMS/NAME layouts, headers, all 105 requested lengths per tag including partial rectangles, reserved-tail/guard preservation and unavailable modes. |
+| `gfx_display_info.c` | NULL-handle display queries by native mode ID: classic DISP/DIMS/NAME/MNTR layouts, headers, every requested length0..104 (monitors0..120), partial rectangles, reserved-tail/guard preservation, unavailable modes and stable monitor names/scalars/identities. |
 | `icon_objects.c` | Owned DiskObject acquisition/free, NULL free, 96 sequential allocation cycles, exact guest FindToolType result pointers, case-insensitive MatchToolValue and preservation of original strings/arrays. The optional `leave` argument is an AROS bridge teardown probe that leaves three objects for context cleanup. Scalar metadata observations may differ between native backends; no icon images are copied or tested. |
 
 ## Building the test programs

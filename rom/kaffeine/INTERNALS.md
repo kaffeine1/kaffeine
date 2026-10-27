@@ -1049,7 +1049,7 @@ validation work.
 | -702 | ResetMenuStrip | As SetMenuStrip, through native ResetMenuStrip, but a strip that the program built takes the copy that windows show or that waits, with the flags that the program changed, without memory; a new copy, for a strip without one, goes through native SetMenuStrip, which works out its page sizes |
 | -816 | SetWindowPointerA | No-op (avoids X11 blocking) (`kaffeine_thunks_gfx.c`) |
 
-**graphics.library (24 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, LoadRGB4 in `kaffeine_thunks.c`):**
+**graphics.library (26 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, LoadRGB4 in `kaffeine_thunks.c`):**
 
 RastPort thunks use the registered 68k RastPort of a window or a screen
 (see RastPorts and Fonts below). ReadPixel also reads bounded guest planar
@@ -3010,15 +3010,15 @@ application and hardware operation remain unverified.
 ## Display query boundary
 
 The manual -756 handler accepts only a NULL `DisplayInfoHandle`, a mode ID
-in D2 and `DTAG_DISP`, `DTAG_DIMS` or `DTAG_NAME` in D1. A complete native
+in D2 and `DTAG_DISP`, `DTAG_DIMS`, `DTAG_NAME` or `DTAG_MNTR` in D1. A complete native
 structure is queried into a zeroed temporary, independently of the classic
 buffer size in D0. An unavailable mode returns zero without writing; an
 unexpected incomplete native response stops20 before any guest write.
 
 Only the actual, clipped classic transfer range must fit in guest memory.
 All fields are encoded explicitly; signed rectangle coordinates retain their
-WORD bits. QueryHeader uses TAG_SKIP and classic local lengths 4/8/4.
-DisplayInfo transfers at most 48 bytes, DimensionInfo 66 and NameInfo 48,
+WORD bits. QueryHeader uses TAG_SKIP and classic local lengths 4/8/4/9.
+DisplayInfo transfers at most 48 bytes, DimensionInfo 66, NameInfo 48 and MonitorInfo 88,
 excluding their reserved tails. DimensionInfo first permits a byte prefix up
 to 26 bytes, then only complete eight-byte rectangles. All untouched bytes
 remain as the caller supplied them. Zero size performs no backend query.
@@ -3027,5 +3027,24 @@ The native-width DimensionInfo reserved fields contain backend-private
 pointers. They are never copied, and no native display handle is exposed:
 -726 (`FindDisplayInfo`) explicitly stops20. Non-NULL handles and unsupported
 chunks also stop20 before reaching native graphics.library. Original target
-and host fixtures cover every requested length 0..104; native mode values
+and host fixtures cover every requested length 0..104 (0..120 for monitors); native mode values
 remain backend observations rather than fixed Amiga hardware values.
+
+
+MonitorInfo.Mspc is a guest identity cached by borrowed native MonitorSpec
+identity, outside the generic shadow map. Its 160-byte classic snapshot uses
+field names to read native metadata and explicit classic offsets to serialize
+scalars and geometry. A maximum of 511 name bytes and a terminator follow the
+snapshot. Native callbacks, xln_Library, ms_Special, database links/HIDD alias,
+semaphore owner/waiters and driver vectors never become guest pointers.
+Canonical empty guest database/semaphore headers support bounded readers.
+
+The context holds up to128 snapshots, allocated as HEAP_MIRROR ownership so
+guest FreeMem cannot invalidate cached identities. Context destruction releases
+all copies; no native monitor reference is opened or closed. Header-only queries
+through byte16 allocate no snapshot. Snapshot publication commits only after
+all allocation, name and overlap checks. Output buffers overlapping existing
+snapshots are refused. Native monitor fields are a snapshot with no writeback.
+OpenMonitor/CloseMonitor explicitly refuse instead of passing guest copies to
+native monitor APIs. Host tests exercise capacity, names, allocation failure,
+free protection, complete byte guards and pointer normalization.

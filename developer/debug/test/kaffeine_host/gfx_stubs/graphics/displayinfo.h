@@ -2,6 +2,7 @@
 #pragma once
 #include <exec/types.h>
 #include <graphics/gfx.h>
+#include <graphics/monitor.h>
 typedef APTR DisplayInfoHandle;
 typedef struct { WORD x, y; } Point;
 struct QueryHeader { ULONG StructID, DisplayID, SkipID, Length; };
@@ -16,6 +17,13 @@ struct DimensionInfo {
     UWORD MaxDepth, MinRasterWidth, MinRasterHeight, MaxRasterWidth, MaxRasterHeight;
     struct Rectangle Nominal, MaxOScan, VideoOScan, TxtOScan, StdOScan;
     UBYTE pad[14]; IPTR reserved[2];
+};
+struct MonitorInfo {
+    struct QueryHeader Header; struct MonitorSpec *Mspc;
+    Point ViewPosition, ViewResolution; struct Rectangle ViewPositionRange;
+    UWORD TotalRows, TotalColorClocks, MinRow; WORD Compatibility;
+    UBYTE pad[32]; Point MouseTicks, DefaultViewPosition;
+    ULONG PreferredModeID; IPTR reserved[2];
 };
 struct NameInfo { struct QueryHeader Header; UBYTE Name[32]; IPTR reserved[2]; };
 #define DTAG_DISP 0x80000000U
