@@ -2713,6 +2713,30 @@ as native copies that `kaffeine_copy.c` makes:
    the knob without messages (`GACT_FOLLOWMOUSE` sends them) sees them at
    the next of these passes, not as the knob moves.
 
+## Icon metadata and ownership
+
+`kaffeine_icon.c` owns up to 32 native DiskObjects per guest context.
+GetDiskObject, GetDiskObjectNew, GetDefDiskObject and NewDiskObject adopt the
+native result and publish a classic 78-byte BE metadata header in one guest
+allocation. Scalar Gadget fields, positions and stack size follow the native
+result. DefaultTool, ToolWindow, a BE32 ToolTypes pointer array and its strings
+follow the padded header. Strings are bounded to 4096 bytes including NUL,
+ToolTypes to 128 entries plus its terminator, and the snapshot to 65536 bytes.
+Every native pointer field outside these copied strings is zero, including
+images and DrawerData. Metadata edits stay in guest memory.
+
+FreeDiskObject(NULL) is a no-op. An exact live guest identity releases the
+stored native pointer once and frees its guest snapshot; foreign, interior
+and repeated frees stop with rc 20. Publication failure releases the newly
+acquired native object. Both RunHunk and RunFile clean up remaining icons
+before destroying guest memory, including after a controlled stop.
+
+FindToolType validates an even-addressed guest array and bounded strings,
+builds a native-width pointer array, then maps the result only into one of
+the original guest strings. MatchToolValue validates both strings and
+preserves the native BOOL. All 21 current icon vectors have manual entries;
+the other 14 operations stop before pointer-rich generated conversions.
+
 ## RastPorts and Fonts
 
 The RastPort of a window or a screen is a 68k RastPort in the guest arena

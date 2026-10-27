@@ -74,10 +74,13 @@ REG_CHECK_ARGS := $(if $(NDK_FD_DIR),--ndk-fd-dir "$(NDK_FD_DIR)",) $(if $(AROS_
 MESSAGE_CPPFLAGS := -I$(TEST_DIR)/message_stubs -I$(TEST_DIR)/dos_thunk_stubs -I$(TEST_DIR)/gfx_stubs -I$(TEST_DIR)/io_stubs $(TEST_CPPFLAGS)
 MESSAGE_OBJS := $(addprefix $(BUILD_DIR)/message_boundary_,cpu.o dispatch.o memory.o messages.o exec_compat.o filehandle.o format.o shadow.o)
 MESSAGE_OBJS += $(BUILD_DIR)/message_entries.o
+ICON_CPPFLAGS := -I$(TEST_DIR)/icon_stubs $(MESSAGE_CPPFLAGS)
+ICON_OBJS := $(MESSAGE_OBJS) $(BUILD_DIR)/icon_boundary_icon.o
 
 TESTS = test_kaffeine test_moira_exec test_hello_thunks test_dispatch test_hunk_loading
 TESTS += test_exec_lists
 TESTS += test_dos_thunks test_exec_messages test_dos_packets
+TESTS += test_icon
 TESTS += test_memheader test_memheader_moira
 TESTS += test_utility_thunks test_locale_thunks test_mathieee_thunks
 TESTS += test_mathffp_thunks
@@ -421,3 +424,9 @@ $(BUILD_DIR)/test_dos_packets: $(TEST_DIR)/test_dos_packets.cpp $(MESSAGE_OBJS) 
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
 -include $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_messages.d
 .PHONY: test_exec_messages test_dos_packets
+
+$(BUILD_DIR)/icon_boundary_icon.o: $(KAFFEINE_DIR)/kaffeine_icon.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(ICON_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
+$(BUILD_DIR)/test_icon: $(TEST_DIR)/test_icon.cpp $(ICON_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(ICON_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(ICON_OBJS) $(LDLIBS)
+-include $(BUILD_DIR)/icon_boundary_icon.d
