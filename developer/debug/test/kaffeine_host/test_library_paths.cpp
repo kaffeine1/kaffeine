@@ -33,6 +33,7 @@ extern "C" IPTR library_paths_unexpected_thunk(KaffeineContext *, void *)
     extern "C" const ULONG kaffeine_thunks_##name##_count = 2
 MANUAL_TABLE(intuition_manual);
 MANUAL_TABLE(graphics_manual);
+MANUAL_TABLE(cybergraphics_manual);
 MANUAL_TABLE(diskfont_manual);
 MANUAL_TABLE(utility_manual);
 MANUAL_TABLE(locale_manual);
@@ -155,6 +156,7 @@ struct Manual { const char *name; const M68KThunkEntry *table; ULONG count; };
 static const Manual manuals[] = {
     {"intuition.library", kaffeine_thunks_intuition_manual, kaffeine_thunks_intuition_manual_count},
     {"graphics.library", kaffeine_thunks_graphics_manual, kaffeine_thunks_graphics_manual_count},
+    {"cybergraphics.library", kaffeine_thunks_cybergraphics_manual, kaffeine_thunks_cybergraphics_manual_count},
     {"diskfont.library", kaffeine_thunks_diskfont_manual, kaffeine_thunks_diskfont_manual_count},
     {"utility.library", kaffeine_thunks_utility_manual, kaffeine_thunks_utility_manual_count},
     {"locale.library", kaffeine_thunks_locale_manual, kaffeine_thunks_locale_manual_count},
