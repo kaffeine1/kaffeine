@@ -42,11 +42,14 @@ The long-term roadmap is a direction, separate from the verified behavior below.
 - The bridge loads 68k disk libraries and adapts native library paths,
   mathffp calls, the no-window console unit, disk fonts, guest queues and
   bounded DOS read packets.
-- Personal Paint loads fonts and image I/O libraries and completes packet
-  reads and WaitPort/GetMsg replies. Startup passes the blitter library's
-  Exec memory-list scan, then reaches a later DOS read packet rejected by
-  the bridge's boundary checks; the editor and full application lifecycle
-  have not been validated.
+- The original 68k Personal Paint 7.2.1.0 reaches the editor from the native
+  AROS Shell in QEMU. A verified run starts with a 24-bit Workbench, selects
+  a 1024×768 canvas with a 256-entry palette inside the application, draws
+  with rectangles, circles and text, saves an IFF/ILBM image, and returns to
+  the Shell with exit code zero. Independently decoded image pixels match
+  the visible canvas exactly. Loading saved 1024×768 IFF and PNG images still
+  reports “The image is too large”; full application compatibility is not
+  established. The interpreter remains Moira.
 
 The embedded native Exec lists currently have empty guest headers with
 valid head, tail and predecessor sentinels. Their native identities remain
@@ -132,11 +135,12 @@ each AROS Shell/Run execution. Its original host callback fixture reproduces
 the former arena-end fault with the old shadow initialization and passes
 all 91 task/list checks with the corrected headers.
 
-Personal Paint progresses through font loading, DOS packet reads,
-WaitPort/GetMsg replies and the blitter library's memory-list scan. Its
-startup is still incomplete because a later DOS read packet is rejected by the
-bridge's boundary checks. Sampled mathffp
-SPDiv results include eight one-ULP differences from AmigaOS.
+Personal Paint's editor, selected drawing tools, IFF/ILBM saving and return
+to the native Shell have been verified in QEMU with the original 68k binary.
+Loading saved 1024×768 images, remaining painting operations, desktop icon
+startup, responsiveness and the full application lifecycle remain open
+checks. Sampled mathffp SPDiv results include eight one-ULP differences from
+AmigaOS.
 
 ## Building and testing
 
@@ -159,7 +163,8 @@ uses observable application outcomes:
 
 1. Complete useful 68k application operations on AROS ARM64, prioritizing
    Personal Paint's editor, tools, load/save, cleanup and desktop use.
-   The current next blocker is the later DOS read-packet boundary.
+   The current application blocker is loading saved 1024×768 images, which
+   reports “The image is too large”.
 2. Accelerate the same binaries with the Kaffeine JIT or a verified hybrid
    mode, preserving behavior and measuring end-to-end benefits.
 3. Validate interaction, stability, memory and performance on real hardware.
