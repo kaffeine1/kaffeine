@@ -758,7 +758,7 @@ before `lib->gen_thunks[]` (generated).
 | -336 | FreeSignal | Frees only a bit the guest allocated; the App objects of a port with that bit go first, and its AppMessages with them (`kaffeine_workbench.c`) |
 | -354 | AddPort | Initializes and publishes the guest port in the context's ExecBase PortList |
 | -360 | RemPort | Checks membership and removes the guest port |
-| -366 | PutMsg | Retains the exact-shadow native path; ordinary guest queues use checked big-endian FIFO links, and recognized guest file-handler identities accept bounded ACTION_READ packets. NULL, mixed or unsupported protocols stop with rc 20 (`kaffeine_exec_compat.c`, `kaffeine_messages.c`, `kaffeine_filehandle.c`) |
+| -366 | PutMsg | Retains the exact-shadow native path; ordinary guest queues use checked big-endian FIFO links, and recognized guest file-handler identities accept bounded ACTION_READ packets, and the guest ports of native DOS handlers their converted packets. NULL, mixed or unsupported protocols stop with rc 20 (`kaffeine_exec_compat.c`, `kaffeine_messages.c`, `kaffeine_filehandle.c`, `kaffeine_handlers.c`) |
 | -372 | GetMsg | IDCMP port of a window: native GetMsg, a 68k IntuiMessage with every field and the 68k Window brought up to date; a 68k port: its first node (`kaffeine_window.c`), where the next AppMessage of a port of App objects comes as a 68k copy when the list is empty |
 | -378 | ReplyMsg | Keeps the IntuiMessage and AppMessage ownership paths. Ordinary guest replies queue type 7, or set type 6 for a NULL reply port; malformed or unsupported guest objects stop with rc 20. Other native-shadow protocols retain their ownership rules |
 | -384 | WaitPort | IDCMP port of a window: native WaitPort, returning a 68k message for the first message that becomes the one GetMsg gives for it; a port of App objects with an empty list: native WaitPort, then the 68k copy of the AppMessage at the tail of the list; another 68k port: its first node, or rc 20 when empty, as no message can reach it yet |
@@ -843,6 +843,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -144 | Exit | Stops via running = FALSE and returns signed D1 through D0; never calls native Exit |
 | -150 | LoadSeg | Bounded guest name; native seglist |
 | -156 | UnLoadSeg | BPTR pass-through, except the guest seglist of a 68k library from disk, which stays until its expunge |
+| -174 | DeviceProc | Bounded or NULL name; the guest port of the native handler, one for each native port; IoErr() as native DOS leaves it, the lock of an assign with the opaque BPTR convention (`kaffeine_handlers.c`, see "DOS handler ports") |
 | -180 | SetComment | Two bounded, NUL-terminated guest strings; native result and `IoErr()` |
 | -186 | SetProtection | Bounded guest name and unchanged scalar protection mask |
 | -192 | DateStamp | Native `DateStamp`, three big-endian longwords, returns the guest pointer |
@@ -874,6 +875,10 @@ classic-system observations recorded by `exec_library_paths`.
 | -492 | Cli | The context's guest CLI snapshot, also in `pr_CLI` of the guest Process (`kaffeine_cli.c`) |
 | -498 | CreateNewProc | Fails with `ERROR_NOT_IMPLEMENTED`: the new process would run 68k code natively |
 | -504 | RunCommand | A non-NULL argument string needs its NUL and all D4 bytes in guest memory; NULL with size 0 passes NULL; the guest seglist of a 68k library from disk gives -1 with `ERROR_OBJECT_WRONG_TYPE` |
+| -510 | GetConsoleTask | The guest port of the native console task, or the port that the program set while it stands for that one; kept in the guest `pr_ConsoleTask` |
+| -516 | SetConsoleTask | 0, a handler port or a FileHandle's `fh_Type` of the program, as the native port it stands for; returns the previous guest port; any other port stops with rc 20 |
+| -522 | GetFileSysTask | As GetConsoleTask, with `pr_FileSystemTask` |
+| -528 | SetFileSysTask | As SetConsoleTask |
 | -534 | GetArgStr | Validated guest ThisTask.pr_Arguments address, never native process arguments |
 | -540 | SetArgStr | Changes guest ThisTask.pr_Arguments, returns its previous guest address; NULL is legal |
 | -558 | SetCurrentDirName | Changes the directory-name BSTR in the shared guest CLI only |
@@ -888,6 +893,8 @@ classic-system observations recorded by `exec_library_paths`.
 | -624 | AssignPath | As AssignLate, preserving native non-binding assign semantics |
 | -630 | AssignAdd | Bounded name and nonzero opaque lock; native ownership transfer on success |
 | -636 | RemAssignList | Bounded name and opaque comparison lock; native DOS releases the matching assign lock |
+| -642 | GetDeviceProc | Bounded or NULL name; a guest DevProc for each native one: `dvp_Port` the guest handler port, `dvp_Lock` with the opaque BPTR convention, `dvp_Flags`, `dvp_DevNode` 0; a DevProc of an earlier call goes to native DOS as its native one and follows it; any other stops with rc 20 |
+| -648 | FreeDeviceProc | Only DevProcs of GetDeviceProc(); anything else does nothing |
 | -708 | IsFileSystem | Bounded name; native result and IoErr |
 | -732 | AddBuffers | Bounded name and signed scalar buffer count; native result and IoErr |
 | -738 | CompareDates | Two converted DateStamps; preserves native reverse ordering without overflowing signed subtraction |
@@ -3226,8 +3233,9 @@ Only replies that come at once are supported: a `WaitPkt()` with nothing on
 `pr_MsgPort`, and a `DoPkt()` to a guest port that no one answers in the
 same call, stop the program with rc 20, as do `pr_PktWait`, packets from a
 task that is not the program's process, and `ReplyPkt()` to no port. The
-ports that `DeviceProc()`, `GetConsoleTask()` and `GetFileSysTask()` return
-are still native and take no packets.
+ports of native handlers that `DeviceProc()`, `GetDeviceProc()`,
+`GetConsoleTask()` and `GetFileSysTask()` give take packets too: see "DOS
+handler ports" below.
 
 Measured on AmigaOS 3.2.3 with an original probe program:
 
@@ -3242,6 +3250,78 @@ Measured on AmigaOS 3.2.3 with an original probe program:
 | D1 after `DoPkt()` | not `dp_Res2` | `dp_Res2`, as the autodoc says |
 | DOS I/O between `SendPkt()` and `WaitPkt()` | takes the reply from `pr_MsgPort` and loses it | leaves it there: DOS calls go to native DOS, `DoPkt()` uses its own port |
 | `DoPkt()` with a NULL port | hangs | NIL: |
+
+## DOS handler ports
+
+`DeviceProc()`, `GetDeviceProc()`, `GetConsoleTask()` and `GetFileSysTask()`
+give the program a guest port for the native port of a handler
+(`kaffeine_handlers.c`): an empty `PA_IGNORE` port in bridge memory, which
+the program cannot free, the same one for the same native port at every
+call. There are 32 of them; one more native handler gets no port, 0 with
+`ERROR_NO_FREE_STORE`. The guest Process starts with them in
+`pr_ConsoleTask` and `pr_FileSystemTask`.
+
+- `SetConsoleTask()` and `SetFileSysTask()` take 0, such a port, or the
+  `fh_Type` of a FileHandle of the program, which stands for the native
+  handler of that file; native DOS gets that native port, and the guest
+  Process keeps what the program gave. `GetConsoleTask()` returns it as long
+  as it stands for the native console task, so that it is the `fh_Type`
+  given to `SetConsoleTask()`, as on AmigaOS. Any other port stops the
+  program with rc 20.
+- `DeviceProc()` leaves IoErr() as native DOS sets it: for an assign the
+  lock of its drawer, with the opaque BPTR convention of the other thunks.
+- `GetDeviceProc()` gives a guest DevProc for each native one, 16 at most:
+  `dvp_Port` the guest port, `dvp_Lock` with the opaque BPTR convention,
+  `dvp_Flags`, and `dvp_DevNode` 0, since no DosList node reaches the
+  program. Passed back, it goes to native DOS as its native DevProc, which
+  moves on to the next drawer of a multi-assign or is freed when there is
+  none; the guest one follows. `FreeDeviceProc()` frees only these; the
+  bridge frees those left when the program ends.
+
+Packets put to such a port go to the native handler with `DoPkt()`, from the
+program's process, and are answered at once like those of the FileHandles.
+Every argument of the action is converted: a BSTR name becomes a native
+string of at most 255 characters (a C string where AROS has
+`AROS_FAST_BSTR`), with a BSTR of 0 as the empty name; locks keep the opaque
+BPTR convention; the FileInfoBlock of `ACTION_EXAMINE_OBJECT` and
+`ACTION_EXAMINE_NEXT` and the InfoData of `ACTION_INFO` and
+`ACTION_DISK_INFO` are native temporaries copied back on success, the
+FileInfoBlock of `ACTION_EXAMINE_NEXT` filled first from the program's, whose
+names stay BSTRs as the handlers write them; the DateStamp of
+`ACTION_SET_DATE` is read from the program. The actions are
+`ACTION_LOCATE_OBJECT`, `ACTION_FREE_LOCK`, `ACTION_COPY_DIR`,
+`ACTION_PARENT`, `ACTION_SAME_LOCK`, `ACTION_CREATE_DIR`,
+`ACTION_DELETE_OBJECT`, `ACTION_RENAME_OBJECT`, `ACTION_EXAMINE_OBJECT`,
+`ACTION_EXAMINE_NEXT`, `ACTION_SET_PROTECT`, `ACTION_SET_COMMENT`,
+`ACTION_SET_DATE`, `ACTION_INFO`, `ACTION_DISK_INFO`, `ACTION_FLUSH`,
+`ACTION_IS_FILESYSTEM`, `ACTION_SCREEN_MODE` and `ACTION_WAIT_CHAR`. Every
+other action gets 0 and `ERROR_ACTION_NOT_KNOWN` without reaching the
+handler, `ACTION_FINDINPUT` and the other actions that make a FileHandle
+among them. A name, buffer or DateStamp outside guest memory, a lock or
+`fib_DiskKey` from the handler that needs more than 32 bits, and a port that
+the program has changed stop the program with rc 20; a lock that cannot be
+given to the program is given back to the handler first.
+
+The `fh_Type` of a FileHandle of the program stays the private port of that
+file, so on the bridge `DeviceProc("RAM:")` is not the `fh_Type` of a file in
+`RAM:`, as it is on AmigaOS. A packet to a handler port reads and writes no
+file: `ACTION_READ`, `ACTION_WRITE` and `ACTION_SEEK` go to the `fh_Type` of
+the file.
+
+Measured on AmigaOS 3.2.3 (A1200 Kickstart 47.115, ram-handler and the
+console handler) with the target program `dos_handlers`:
+
+| Case | AmigaOS 3.2.3 | kaffeine |
+| --- | --- | --- |
+| `GetConsoleTask()` after `SetConsoleTask(fh->fh_Type)` | that `fh_Type` | same |
+| `DeviceProc("RAM:")` and the `fh_Type` of a file in `RAM:` | the same port | different ports |
+| IoErr() after `DeviceProc()` of an assign | a lock on its drawer | same |
+| `dvp_Flags` of an assign of one drawer | 0 | 0 |
+| `dvp_DevNode` | the DosList node | 0 |
+| IoErr() when `GetDeviceProc()` has no more drawers | left alone | `ERROR_NO_MORE_ENTRIES`, as the autodoc says |
+| Names in the FileInfoBlock of `ACTION_EXAMINE_*` | BSTRs | same |
+| `id_VolumeNode` of `ACTION_INFO`, and of a console the window | set | 0 |
+| `ACTION_SAME_LOCK` of a lock and its copy | `DOSTRUE` | same |
 
 ## Known Bugs
 
