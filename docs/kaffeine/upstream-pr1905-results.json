@@ -1,0 +1,351 @@
+{
+  "recorded_date": "2026-10-28",
+  "upstream_pr": "https://github.com/aros-development-team/AROS/pull/1905",
+  "upstream_commit": "e016d6fb7999eb3c7962f078e5ff75d50f957079",
+  "kaffeine_runtime_commit": "6fc72c263fa64341c517e4b6d3ec419bd59ae926",
+  "scope": "Host function-level probes with fixture context/native collaborators; no upstream native build or VM run; ASan/UBSan, leak detection disabled",
+  "observations": 28,
+  "upstream_contract_failures": 13,
+  "upstream_positive_controls": 5,
+  "kaffeine_control_and_boundary_passes": 10,
+  "native_upstream_build_or_vm_run": false,
+  "probe_results": [
+    {
+      "program": "upstream-access",
+      "case": "control",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "upstream-access",
+      "case": "read16-wrap",
+      "contract_passed": false,
+      "stdout": ""
+    },
+    {
+      "program": "upstream-access",
+      "case": "read32-wrap",
+      "contract_passed": false,
+      "stdout": ""
+    },
+    {
+      "program": "upstream-access",
+      "case": "write16-wrap",
+      "contract_passed": false,
+      "stdout": ""
+    },
+    {
+      "program": "upstream-access",
+      "case": "write32-wrap",
+      "contract_passed": false,
+      "stdout": ""
+    },
+    {
+      "program": "upstream-memheader",
+      "case": "control",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "upstream-memheader",
+      "case": "overflow",
+      "contract_passed": false,
+      "stdout": "invalid operation accepted: result=512, bytes_changed=0, free=128\n"
+    },
+    {
+      "program": "upstream-memheader",
+      "case": "bad-successor",
+      "contract_passed": false,
+      "stdout": "invalid operation accepted: result=512, bytes_changed=1, free=120\n"
+    },
+    {
+      "program": "upstream-memheader",
+      "case": "overlap-free",
+      "contract_passed": false,
+      "stdout": "invalid operation accepted: result=0, bytes_changed=1, free=136\n"
+    },
+    {
+      "program": "upstream-memheader",
+      "case": "outside-pool",
+      "contract_passed": false,
+      "stdout": "invalid operation accepted: result=0, bytes_changed=1, free=136\n"
+    },
+    {
+      "program": "kaffeine-access",
+      "case": "control",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "kaffeine-access",
+      "case": "read16-wrap",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "kaffeine-access",
+      "case": "read32-wrap",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "kaffeine-access",
+      "case": "write16-wrap",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "kaffeine-access",
+      "case": "write32-wrap",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "kaffeine-memheader",
+      "case": "control",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "kaffeine-memheader",
+      "case": "overflow",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "kaffeine-memheader",
+      "case": "bad-successor",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "kaffeine-memheader",
+      "case": "overlap-free",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "kaffeine-memheader",
+      "case": "outside-pool",
+      "contract_passed": true,
+      "stdout": "contract satisfied\n"
+    },
+    {
+      "program": "upstream-heap",
+      "case": "control",
+      "contract_passed": true,
+      "stdout": ""
+    },
+    {
+      "program": "upstream-heap",
+      "case": "overflow",
+      "contract_passed": false,
+      "stdout": "HeapAlloc(UINT32_MAX): 00000600, free=1016, changed=1\n"
+    },
+    {
+      "program": "upstream-heap",
+      "case": "custom-hole",
+      "contract_passed": false,
+      "stdout": "12 MiB Fast allocation: 00380000, includes custom register page=1\n"
+    },
+    {
+      "program": "upstream-library",
+      "case": "control",
+      "contract_passed": true,
+      "stdout": "cached OpenLibrary version 00000002: result=00000100\n"
+    },
+    {
+      "program": "upstream-library",
+      "case": "high-word",
+      "contract_passed": false,
+      "stdout": "cached OpenLibrary version 12340002: result=00000000\n"
+    },
+    {
+      "program": "upstream-library",
+      "case": "old-open",
+      "contract_passed": false,
+      "stdout": "cached OpenLibrary version 12340002: result=00000000\n"
+    },
+    {
+      "program": "upstream-alias",
+      "case": "control",
+      "contract_passed": true,
+      "stdout": ""
+    },
+    {
+      "program": "upstream-alias",
+      "case": "alias",
+      "contract_passed": false,
+      "stdout": "read16($1DFF016)=ff00, RAM=a5a5\n"
+    }
+  ],
+  "kaffeine_focused_host_executables": [
+    {
+      "program": "test_guest_bounds",
+      "result": "pass"
+    },
+    {
+      "program": "test_exec_memory",
+      "result": "pass"
+    },
+    {
+      "program": "test_memheader",
+      "result": "pass"
+    },
+    {
+      "program": "test_memheader_moira",
+      "result": "pass"
+    },
+    {
+      "program": "test_utility_thunks",
+      "result": "pass"
+    },
+    {
+      "program": "test_hunk_loading",
+      "result": "pass"
+    },
+    {
+      "program": "test_m68klib",
+      "result": "pass"
+    }
+  ],
+  "disk_library_fixture": {
+    "cases": 139,
+    "checks": 11251,
+    "failed": 0
+  },
+  "extracted_source_functions": [
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_intern.h",
+      "function": "m68k_read16",
+      "line": 350,
+      "sha256": "e986ccc104b0555a8df264c34aee1a7b7ee22493435aefadcc3d2be895242861"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_intern.h",
+      "function": "m68k_read32",
+      "line": 357,
+      "sha256": "c2be3612952c3b8a8b8c5c6d1c999d34ecc5d4e9509586df57ba774aaaf1d504"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_intern.h",
+      "function": "m68k_write16",
+      "line": 366,
+      "sha256": "e88aa2d5327ac78ee736b40726f2d13868f858de93e0c7ad16f74ee3b0a838ab"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_intern.h",
+      "function": "m68k_write32",
+      "line": 375,
+      "sha256": "92307139f50871dc5925263ed5675e718e412943af91729b2e2b7908226d94b7"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_thunks.c",
+      "function": "thunk_exec_Allocate_m",
+      "line": 5388,
+      "sha256": "f3dc38cfc5ffe07bb51929034abe7df7e10a70da60cfde023285fe461de62419"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_thunks.c",
+      "function": "thunk_exec_Deallocate_m",
+      "line": 5421,
+      "sha256": "4bd70bbcd0d999fb521caa9ccd4c1978267d6ae454ff9d43b68e2ac86b2b2b0e"
+    },
+    {
+      "file": "kaffeine/rom/kaffeine/kaffeine_intern.h",
+      "function": "m68k_read16",
+      "line": 443,
+      "sha256": "16da7f5068aa17428dde1f558a22e503c49521d1d73d004511bef22e070d1858"
+    },
+    {
+      "file": "kaffeine/rom/kaffeine/kaffeine_intern.h",
+      "function": "m68k_read32",
+      "line": 450,
+      "sha256": "0624930ebc8fea624bded311a7d5533f21d2bf5a2ee266a4cabbb07fc24595a8"
+    },
+    {
+      "file": "kaffeine/rom/kaffeine/kaffeine_intern.h",
+      "function": "m68k_write16",
+      "line": 458,
+      "sha256": "171000a3510969d1017e9d66fdfd267c099307101f6731bdb3f96031e59c7cf6"
+    },
+    {
+      "file": "kaffeine/rom/kaffeine/kaffeine_intern.h",
+      "function": "m68k_write32",
+      "line": 466,
+      "sha256": "91731cf734fcf64b44fc663138ac6fdf9f8fbd021f0e4156a404b05accb11436"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_intern.h",
+      "function": "m68k_read16",
+      "line": 350,
+      "sha256": "e986ccc104b0555a8df264c34aee1a7b7ee22493435aefadcc3d2be895242861"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_intern.h",
+      "function": "m68k_read32",
+      "line": 357,
+      "sha256": "c2be3612952c3b8a8b8c5c6d1c999d34ecc5d4e9509586df57ba774aaaf1d504"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_intern.h",
+      "function": "m68k_write16",
+      "line": 366,
+      "sha256": "e88aa2d5327ac78ee736b40726f2d13868f858de93e0c7ad16f74ee3b0a838ab"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_intern.h",
+      "function": "m68k_write32",
+      "line": 375,
+      "sha256": "92307139f50871dc5925263ed5675e718e412943af91729b2e2b7908226d94b7"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_memory.c",
+      "function": "heap_publish",
+      "line": 131,
+      "sha256": "6bc13005f04af94574f9623d0ea9ae317811f52fa9bb69d18b3f86e249bad197"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_memory.c",
+      "function": "M68KEmu_HeapRegion",
+      "line": 140,
+      "sha256": "75caace7941698a27ed80423ab2a0ea13d66ba5589e3638bd308d9592c22c84f"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_memory.c",
+      "function": "heap_largest",
+      "line": 145,
+      "sha256": "6e54d468c1b3f3a8d5c5d82bf7a3cd29d541a16c0dd708b8988bf5ff649ab1c5"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_memory.c",
+      "function": "heap_alloc_in",
+      "line": 237,
+      "sha256": "6841010f2e27eded860c3060bda939044b19817657de5a21188f4da8d326709f"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_memory.c",
+      "function": "M68KEmu_HeapAlloc",
+      "line": 283,
+      "sha256": "1f412d0a1fc1cb52e5b0172f5b14a30e81fd6495689b28d2d9823f3bdf6cfeb9"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_thunks.c",
+      "function": "thunk_exec_OpenLibrary",
+      "line": 156,
+      "sha256": "51965ce020cad4ab9bce673397ecac940bb9941109d075b9278da7256defd37c"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_thunks.c",
+      "function": "thunk_exec_OldOpenLibrary",
+      "line": 195,
+      "sha256": "ebd4c3efd03154337e8135a488c10061aa54d7582b8cb5a923176d5a613ac7c7"
+    },
+    {
+      "file": "upstream/rom/m68kemu/m68kemu_moira.cpp",
+      "function": "read16",
+      "line": 308,
+      "sha256": "50b8db966d2109b50d000149f14857e9d86d34b54a57ea3d95a29ed27f8beded"
+    }
+  ]
+}
