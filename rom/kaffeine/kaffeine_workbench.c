@@ -19,11 +19,14 @@
     guest token for each App object.
     An AppIcon takes a DiskObject that the program built in its own memory,
     copied into native memory with its images, and gives NULL for one that
-    AmigaOS 3.2.3 does not take; the DiskObjects of the bridge's
-    icon.library are native ones that it cannot read yet. Tags are
-    not bridged yet: a list with any tag stops the program. When the program
-    deletes a port or frees its signal, and at its end, the App objects on
-    the port go and its AppMessages go back.
+    AmigaOS 3.2.3 does not take. A DiskObject that the bridge's icon.library
+    gave the program, a snapshot without images, gets a native clone of the
+    object behind it instead (see "icon.library DiskObjects" below). Tags
+    are not bridged yet: a list with any tag stops the program. When the
+    program deletes a port or frees its signal, and at its end, the App
+    objects on the port go and its AppMessages go back. Native data that an
+    App object gave Workbench goes only after Workbench has let the object
+    go.
 */
 
 #include "kaffeine_intern.h"
@@ -40,8 +43,21 @@
 #include <workbench/workbench.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
+/* Select the SDK macros that also expose an explicit library base. */
+#define ICON_NOLIBINLINE
+#include <proto/icon.h>
 #include <proto/workbench.h>
 #include <string.h>
+
+/* The plain icon.library calls of the SDK go through the global IconBase,
+   which kaffeine_icon.c and every other context share. An AppIcon calls
+   icon.library through a base of its own instead, with the forms of the
+   SDK that take the base as their first argument. */
+#if !defined(__DupDiskObjectA_WB) || !defined(__FreeDiskObject_WB)
+#error "AppIcons need the base-taking icon.library calls of the SDK"
+#endif
+/* DupDiskObjectA() is of icon.library 44 */
+#define ICON_VERSION 44
 
 /* The 68k Message, MsgPort, AppMessage, WBArg, DiskObject, Gadget and
    Image of the NDK */
@@ -56,10 +72,13 @@ enum
     G_WBARG_LOCK = 0, G_WBARG_NAME = 4, G_WBARG_SIZE = 8,
     G_DO_MAGIC = 0, G_DO_VERSION = 2, G_DO_GADGET = 4, G_DO_TYPE = 48,
     G_DO_DEFAULTTOOL = 50, G_DO_TOOLTYPES = 54, G_DO_CURRENTX = 58,
-    G_DO_CURRENTY = 62, G_DO_STACKSIZE = 74, G_DISKOBJECT_SIZE = 78,
-    G_GG_LEFTEDGE = 4, G_GG_TOPEDGE = 6, G_GG_WIDTH = 8, G_GG_HEIGHT = 10,
-    G_GG_FLAGS = 12, G_GG_ACTIVATION = 14, G_GG_GADGETTYPE = 16,
-    G_GG_GADGETRENDER = 18, G_GG_SELECTRENDER = 22, G_GG_GADGETID = 38,
+    G_DO_CURRENTY = 62, G_DO_DRAWERDATA = 66, G_DO_TOOLWINDOW = 70,
+    G_DO_STACKSIZE = 74, G_DISKOBJECT_SIZE = 78,
+    G_GG_NEXTGADGET = 0, G_GG_LEFTEDGE = 4, G_GG_TOPEDGE = 6, G_GG_WIDTH = 8,
+    G_GG_HEIGHT = 10, G_GG_FLAGS = 12, G_GG_ACTIVATION = 14, G_GG_GADGETTYPE = 16,
+    G_GG_GADGETRENDER = 18, G_GG_SELECTRENDER = 22, G_GG_GADGETTEXT = 26,
+    G_GG_MUTUALEXCLUDE = 30, G_GG_SPECIALINFO = 34, G_GG_GADGETID = 38,
+    G_GG_USERDATA = 40,
     G_IM_LEFTEDGE = 0, G_IM_TOPEDGE = 2, G_IM_WIDTH = 4, G_IM_HEIGHT = 6,
     G_IM_DEPTH = 8, G_IM_IMAGEDATA = 10, G_IM_PLANEPICK = 14,
     G_IM_PLANEONOFF = 15, G_IMAGE_SIZE = 20
@@ -117,6 +136,7 @@ struct AppPort
 {
     struct MsgPort front;
     struct MsgPort inbox;
+    BOOL detached; /* the guest port has gone; reply native deliveries only */
 };
 
 /* An AppMessage that front has replied: its fields, and its WBArgs with
@@ -188,10 +208,13 @@ AROS_UFH2S(void, take_appmessages,
 
     while ((msg = GetMsg(front)))
     {
-        if ((carrier = carry((struct AppMessage *)msg)))
-            PutMsg(&port->inbox, &carrier->message);
-        else
-            bug("[kaffeine] AppMessage: no memory for a carrier, replied\n");
+        if (!port->detached)
+        {
+            if ((carrier = carry((struct AppMessage *)msg)))
+                PutMsg(&port->inbox, &carrier->message);
+            else
+                bug("[kaffeine] AppMessage: no memory for a carrier, replied\n");
+        }
         ReplyMsg(msg);
     }
 
@@ -275,11 +298,28 @@ static int new_object(struct KaffeineContext *ctx)
     return i;
 }
 
+/* The App object goes, after Workbench has let it go: its token, the clone
+   of an icon.library DiskObject through the base that the object holds,
+   then that base, and its native copies */
 static void drop_object(struct KaffeineContext *ctx, int i)
 {
     Kaffeine_HeapFree(ctx, ctx->app_objects[i].guest, 4);
+    if (ctx->app_objects[i].clone)
+        __FreeDiskObject_WB(ctx->app_objects[i].icon_base, ctx->app_objects[i].clone);
+    if (ctx->app_objects[i].icon_base)
+        CloseLibrary(ctx->app_objects[i].icon_base);
     if (ctx->app_objects[i].copy)
         FreeVec(ctx->app_objects[i].copy);
+    memset(&ctx->app_objects[i], 0, sizeof(ctx->app_objects[i]));
+}
+
+/* An App object with native data that Workbench would not let go at the
+   end of its port: the token goes, and the data stay, with the reference
+   to icon.library of a clone, as Workbench may still read them */
+static void abandon_object(struct KaffeineContext *ctx, int i)
+{
+    bug("[kaffeine] Workbench keeps an App object, leaving its native data\n");
+    Kaffeine_HeapFree(ctx, ctx->app_objects[i].guest, 4);
     memset(&ctx->app_objects[i], 0, sizeof(ctx->app_objects[i]));
 }
 
@@ -511,6 +551,156 @@ static struct DiskObject *copy_diskobject(struct KaffeineContext *ctx, ULONG dob
     return native;
 }
 
+/* ── icon.library DiskObjects ────────────────────────────────────── */
+
+/* The DiskObjects of the bridge's icon.library are metadata-only snapshots
+   in guest memory, without images, with the native object behind them in
+   ctx->icons (kaffeine_icon.c). Only the snapshot at the exact address
+   that icon.library gave, while the program owns it, stands for its native
+   object: an address inside one, a copy of one or one that the program
+   freed is a DiskObject of the program's own like any other, however
+   alike its bytes. Its AppIcon gets a DupDiskObjectA() clone of the native
+   object, with its images, their data and its strings, as AddAppIconA()
+   keeps the DiskObject until RemoveAppIcon(); the App object keeps the
+   clone with a reference to icon.library of its own, so that the program
+   may free the snapshot and close icon.library while the AppIcon lives.
+   The guest bytes are never taken as a native DiskObject. Of the snapshot
+   the program may change do_CurrentX and do_CurrentY, which the clone
+   takes; every other field of the classic DiskObject and its Gadget must
+   have the value that icon.library gave, its pointers must stay within the
+   snapshot at the text of the native strings, and GadgetRender and
+   SelectRender stay NULL (a snapshot that the program gave a GadgetRender
+   Image is one that it built, which wb_AddAppIconA() copies). */
+
+/* The owner entry of the snapshot at exactly dobj, or NULL */
+static struct KaffeineIcon *owned_snapshot(struct KaffeineContext *ctx, ULONG dobj)
+{
+    int i;
+
+    for (i = 0; dobj && i < KAFFEINE_MAX_ICONS; i++)
+        if (ctx->icons[i].guest == dobj && ctx->icons[i].native)
+            return &ctx->icons[i];
+    return NULL;
+}
+
+/* The guest string pointer at field of the snapshot: NULL for no native
+   string s, else within the snapshot at the text of s */
+static BOOL snapshot_text(struct KaffeineContext *ctx, const struct KaffeineIcon *icon,
+                          ULONG addr, CONST_STRPTR s)
+{
+    ULONG length, offset = addr - icon->guest;
+
+    if (!s || !addr)
+        return !s && !addr;
+    length = strlen((const char *)s);
+    return addr >= icon->guest && offset < icon->size && icon->size - offset > length &&
+           !memcmp(ctx->mem + addr, s, length + 1);
+}
+
+/* The snapshot as icon.library gave it, but for its position */
+static BOOL snapshot_unchanged(struct KaffeineContext *ctx, const struct KaffeineIcon *icon)
+{
+    const struct DiskObject *native = icon->native;
+    const struct Gadget *g = &native->do_Gadget;
+    ULONG dobj = icon->guest, gadget = dobj + G_DO_GADGET, types, offset, count, i;
+
+    if (icon->size < G_DISKOBJECT_SIZE || !guest_range(ctx, dobj, icon->size))
+        return FALSE;
+    if (m68k_read16(ctx, dobj + G_DO_MAGIC) != native->do_Magic ||
+        m68k_read16(ctx, dobj + G_DO_VERSION) != native->do_Version ||
+        m68k_read32(ctx, gadget + G_GG_NEXTGADGET) ||
+        m68k_read16(ctx, gadget + G_GG_LEFTEDGE) != (UWORD)g->LeftEdge ||
+        m68k_read16(ctx, gadget + G_GG_TOPEDGE) != (UWORD)g->TopEdge ||
+        m68k_read16(ctx, gadget + G_GG_WIDTH) != (UWORD)g->Width ||
+        m68k_read16(ctx, gadget + G_GG_HEIGHT) != (UWORD)g->Height ||
+        m68k_read16(ctx, gadget + G_GG_FLAGS) != g->Flags ||
+        m68k_read16(ctx, gadget + G_GG_ACTIVATION) != g->Activation ||
+        m68k_read16(ctx, gadget + G_GG_GADGETTYPE) != g->GadgetType ||
+        m68k_read32(ctx, gadget + G_GG_GADGETRENDER) ||
+        m68k_read32(ctx, gadget + G_GG_SELECTRENDER) ||
+        m68k_read32(ctx, gadget + G_GG_GADGETTEXT) ||
+        m68k_read32(ctx, gadget + G_GG_MUTUALEXCLUDE) != (ULONG)g->MutualExclude ||
+        m68k_read32(ctx, gadget + G_GG_SPECIALINFO) ||
+        m68k_read16(ctx, gadget + G_GG_GADGETID) != g->GadgetID ||
+        m68k_read32(ctx, gadget + G_GG_USERDATA) ||
+        ctx->mem[dobj + G_DO_TYPE] != native->do_Type ||
+        m68k_read32(ctx, dobj + G_DO_DRAWERDATA) ||
+        m68k_read32(ctx, dobj + G_DO_STACKSIZE) != (ULONG)native->do_StackSize ||
+        !snapshot_text(ctx, icon, m68k_read32(ctx, dobj + G_DO_DEFAULTTOOL), native->do_DefaultTool) ||
+        !snapshot_text(ctx, icon, m68k_read32(ctx, dobj + G_DO_TOOLWINDOW), native->do_ToolWindow))
+        return FALSE;
+    types = m68k_read32(ctx, dobj + G_DO_TOOLTYPES);
+    if (!native->do_ToolTypes)
+        return !types;
+    for (count = 0; count < MAX_TOOLTYPES && native->do_ToolTypes[count]; count++)
+        ;
+    offset = types - dobj;
+    if (count == MAX_TOOLTYPES || types < dobj || offset >= icon->size || (icon->size - offset) / 4 <= count)
+        return FALSE;
+    for (i = 0; i < count; i++)
+        if (!snapshot_text(ctx, icon, m68k_read32(ctx, types + 4 * i), native->do_ToolTypes[i]))
+            return FALSE;
+    return !m68k_read32(ctx, types + 4 * count);
+}
+
+/* The AppIcon of the snapshot of icon, with the arguments of
+   AddAppIconA(): its text and token, then a reference to icon.library and
+   the clone, which go back in the opposite order when the next of them or
+   Workbench fails, giving 0 without stopping the program */
+static IPTR add_snapshot_icon(struct KaffeineContext *ctx, void *cpu, int port,
+                              const struct KaffeineIcon *icon)
+{
+    struct Library *base;
+    struct DiskObject *clone;
+    struct AppIcon *native;
+    STRPTR text;
+    APTR copy = NULL;
+    int slot;
+
+    if (!snapshot_unchanged(ctx, icon))
+        return refuse(ctx, "AddAppIconA(): a DiskObject of icon.library that the program changed "
+                           "in more than its position");
+    if (guest_length(ctx, THUNK_A(0), MAX_TEXT) == ~(ULONG)0)
+        return refuse(ctx, "AddAppIconA(): no text of at most 1024 bytes in guest memory");
+    if (!(text = copy_text(ctx, THUNK_A(0), &copy)))
+        return 0;
+    if ((slot = new_object(ctx)) < 0)
+    {
+        FreeVec(copy);
+        return 0;
+    }
+    if (!(base = OpenLibrary("icon.library", ICON_VERSION)))
+        goto no_base;
+    /* no tags: images, their data, the strings and the drawer data are all
+       duplicated, as the AppIcon outlives the native original */
+    if (!(clone = __DupDiskObjectA_WB(base, icon->native, NULL)))
+        goto no_clone;
+    /* the position of the snapshot, in the 32 bits of the classic fields */
+    clone->do_CurrentX = (LONG)m68k_read32(ctx, icon->guest + G_DO_CURRENTX);
+    clone->do_CurrentY = (LONG)m68k_read32(ctx, icon->guest + G_DO_CURRENTY);
+    if (!(native = AddAppIconA(THUNK_D(0), THUNK_D(1), text, ctx->app_ports[port].native,
+                               (BPTR)(IPTR)THUNK_A(2), clone, NULL)))
+    {
+        __FreeDiskObject_WB(base, clone);
+        goto no_clone;
+    }
+    ctx->app_objects[slot].kind = APP_ICON;
+    ctx->app_objects[slot].port = (UBYTE)port;
+    ctx->app_objects[slot].native = native;
+    ctx->app_objects[slot].copy = copy;
+    ctx->app_objects[slot].clone = clone;
+    ctx->app_objects[slot].icon_base = base;
+    return ctx->app_objects[slot].guest;
+
+no_clone:
+    CloseLibrary(base);
+no_base:
+    Kaffeine_HeapFree(ctx, ctx->app_objects[slot].guest, 4);
+    ctx->app_objects[slot].guest = 0;
+    FreeVec(copy);
+    return 0;
+}
+
 /* ── Thunks ──────────────────────────────────────────────────────── */
 
 /* The new App object of a native one, or 0, with its native copies going
@@ -557,6 +747,7 @@ static IPTR wb_AddAppWindowA(struct KaffeineContext *ctx, void *cpu)
 static IPTR wb_AddAppIconA(struct KaffeineContext *ctx, void *cpu)
 {
     struct DiskObject *dobj;
+    struct KaffeineIcon *icon;
     STRPTR text = NULL;
     APTR copy = NULL;
     int port, slot;
@@ -565,6 +756,10 @@ static IPTR wb_AddAppIconA(struct KaffeineContext *ctx, void *cpu)
         return refuse(ctx, "AddAppIconA(): its tags are not bridged yet");
     if ((port = app_port(ctx, THUNK_A(1))) < 0)
         return refuse(ctx, "AddAppIconA(): no port with a signal of the program");
+    /* a snapshot of icon.library, which has no image of its own */
+    if ((icon = owned_snapshot(ctx, THUNK_A(3))) &&
+        !m68k_read32(ctx, THUNK_A(3) + G_DO_GADGET + G_GG_GADGETRENDER))
+        return add_snapshot_icon(ctx, cpu, port, icon);
     if (diskobject_fails(ctx, THUNK_A(3)))
     {
         bug("[kaffeine] AddAppIconA(): a DiskObject that AmigaOS 3.2.3 does not take, NULL\n");
@@ -572,7 +767,7 @@ static IPTR wb_AddAppIconA(struct KaffeineContext *ctx, void *cpu)
     }
     if (!(dobj = copy_diskobject(ctx, THUNK_A(3), THUNK_A(0), &text, &copy)))
         return refuse(ctx, "AddAppIconA(): no DiskObject of the program's own with its images "
-                           "and text (those of icon.library are not bridged yet)");
+                           "and text in guest memory");
     if ((slot = new_object(ctx)) < 0)
     {
         FreeVec(copy);
@@ -607,7 +802,9 @@ static IPTR wb_AddAppMenuItemA(struct KaffeineContext *ctx, void *cpu)
 }
 
 /* -54, -66, -78: RemoveAppWindow(), RemoveAppIcon(), RemoveAppMenuItem()
-   (A0=object): FALSE for a token that is none of that kind */
+   (A0=object): FALSE for a token that is none of that kind. An object
+   that Workbench does not let go stays with the native data that it gave
+   Workbench, for another removal or the end of its port. */
 static IPTR remove_object(struct KaffeineContext *ctx, ULONG guest, UBYTE kind)
 {
     int i = object_index(ctx, guest, kind);
@@ -617,6 +814,11 @@ static IPTR remove_object(struct KaffeineContext *ctx, ULONG guest, UBYTE kind)
         return guest ? refuse(ctx, "RemoveApp...(): not an App object of the program of that kind")
                      : FALSE;
     removed = remove_native(ctx, i);
+    if (!removed)
+    {
+        bug("[kaffeine] RemoveApp...(): Workbench keeps the object, which stays\n");
+        return FALSE;
+    }
     drop_object(ctx, i);
     return removed;
 }
@@ -806,21 +1008,40 @@ BOOL Kaffeine_AppReplyMsg(struct KaffeineContext *ctx, ULONG message)
    native ports go: after the App objects, nothing puts to them */
 static void port_gone(struct KaffeineContext *ctx, int p)
 {
+    struct AppPort *port = (struct AppPort *)ctx->app_ports[p].native;
     struct Message *msg;
+    BOOL retained = FALSE;
     int i;
 
+    /* No delivery after this point may signal the departing task or make
+       another carrier. The front callback needs neither ctx nor guest
+       memory when detached. A sender already in the callback can still
+       put a carrier on the native inbox, which remains valid below. */
+    port->detached = TRUE;
+    port->inbox.mp_Flags = PA_IGNORE;
+    port->inbox.mp_SigTask = NULL;
     for (i = 0; i < KAFFEINE_MAX_APP_OBJECTS; i++)
         if (ctx->app_objects[i].guest && ctx->app_objects[i].port == p)
         {
-            remove_native(ctx, i);
-            drop_object(ctx, i);
+            if (remove_native(ctx, i))
+                drop_object(ctx, i);
+            else
+            {
+                abandon_object(ctx, i);
+                retained = TRUE;
+            }
         }
     for (i = 0; i < KAFFEINE_MAX_APP_MESSAGES; i++)
         if (ctx->app_messages[i].guest && ctx->app_messages[i].port == p)
             reply_copy(ctx, i);
     while ((msg = GetMsg(inbox(ctx, p))))
         free_carrier((struct Carrier *)msg);
-    FreeMem(ctx->app_ports[p].native, sizeof(struct AppPort));
+    /* RemoveApp...() normally succeeds for a live AROS object. If it
+       refuses, Workbench still owns the front pointer as well as the
+       icon/label data: retain the detached port, too. Later deliveries
+       are replied without touching the task, its signal or guest memory. */
+    if (!retained)
+        FreeMem(port, sizeof(*port));
     memset(&ctx->app_ports[p], 0, sizeof(ctx->app_ports[p]));
 }
 

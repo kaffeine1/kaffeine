@@ -28,6 +28,8 @@ struct Message *WaitPort(struct MsgPort *port);
 void ReplyMsg(struct Message *message);
 void PutMsg(struct MsgPort *port, struct Message *message);
 void RawPutChar(UBYTE ch);
+struct Library *OpenLibrary(CONST_STRPTR name, ULONG version);
+void CloseLibrary(struct Library *library);
 #ifdef __cplusplus
 }
 #endif

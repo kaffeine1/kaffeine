@@ -2,9 +2,11 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
     Workbench calls through literal 68k LVOs, the production dispatcher,
-    heap, shadow engine, window hooks and Exec I/O hooks. Native Workbench
-    records its arguments; native Exec supplies a queue and counts memory.
-    Guest structures use the NDK 3.2 byte offsets, never host sizeof().
+    heap, shadow engine, window hooks, Exec I/O hooks and icon.library
+    snapshots. Native Workbench records its arguments; native Exec supplies
+    a queue and counts memory; native icon.library records every original,
+    clone, part and base. Guest structures use the NDK 3.2 byte offsets,
+    never host sizeof().
 */
 #ifdef NDEBUG
 #undef NDEBUG
@@ -27,9 +29,11 @@
 #include <proto/exec.h>
 #include <proto/intuition.h>
 #include <proto/gadtools.h>
+#include <proto/icon.h>
 #include <proto/workbench.h>
 #include "kaffeine_dispatch.h"
 #include "kaffeine_exec_io.h"
+#include "kaffeine_icon.h"
 #include "kaffeine_intern.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
@@ -239,9 +243,149 @@ extern "C" const ULONG kaffeine_thunks_timer_count = 0;
 extern "C" const M68KThunkEntry kaffeine_thunks_console[] = {{0, nullptr}};
 extern "C" const ULONG kaffeine_thunks_console_count = 0;
 
+/* Native icon.library. GetDiskObject(), which kaffeine_icon.c calls through
+   the global base, gives an original; DupDiskObjectA() through a base that
+   OpenLibrary() gave gives a clone. Every image, image data, string and
+   array of each object is a part of its own, so that a clone provably
+   shares nothing with its original, nor with guest memory. */
+struct IconObject { Library *base; std::vector<void *> parts; };
+static Library icon_library;
+static std::map<DiskObject *, IconObject> originals, clones;
+static unsigned icon_opens, icon_open_calls, dup_calls;
+static bool fail_open, fail_dup;
+static const char original_tool[] = "SYS:Utilities/Clock", original_window[] = "CON:0/0/200/50/Clock";
+static const char original_type0[] = "DONOTWAIT", original_type1[] = "FORMAT=digital";
+static const UWORD original_render[] = {0x8001, 0x4002, 0x2004, 0x1008}, original_select[] = {0xF00F, 0x0FF0, 0x3C3C, 0xC3C3};
+static void *part(IconObject &owner, const void *from, size_t size)
+{
+    void *p = std::malloc(size);
+    require(p != nullptr, "icon part allocation succeeds");
+    std::memcpy(p, from, size);
+    owner.parts.push_back(p);
+    return p;
+}
+static bool part_of(const IconObject &owner, const void *p)
+{
+    return std::find(owner.parts.begin(), owner.parts.end(), p) != owner.parts.end();
+}
+static void release(IconObject &owner, DiskObject *d)
+{
+    for (void *p : owner.parts) std::free(p);
+    delete d;
+}
+/* Depth planes of rows of words, as DupDiskObjectA() copies them */
+static size_t image_bytes(const Image *im) { return ((im->Width + 15) >> 4) * 2 * im->Height * im->Depth; }
+static Image *image_part(IconObject &owner, const Image &from, const void *data)
+{
+    auto *im = static_cast<Image *>(part(owner, &from, sizeof(from)));
+    im->ImageData = static_cast<UWORD *>(part(owner, data, image_bytes(&from)));
+    im->NextImage = nullptr;
+    return im;
+}
+static STRPTR text_part(IconObject &owner, const char *s) { return static_cast<STRPTR>(part(owner, s, std::strlen(s) + 1)); }
+static DiskObject *make_original()
+{
+    auto *d = new DiskObject{};
+    IconObject &o = originals[d];
+    d->do_Magic = WB_DISKMAGIC; d->do_Version = WB_DISKVERSION; d->do_Type = WBPROJECT;
+    auto &g = d->do_Gadget;
+    g.LeftEdge = -2; g.TopEdge = 3; g.Width = 16; g.Height = 3;
+    g.Flags = GFLG_GADGIMAGE | GFLG_GADGHIMAGE; g.Activation = 0x103; g.GadgetType = GTYP_BOOLGADGET;
+    g.MutualExclude = 0x2468; g.GadgetID = 0x4321;
+    /* the revision of the icon, which the snapshot does not show */
+    g.UserData = reinterpret_cast<APTR>(static_cast<IPTR>(1));
+    g.GadgetRender = image_part(o, Image{0, 0, 16, 2, 2, nullptr, 3, 0, nullptr}, original_render);
+    g.SelectRender = image_part(o, Image{0, 1, 16, 2, 2, nullptr, 3, 0, nullptr}, original_select);
+    d->do_DefaultTool = text_part(o, original_tool);
+    d->do_ToolWindow = text_part(o, original_window);
+    STRPTR types[] = {text_part(o, original_type0), text_part(o, original_type1), nullptr};
+    d->do_ToolTypes = static_cast<STRPTR *>(part(o, types, sizeof(types)));
+    d->do_CurrentX = 120; d->do_CurrentY = -40; d->do_StackSize = 8192;
+    return d;
+}
+extern "C" DiskObject *GetDiskObject(CONST_STRPTR name)
+{
+    require(name && std::strcmp(name, "SYS:Clock") == 0, "GetDiskObject gets the guest name");
+    events.push_back("GetDiskObject");
+    return make_original();
+}
+extern "C" void FreeDiskObject(DiskObject *d)
+{
+    require(!clones.count(d), "a clone never goes through the global icon.library base");
+    auto it = originals.find(d);
+    require(it != originals.end(), "the global FreeDiskObject frees a live original, once");
+    events.push_back("FreeOriginal");
+    release(it->second, d);
+    originals.erase(it);
+}
+extern "C" DiskObject *GetDiskObjectNew(CONST_STRPTR) { require(false, "unexpected GetDiskObjectNew"); return nullptr; }
+extern "C" DiskObject *GetDefDiskObject(LONG) { require(false, "unexpected GetDefDiskObject"); return nullptr; }
+extern "C" DiskObject *NewDiskObject(ULONG) { require(false, "unexpected NewDiskObject"); return nullptr; }
+extern "C" UBYTE *FindToolType(const STRPTR *, const STRPTR) { require(false, "unexpected FindToolType"); return nullptr; }
+extern "C" BOOL MatchToolValue(UBYTE *, UBYTE *) { require(false, "unexpected MatchToolValue"); return FALSE; }
+extern "C" Library *OpenLibrary(CONST_STRPTR name, ULONG version)
+{
+    ++icon_open_calls;
+    require(name && std::strcmp(name, "icon.library") == 0 && version >= 44,
+            "an AppIcon opens icon.library 44, which has DupDiskObjectA()");
+    events.push_back("OpenIcon");
+    if (fail_open) return nullptr;
+    ++icon_opens;
+    return &icon_library;
+}
+extern "C" void CloseLibrary(Library *library)
+{
+    require(library == &icon_library && icon_opens > 0, "only an open icon.library base is closed");
+    events.push_back("CloseIcon");
+    --icon_opens;
+    require(clones.size() <= icon_opens, "no reference closes while its clone lives");
+}
+extern "C" DiskObject *Test_DupDiskObjectA_WB(Library *base, DiskObject *from, TagItem *tags)
+{
+    ++dup_calls;
+    require(base == &icon_library && icon_opens > clones.size(),
+            "DupDiskObjectA goes through a base of its own, open, not the global one");
+    require(originals.count(from) == 1, "DupDiskObjectA duplicates a live native original, never guest memory");
+    require(!tags, "DupDiskObjectA has no tags: it duplicates images, data and strings");
+    events.push_back("DupDiskObject");
+    if (fail_dup) return nullptr;
+    auto *d = new DiskObject(*from);
+    IconObject &c = clones[d];
+    c.base = base;
+    for (APTR *render : {&d->do_Gadget.GadgetRender, &d->do_Gadget.SelectRender})
+        if (*render)
+        {
+            const auto *im = static_cast<const Image *>(*render);
+            *render = image_part(c, *im, im->ImageData);
+        }
+    if (from->do_DefaultTool) d->do_DefaultTool = text_part(c, from->do_DefaultTool);
+    if (from->do_ToolWindow) d->do_ToolWindow = text_part(c, from->do_ToolWindow);
+    if (from->do_ToolTypes)
+    {
+        size_t n = 0;
+        while (from->do_ToolTypes[n]) ++n;
+        std::vector<STRPTR> types(n + 1, nullptr);
+        for (size_t i = 0; i < n; ++i) types[i] = text_part(c, from->do_ToolTypes[i]);
+        d->do_ToolTypes = static_cast<STRPTR *>(part(c, types.data(), types.size() * sizeof(STRPTR)));
+    }
+    return d;
+}
+static std::vector<std::pair<APTR, const DiskObject *>> retained_icons();
+extern "C" void Test_FreeDiskObject_WB(Library *base, DiskObject *d)
+{
+    auto it = clones.find(d);
+    require(it != clones.end() && it->second.base == base, "a clone goes through its own base, once");
+    require(base == &icon_library && icon_opens >= clones.size(), "the base of a clone is still open when it goes");
+    for (const auto &[object, icon] : retained_icons())
+        require(icon != d, "no clone goes while Workbench keeps its AppIcon");
+    events.push_back("FreeClone");
+    release(it->second, d);
+    clones.erase(it);
+}
+
 /* Each native object has a distinct address, unrelated to its guest token. */
 enum Kind { WINDOW = 1, ICON, MENU };
-struct NativeObject { Kind kind; MsgPort *port; };
+struct NativeObject { Kind kind; MsgPort *port; DiskObject *icon; const char *text; };
 struct AddCall
 {
     Kind kind;
@@ -268,12 +412,32 @@ static APTR record_add(AddCall call)
 {
     if (!fail_add)
     {
-        object_storage.push_back({call.kind, call.port});
+        object_storage.push_back({call.kind, call.port, call.icon, call.text});
         call.result = &object_storage.back();
         objects.emplace(call.result, object_storage.back());
     }
     adds.push_back(call);
     return call.result;
+}
+/* The DiskObject that each AppIcon on Workbench keeps, as AROS keeps it */
+static std::vector<std::pair<APTR, const DiskObject *>> retained_icons()
+{
+    std::vector<std::pair<APTR, const DiskObject *>> icons;
+    for (const auto &[object, native] : objects)
+        if (native.kind == ICON) icons.emplace_back(object, native.icon);
+    return icons;
+}
+/* What Workbench reads of an App object while it keeps it: its label and
+   the DiskObject of an AppIcon, a native copy or a clone with its base */
+static void check_kept(const NativeObject &native)
+{
+    if (native.kind == WINDOW) return;
+    require(copied_native(native.text, 1), "the label of an App object lives while Workbench keeps it");
+    if (native.kind != ICON) return;
+    if (clones.count(native.icon))
+        require(icon_opens >= clones.size(), "the clone of an AppIcon and its base live while Workbench keeps it");
+    else
+        require(copied_native(native.icon, sizeof(DiskObject)), "the copy of an AppIcon lives while Workbench keeps it");
 }
 extern "C" AppWindow *AddAppWindowA(IPTR id, IPTR ud, Window *window, MsgPort *port, TagItem *tags)
 {
@@ -282,6 +446,9 @@ extern "C" AppWindow *AddAppWindowA(IPTR id, IPTR ud, Window *window, MsgPort *p
 extern "C" AppIcon *AddAppIconA(IPTR id, IPTR ud, CONST_STRPTR text, MsgPort *port,
                                 BPTR lock, DiskObject *icon, TagItem *tags)
 {
+    events.push_back("AddAppIcon");
+    NativeObject kept{ICON, port, icon, text};
+    check_kept(kept);
     return static_cast<AppIcon *>(record_add({ICON, id, ud, nullptr, port, tags, text, lock, icon, nullptr}));
 }
 extern "C" AppMenuItem *AddAppMenuItemA(IPTR id, IPTR ud, APTR text, MsgPort *port, TagItem *tags)
@@ -297,13 +464,15 @@ static BOOL record_remove(APTR object, Kind kind)
 {
     auto it = objects.find(object);
     require(it != objects.end() && it->second.kind == kind, "native removal has the correct object and kind");
+    check_kept(it->second);
     if (during_remove) { auto deliver = during_remove; during_remove = nullptr; deliver(); }
     for (Message *msg : sent)
         require(std::count(replies.begin(), replies.end(), msg) == 1,
                 "no AppMessage waits for a reply while a removal takes the lock of Workbench");
     removes.push_back(object);
     events.push_back("RemoveAppObject");
-    objects.erase(it);
+    /* a refused object stays on Workbench, with what it reads */
+    if (remove_result) objects.erase(it);
     return remove_result;
 }
 extern "C" BOOL RemoveAppWindow(AppWindow *p) { return record_remove(p, WINDOW); }
@@ -326,9 +495,11 @@ enum
     AM_MOUSEY = 44, AM_SECONDS = 46, AM_MICROS = 50, AM_SIZE = 86,
     ARG_LOCK = 0, ARG_NAME = 4, ARG_SIZE = 8,
     DO_MAGIC = 0, DO_VERSION = 2, DO_GADGET = 4, DO_TYPE = 48,
-    DO_TOOL = 50, DO_TYPES = 54, DO_X = 58, DO_Y = 62, DO_STACK = 74, DO_SIZE = 78,
-    GG_LEFT = 4, GG_TOP = 6, GG_WIDTH = 8, GG_HEIGHT = 10, GG_FLAGS = 12,
-    GG_ACTIVATION = 14, GG_TYPE = 16, GG_RENDER = 18, GG_SELECT = 22, GG_ID = 38,
+    DO_TOOL = 50, DO_TYPES = 54, DO_X = 58, DO_Y = 62, DO_DRAWER = 66, DO_WINDOW = 70,
+    DO_STACK = 74, DO_SIZE = 78,
+    GG_NEXT = 0, GG_LEFT = 4, GG_TOP = 6, GG_WIDTH = 8, GG_HEIGHT = 10, GG_FLAGS = 12,
+    GG_ACTIVATION = 14, GG_TYPE = 16, GG_RENDER = 18, GG_SELECT = 22, GG_TEXT = 26,
+    GG_MUTEX = 30, GG_SPECIAL = 34, GG_ID = 38, GG_USERDATA = 40,
     IM_LEFT = 0, IM_TOP = 2, IM_WIDTH = 4, IM_HEIGHT = 6, IM_DEPTH = 8,
     IM_DATA = 10, IM_PICK = 14, IM_ONOFF = 15, IM_SIZE = 20
 };
@@ -373,7 +544,7 @@ struct Fixture
     static constexpr ULONG screen_addr = 0x6500, disk = 0x6800, image = 0x6900, select = 0x6940;
     static constexpr ULONG data = 0x6980, select_data = 0x69C0, text = 0x6A00, tool = 0x6B00;
     static constexpr ULONG types = 0x6C00, type1 = 0x6D00, type2 = 0x6E00, tags = 0x6F00;
-    static constexpr ULONG bad_text = 0x7000, raw_message = 0x7800;
+    static constexpr ULONG bad_text = 0x7000, raw_message = 0x7800, icon_name = 0x7500, iconlib = 0x5000;
     static constexpr ULONG id = 0x89ABCDEF, userdata = 0xFEDCBA98, lock = 0xDA123456;
     KaffeineContext *ctx;
     TestCPU state;
@@ -394,6 +565,9 @@ struct Fixture
         waited_empty = fail_add = false; on_wait = nullptr; on_wait_port = nullptr;
         remove_result = info_result = TRUE;
         info_lock = nullptr; info_name = nullptr; info_screen = nullptr;
+        require(originals.empty() && clones.empty() && icon_opens == 0,
+                "previous case released every icon and closed every icon.library reference");
+        icon_open_calls = dup_calls = 0; fail_open = fail_dup = false;
         ctx = static_cast<KaffeineContext *>(AllocMem(sizeof(*ctx), MEMF_CLEAR));
         live = ctx;
         ctx->mem_size = 0x20000;
@@ -403,15 +577,16 @@ struct Fixture
         ctx->exec_task = &owner;
         ctx->m68k_sysbase = exec;
         m68k_write32(ctx, exec + M68K_EXECBASE_THISTASK, task);
-        ctx->num_libs = 2;
+        ctx->num_libs = 3;
         library(ctx->libs[0], exec, 700, "exec.library", exec_thunks, std::size(exec_thunks));
         library(ctx->libs[1], wb, 96, "workbench.library", kaffeine_thunks_workbench, kaffeine_thunks_workbench_count);
+        library(ctx->libs[2], iconlib, 204, "icon.library", kaffeine_thunks_icon_manual, kaffeine_thunks_icon_manual_count);
         guest_window = Kaffeine_WindowCreate(ctx, &window);
         require(guest_window && Kaffeine_ShadowNative(ctx, guest_window, KAFFEINE_SHADOW_WINDOW) == &window,
                 "production WindowCreate registers a WINDOW shadow");
         require(Kaffeine_ShadowAdd(ctx, screen_addr, &screen, KAFFEINE_SHADOW_SCREEN), "screen shadow registers");
         write_text(text, "Guest icon"); write_text(tool, "SYS:Utilities/Tool");
-        write_text(type1, "MODE=fast"); write_text(type2, "FLAG");
+        write_text(type1, "MODE=fast"); write_text(type2, "FLAG"); write_text(icon_name, "SYS:Clock");
         std::memset(ctx->mem + bad_text, 'X', 1025);
     }
     ~Fixture()
@@ -419,6 +594,10 @@ struct Fixture
         Kaffeine_IOCleanup(ctx);
         require(objects.empty(), "cleanup removes every native App object");
         require(vector_count() == 0, "cleanup releases all native text and DiskObject copies");
+        require(clones.empty() && icon_opens == 0, "cleanup frees every clone and closes every icon.library reference");
+        /* the program's own icon.library objects go after, as at its end */
+        Kaffeine_IconsCleanup(ctx);
+        require(originals.empty(), "icon cleanup frees every original");
         require(signals == 0xFFFF, "cleanup returns every owned native signal");
         for (const auto &[port, queue] : queues)
         {
@@ -485,6 +664,36 @@ struct Fixture
     }
     ULONG add_window(ULONG p, ULONG tag = 0) { return call(wb, 48, {guest_window, p, tag}); }
     ULONG add_icon(ULONG p, ULONG tag = 0) { return call(wb, 60, {text, p, lock, disk, tag}); }
+    /* A DiskObject of icon.library through its literal LVO: a metadata-only
+       snapshot, with its native original behind it */
+    ULONG snapshot()
+    {
+        const size_t before = originals.size();
+        ULONG s = call(iconlib, 78, {icon_name});
+        require(valid(s, DO_SIZE) && originals.size() == before + 1 && original_of(s),
+                "GetDiskObject gives an owned guest snapshot of a new native original");
+        require(!read(s + DO_GADGET + GG_RENDER) && !read(s + DO_GADGET + GG_SELECT),
+                "the snapshot is metadata-only, without images");
+        return s;
+    }
+    ULONG add_snapshot(ULONG p, ULONG s, ULONG label = text) { return call(wb, 60, {label, p, lock, s, 0}); }
+    ULONG free_snapshot(ULONG s) { return call(iconlib, 90, {s}); }
+    DiskObject *original_of(ULONG s) const
+    {
+        for (const auto &icon : ctx->icons) if (icon.guest == s) return icon.native;
+        return nullptr;
+    }
+    std::vector<UBYTE> snapshot_bytes(ULONG s) const
+    {
+        for (const auto &icon : ctx->icons)
+            if (icon.guest == s) return {ctx->mem + s, ctx->mem + s + icon.size};
+        return {};
+    }
+    bool in_guest(const void *p) const
+    {
+        const IPTR address = reinterpret_cast<IPTR>(p), start = reinterpret_cast<IPTR>(ctx->mem);
+        return address >= start && address - start < ctx->mem_size + KAFFEINE_MEM_GUARD;
+    }
     ULONG add_menu(ULONG p, ULONG label = text, ULONG tag = 0) { return call(wb, 72, {label, p, tag, 0xFFFFFFFF}); }
     ULONG get(ULONG p) { return call(exec, 372, {p}); }
     ULONG wait(ULONG p) { return call(exec, 384, {p}); }
@@ -654,10 +863,13 @@ static void test_window_add_remove()
 }
 static void test_window_remove_false()
 {
-    Fixture f; ULONG p = f.port(), token = f.add_window(p);
+    Fixture f; ULONG p = f.port(), token = f.add_window(p); APTR native = adds.back().result;
     remove_result = FALSE;
-    require(f.call(Fixture::wb, 54, {token}) == FALSE && !f.token_present(token) && f.ctx->running,
-            "native FALSE is returned and the token is still discarded");
+    require(f.call(Fixture::wb, 54, {token}) == FALSE && f.token_present(token) && f.ctx->running && objects.count(native),
+            "native FALSE preserves the window token and backing port for another removal");
+    remove_result = TRUE;
+    require(f.call(Fixture::wb, 54, {token}) == TRUE && !f.token_present(token) && !objects.count(native),
+            "the same window token can be retried after Workbench refuses removal");
 }
 static void test_shared_port()
 {
@@ -749,6 +961,294 @@ static void test_icon_native_failure()
     require(adds.back().kind == ICON && !adds.back().result && blocks.size() == before && vector_count() == 0 &&
             Kaffeine_HeapAvail(f.ctx, 0) == available && objects.size() == 1,
             "failed native icon frees every new native allocation and the guest token");
+}
+/* A refused RemoveAppIcon() of a DiskObject that the program built: Workbench
+   may still read the copy, which stays with the token until it lets go */
+static void test_icon_remove_refused()
+{
+    Fixture f; ULONG p = f.port(); f.diskobject();
+    ULONG token = f.add_icon(p); APTR native = adds.back().result; const DiskObject *copy = adds.back().icon;
+    remove_result = FALSE;
+    require(f.call(Fixture::wb, 66, {token}) == FALSE && f.ctx->running && f.token_present(token) &&
+            objects.count(native) && copied_native(copy, sizeof(*copy)) && vector_count() == 1,
+            "a refused AppIcon keeps its token and the copy that Workbench reads");
+    remove_result = TRUE;
+    require(f.call(Fixture::wb, 66, {token}) == TRUE && !f.token_present(token) && !objects.count(native) &&
+            vector_count() == 0, "the copy goes once Workbench lets the AppIcon go");
+}
+
+/* ── AppIcons of icon.library DiskObjects ─────────────────────────── */
+
+static size_t event_count(const char *name) { return std::count(events.begin(), events.end(), name); }
+static size_t event_at(const char *name)
+{
+    auto it = std::find(events.begin(), events.end(), name);
+    require(it != events.end(), "an expected native event happened");
+    return static_cast<size_t>(it - events.begin());
+}
+static void check_clone_image(const IconObject &c, const IconObject &o, const void *clone, const void *original)
+{
+    const auto *ci = static_cast<const Image *>(clone), *oi = static_cast<const Image *>(original);
+    require(ci && oi && ci != oi && part_of(c, ci) && !part_of(o, ci), "the clone has an Image of its own");
+    require(ci->LeftEdge == oi->LeftEdge && ci->TopEdge == oi->TopEdge && ci->Width == oi->Width &&
+            ci->Height == oi->Height && ci->Depth == oi->Depth && ci->PlanePick == oi->PlanePick &&
+            ci->PlaneOnOff == oi->PlaneOnOff && !ci->NextImage, "the Image of the clone has the fields of the original");
+    require(ci->ImageData && ci->ImageData != oi->ImageData && part_of(c, ci->ImageData) &&
+            std::memcmp(ci->ImageData, oi->ImageData, image_bytes(oi)) == 0,
+            "the clone has a copy of every plane of the image data");
+}
+static void check_clone_text(const IconObject &c, const char *clone, const char *original)
+{
+    require(clone && original && clone != original && part_of(c, clone) && std::strcmp(clone, original) == 0,
+            "the clone has a copy of the string of the original");
+}
+/* The DiskObject that Workbench got last: a clone of the original behind
+   the snapshot, at the position x, y */
+static DiskObject *check_clone(Fixture &f, ULONG port, DiskObject *original, LONG x, LONG y)
+{
+    const auto &call = adds.back();
+    require(call.kind == ICON && call.id == Fixture::id && call.userdata == Fixture::userdata &&
+            call.port == f.native_port(port) && !call.tags &&
+            call.lock == reinterpret_cast<BPTR>(static_cast<IPTR>(Fixture::lock)),
+            "AddAppIconA gets its scalar arguments, the native port, the lock and NULL tags");
+    require(copied_native(call.text, 11) && std::strcmp(call.text, "Guest icon") == 0, "the label is a native copy");
+    DiskObject *d = call.icon;
+    require(d && d != original && clones.count(d) && !originals.count(d) && !f.in_guest(d),
+            "Workbench gets a native clone, neither the original nor guest memory");
+    const IconObject &c = clones.at(d), &o = originals.at(original);
+    const auto &g = d->do_Gadget, &og = original->do_Gadget;
+    require(d->do_Magic == original->do_Magic && d->do_Version == original->do_Version &&
+            d->do_Type == original->do_Type && d->do_StackSize == original->do_StackSize && !d->do_DrawerData,
+            "the clone has the scalars of the original");
+    require(g.LeftEdge == og.LeftEdge && g.TopEdge == og.TopEdge && g.Width == og.Width && g.Height == og.Height &&
+            g.Flags == og.Flags && g.Activation == og.Activation && g.GadgetType == og.GadgetType &&
+            g.MutualExclude == og.MutualExclude && g.GadgetID == og.GadgetID && g.UserData == og.UserData &&
+            !g.NextGadget && !g.GadgetText && !g.SpecialInfo,
+            "the gadget of the clone is the original's, also where the snapshot shows nothing");
+    require(d->do_CurrentX == x && d->do_CurrentY == y, "the clone has the position of the snapshot");
+    check_clone_image(c, o, g.GadgetRender, og.GadgetRender);
+    check_clone_image(c, o, g.SelectRender, og.SelectRender);
+    check_clone_text(c, d->do_DefaultTool, original->do_DefaultTool);
+    check_clone_text(c, d->do_ToolWindow, original->do_ToolWindow);
+    require(d->do_ToolTypes && d->do_ToolTypes != original->do_ToolTypes && part_of(c, d->do_ToolTypes) &&
+            !d->do_ToolTypes[2], "the clone has a tool type array of its own with its NULL end");
+    for (unsigned i = 0; i < 2; ++i) check_clone_text(c, d->do_ToolTypes[i], original->do_ToolTypes[i]);
+    return d;
+}
+/* The clone after its original has gone */
+static void check_clone_alone(DiskObject *d)
+{
+    const auto *render = static_cast<const Image *>(d->do_Gadget.GadgetRender);
+    const auto *select = static_cast<const Image *>(d->do_Gadget.SelectRender);
+    require(clones.count(d) && std::strcmp(d->do_DefaultTool, original_tool) == 0 &&
+            std::strcmp(d->do_ToolWindow, original_window) == 0 &&
+            std::strcmp(d->do_ToolTypes[0], original_type0) == 0 && std::strcmp(d->do_ToolTypes[1], original_type1) == 0 &&
+            std::memcmp(render->ImageData, original_render, sizeof(original_render)) == 0 &&
+            std::memcmp(select->ImageData, original_select, sizeof(original_select)) == 0,
+            "the clone needs nothing of its original");
+}
+static void no_icon_calls(Fixture &f, const char *what)
+{
+    require(adds.empty() && icon_open_calls == 0 && dup_calls == 0 && clones.empty() && vector_count() == 0, what);
+    for (const auto &entry : f.ctx->app_objects) require(!entry.guest, "no token");
+}
+
+static void test_snapshot_icon()
+{
+    Fixture f; ULONG p = f.port(), s = f.snapshot(); DiskObject *original = f.original_of(s);
+    const auto bytes = f.snapshot_bytes(s);
+    events.clear();
+    ULONG token = f.add_snapshot(p, s); f.check_token(token);
+    require(f.ctx->running && f.snapshot_bytes(s) == bytes, "AddAppIconA takes the snapshot as it is and leaves it so");
+    DiskObject *clone = check_clone(f, p, original, 120, -40);
+    APTR native = adds.back().result;
+    require(event_count("OpenIcon") == 1 && event_count("DupDiskObject") == 1 && icon_opens == 1 && clones.size() == 1 &&
+            event_at("OpenIcon") < event_at("DupDiskObject") && event_at("DupDiskObject") < event_at("AddAppIcon"),
+            "a reference to icon.library of its own, then the clone, then Workbench");
+    /* the program frees its snapshot, and its icon.library objects go */
+    require(f.free_snapshot(s) == 0 && f.ctx->running && !originals.count(original) && event_count("FreeOriginal") == 1,
+            "the program frees the snapshot through its literal LVO, which frees the original");
+    Kaffeine_IconsCleanup(f.ctx);
+    require(objects.count(native) && f.token_present(token) && icon_opens == 1,
+            "the AppIcon outlives the original and the program's icon.library objects");
+    check_clone_alone(clone);
+    events.clear();
+    require(f.call(Fixture::wb, 66, {token}) == TRUE && removes.back() == native && f.ctx->running,
+            "RemoveAppIcon removes the native AppIcon");
+    require(event_count("RemoveAppObject") == 1 && event_count("FreeClone") == 1 && event_count("CloseIcon") == 1 &&
+            event_at("RemoveAppObject") < event_at("FreeClone") && event_at("FreeClone") < event_at("CloseIcon"),
+            "the clone goes after Workbench lets the AppIcon go, through its base, which then closes");
+    require(!f.token_present(token) && clones.empty() && icon_opens == 0 && vector_count() == 0,
+            "the token, the clone, the reference and the label go");
+    f.refused(f.call(Fixture::wb, 66, {token}));
+    require(event_count("FreeClone") == 1 && event_count("CloseIcon") == 1 && removes.size() == 1,
+            "a second removal of the token frees nothing again");
+}
+static void test_snapshot_position()
+{
+    Fixture f; ULONG p = f.port(), s = f.snapshot(); DiskObject *original = f.original_of(s);
+    f.longword(s + DO_X, 0x80000000); f.longword(s + DO_Y, 0xFFFFFFFB);
+    require(f.ctx->mem[s + DO_X] == 0x80 && f.ctx->mem[s + DO_X + 3] == 0 && f.ctx->mem[s + DO_Y] == 0xFF &&
+            f.ctx->mem[s + DO_Y + 3] == 0xFB, "the positions are big-endian 32-bit fields");
+    f.check_token(f.add_snapshot(p, s));
+    check_clone(f, p, original, static_cast<LONG>(0x80000000), -5);
+    require(original->do_CurrentX == 120 && original->do_CurrentY == -40, "the original keeps its own position");
+}
+static void test_snapshot_edit(const std::function<void(Fixture &, ULONG)> &edit)
+{
+    Fixture f; ULONG p = f.port(), s = f.snapshot(); edit(f, s);
+    const ULONG available = Kaffeine_HeapAvail(f.ctx, 0);
+    f.refused(f.add_snapshot(p, s));
+    no_icon_calls(f, "an unsupported edit stops the program before a label, a reference, a clone or Workbench");
+    require(Kaffeine_HeapAvail(f.ctx, 0) == available && originals.size() == 1, "and before a token; the original stays the program's");
+}
+static void test_snapshot_bad_label()
+{
+    Fixture f; ULONG p = f.port(), s = f.snapshot();
+    f.refused(f.add_snapshot(p, s, Fixture::bad_text));
+    no_icon_calls(f, "a label without NUL in 1025 bytes stops the program before any native call");
+}
+/* An address that is no live snapshot is a DiskObject of the program's
+   own, however alike its bytes: without images, AddAppIconA() gives NULL */
+enum Foreign { INTERIOR, COPIED, FREED };
+static void test_snapshot_not_promoted(Foreign how)
+{
+    Fixture f; ULONG p = f.port(), s = f.snapshot(), dobj = s;
+    if (how == INTERIOR) dobj = s + 4;
+    else if (how == COPIED) { std::memcpy(f.ctx->mem + Fixture::disk, f.ctx->mem + s, DO_SIZE); dobj = Fixture::disk; }
+    else require(f.free_snapshot(s) == 0 && originals.empty(), "the program frees its snapshot");
+    ULONG result = f.add_snapshot(p, dobj);
+    if (how == FREED) require(result == 0 || result == 20, "a freed snapshot is taken as any guest DiskObject");
+    else require(result == 0 && f.ctx->running && f.ctx->exit_code == 0,
+                 "a DiskObject without images that is no live snapshot gives NULL");
+    no_icon_calls(f, "it is never promoted to a native original");
+}
+/* A snapshot that the program gave images of its own is one that it
+   built: copied from guest memory, never cloned */
+static void test_snapshot_given_images()
+{
+    Fixture f; ULONG p = f.port(), s = f.snapshot();
+    f.image_at(Fixture::image, Fixture::data, 2, 3, 8);
+    f.image_at(Fixture::select, Fixture::select_data, 1, 1, 1, true);
+    f.longword(s + DO_GADGET + GG_RENDER, Fixture::image); f.longword(s + DO_GADGET + GG_SELECT, Fixture::select);
+    f.check_token(f.add_snapshot(p, s));
+    const DiskObject *d = adds.back().icon;
+    require(icon_open_calls == 0 && dup_calls == 0 && clones.empty() && copied_native(d, sizeof(*d)),
+            "the DiskObject is a copy of the guest one");
+    check_image(static_cast<Image *>(d->do_Gadget.GadgetRender), {2, 3, 2});
+    check_image(static_cast<Image *>(d->do_Gadget.SelectRender), {1, 1, 1}, true);
+    require(std::strcmp(d->do_DefaultTool, original_tool) == 0 && std::strcmp(d->do_ToolTypes[1], original_type1) == 0 &&
+            d->do_CurrentX == 120 && d->do_CurrentY == -40, "the copy has the guest fields of the snapshot");
+}
+enum IconFailure { NO_BASE, NO_CLONE, NO_APPICON, NO_ENTRY, NO_GUEST_MEMORY };
+static void test_snapshot_failure(IconFailure failure)
+{
+    Fixture f; ULONG p = f.port(), s = f.snapshot();
+    std::vector<ULONG> menus, drained;
+    if (failure == NO_ENTRY)
+        while (menus.size() < KAFFEINE_MAX_APP_OBJECTS)
+        {
+            menus.push_back(f.add_menu(p));
+            require(menus.back() != 0, "every App object entry is taken");
+        }
+    if (failure == NO_GUEST_MEMORY)
+        for (ULONG size : {256u, 4u})
+            for (ULONG block; (block = Kaffeine_HeapAlloc(f.ctx, size, MEMF_PUBLIC)); ) drained.push_back(block);
+    fail_open = failure == NO_BASE; fail_dup = failure == NO_CLONE; fail_add = failure == NO_APPICON;
+    const ULONG available = Kaffeine_HeapAvail(f.ctx, 0);
+    const size_t vectors = vector_count(), added = adds.size();
+    events.clear();
+    require(f.add_snapshot(p, s) == 0 && f.ctx->running && f.ctx->exit_code == 0,
+            "a native or table failure gives NULL without stopping the program");
+    std::vector<std::string> expected;
+    if (failure == NO_BASE) expected = {"OpenIcon"};
+    if (failure == NO_CLONE) expected = {"OpenIcon", "DupDiskObject", "CloseIcon"};
+    if (failure == NO_APPICON) expected = {"OpenIcon", "DupDiskObject", "AddAppIcon", "FreeClone", "CloseIcon"};
+    std::vector<std::string> native_events;
+    for (const auto &event : events)
+        if (event != "FreeMem") native_events.push_back(event);
+    require(native_events == expected, "what was taken goes back in the opposite order, and nothing after the failure is taken");
+    require(clones.empty() && icon_opens == 0 && vector_count() == vectors && Kaffeine_HeapAvail(f.ctx, 0) == available &&
+            adds.size() == added + (failure == NO_APPICON) && objects.size() == menus.size(),
+            "no clone, reference, label copy, token or native AppIcon is left");
+    size_t tokens = 0;
+    for (const auto &entry : f.ctx->app_objects) tokens += entry.guest != 0;
+    require(tokens == menus.size() && originals.size() == 1, "only the earlier tokens and the original remain");
+    for (ULONG block : drained) Kaffeine_HeapFree(f.ctx, block, 0);
+}
+static void test_snapshot_remove_refused()
+{
+    Fixture f; ULONG p = f.port(), s = f.snapshot(), token = f.add_snapshot(p, s);
+    APTR native = adds.back().result; DiskObject *clone = adds.back().icon; const char *label = adds.back().text;
+    remove_result = FALSE; events.clear();
+    require(f.call(Fixture::wb, 66, {token}) == FALSE && f.ctx->running && f.ctx->exit_code == 0,
+            "the FALSE of Workbench reaches the program, which goes on");
+    require(f.token_present(token) && objects.count(native) && clones.count(clone) && icon_opens == 1 &&
+            copied_native(label, 11) && !event_count("FreeClone") && !event_count("CloseIcon"),
+            "a refused AppIcon keeps its token, clone, reference and label");
+    require(f.free_snapshot(s) == 0 && originals.empty() && clones.count(clone), "the original may go meanwhile");
+    remove_result = TRUE; events.clear();
+    require(f.call(Fixture::wb, 66, {token}) == TRUE && std::count(removes.begin(), removes.end(), native) == 2,
+            "another RemoveAppIcon asks Workbench again");
+    require(event_at("RemoveAppObject") < event_at("FreeClone") && event_at("FreeClone") < event_at("CloseIcon") &&
+            event_count("FreeClone") == 1 && !f.token_present(token) && clones.empty() && icon_opens == 0 &&
+            vector_count() == 0, "everything goes once, after Workbench lets the AppIcon go");
+}
+/* Workbench refuses to let the AppIcon go up to the end of the program */
+static void test_snapshot_refused_at_end()
+{
+    Fixture f; ULONG p = f.port(), s = f.snapshot(), token = f.add_snapshot(p, s);
+    APTR native = adds.back().result; DiskObject *clone = adds.back().icon; const char *label = adds.back().text;
+    MsgPort *front = adds.back().port;
+    const ULONG port_bytes = blocks.at(front).size;
+    remove_result = FALSE; events.clear();
+    Kaffeine_IOCleanup(f.ctx);
+    require(std::count(removes.begin(), removes.end(), native) == 1 && !f.token_present(token) && !f.native_port(p),
+            "cleanup asks Workbench once and forgets the token");
+    require(objects.count(native) && clones.count(clone) && icon_opens == 1 && copied_native(label, 11) &&
+            !event_count("FreeClone") && !event_count("CloseIcon"), "what Workbench keeps is never freed under it");
+    require(blocks.count(front) && Fixture::inbox(front)->mp_Flags == PA_IGNORE &&
+            !Fixture::inbox(front)->mp_SigTask && signals == 0xFFFF,
+            "Workbench's retained port stays valid and has no departing task or freed signal");
+    const size_t native_blocks = blocks.size();
+    Delivery *late = f.delivery(front);
+    require(f.replied(late) && queues[front].empty() && queues[Fixture::inbox(front)].empty() &&
+            blocks.size() == native_blocks && dups.empty(),
+            "a late delivery to the detached port is replied without a carrier, lock or task signal");
+    Kaffeine_IOCleanup(f.ctx);
+    require(std::count(removes.begin(), removes.end(), native) == 1 && clones.count(clone), "a repeated cleanup leaves it alone");
+    /* Workbench lets the AppIcon go later; the fixture releases what the bridge left to it */
+    objects.erase(native);
+    Test_FreeDiskObject_WB(&icon_library, clone);
+    CloseLibrary(&icon_library);
+    FreeVec(const_cast<char *>(label));
+    FreeMem(front, port_bytes);
+    remove_result = TRUE;
+}
+enum PortEnd { DELETE_PORT, FREE_SIGNAL, END_OF_PROGRAM };
+static void test_snapshot_port_end(PortEnd end)
+{
+    Fixture f; ULONG p = f.port(), other = f.port(), s1 = f.snapshot(), s2 = f.snapshot();
+    ULONG t1 = f.add_snapshot(p, s1); APTR n1 = adds.back().result; DiskObject *c1 = adds.back().icon;
+    ULONG t2 = f.add_snapshot(other, s2); APTR n2 = adds.back().result; DiskObject *c2 = adds.back().icon;
+    require(c1 != c2 && clones.size() == 2 && icon_opens == 2, "each AppIcon has a clone and a reference of its own");
+    require(f.free_snapshot(s1) == 0 && f.free_snapshot(s2) == 0 && originals.empty(), "the program frees both snapshots first");
+    UBYTE bit = f.ctx->mem[p + MP_SIGBIT]; events.clear();
+    if (end == DELETE_PORT) require(f.call(Fixture::exec, 672, {p}) == 0, "DeleteMsgPort returns zero");
+    else if (end == FREE_SIGNAL) require(f.call(Fixture::exec, 336, {}, bit) == 0, "FreeSignal returns zero");
+    else Kaffeine_IOCleanup(f.ctx);
+    require(!clones.count(c1) && !objects.count(n1) && std::count(removes.begin(), removes.end(), n1) == 1 &&
+            !f.token_present(t1), "the AppIcon of the port goes, and its clone");
+    require(event_at("RemoveAppObject") < event_at("FreeClone") && event_at("FreeClone") < event_at("CloseIcon") &&
+            event_at("CloseIcon") < event_at("FreeAppPort"),
+            "Workbench lets the AppIcon go, then its clone and its reference go, then the native port");
+    if (end != END_OF_PROGRAM)
+        require(clones.count(c2) && objects.count(n2) && f.token_present(t2) && icon_opens == 1 &&
+                event_count("FreeClone") == 1, "another port keeps its AppIcon, clone and reference");
+    Kaffeine_IOCleanup(f.ctx); Kaffeine_IOCleanup(f.ctx);
+    require(clones.empty() && icon_opens == 0 && event_count("FreeClone") == 2 && event_count("CloseIcon") == 2 &&
+            std::count(removes.begin(), removes.end(), n2) == 1 && !f.token_present(t2),
+            "every clone goes once through its base, and every reference closes once");
 }
 static void test_menu()
 {
@@ -1073,6 +1573,64 @@ int main(int argc, char **argv)
         {"icon_unterminated_tool_type", [] { test_bad_icon([](Fixture &f) { f.longword(Fixture::types, Fixture::bad_text); }); }},
         {"icon_unterminated_default_tool", [] { test_bad_icon([](Fixture &f) { f.longword(Fixture::disk + DO_TOOL, Fixture::bad_text); }); }},
         {"icon_native_failure", test_icon_native_failure},
+        {"icon_remove_refused", test_icon_remove_refused},
+        {"snapshot_icon_clone", test_snapshot_icon},
+        {"snapshot_icon_position", test_snapshot_position},
+        {"snapshot_icon_bad_label", test_snapshot_bad_label},
+        {"snapshot_edit_magic", [] { test_snapshot_edit([](Fixture &f, ULONG s) { f.word(s + DO_MAGIC, 0); }); }},
+        {"snapshot_edit_version", [] { test_snapshot_edit([](Fixture &f, ULONG s) { f.word(s + DO_VERSION, 2); }); }},
+        {"snapshot_edit_next_gadget", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.longword(s + DO_GADGET + GG_NEXT, s); }); }},
+        {"snapshot_edit_width", [] { test_snapshot_edit([](Fixture &f, ULONG s) { f.word(s + DO_GADGET + GG_WIDTH, 17); }); }},
+        {"snapshot_edit_flags", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.word(s + DO_GADGET + GG_FLAGS, GFLG_GADGIMAGE); }); }},
+        {"snapshot_edit_select_render", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.image_at(Fixture::select, Fixture::select_data, 1, 1, 1, true);
+             f.longword(s + DO_GADGET + GG_SELECT, Fixture::select); }); }},
+        {"snapshot_edit_gadget_text", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.longword(s + DO_GADGET + GG_TEXT, Fixture::text); }); }},
+        {"snapshot_edit_mutual_exclude", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.longword(s + DO_GADGET + GG_MUTEX, 0); }); }},
+        {"snapshot_edit_special_info", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.longword(s + DO_GADGET + GG_SPECIAL, Fixture::raw_message); }); }},
+        {"snapshot_edit_gadget_id", [] { test_snapshot_edit([](Fixture &f, ULONG s) { f.word(s + DO_GADGET + GG_ID, 1); }); }},
+        {"snapshot_edit_user_data", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.longword(s + DO_GADGET + GG_USERDATA, 1); }); }},
+        {"snapshot_edit_type", [] { test_snapshot_edit([](Fixture &f, ULONG s) { f.ctx->mem[s + DO_TYPE] = 3; }); }},
+        {"snapshot_edit_stack", [] { test_snapshot_edit([](Fixture &f, ULONG s) { f.longword(s + DO_STACK, 4096); }); }},
+        {"snapshot_edit_drawer_data", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.longword(s + DO_DRAWER, Fixture::raw_message); }); }},
+        {"snapshot_edit_default_tool_moved", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.write_text(Fixture::tool, original_tool); f.longword(s + DO_TOOL, Fixture::tool); }); }},
+        {"snapshot_edit_default_tool_text", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.ctx->mem[f.read(s + DO_TOOL)] = 'X'; }); }},
+        {"snapshot_edit_default_tool_cleared", [] { test_snapshot_edit([](Fixture &f, ULONG s) { f.longword(s + DO_TOOL, 0); }); }},
+        {"snapshot_edit_tool_window_cleared", [] { test_snapshot_edit([](Fixture &f, ULONG s) { f.longword(s + DO_WINDOW, 0); }); }},
+        {"snapshot_edit_tool_types_cleared", [] { test_snapshot_edit([](Fixture &f, ULONG s) { f.longword(s + DO_TYPES, 0); }); }},
+        {"snapshot_edit_tool_type_text", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.ctx->mem[f.read(f.read(s + DO_TYPES))] = 'X'; }); }},
+        {"snapshot_edit_tool_type_moved", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             f.write_text(Fixture::type1, original_type0); f.longword(f.read(s + DO_TYPES), Fixture::type1); }); }},
+        {"snapshot_edit_tool_types_unterminated", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             ULONG array = f.read(s + DO_TYPES); f.longword(array + 8, f.read(array)); }); }},
+        {"snapshot_edit_tool_type_array_moved", [] { test_snapshot_edit([](Fixture &f, ULONG s) {
+             ULONG array = f.read(s + DO_TYPES);
+             for (ULONG i = 0; i < 3; ++i) f.longword(Fixture::types + 4 * i, f.read(array + 4 * i));
+             f.longword(s + DO_TYPES, Fixture::types); }); }},
+        {"snapshot_interior_not_promoted", [] { test_snapshot_not_promoted(INTERIOR); }},
+        {"snapshot_copy_not_promoted", [] { test_snapshot_not_promoted(COPIED); }},
+        {"snapshot_freed_not_promoted", [] { test_snapshot_not_promoted(FREED); }},
+        {"snapshot_given_images_copied", test_snapshot_given_images},
+        {"snapshot_no_icon_library", [] { test_snapshot_failure(NO_BASE); }},
+        {"snapshot_no_clone", [] { test_snapshot_failure(NO_CLONE); }},
+        {"snapshot_native_add_failure", [] { test_snapshot_failure(NO_APPICON); }},
+        {"snapshot_no_object_entry", [] { test_snapshot_failure(NO_ENTRY); }},
+        {"snapshot_no_guest_token", [] { test_snapshot_failure(NO_GUEST_MEMORY); }},
+        {"snapshot_remove_refused", test_snapshot_remove_refused},
+        {"snapshot_refused_at_end", test_snapshot_refused_at_end},
+        {"snapshot_delete_port", [] { test_snapshot_port_end(DELETE_PORT); }},
+        {"snapshot_free_signal", [] { test_snapshot_port_end(FREE_SIGNAL); }},
+        {"snapshot_end_of_program", [] { test_snapshot_port_end(END_OF_PROGRAM); }},
         {"menu_copied_text", test_menu},
         {"menu_unterminated_text", test_menu_bad_text},
         {"menu_text_limit", test_menu_text_limit},

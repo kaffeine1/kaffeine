@@ -1557,8 +1557,8 @@ library returns 0.
 |-----|----------|----------|
 | -48 | AddAppWindowA | A window of the program; the native AppWindow behind a guest token, or 0 |
 | -54 | RemoveAppWindow | Native RemoveAppWindow() and its BOOL; 0 gives FALSE, a token of no AppWindow rc 20 |
-| -60 | AddAppIconA | A DiskObject that the program built in its memory, as the autodoc has it (no magic, no version, no `GFLG_GADGIMAGE`) or as an icon file has it, with any magic, copied into native memory with its gadget, its render Image, the select Image of the `GFLG_GADGHIMAGE` bit (which `GADGHNONE` has too), its default tool and tool types; the copy has the magic of an icon and `GFLG_GADGIMAGE`, without which icon.library of AROS draws no image. Each Image has its Depth planes in the copy, as `DupDiskObject()` copies them; from guest memory come the planes that drawing takes, one for each bit of PlanePick and at most Depth, as `intuition.h` says and `DrawImage()` takes them, and the others stay zero. As on AmigaOS 3.2.3, measured, 0 without stopping the program for `GFLG_GADGHIMAGE` without a select Image and for an Image without a width, a height, planes or data, or with more than 8 planes, and without a render Image, as AROS gives; an Image wider or higher than 1024, or a DiskObject, Image or data outside guest memory, stops the program. The text copied; the lock as the bridge passes every lock. The copies stay until RemoveAppIcon(), as AROS keeps both pointers. A DiskObject of the bridge's icon.library is a native one, which the bridge cannot read yet |
-| -66 | RemoveAppIcon | Native RemoveAppIcon(), then the copies go |
+| -60 | AddAppIconA | A DiskObject that the program built in its memory, as the autodoc has it (no magic, no version, no `GFLG_GADGIMAGE`) or as an icon file has it, with any magic, copied into native memory with its gadget, its render Image, the select Image of the `GFLG_GADGHIMAGE` bit (which `GADGHNONE` has too), its default tool and tool types; the copy has the magic of an icon and `GFLG_GADGIMAGE`, without which icon.library of AROS draws no image. Each Image has its Depth planes in the copy, as `DupDiskObject()` copies them; from guest memory come the planes that drawing takes, one for each bit of PlanePick and at most Depth, as `intuition.h` says and `DrawImage()` takes them, and the others stay zero. As on AmigaOS 3.2.3, measured, 0 without stopping the program for `GFLG_GADGHIMAGE` without a select Image and for an Image without a width, a height, planes or data, or with more than 8 planes, and without a render Image, as AROS gives; an Image wider or higher than 1024, or a DiskObject, Image or data outside guest memory, stops the program. The text copied; the lock as the bridge passes every lock. The copies stay until RemoveAppIcon(), as AROS keeps both pointers. An exact live metadata snapshot owned by the bridge's icon.library instead uses a deep native `DupDiskObjectA()` clone, with a separate open icon.library reference retained until successful removal. Only `do_CurrentX/Y` overrides are supported on that path; other scalar edits or changed metadata pointers/text stop with rc 20. Native image pointers never enter the guest. A snapshot given guest images uses the caller-built copy path; copied, interior or freed snapshot addresses never recover a native object |
+| -66 | RemoveAppIcon | Native RemoveAppIcon(); on TRUE, release the copied data and any native icon clone through its retained icon.library base, then close that base. On FALSE, keep the token, data and port for another removal attempt |
 | -72 | AddAppMenuItemA | The text, of at most 1024 bytes, copied until RemoveAppMenuItem() |
 | -78 | RemoveAppMenuItem | Native RemoveAppMenuItem() and its BOOL |
 | -90 | WBInfo | The lock as the bridge passes every lock, a name of at most 1024 bytes in guest memory, a screen of the program or NULL |
@@ -2019,8 +2019,14 @@ m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
    program replies it without `GetMsg()`.
 4. `DeleteMsgPort()` of the port, `FreeSignal()` of its signal and the end
    of the program remove its App objects from Workbench, then free its
-   copies, the carriers still in the second port and the native ports;
-   after the App objects, nothing puts to them.
+   copies, the carriers still in the second port and the native ports.
+   A FALSE from native removal preserves the token on an explicit removal.
+   If removal still refuses during port teardown, Workbench may retain
+   both the data and the front port: these native allocations and any held
+   icon.library reference are deliberately retained. The detached port
+   has no task or active signal and replies later deliveries without
+   making carriers or accessing guest memory. Normal successful removal
+   releases every clone, base reference, copied label and native port.
 
 ### GadTools Menus
 

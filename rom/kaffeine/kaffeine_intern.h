@@ -185,11 +185,15 @@ struct KaffeineContext
        Workbench gets), the App objects by the guest token that the program
        got for each, with the native copies that they keep, and the 68k
        copies of the AppMessages that the program took and has not replied,
-       with the carrier of each (native) */
+       with the carrier of each (native). The AppIcon of an icon.library
+       DiskObject of the program keeps a DupDiskObjectA() clone of its
+       native object (clone), freed through icon_base, a reference to
+       icon.library of its own, after Workbench has let the AppIcon go. */
     #define KAFFEINE_MAX_APP_PORTS 8
     struct { ULONG guest; struct MsgPort *native; } app_ports[KAFFEINE_MAX_APP_PORTS];
     #define KAFFEINE_MAX_APP_OBJECTS 32
-    struct { ULONG guest; UBYTE kind; UBYTE port; APTR native; APTR copy; } app_objects[KAFFEINE_MAX_APP_OBJECTS];
+    struct { ULONG guest; UBYTE kind; UBYTE port; APTR native; APTR copy;
+             struct DiskObject *clone; struct Library *icon_base; } app_objects[KAFFEINE_MAX_APP_OBJECTS];
     #define KAFFEINE_MAX_APP_MESSAGES 32
     struct { ULONG guest; UBYTE port; struct Message *native; } app_messages[KAFFEINE_MAX_APP_MESSAGES];
 
