@@ -326,13 +326,13 @@ void Kaffeine_PacketReply(struct KaffeineContext *ctx, ULONG port, ULONG msg,
 
 /* A contiguous 68-byte StandardPacket with a reply queue that takes it;
    SendPkt() sets mn_Length 68 when the program left it 0, as AmigaOS
-   AllocDosObject() does. */
+   AllocDosObject() does. DOS replies use dp_Port; mn_ReplyPort is unused
+   and may retain arbitrary data in a packet reused by the caller. */
 BOOL Kaffeine_PacketMessage(struct KaffeineContext *ctx, ULONG msg, struct KaffeineQueue *reply)
 {
     return !(msg & 1) && Kaffeine_GuestBytes(ctx, msg, 68) &&
         m68k_read16(ctx, msg + 18) == 68 && m68k_read32(ctx, msg + 20) == msg &&
         (!m68k_read32(ctx, msg + 10) || m68k_read32(ctx, msg + 10) == msg + 20) &&
-        (!m68k_read32(ctx, msg + 14) || m68k_read32(ctx, msg + 14) == m68k_read32(ctx, msg + 24)) &&
         Kaffeine_QueueRead(ctx, m68k_read32(ctx, msg + 24), reply) &&
         Kaffeine_MessagePreflight(ctx, reply, msg, 68);
 }

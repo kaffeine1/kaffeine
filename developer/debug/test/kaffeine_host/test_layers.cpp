@@ -643,6 +643,7 @@ static void test_registration()
         else if (e.lvo == 150) assert(e.thunk == Kaffeine_DisposeLayerInfo);
         else if (e.lvo == 174) assert(e.thunk == Kaffeine_InstallClipRegion);
         else if (e.lvo == 198) assert(e.thunk == Kaffeine_InstallLayerHook);
+        else if (e.lvo == 204) assert(e.thunk == Kaffeine_InstallLayerInfoHook);
         else assert(e.thunk == kaffeine_layers_Unsupported);
     }
     assert(!kaffeine_thunks_layers_manual[std::size(lvos)].lvo &&

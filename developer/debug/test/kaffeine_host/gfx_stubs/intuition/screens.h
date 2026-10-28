@@ -9,7 +9,7 @@
 /* Native layer storage: only the layer bridge reads top_layer, under
    LockLayerInfo(); the rest stays opaque. */
 struct Layer;
-struct Layer_Info { struct Layer *top_layer; struct SignalSemaphore Lock; UWORD Flags; struct Layer *check_lp; };
+struct Layer_Info { struct Layer *top_layer; struct SignalSemaphore Lock; UWORD Flags; struct Layer *check_lp; void *BlankHook; };
 
 /* Field names, order and types from compiler/include/intuition/screens.h.
    Host pointers have host width; the tests check guest offsets separately. */

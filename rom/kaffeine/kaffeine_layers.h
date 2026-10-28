@@ -49,6 +49,7 @@ struct Screen;
 #define M68K_LI_TOP_LAYER         0
 #define M68K_LI_LOCK              24
 #define M68K_LI_FLAGS             88
+#define M68K_LI_BLANKHOOK         94
 #define M68K_SIZEOF_LAYER_INFO    102
 
 #define M68K_SIZEOF_HOOK          20
@@ -173,6 +174,7 @@ IPTR Kaffeine_DeleteLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_LockLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_UnlockLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_NewLayerInfo(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_InstallLayerInfoHook(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_DisposeLayerInfo(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_InstallClipRegion(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_CreateUpfrontHookLayer(struct KaffeineContext *ctx, void *cpu);
@@ -270,7 +272,7 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     { 186, Kaffeine_CreateUpfrontHookLayer }, \
     { 192, kaffeine_layers_Unsupported },     /* CreateBehindHookLayer */ \
     { 198, Kaffeine_InstallLayerHook }, \
-    { 204, kaffeine_layers_Unsupported },     /* InstallLayerInfoHook */ \
+    { 204, Kaffeine_InstallLayerInfoHook },   /* owned LayerInfo, sentinel modes */ \
     { 210, kaffeine_layers_Unsupported },     /* SortLayerCR */ \
     { 216, kaffeine_layers_Unsupported },     /* DoHookClipRects */ \
     { 222, kaffeine_layers_Unsupported },     /* ChangeLayerShape */ \

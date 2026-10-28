@@ -2859,9 +2859,21 @@ m68k: SetAPen(rp, 2); rp->cp_x = 10; Draw(rp, 50, 10)
    as the one of the 68k TextFonts, and each held font has a 68k TextFont
    that stays, so it fills only with it. Without the 68k TextFont there is
    no 68k Screen either. Native pointers are not shown: NextScreen,
-   FirstWindow, Title, DefaultTitle, the ColorMap and RasInfo of the
+   FirstWindow, Title, DefaultTitle and RasInfo of the
    ViewPort, the planes of the BitMap, the LayerInfo, FirstGadget,
    BarLayer, ExtData and UserData stay 0.
+   `ViewPort.ColorMap` is a borrowed classic identity owned by that screen.
+   Its 52-byte snapshot contains scalar flags/type/count, the guest ViewPort
+   link and mode ID; native palette arrays and backend pointers stay private.
+   Palette thunks resolve only that exact live identity. `LoadRGB4()` and
+   `LoadRGB32()` decode big-endian arrays into bounded native temporaries;
+   the complete RGB32 stream is checked before any palette update.
+   `GetRGB32()` writes big-endian components through a bounded temporary.
+   Scalar RGB4/RGB32 getters and setters use the same checked identities.
+   This covers at most 256 colors per call. Closing or releasing the last
+   holder of a screen retires its palette identity. Standalone ColorMap/pen
+   allocation and freeing a borrowed palette stop the guest; `VideoControl()`
+   reports an error until its pointer-bearing tags have typed conversions.
 3. The 68k Screen stays while the program holds a lock on the screen, has
    a window there or holds the list of public screens, and goes with the
    last of them: `Kaffeine_WindowDelete()` calls `ctx->screen_release` once
@@ -2985,6 +2997,12 @@ Screen of.
    layer lock. Native failure rolls back allocations and keeps any objects
    still referenced by a surviving native root. Cleanup deletes layers before
    LayerInfos, then releases their persistent bitmap adapters.
+   `InstallLayerInfoHook()` (-204) accepts the standard backfill sentinels
+   0 and 1 for an owned `NewLayerInfo()` or opened screen's LayerInfo. It delegates the change
+   to native layers, including its hidden root, returns the previous mode
+   and updates the classic `BlankHook` field. Foreign/stale LayerInfos,
+   real guest hooks, unrepresentable native hooks and calls during a
+   callback, blit or held layer lock are refused before the native call.
 9. `kaffeine_regions.c` owns up to 16 native graphics Regions. `NewRegion()`
    (-516) returns a stable protected 12-byte classic Region; its bounded list
    has up to 64 big-endian 16-byte RegionRectangles linked only by guest
@@ -3434,3 +3452,17 @@ VisualInfo references. execute_owned frees menus/gadgets and then all
 VisualInfos before releasing screens. FreeSysRequest and SysReqHandler
 validate the requester marker, and requester destruction runs gadget/menu
 close hooks before dropping window/message/port mirrors.
+
+BltBitMap() clips non-negative rectangles to the native dimensions of both
+bitmaps before creating call-local adapters or invoking the native blitter.
+Origins outside either bitmap and zero masks return zero without a blit.
+Negative coordinates, negative sizes and caller TempA buffers remain outside
+the supported boundary. The original gfx_blit_clip target probe checks the
+resulting pixels and intact memory guards against native AROS.
+
+IntuiTextLength() (-330) measures one checked classic IntuiText through
+native Intuition. A NULL descriptor returns zero. Its guest text must be
+NUL-terminated in the arena; optional TextAttr/TaggedTextAttr inputs use the
+shared font converter. NextText stays NULL in the native copy, matching
+Intuition's single-text contract. Native Intuition chooses the system font
+and handles unavailable-font fallback; no guest byte is written.
