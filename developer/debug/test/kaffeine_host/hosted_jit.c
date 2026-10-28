@@ -170,6 +170,32 @@ static uint32_t a64_csinc(int sf, int rd, int rn, int rm, int cond)
            (uint32_t)rn << 5 | (uint32_t)rd;
 }
 
+static uint32_t a64_adc_sbc(int sf, int sub, int s, int rd, int rn, int rm)
+{
+    return (uint32_t)sf << 31 | (uint32_t)sub << 30 | (uint32_t)s << 29 | 0x1A000000u |
+           (uint32_t)rm << 16 | (uint32_t)rn << 5 | (uint32_t)rd;
+}
+
+static uint32_t a64_lslv(int rd, int rn, int rm)
+{
+    return 0x1AC02000u | (uint32_t)rm << 16 | (uint32_t)rn << 5 | (uint32_t)rd;
+}
+
+static uint32_t a64_mul(int rd, int rn, int rm)
+{
+    return 0x1B007C00u | (uint32_t)rm << 16 | (uint32_t)rn << 5 | (uint32_t)rd;
+}
+
+static uint32_t a64_smull(int rd, int rn, int rm)
+{
+    return 0x9B207C00u | (uint32_t)rm << 16 | (uint32_t)rn << 5 | (uint32_t)rd;
+}
+
+static uint32_t a64_umull(int rd, int rn, int rm)
+{
+    return 0x9BA07C00u | (uint32_t)rm << 16 | (uint32_t)rn << 5 | (uint32_t)rd;
+}
+
 static uint32_t a64_mrs_nzcv(int rt) { return 0xD53B4200u | (uint32_t)rt; }
 
 /* size: 0 byte, 1 halfword, 2 word; address [Xn, Wm, UXTW] */
@@ -228,6 +254,8 @@ static uint32_t a64_ubfx(int rd, int rn, int lsb, int width) { return a64_bitfie
 static uint32_t a64_bfi(int rd, int rn, int lsb, int width) { return a64_bitfield(0, 1, rd, rn, (32 - lsb) & 31, width - 1); }
 static uint32_t a64_sxtb(int rd, int rn) { return a64_bitfield(0, 0, rd, rn, 0, 7); }
 static uint32_t a64_sxth(int rd, int rn) { return a64_bitfield(0, 0, rd, rn, 0, 15); }
+static uint32_t a64_uxtb(int rd, int rn) { return a64_bitfield(0, 2, rd, rn, 0, 7); }
+static uint32_t a64_uxth(int rd, int rn) { return a64_bitfield(0, 2, rd, rn, 0, 15); }
 static uint32_t a64_ror(int rd, int rn, int s) { return a64_extr(0, rd, rn, rn, s); }
 static uint32_t a64_cset(int rd, int cond) { return a64_csinc(0, rd, ZR, ZR, cond ^ 1); }
 
@@ -468,21 +496,27 @@ struct HJEA
 enum
 {
     K_NOP, K_MOVEQ, K_MOVE, K_MOVEA, K_LEA, K_PEA,
+    K_LINK, K_UNLK, K_EXG, K_CMPM,
     K_ALU,      /* <ea>,Dn: ADD SUB AND OR CMP */
     K_ALUM,     /* Dn,<ea>: ADD SUB AND OR EOR */
     K_ALUI,     /* #imm,<ea>: ORI ANDI SUBI ADDI EORI CMPI */
     K_ALUA,     /* ADDA SUBA CMPA */
     K_QUICK,    /* ADDQ SUBQ */
-    K_CLR, K_TST, K_NEG, K_NOT, K_SWAP, K_EXTW, K_EXTL,
-    K_SHIFT,    /* LSL LSR ASR ROL ROR #n,Dn (.L) */
+    K_ADDX,     /* ADDX SUBX NEGX */
+    K_MULW,     /* MULU.W MULS.W */
+    K_MULL,     /* MULU.L MULS.L */
+    K_BIT,      /* BTST BCHG BCLR BSET */
+    K_CLR, K_TST, K_NEG, K_NOT, K_SWAP, K_EXTW, K_EXTL, K_EXTBL,
+    K_SHIFT,    /* ASL ASR LSL LSR ROL ROR ROXL ROXR */
     K_SCC,
-    K_BCC, K_BSR, K_DBCC, K_JSR, K_JMP, K_RTS,
+    K_BCC, K_BSR, K_DBCC, K_JSR, K_JMP, K_RTS, K_RTR,
     K_MOVEM,
-    K_MOVEFROMSR, K_MOVETOCCR, K_MOVETOSR,
+    K_MOVEFROMSR, K_MOVEFROMCCR, K_MOVETOCCR, K_MOVETOSR, K_LOGICSR,
     K_LINEA, K_FAULT
 };
 enum { OP_ADD, OP_SUB, OP_AND, OP_OR, OP_EOR, OP_CMP };
-enum { SH_LSL, SH_LSR, SH_ASR, SH_ROL, SH_ROR };
+enum { SH_LSL, SH_LSR, SH_ASR, SH_ASL, SH_ROL, SH_ROR, SH_ROXL, SH_ROXR };
+enum { BIT_TST, BIT_CHG, BIT_CLR, BIT_SET };
 
 struct HJInsn
 {
@@ -594,6 +628,20 @@ static int decode_misc(struct HJDec *d, uint16_t op, struct HJInsn *in)
 
     if (op == 0x4E71) { in->kind = K_NOP; return 1; }
     if (op == 0x4E75) { in->kind = K_RTS; in->use = HJF_ALL; return 1; }
+    if (op == 0x4E77) { in->kind = K_RTR; in->def = HJF_ALL; return 1; }
+    if ((op & 0xFFF8) == 0x4E50)
+    {
+        in->kind = K_LINK; in->size = 2; in->dst.reg = (uint8_t)reg;
+        in->src.disp = (int16_t)fetch16(d);
+        return 1;
+    }
+    if ((op & 0xFFF8) == 0x4808)
+    {
+        in->kind = K_LINK; in->size = 4; in->dst.reg = (uint8_t)reg;
+        in->src.disp = (int32_t)fetch32(d);
+        return 1;
+    }
+    if ((op & 0xFFF8) == 0x4E58) { in->kind = K_UNLK; in->dst.reg = (uint8_t)reg; return 1; }
     if (op == 0x4AFC) return fault_insn(in, "ILLEGAL");
     if ((op & 0xFFC0) == 0x4E80 || (op & 0xFFC0) == 0x4EC0)
     {
@@ -601,6 +649,7 @@ static int decode_misc(struct HJDec *d, uint16_t op, struct HJInsn *in)
         in->use = HJF_ALL;
         return decode_ea(d, mode, reg, 4, M_CTRL, &in->src) || fault_insn(in, "JSR/JMP mode");
     }
+    if ((op & 0xFFF8) == 0x49C0) { in->kind = K_EXTBL; in->dst.reg = (uint8_t)reg; in->def = HJF_NZVC; return 1; }
     if ((op & 0xF1C0) == 0x41C0)
     {
         in->kind = K_LEA;
@@ -612,23 +661,39 @@ static int decode_misc(struct HJDec *d, uint16_t op, struct HJInsn *in)
         in->kind = K_MOVEFROMSR; in->size = 2; in->use = HJF_ALL;
         return decode_ea(d, mode, reg, 2, M_DALT, &in->dst) || fault_insn(in, "MOVE from SR mode");
     }
+    if ((op & 0xFFC0) == 0x42C0)
+    {
+        in->kind = K_MOVEFROMCCR; in->size = 2; in->use = HJF_ALL;
+        return decode_ea(d, mode, reg, 2, M_DALT, &in->dst) || fault_insn(in, "MOVE from CCR mode");
+    }
     if ((op & 0xFFC0) == 0x44C0 || (op & 0xFFC0) == 0x46C0)
     {
         in->kind = (op & 0x0200) ? K_MOVETOSR : K_MOVETOCCR; in->size = 2; in->def = HJF_ALL;
         return decode_ea(d, mode, reg, 2, M_DATA, &in->src) || fault_insn(in, "MOVE to SR mode");
     }
+    if (size && (op & 0xFF00) == 0x4000)
+    {
+        in->kind = K_ADDX; in->op = OP_SUB; in->count = 1; in->size = (uint8_t)size;
+        in->use = HJF_X | HJF_Z; in->def = HJF_ALL;
+        return decode_ea(d, mode, reg, size, M_DALT, &in->dst) || fault_insn(in, "NEGX mode");
+    }
     if (size && ((op & 0xFF00) == 0x4200 || (op & 0xFF00) == 0x4400 ||
                  (op & 0xFF00) == 0x4600 || (op & 0xFF00) == 0x4A00))
     {
+        unsigned allowed = M_DALT;
+
         switch (op & 0xFF00)
         {
         case 0x4200: in->kind = K_CLR; in->def = HJF_NZVC; break;
         case 0x4400: in->kind = K_NEG; in->def = HJF_ALL; break;
         case 0x4600: in->kind = K_NOT; in->def = HJF_NZVC; break;
-        default:     in->kind = K_TST; in->def = HJF_NZVC; break;
+        default:
+            in->kind = K_TST; in->def = HJF_NZVC;
+            allowed = size == 1 ? M_DATA : M_ALL;
+            break;
         }
         in->size = (uint8_t)size;
-        return decode_ea(d, mode, reg, size, M_DALT, &in->dst) || fault_insn(in, "unary mode");
+        return decode_ea(d, mode, reg, size, allowed, &in->dst) || fault_insn(in, "unary mode");
     }
     if ((op & 0xFFF8) == 0x4840) { in->kind = K_SWAP; in->dst.reg = (uint8_t)reg; in->def = HJF_NZVC; return 1; }
     if ((op & 0xFFC0) == 0x4840)
@@ -638,15 +703,27 @@ static int decode_misc(struct HJDec *d, uint16_t op, struct HJInsn *in)
     }
     if ((op & 0xFFF8) == 0x4880) { in->kind = K_EXTW; in->dst.reg = (uint8_t)reg; in->def = HJF_NZVC; return 1; }
     if ((op & 0xFFF8) == 0x48C0) { in->kind = K_EXTL; in->dst.reg = (uint8_t)reg; in->def = HJF_NZVC; return 1; }
+    if ((op & 0xFFC0) == 0x4C00)
+    {
+        uint16_t ext = fetch16(d);
+
+        if (ext & 0x83F8u)
+            return fault_insn(in, "MUL.L extension");
+        in->kind = K_MULL;
+        in->size = 4;
+        in->op = (uint8_t)((ext >> 11) & 1);
+        in->dst.reg = (uint8_t)((ext >> 12) & 7);
+        in->count = (uint8_t)((ext & 7) | (((ext >> 10) & 1) << 3));
+        in->def = HJF_NZVC;
+        return decode_ea(d, mode, reg, 4, M_DATA, &in->src) || fault_insn(in, "MUL.L mode");
+    }
     if ((op & 0xFB80) == 0x4880)
     {
         uint16_t mask = fetch16(d);
         int load = (op >> 10) & 1;
 
-        if (!(op & 0x0040))
-            return fault_insn(in, "MOVEM.W");
-        in->kind = K_MOVEM; in->count = (uint8_t)load; in->size = 4;
-        if (!decode_ea(d, mode, reg, 4, load ? (M_CTRL | M(EA_POST)) : (M_CALT | M(EA_PRE)), &in->src))
+        in->kind = K_MOVEM; in->count = (uint8_t)load; in->size = (op & 0x0040) ? 4 : 2;
+        if (!decode_ea(d, mode, reg, in->size, load ? (M_CTRL | M(EA_POST)) : (M_CALT | M(EA_PRE)), &in->src))
             return fault_insn(in, "MOVEM mode");
         if (in->src.mode == EA_PRE)
         {
@@ -687,7 +764,44 @@ static int decode_insn(struct KaffeineContext *ctx, uint32_t pc, struct HJInsn *
         static const int8_t ops[8] = { OP_OR, OP_AND, OP_SUB, OP_ADD, -1, OP_EOR, OP_CMP, -1 };
         int which = ops[(op >> 9) & 7];
 
-        if ((op & 0x0100) || which < 0 || !size || (op & 0x3F) == 0x3C)
+        if (op & 0x0100)
+        {
+            int bop = (op >> 6) & 3;
+            unsigned allowed = bop == BIT_TST ? M_DATA : M_DALT;
+
+            if (mode == 1)
+            {
+                ok = fault_insn(in, "MOVEP");
+                break;
+            }
+            in->kind = K_BIT; in->op = (uint8_t)bop;
+            in->size = mode == 0 ? 4 : 1;
+            in->src.mode = EA_DN; in->src.reg = (uint8_t)((op >> 9) & 7);
+            in->def = HJF_Z;
+            ok = decode_ea(&d, mode, reg, 1, allowed, &in->dst) || fault_insn(in, "bit mode");
+            break;
+        }
+        if ((op & 0xFF00) == 0x0800)
+        {
+            int bop = (op >> 6) & 3;
+            unsigned allowed = bop == BIT_TST ? (M_DATA & ~M(EA_IMM)) : M_DALT;
+
+            in->kind = K_BIT; in->op = (uint8_t)bop;
+            in->size = mode == 0 ? 4 : 1;
+            in->src.mode = EA_IMM; in->src.value = fetch16(&d) & 0xFFu;
+            in->def = HJF_Z;
+            ok = decode_ea(&d, mode, reg, 1, allowed, &in->dst) || fault_insn(in, "bit mode");
+            break;
+        }
+        if ((op & 0x3F) == 0x3C && (which == OP_OR || which == OP_AND || which == OP_EOR) &&
+            (size == 1 || size == 2))
+        {
+            in->kind = K_LOGICSR; in->op = (uint8_t)which; in->size = (uint8_t)size;
+            in->src.value = fetch16(&d);
+            in->use = HJF_ALL; in->def = HJF_ALL;
+            break;
+        }
+        if (which < 0 || !size || (op & 0x3F) == 0x3C)
         {
             ok = fault_insn(in, "opcode outside the subset");
             break;
@@ -696,7 +810,9 @@ static int decode_insn(struct KaffeineContext *ctx, uint32_t pc, struct HJInsn *
         in->src.mode = EA_IMM;
         in->src.value = size == 4 ? fetch32(&d) : size == 2 ? fetch16(&d) : (fetch16(&d) & 0xFFu);
         in->def = (which == OP_ADD || which == OP_SUB) ? HJF_ALL : HJF_NZVC;
-        ok = decode_ea(&d, mode, reg, size, M_DALT, &in->dst) || fault_insn(in, "immediate mode");
+        ok = decode_ea(&d, mode, reg, size,
+                       M_DALT | (which == OP_CMP ? (M(EA_PCDISP) | M(EA_PCIDX)) : 0),
+                       &in->dst) || fault_insn(in, "immediate mode");
         break;
     }
     case 0x1: case 0x2: case 0x3:
@@ -787,7 +903,15 @@ static int decode_insn(struct KaffeineContext *ctx, uint32_t pc, struct HJInsn *
 
         if (opmode == 3 || opmode == 7)
         {
-            if (group == 0x8 || group == 0xC)
+            if (group == 0xC)
+            {
+                in->kind = K_MULW; in->op = (uint8_t)(opmode == 7); in->size = 2;
+                in->dst.mode = EA_DN; in->dst.reg = (uint8_t)dn;
+                in->def = HJF_NZVC;
+                ok = decode_ea(&d, mode, reg, 2, M_DATA, &in->src) || fault_insn(in, "MUL.W mode");
+                break;
+            }
+            if (group == 0x8)
             {
                 ok = fault_insn(in, "MUL/DIV");
                 break;
@@ -813,10 +937,28 @@ static int decode_insn(struct KaffeineContext *ctx, uint32_t pc, struct HJInsn *
         {
             if (mode == 1)
             {
-                ok = fault_insn(in, "CMPM");
+                in->kind = K_CMPM;
+                in->src.reg = (uint8_t)reg;
+                in->dst.reg = (uint8_t)dn;
+                in->def = HJF_NZVC;
                 break;
             }
             alu = OP_EOR;
+        }
+        if ((group == 0x9 || group == 0xD) && (mode == 0 || mode == 1))
+        {
+            in->kind = K_ADDX; in->op = (uint8_t)alu; in->count = 0;
+            in->src.mode = mode ? EA_PRE : EA_DN; in->src.reg = (uint8_t)reg;
+            in->dst.mode = mode ? EA_PRE : EA_DN; in->dst.reg = (uint8_t)dn;
+            in->use = HJF_X | HJF_Z; in->def = HJF_ALL;
+            break;
+        }
+        if (group == 0xC && ((opmode == 5 && (mode == 0 || mode == 1)) || (opmode == 6 && mode == 1)))
+        {
+            in->kind = K_EXG;
+            in->src.reg = (uint8_t)(opmode == 5 && mode == 1 ? REG_A(dn) : REG_D(dn));
+            in->dst.reg = (uint8_t)(mode == 1 ? REG_A(reg) : REG_D(reg));
+            break;
         }
         in->kind = K_ALUM; in->op = (uint8_t)alu;
         in->src.mode = EA_DN; in->src.reg = (uint8_t)dn;
@@ -830,16 +972,44 @@ static int decode_insn(struct KaffeineContext *ctx, uint32_t pc, struct HJInsn *
         break;
     case 0xE:
     {
-        int type = (op >> 3) & 3, left = (op >> 8) & 1;
+        static const uint8_t sops[4][2] = {
+            { SH_ASR, SH_ASL }, { SH_LSR, SH_LSL },
+            { SH_ROXR, SH_ROXL }, { SH_ROR, SH_ROL }
+        };
+        int left = (op >> 8) & 1, type;
 
-        if (size != 4 || (op & 0x0020) || type == 2 || (type == 0 && left))
+        if (size == 0)
         {
-            ok = fault_insn(in, "shift outside the subset");
+            if (op & 0x0800)
+            {
+                ok = fault_insn(in, "bitfield");
+                break;
+            }
+            type = (op >> 9) & 3;
+            in->kind = K_SHIFT; in->size = 2; in->count = 1;
+            in->src.mode = EA_IMM;
+            in->op = sops[type][left];
+            in->use = type == 2 ? HJF_X : 0;
+            in->def = type == 3 ? HJF_NZVC : HJF_ALL;
+            ok = decode_ea(&d, mode, reg, 2, M_MALT, &in->dst) || fault_insn(in, "shift mode");
             break;
         }
-        in->kind = K_SHIFT; in->size = 4; in->dst.reg = (uint8_t)reg;
-        in->count = (uint8_t)(((op >> 9) & 7) ? ((op >> 9) & 7) : 8);
-        in->op = type == 1 ? (left ? SH_LSL : SH_LSR) : type == 0 ? SH_ASR : (left ? SH_ROL : SH_ROR);
+        type = (op >> 3) & 3;
+        in->kind = K_SHIFT; in->size = (uint8_t)size;
+        in->dst.mode = EA_DN; in->dst.reg = (uint8_t)reg;
+        in->op = sops[type][left];
+        if (op & 0x0020)
+        {
+            in->src.mode = EA_DN;
+            in->src.reg = (uint8_t)((op >> 9) & 7);
+            in->use = type == 3 ? 0 : HJF_X;
+        }
+        else
+        {
+            in->src.mode = EA_IMM;
+            in->count = (uint8_t)(((op >> 9) & 7) ? ((op >> 9) & 7) : 8);
+            in->use = type == 2 ? HJF_X : 0;
+        }
         in->def = type == 3 ? HJF_NZVC : HJF_ALL;
         break;
     }
@@ -859,7 +1029,7 @@ static int decode_insn(struct KaffeineContext *ctx, uint32_t pc, struct HJInsn *
 static int is_terminator(int kind)
 {
     return kind == K_BCC || kind == K_BSR || kind == K_DBCC || kind == K_JSR ||
-           kind == K_JMP || kind == K_RTS || kind == K_LINEA || kind == K_FAULT;
+           kind == K_JMP || kind == K_RTS || kind == K_RTR || kind == K_LINEA || kind == K_FAULT;
 }
 
 /* Which flags each instruction must compute: those a later instruction of
@@ -1306,57 +1476,350 @@ static void emit_rmw(struct HJTrans *t, const struct HJInsn *in, int op, int sva
     emit_post(t, &in->dst, in->size);
 }
 
+static void emit_addx(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+    int size = in->size, shift = 32 - 8 * size, sub = in->op == OP_SUB;
+    int dval, sval, areg = -1;
+
+    if (in->count == 1)
+    {
+        dval = ZR;
+        if (in->dst.mode == EA_DN)
+            sval = REG_D(in->dst.reg);
+        else
+        {
+            areg = emit_address(t, &in->dst, size);
+            emit_access(t, read_kind(size), areg);
+            sval = R_VAL;
+        }
+    }
+    else if (in->dst.mode == EA_DN)
+    {
+        sval = REG_D(in->src.reg);
+        dval = REG_D(in->dst.reg);
+    }
+    else
+    {
+        int ay = REG_A(in->src.reg), ax = REG_A(in->dst.reg);
+
+        put(e, a64_addsub_imm(0, 1, 0, ay, ay, (uint32_t)step_of(size, in->src.reg), 0));
+        emit_access(t, read_kind(size), ay);
+        put(e, a64_mov(R_SRC, R_VAL));
+        put(e, a64_addsub_imm(0, 1, 0, ax, ax, (uint32_t)step_of(size, in->dst.reg), 0));
+        emit_access(t, read_kind(size), ax);
+        sval = R_SRC;
+        dval = R_VAL;
+        areg = ax;
+    }
+    put(e, a64_ubfx(R_F1, R_FLAGS, 4, 1));
+    if (size == 4)
+    {
+        if (sub)
+            put(e, a64_addsub_reg(0, 1, 1, ZR, ZR, R_F1, 0, 0));
+        else
+            put(e, a64_addsub_imm(0, 1, 1, ZR, R_F1, 1, 0));
+        put(e, a64_adc_sbc(0, sub, 1, R_SCR, dval, sval));
+    }
+    else
+    {
+        put(e, a64_lsl(R_SCR, dval, shift));
+        put(e, a64_lsl(R_F2, sval, shift));
+        put(e, a64_logic_reg(0, 1, 0, R_F2, R_F2, R_F1, 0, shift - 1));
+        if (!sub)
+            put(e, a64_logic_reg(0, 1, 0, R_SCR, R_SCR, R_F1, 0, shift - 1));
+        put(e, a64_addsub_reg(0, sub, 1, R_SCR, R_SCR, R_F2, 0, 0));
+    }
+    if (in->need)
+    {
+        put(e, a64_mrs_nzcv(R_F1));
+        put(e, a64_lsr(R_F1, R_F1, 28));
+        if (sub)
+            put(e, a64_logic_const(2, R_F1, R_F1, HJF_C));
+    }
+    if (size < 4)
+        put(e, a64_lsr(R_SCR, R_SCR, shift));
+    if (in->need)
+    {
+        put(e, a64_tst(R_SCR, R_SCR));
+        put(e, a64_cset(R_F2, A64_EQ));
+        put(e, a64_logic_reg(0, 0, 0, R_F2, R_F2, R_FLAGS, 1, 2));
+        put(e, a64_bfi(R_F1, R_F2, 2, 1));
+        put(e, a64_bfi(R_FLAGS, R_F1, 0, 4));
+        put(e, a64_lsr(R_F2, R_F1, 1));
+        put(e, a64_bfi(R_FLAGS, R_F2, 4, 1));
+    }
+    if (in->dst.mode == EA_DN)
+        emit_insert(e, REG_D(in->dst.reg), R_SCR, size);
+    else
+    {
+        put(e, a64_mov(R_VAL, R_SCR));
+        emit_access(t, write_kind(size), areg);
+        if (in->count == 1)
+            emit_post(t, &in->dst, size);
+    }
+}
+
+static void emit_bit(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+    int v, areg;
+
+    if (in->src.mode == EA_IMM)
+    {
+        unsigned bit = in->src.value & (in->dst.mode == EA_DN ? 31u : 7u);
+
+        emit_mov32(e, R_RES, 1u << bit);
+    }
+    else
+    {
+        int sreg = REG_D(in->src.reg);
+
+        if (in->dst.mode != EA_DN)
+        {
+            put(e, a64_logic_const(0, R_F1, sreg, 7u));
+            sreg = R_F1;
+        }
+        emit_mov32(e, R_RES, 1u);
+        put(e, a64_lslv(R_RES, R_RES, sreg));
+    }
+    if (in->op == BIT_TST)
+    {
+        v = emit_read(t, &in->dst, in->size);
+        if (in->need & HJF_Z)
+        {
+            put(e, a64_tst(v, R_RES));
+            put(e, a64_cset(R_F1, A64_EQ));
+            put(e, a64_bfi(R_FLAGS, R_F1, 2, 1));
+        }
+        return;
+    }
+    v = in->dst.mode == EA_DN ? REG_D(in->dst.reg) : R_VAL;
+    areg = in->dst.mode == EA_DN ? -1 : emit_address(t, &in->dst, 1);
+    if (areg >= 0)
+        emit_access(t, SLOW_R8, areg);
+    if (in->need & HJF_Z)
+    {
+        put(e, a64_tst(v, R_RES));
+        put(e, a64_cset(R_F1, A64_EQ));
+        put(e, a64_bfi(R_FLAGS, R_F1, 2, 1));
+    }
+    if (in->op == BIT_CHG)
+        put(e, a64_logic_reg(0, 2, 0, v, v, R_RES, 0, 0));
+    else if (in->op == BIT_CLR)
+        put(e, a64_logic_reg(0, 0, 1, v, v, R_RES, 0, 0));
+    else
+        put(e, a64_logic_reg(0, 1, 0, v, v, R_RES, 0, 0));
+    if (areg >= 0)
+    {
+        emit_access(t, SLOW_W8, areg);
+        emit_post(t, &in->dst, 1);
+    }
+}
+
+static void emit_mull(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+    int dl = REG_D(in->dst.reg), dh = REG_D(in->count & 7);
+    int quad = (in->count >> 3) & 1, is_signed = in->op;
+    int v = emit_read(t, &in->src, 4);
+
+    put(e, is_signed ? a64_smull(R_SCR, v, dl) : a64_umull(R_SCR, v, dl));
+    if (quad)
+    {
+        put(e, a64_bitfield(1, 2, dh, R_SCR, 32, 63));
+        put(e, a64_mov(dl, R_SCR));
+        if (in->need & HJF_NZVC)
+        {
+            put(e, a64_logic_reg(1, 3, 0, ZR, R_SCR, R_SCR, 0, 0));
+            emit_nzcv_to_flags(e, 0, 0);
+        }
+        return;
+    }
+    put(e, a64_mov(dl, R_SCR));
+    if (in->need & HJF_NZVC)
+    {
+        put(e, a64_tst(dl, dl));
+        put(e, a64_mrs_nzcv(R_F1));
+        put(e, a64_lsr(R_F1, R_F1, 28));
+        if (is_signed)
+        {
+            put(e, a64_bitfield(1, 0, R_F2, dl, 0, 31));
+            put(e, a64_addsub_reg(1, 1, 1, ZR, R_SCR, R_F2, 0, 0));
+        }
+        else
+        {
+            put(e, a64_bitfield(1, 2, R_F2, R_SCR, 32, 63));
+            put(e, a64_addsub_imm(0, 1, 1, ZR, R_F2, 0, 0));
+        }
+        put(e, a64_cset(R_F2, A64_NE));
+        put(e, a64_bfi(R_F1, R_F2, 0, 1));
+        put(e, a64_bfi(R_FLAGS, R_F1, 0, 4));
+    }
+}
+
 static void emit_shift(struct HJTrans *t, const struct HJInsn *in)
 {
     struct HJEmit *e = &t->e;
     int dn = REG_D(in->dst.reg), n = in->count;
     unsigned need = in->need;
 
-    switch (in->op)
+    if (in->size == 4 && in->src.mode == EA_IMM && in->dst.mode == EA_DN &&
+        in->op != SH_ASL && in->op != SH_ROXL && in->op != SH_ROXR)
     {
-    case SH_LSL:
-        if (need) put(e, a64_ubfx(R_F2, dn, 32 - n, 1));
-        put(e, a64_lsl(dn, dn, n));
-        break;
-    case SH_LSR:
-    case SH_ASR:
-        if (need) put(e, a64_ubfx(R_F2, dn, n - 1, 1));
-        put(e, in->op == SH_LSR ? a64_lsr(dn, dn, n) : a64_asr(dn, dn, n));
-        break;
-    case SH_ROL:
-        put(e, a64_ror(dn, dn, 32 - n));
-        if (need) put(e, a64_ubfx(R_F2, dn, 0, 1));
-        break;
-    default:
-        put(e, a64_ror(dn, dn, n));
-        if (need) put(e, a64_lsr(R_F2, dn, 31));
-        break;
+        switch (in->op)
+        {
+        case SH_LSL:
+            if (need) put(e, a64_ubfx(R_F2, dn, 32 - n, 1));
+            put(e, a64_lsl(dn, dn, n));
+            break;
+        case SH_LSR:
+        case SH_ASR:
+            if (need) put(e, a64_ubfx(R_F2, dn, n - 1, 1));
+            put(e, in->op == SH_LSR ? a64_lsr(dn, dn, n) : a64_asr(dn, dn, n));
+            break;
+        case SH_ROL:
+            put(e, a64_ror(dn, dn, 32 - n));
+            if (need) put(e, a64_ubfx(R_F2, dn, 0, 1));
+            break;
+        default:
+            put(e, a64_ror(dn, dn, n));
+            if (need) put(e, a64_lsr(R_F2, dn, 31));
+            break;
+        }
+        if (need & HJF_NZVC)
+        {
+            put(e, a64_tst(dn, dn));
+            put(e, a64_mrs_nzcv(R_F1));
+            put(e, a64_lsr(R_F1, R_F1, 28));
+            put(e, a64_bfi(R_F1, R_F2, 1, 1));
+            put(e, a64_bfi(R_FLAGS, R_F1, 0, 4));
+        }
+        if ((need & HJF_X) && in->op != SH_ROL && in->op != SH_ROR)
+            put(e, a64_bfi(R_FLAGS, R_F2, 4, 1));
+        return;
     }
-    if (need & HJF_NZVC)
     {
-        put(e, a64_tst(dn, dn));
-        put(e, a64_mrs_nzcv(R_F1));
-        put(e, a64_lsr(R_F1, R_F1, 28));
-        put(e, a64_bfi(R_F1, R_F2, 1, 1));
-        put(e, a64_bfi(R_FLAGS, R_F1, 0, 4));
+        int w = 8 * in->size, shift = 32 - w, areg = -1;
+        unsigned br_zero, loop_top;
+
+        if (in->dst.mode == EA_DN)
+            put(e, in->size == 1 ? a64_uxtb(R_RES, dn) :
+                   in->size == 2 ? a64_uxth(R_RES, dn) : a64_mov(R_RES, dn));
+        else
+        {
+            areg = emit_address(t, &in->dst, 2);
+            emit_access(t, SLOW_R16, areg);
+            put(e, a64_uxth(R_RES, R_VAL));
+        }
+        if (in->src.mode == EA_IMM)
+            emit_mov32(e, R_SRC, in->count);
+        else
+            put(e, a64_logic_const(0, R_SRC, REG_D(in->src.reg), 0x3Fu));
+        if (in->op == SH_ROXL || in->op == SH_ROXR)
+            put(e, a64_ubfx(R_F1, R_FLAGS, 4, 1));
+        else
+            put(e, a64_mov(R_F1, ZR));
+        if (in->op == SH_ASL)
+            put(e, a64_mov(R_F2, ZR));
+        br_zero = e->n;
+        put(e, a64_cbz(0, 0, R_SRC, 0));
+        loop_top = e->n;
+        switch (in->op)
+        {
+        case SH_LSL:
+            put(e, a64_ubfx(R_F1, R_RES, w - 1, 1));
+            put(e, a64_lsl(R_RES, R_RES, 1));
+            break;
+        case SH_ASL:
+            put(e, a64_ubfx(R_F1, R_RES, w - 1, 1));
+            put(e, a64_lsl(R_SCR, R_RES, 1));
+            put(e, a64_logic_reg(0, 2, 0, R_SCR, R_RES, R_SCR, 0, 0));
+            put(e, a64_logic_reg(0, 1, 0, R_F2, R_F2, R_SCR, 0, 0));
+            put(e, a64_lsl(R_RES, R_RES, 1));
+            break;
+        case SH_ROL:
+            put(e, a64_ubfx(R_F1, R_RES, w - 1, 1));
+            put(e, a64_lsl(R_RES, R_RES, 1));
+            put(e, a64_logic_reg(0, 1, 0, R_RES, R_RES, R_F1, 0, 0));
+            break;
+        case SH_ROXL:
+            put(e, a64_mov(R_SCR, R_F1));
+            put(e, a64_ubfx(R_F1, R_RES, w - 1, 1));
+            put(e, a64_lsl(R_RES, R_RES, 1));
+            put(e, a64_logic_reg(0, 1, 0, R_RES, R_RES, R_SCR, 0, 0));
+            break;
+        case SH_LSR:
+            put(e, a64_ubfx(R_F1, R_RES, 0, 1));
+            put(e, a64_lsr(R_RES, R_RES, 1));
+            break;
+        case SH_ASR:
+            put(e, a64_ubfx(R_F1, R_RES, 0, 1));
+            put(e, a64_ubfx(R_SCR, R_RES, w - 1, 1));
+            put(e, a64_lsr(R_RES, R_RES, 1));
+            put(e, a64_bfi(R_RES, R_SCR, w - 1, 1));
+            break;
+        case SH_ROR:
+            put(e, a64_ubfx(R_F1, R_RES, 0, 1));
+            put(e, a64_lsr(R_RES, R_RES, 1));
+            put(e, a64_bfi(R_RES, R_F1, w - 1, 1));
+            break;
+        default:
+            put(e, a64_mov(R_SCR, R_F1));
+            put(e, a64_ubfx(R_F1, R_RES, 0, 1));
+            put(e, a64_lsr(R_RES, R_RES, 1));
+            put(e, a64_bfi(R_RES, R_SCR, w - 1, 1));
+            break;
+        }
+        put(e, a64_addsub_imm(0, 1, 1, R_SRC, R_SRC, 1, 0));
+        put(e, a64_bcond(A64_NE, (int32_t)loop_top - (int32_t)e->n));
+        if ((need & HJF_X) && in->op != SH_ROL && in->op != SH_ROR)
+            put(e, a64_bfi(R_FLAGS, R_F1, 4, 1));
+        patch(e, br_zero, e->n);
+        if (need & HJF_NZVC)
+        {
+            if (in->size == 4)
+                put(e, a64_tst(R_RES, R_RES));
+            else
+            {
+                put(e, a64_lsl(R_SCR, R_RES, shift));
+                put(e, a64_tst(R_SCR, R_SCR));
+            }
+            put(e, a64_mrs_nzcv(R_SCR));
+            put(e, a64_lsr(R_SCR, R_SCR, 28));
+            put(e, a64_bfi(R_SCR, R_F1, 1, 1));
+            if (in->op == SH_ASL)
+            {
+                put(e, a64_ubfx(R_F2, R_F2, w - 1, 1));
+                put(e, a64_bfi(R_SCR, R_F2, 0, 1));
+            }
+            put(e, a64_bfi(R_FLAGS, R_SCR, 0, 4));
+        }
+        if (in->dst.mode == EA_DN)
+            emit_insert(e, dn, R_RES, in->size);
+        else
+        {
+            put(e, a64_mov(R_VAL, R_RES));
+            emit_access(t, SLOW_W16, areg);
+            emit_post(t, &in->dst, 2);
+        }
     }
-    if ((need & HJF_X) && in->op != SH_ROL && in->op != SH_ROR)
-        put(e, a64_bfi(R_FLAGS, R_F2, 4, 1));
 }
 
 static void emit_movem(struct HJTrans *t, const struct HJInsn *in)
 {
     struct HJEmit *e = &t->e;
-    int r, an = REG_A(in->src.reg);
+    int r, an = REG_A(in->src.reg), step = in->size;
+    int rkind = read_kind(step), wkind = write_kind(step);
 
     if (in->count == 0 && in->src.mode == EA_PRE)
     {
         for (r = 15; r >= 0; r--)
             if (in->mask & (1u << r))
             {
-                put(e, a64_addsub_imm(0, 1, 0, an, an, 4, 0));
+                put(e, a64_addsub_imm(0, 1, 0, an, an, (uint32_t)step, 0));
                 put(e, a64_mov(R_VAL, r));
-                emit_access(t, SLOW_W32, an);
+                emit_access(t, wkind, an);
             }
         return;
     }
@@ -1365,31 +1828,33 @@ static void emit_movem(struct HJTrans *t, const struct HJInsn *in)
         for (r = 0; r < 16; r++)
             if (in->mask & (1u << r))
             {
-                emit_access(t, SLOW_R32, an);
-                put(e, a64_addsub_imm(0, 0, 0, an, an, 4, 0));
-                put(e, a64_mov(r, R_VAL));
+                emit_access(t, rkind, an);
+                put(e, a64_addsub_imm(0, 0, 0, an, an, (uint32_t)step, 0));
+                put(e, step == 2 ? a64_sxth(r, R_VAL) : a64_mov(r, R_VAL));
             }
         return;
     }
-    put(e, a64_mov(R_RES, emit_address(t, &in->src, 4)));
+    put(e, a64_mov(R_RES, emit_address(t, &in->src, step)));
     for (r = 0; r < 16; r++)
         if (in->mask & (1u << r))
         {
             if (in->count == 0)
             {
                 put(e, a64_mov(R_VAL, r));
-                emit_access(t, SLOW_W32, R_RES);
+                emit_access(t, wkind, R_RES);
             }
             else
             {
-                emit_access(t, SLOW_R32, R_RES);
-                put(e, a64_mov(r, R_VAL));
+                emit_access(t, rkind, R_RES);
+                put(e, step == 2 ? a64_sxth(r, R_VAL) : a64_mov(r, R_VAL));
             }
-            put(e, a64_addsub_imm(0, 0, 0, R_RES, R_RES, 4, 0));
+            put(e, a64_addsub_imm(0, 0, 0, R_RES, R_RES, (uint32_t)step, 0));
         }
 }
 
 /* 68k CCR (C bit 0, V bit 1) to and from the flags (V bit 0, C bit 1). */
+static uint32_t swap_cv(uint32_t f) { return (f & 0x1Cu) | ((f & 1u) << 1) | ((f >> 1) & 1u); }
+
 static void emit_ccr_to_flags(struct HJEmit *e, int src)
 {
     put(e, a64_logic_const(0, R_F1, src, 0x1C));
@@ -1451,6 +1916,42 @@ static void emit_insn(struct HJTrans *t, const struct HJInsn *in)
         put(e, a64_mov(R_VAL, R_RES));
         emit_access(t, SLOW_W32, REG_A(7));
         break;
+    case K_LINK:
+        put(e, a64_addsub_imm(0, 1, 0, REG_A(7), REG_A(7), 4, 0));
+        put(e, a64_mov(R_VAL, REG_A(in->dst.reg)));
+        emit_access(t, SLOW_W32, REG_A(7));
+        if (in->dst.reg != 7)
+            put(e, a64_mov(REG_A(in->dst.reg), REG_A(7)));
+        emit_add_const(e, REG_A(7), REG_A(7), in->src.disp);
+        break;
+    case K_UNLK:
+        if (in->dst.reg != 7)
+            put(e, a64_mov(REG_A(7), REG_A(in->dst.reg)));
+        emit_access(t, SLOW_R32, REG_A(7));
+        if (in->dst.reg != 7)
+            put(e, a64_addsub_imm(0, 0, 0, REG_A(7), REG_A(7), 4, 0));
+        put(e, a64_mov(REG_A(in->dst.reg), R_VAL));
+        break;
+    case K_EXG:
+        if (in->src.reg != in->dst.reg)
+        {
+            put(e, a64_mov(R_SCR, in->src.reg));
+            put(e, a64_mov(in->src.reg, in->dst.reg));
+            put(e, a64_mov(in->dst.reg, R_SCR));
+        }
+        break;
+    case K_CMPM:
+    {
+        int ay = REG_A(in->src.reg), ax = REG_A(in->dst.reg);
+
+        emit_access(t, read_kind(size), ay);
+        put(e, a64_addsub_imm(0, 0, 0, ay, ay, (uint32_t)step_of(size, in->src.reg), 0));
+        put(e, a64_mov(R_SRC, R_VAL));
+        emit_access(t, read_kind(size), ax);
+        put(e, a64_addsub_imm(0, 0, 0, ax, ax, (uint32_t)step_of(size, in->dst.reg), 0));
+        emit_alu(t, OP_CMP, size, R_VAL, R_SRC, ZR, in->need);
+        break;
+    }
     case K_ALU:
         v = emit_read(t, &in->src, size);
         emit_alu(t, in->op, size, REG_D(in->dst.reg), v, REG_D(in->dst.reg), in->need);
@@ -1480,6 +1981,24 @@ static void emit_insn(struct HJTrans *t, const struct HJInsn *in)
             emit_alu(t, in->op, size, REG_D(in->dst.reg), R_SRC, REG_D(in->dst.reg), in->need);
         else
             emit_rmw(t, in, in->op, R_SRC);
+        break;
+    case K_ADDX:
+        emit_addx(t, in);
+        break;
+    case K_MULW:
+        v = emit_read(t, &in->src, 2);
+        an = REG_D(in->dst.reg);
+        put(e, in->op ? a64_sxth(R_SCR, v) : a64_uxth(R_SCR, v));
+        put(e, in->op ? a64_sxth(R_F1, an) : a64_uxth(R_F1, an));
+        put(e, a64_mul(an, R_SCR, R_F1));
+        if (in->need)
+            emit_flags_logic(e, an, 4);
+        break;
+    case K_MULL:
+        emit_mull(t, in);
+        break;
+    case K_BIT:
+        emit_bit(t, in);
         break;
     case K_ALUA:
         v = emit_read(t, &in->src, size);
@@ -1564,6 +2083,11 @@ static void emit_insn(struct HJTrans *t, const struct HJInsn *in)
         if (in->need)
             emit_flags_logic(e, REG_D(in->dst.reg), 4);
         break;
+    case K_EXTBL:
+        put(e, a64_sxtb(REG_D(in->dst.reg), REG_D(in->dst.reg)));
+        if (in->need)
+            emit_flags_logic(e, REG_D(in->dst.reg), 4);
+        break;
     case K_SHIFT:
         emit_shift(t, in);
         break;
@@ -1579,13 +2103,17 @@ static void emit_insn(struct HJTrans *t, const struct HJInsn *in)
         emit_write(t, &in->dst, 1, R_RES);
         break;
     case K_MOVEFROMSR:
+    case K_MOVEFROMCCR:
         put(e, a64_logic_const(0, R_F1, R_FLAGS, 0x1C));
         put(e, a64_ubfx(R_F2, R_FLAGS, 1, 1));
         put(e, a64_logic_reg(0, 1, 0, R_F1, R_F1, R_F2, 0, 0));
         put(e, a64_ubfx(R_F2, R_FLAGS, 0, 1));
-        put(e, a64_logic_reg(0, 1, 0, R_F1, R_F1, R_F2, 0, 1));
-        put(e, a64_ldst_uimm(2, 1, R_F2, R_STATE, ST_SRHI));
-        put(e, a64_logic_reg(0, 1, 0, R_RES, R_F1, R_F2, 0, 8));
+        put(e, a64_logic_reg(0, 1, 0, R_RES, R_F1, R_F2, 0, 1));
+        if (in->kind == K_MOVEFROMSR)
+        {
+            put(e, a64_ldst_uimm(2, 1, R_F2, R_STATE, ST_SRHI));
+            put(e, a64_logic_reg(0, 1, 0, R_RES, R_RES, R_F2, 0, 8));
+        }
         emit_write(t, &in->dst, 2, R_RES);
         break;
     case K_MOVETOSR:
@@ -1599,6 +2127,25 @@ static void emit_insn(struct HJTrans *t, const struct HJInsn *in)
         }
         emit_ccr_to_flags(e, v);
         break;
+    case K_LOGICSR:
+    {
+        int opc = in->op == OP_AND ? 0 : in->op == OP_OR ? 1 : 2;
+        uint32_t fmask = swap_cv(in->src.value & 0x1Fu);
+
+        emit_mov32(e, R_F1, fmask);
+        put(e, a64_logic_reg(0, opc, 0, R_FLAGS, R_FLAGS, R_F1, 0, 0));
+        if (size == 2)
+        {
+            uint32_t smask = (in->src.value >> 8) & 0xF7u;
+
+            put(e, a64_ldst_uimm(2, 1, R_F1, R_STATE, ST_SRHI));
+            emit_mov32(e, R_F2, smask);
+            put(e, a64_logic_reg(0, opc, 0, R_F1, R_F1, R_F2, 0, 0));
+            put(e, a64_logic_const(0, R_F1, R_F1, ~0x08u));
+            put(e, a64_ldst_uimm(2, 0, R_F1, R_STATE, ST_SRHI));
+        }
+        break;
+    }
     case K_MOVEM:
         emit_movem(t, in);
         break;
@@ -1653,6 +2200,15 @@ static void emit_insn(struct HJTrans *t, const struct HJInsn *in)
         emit_glue_jump(t, t->g_lookup);
         break;
     case K_RTS:
+        emit_access(t, SLOW_R32, REG_A(7));
+        put(e, a64_addsub_imm(0, 0, 0, REG_A(7), REG_A(7), 4, 0));
+        put(e, a64_mov(R_ADDR, R_VAL));
+        emit_glue_jump(t, t->g_lookup);
+        break;
+    case K_RTR:
+        emit_access(t, SLOW_R16, REG_A(7));
+        put(e, a64_addsub_imm(0, 0, 0, REG_A(7), REG_A(7), 2, 0));
+        emit_ccr_to_flags(e, R_VAL);
         emit_access(t, SLOW_R32, REG_A(7));
         put(e, a64_addsub_imm(0, 0, 0, REG_A(7), REG_A(7), 4, 0));
         put(e, a64_mov(R_ADDR, R_VAL));
@@ -2127,8 +2683,6 @@ static struct HJBlock *get_block(struct HJBackend *b, uint32_t pc)
    struct KaffeineCPUOps
    ------------------------------------------------------------------ */
 
-static uint32_t swap_cv(uint32_t f) { return (f & 0x1Cu) | ((f & 1u) << 1) | ((f >> 1) & 1u); }
-
 static ULONG hj_get_d(void *s, int r) { return ((struct HJBackend *)s)->st.d[r]; }
 static ULONG hj_get_a(void *s, int r) { return ((struct HJBackend *)s)->st.a[r]; }
 static void hj_set_d(void *s, int r, ULONG v) { ((struct HJBackend *)s)->st.d[r] = v; }
@@ -2337,12 +2891,27 @@ int HJ_EncoderSelfTest(char *message, unsigned long size)
         { 0x33001f23, a64_bfi(3, 25, 0, 8), "bfi w3, w25, #0, #8" },
         { 0x13001c79, a64_sxtb(25, 3), "sxtb w25, w3" },
         { 0x13003ee8, a64_sxth(8, 23), "sxth w8, w23" },
+        { 0x53001c7c, a64_uxtb(28, 3), "uxtb w28, w3" },
+        { 0x53003e3c, a64_uxth(28, 17), "uxth w28, w17" },
+        { 0x93407c1b, a64_bitfield(1, 0, 27, 0, 0, 31), "sxtw x27, w0" },
+        { 0xd360ff3b, a64_bitfield(1, 2, 27, 25, 32, 63), "lsr x27, x25, #32" },
+        { 0xea19033f, a64_logic_reg(1, 3, 0, ZR, 25, 25, 0, 0), "tst x25, x25" },
+        { 0x0a550b7b, a64_logic_reg(0, 0, 0, 27, 27, 21, 1, 2), "and w27, w27, w21, lsr #2" },
+        { 0x0a3c0000, a64_logic_reg(0, 0, 1, 0, 0, 28, 0, 0), "bic w0, w0, w28" },
         { 0x13834063, a64_ror(3, 3, 16), "ror w3, w3, #16" },
         { 0x13837c63, a64_ror(3, 3, 31), "ror w3, w3, #31" },
         { 0x5ac00a31, a64_rev32(17, 17), "rev w17, w17" },
         { 0x5ac00639, a64_rev16(25, 17), "rev16 w25, w17" },
         { 0x1a9f37fb, a64_cset(27, A64_HS), "cset w27, hs" },
         { 0x1a9f27fb, a64_cset(27, A64_LO), "cset w27, lo" },
+        { 0x1a9f17fa, a64_cset(26, A64_EQ), "cset w26, eq" },
+        { 0x1a9f07fb, a64_cset(27, A64_NE), "cset w27, ne" },
+        { 0x3a020039, a64_adc_sbc(0, 0, 1, 25, 1, 2), "adcs w25, w1, w2" },
+        { 0x7a020039, a64_adc_sbc(0, 1, 1, 25, 1, 2), "sbcs w25, w1, w2" },
+        { 0x1ada239c, a64_lslv(28, 28, 26), "lsl w28, w28, w26" },
+        { 0x1b1a7f20, a64_mul(0, 25, 26), "mul w0, w25, w26" },
+        { 0x9b207e39, a64_smull(25, 17, 0), "smull x25, w17, w0" },
+        { 0x9ba07e39, a64_umull(25, 17, 0), "umull x25, w17, w0" },
         { 0xd53b421a, a64_mrs_nzcv(26), "mrs x26, nzcv" },
         { 0xb8684a91, a64_ldst_reg(2, 1, 17, 20, 8), "ldr w17, [x20, w8, uxtw]" },
         { 0x78704a91, a64_ldst_reg(1, 1, 17, 20, 16), "ldrh w17, [x20, w16, uxtw]" },

@@ -191,11 +191,12 @@ copy taken at translation; the others are translated again.
 
 ## Verification
 
-- 114 encodings compared with the words that Apple clang 21 assembles from
+- 129 encodings compared with the words that Apple clang 21 assembles from
   the same instructions, as `HJ_EncoderSelfTest()`, which also runs where
   translated code cannot (the x86_64 job of the CI).
-- The groups in the table, each on both backends where both apply, and
-  four more: a block cut at 64 instructions whose X flag the next block
+- The groups in the table, each on both backends where both apply, a group
+  of deterministic checks for the extended instructions (`extended-insns`),
+  and four more: a block cut at 64 instructions whose X flag the next block
   reads, a loop of 200000 back edges that uses up the budget three times,
   40000 chained blocks inside a callback, with the code memory emptied
   and a `CacheClearU()` while the caller waits in the dispatcher, and a
@@ -206,8 +207,12 @@ copy taken at translation; the others are translated again.
   in a scratch area, accesses at the end of the arena and outside it, reads
   of `VPOSR`/`VHPOSR`, forward `Bcc.S`, `Bcc.W`, `Bcc.L`, `BRA` and `JMP` on
   every condition, `DBcc` loops, subroutine calls with `BSR.W`, `BSR.L`,
-  `JSR (d16,PC)`, `JSR` absolute, `JSR (A4)` and `JSR 8(A5)`, `PEA`,
-  `MOVEM`, `Scc` and the SR moves.
+  `JSR (d16,PC)`, `JSR` absolute, `JSR (A4)` and `JSR 8(A5)` returning with
+  `RTS` or `RTR`, `LINK.W`, `LINK.L`, `UNLK`, `PEA`, `MOVEM.W` and
+  `MOVEM.L`, `BTST`/`BCHG`/`BCLR`/`BSET`, `ADDX`/`SUBX`/`NEGX`, `CMPM`,
+  `EXG`, `EXTB.L`, `MULU`/`MULS` `.W` and `.L`, all eight shifts and
+  rotates across `.B`, `.W`, `.L` and `<ea>.W`, `Scc`, and the SR and CCR
+  moves and immediate logic operations.
 - 32 mutants of the translator, each one caught: the borrow of `SUB` and
   `CMP`, X from the wrong bit, `GE` reading Z, `HI` without C, byte inserts
   too wide, the byte step of A7, words not swapped on load, the second word
@@ -230,11 +235,17 @@ copy taken at translation; the others are translated again.
 
 ## Limits
 
-- The subset: `MOVEQ`, `MOVE`, `MOVEA`, `LEA`, `PEA`, `ADD`, `SUB`, `AND`,
-  `OR`, `EOR`, `CMP` and their address, immediate and quick forms, `CLR`,
-  `TST`, `NEG`, `NOT`, `SWAP`, `EXT`, `LSL`/`LSR`/`ASR`/`ROL`/`ROR` `.L`
-  with an immediate count, `Scc`, `Bcc`, `BSR`, `DBcc`, `JSR`, `JMP`,
-  `RTS`, `MOVEM.L`, the SR and CCR moves, `NOP` and A-line, with all
+- The subset: `MOVEQ`, `MOVE`, `MOVEA`, `LEA`, `PEA`, `LINK.W`, `LINK.L`,
+  `UNLK`, `ADD`, `SUB`, `AND`, `OR`, `EOR`, `CMP` and their address,
+  immediate (including PC-relative `CMPI`) and quick forms, `CMPM`, `ADDX`,
+  `SUBX`, `NEGX`, `MULU.W`, `MULS.W`, `MULU.L`, `MULS.L` (32-bit and 64-bit
+  `Dh:Dl`), `BTST`, `BCHG`, `BCLR`, `BSET`, `CLR`, `TST` (including 68020
+  address register, immediate and PC-relative modes), `NEG`, `NOT`, `SWAP`,
+  `EXT.W`, `EXT.L`, `EXTB.L`, `EXG`, `ASL`/`ASR`/`LSL`/`LSR`/`ROL`/`ROR`/
+  `ROXL`/`ROXR` (`.B`, `.W`, `.L` with immediate or register counts, and
+  1-bit `<ea>.W` in memory), `Scc`, `Bcc`, `BSR`, `DBcc`, `JSR`, `JMP`,
+  `RTS`, `RTR`, `MOVEM.W`, `MOVEM.L`, `MOVE` from and to `SR` and `CCR`,
+  `ORI`/`ANDI`/`EORI` to `CCR` and `SR`, `NOP` and A-line, with all
   addressing modes but the full extension word. Everything else, `ILLEGAL`
   and Line-F stop with 20 and a message.
 - No exception frames at all: no `TRAP`, `CHK`, address error, privilege
