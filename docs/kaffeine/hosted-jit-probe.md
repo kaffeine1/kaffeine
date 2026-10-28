@@ -14,7 +14,7 @@ The probe is a small 68k to AArch64 block translator that I wrote for this
 experiment: `developer/debug/test/kaffeine_host/hosted_jit.c`, with its
 driver `test_hosted_jit.cpp`. **It contains no Emu68 code** and it is not a
 backend of `kaffeine.library`: it covers a subset of the 68k instruction set
-and is built only by the host suite. It implements `struct KaffeineCPUOps`,
+and is built by the host suite and a focused native AROS probe. It implements `struct KaffeineCPUOps`,
 `flush_code()` included, and runs through the production
 `Kaffeine_RunCPU()`, `Kaffeine_DispatchLibraryCall()` and
 `Kaffeine_CallGuest()`, with the production `CallHookPkt()`, `RawDoFmt()`,
@@ -246,7 +246,8 @@ copy taken at translation; the others are translated again.
 - One thread, one code memory per backend, emptied when it fills up; no
   patching of block exits; one probe of the lookup table.
 - No FPU and no MMU instructions.
-- It has not run inside AROS.
+- The native standalone AROS AArch64 probe has focused VM coverage; it is
+  still not a kaffeine.library application backend.
 
 ## What a translating backend needs from the bridge
 
@@ -276,8 +277,31 @@ copy taken at translation; the others are translated again.
 - Porting Emu68's translator instead, for its coverage and its FPU: the
   memory accesses, the register convention, the exits and the exceptions
   of the hosted side would follow this probe, in MPL files kept apart.
-- Either way, first a run inside AROS on the Raspberry Pi, with
-  `CacheClearE()` to publish the translated code.
+- Broader native AROS execution, physical Raspberry Pi cache validation,
+  and integration with the library and its guest-task factory. The focused
+  AROS VM probe below publishes code through `CacheClearE()`.
+
+## Native AROS AArch64 probe
+
+`developer/debug/test/kaffeine_native/jit_probe.c` links this translator with
+the production CPU loop, dispatcher and callback primitive. On standalone
+AROS AArch64 code memory comes from `AllocMem` with `MEMF_EXECUTABLE`;
+`CacheClearE(..., CACRF_ClearD | CACRF_ClearI)` publishes each emitted block.
+The standalone-flavour check keeps this allocation path out of hosted AROS,
+whose executable-memory protection differs.
+
+The initial AROS ARM/QEMU run passed 38 checks in both direct Shell and
+`Run` modes: encoder words, executable allocation, translated arithmetic,
+big-endian memory, a native thunk, a nested translated callback, invalidated
+and retranslated guest code, and explicit unsupported-instruction failure.
+The callback used six translated blocks and nested execution; the code
+mutation case used seven blocks and one invalidation. The existing host
+suite also passed 3,295 checks with Clang, ASan/UBSan and GCC 15.
+
+These are separate results from the host timings above. No native speedup
+or physical-target cache result is claimed. The library application backend
+remains Moira; full instruction coverage and guest-task integration still
+need work. See the [native probe instructions](../../developer/debug/test/kaffeine_native/README.md).
 
 ## Reproducing
 

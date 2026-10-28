@@ -30,7 +30,7 @@ struct HJStats
     unsigned long guest_insns;   /* 68k instructions in them */
     unsigned long host_words;    /* AArch64 words emitted for them */
     unsigned long translate_ns;  /* decoding, emission, copy and cache sync */
-    unsigned long write_windows; /* code memory made writable */
+    unsigned long write_windows; /* code publication windows */
     unsigned long icache_syncs;  /* host instruction cache maintenance */
     unsigned long enters;        /* calls from C into translated code */
     unsigned long exits[HJ_EXIT_COUNT];
@@ -45,9 +45,9 @@ struct HJStats
 extern "C" {
 #endif
 
-/* Nonzero where translated code can run (AArch64 Darwin or Linux). */
+/* Nonzero on AArch64 Darwin, Linux or standalone native AROS. */
 int HJ_Available(void);
-/* "MAP_JIT", "mprotect" or "none". */
+/* "MAP_JIT", "mprotect", "AROS AllocMem/CacheClearE" or "none". */
 const char *HJ_ExecMemoryKind(void);
 /* Encoder words against words assembled by clang; 0 on success. */
 int HJ_EncoderSelfTest(char *message, unsigned long size);
