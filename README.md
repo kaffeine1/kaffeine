@@ -17,10 +17,15 @@ architectural boundaries and observable milestones.
 
 The current bridge runs 68k HUNK programs inside AROS AArch64 using Moira
 as the CPU interpreter. Supported library calls reach native AROS services;
-targeted graphics tests use AROS windows, fonts, menus and gadgets. CLI
-programs and the bzip2 self-test run in QEMU. A hosted AArch64 translation
-probe is a step toward the Kaffeine JIT, separate from the production AROS
-execution path.
+targeted graphics and system tests cover AROS windows, owned and public
+screens (including 8-bit `LUT8` indexed screens on the Raspberry Pi
+framebuffer driver), fonts, layers, regions, bitmaps, menus, gadgets,
+cooperative guest child tasks (`AddTask`/`RemTask`), DOS packets and handler
+ports, `ExAll`/`ExAllEnd`, and Workbench application objects. CLI programs,
+the bzip2 1.0.8 self-test and the IJG JPEG library 9f self-test (`cjpeg`,
+`djpeg`, `jpegtran`) run in QEMU. A standalone AArch64 translation probe runs
+both on the host and inside native AROS AArch64 (`jit_probe`) as a step
+toward the Kaffeine JIT, separate from the production AROS execution path.
 
 The original 68k Personal Paint 7.2.1.0 reaches its editor from the native
 AROS Shell in QEMU. A verified run uses a 24-bit Workbench and selects a
@@ -38,8 +43,9 @@ execution are future work. The manifesto does not claim them as implemented.
 
 - [Current behavior, architecture and verified limits](README.KAFFEINE.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
+- [Standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).
 - [AROS target programs and QEMU runner](developer/debug/test/kaffeine_target/README.md).
-- [Library implementation](rom/kaffeine/README.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).
+- [Library implementation](rom/kaffeine/README.md), [internals reference](rom/kaffeine/INTERNALS.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).
 - [Licenses and provenance](docs/kaffeine/LICENSING.md).
 
 The project builds on AROS and its original `m68kemu.library`. The bridge is

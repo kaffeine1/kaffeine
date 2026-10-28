@@ -291,11 +291,15 @@ fixed addresses can belong to live allocations. Custom-chip window and
 `$1DFF000` alias checks remain separate.
 
 The sampled mathffp SPDiv cases retain eight one-ULP differences from
-AmigaOS. Personal Paint progresses through packet reads and replies and
-the blitter library's memory-list scan, then stops at a later DOS read packet
-rejected by the bridge's boundary checks. Complete application
-startup, an FPU, general asynchronous/cross-task messaging and physical
-hardware have not been established.
+AmigaOS. The original 68k Personal Paint 7.2.1.0 runs under Moira on AROS
+AArch64 in QEMU. A verified native Shell session starts with a 24-bit
+Workbench, selects a 1024×768 canvas with 256 colors inside the application,
+draws rectangles, circles and text, saves IFF/ILBM and exits with code zero.
+The independently decoded image matches the visible canvas pixel for pixel.
+Loading saved 1024×768 IFF and PNG images reports “The image is too large”.
+Other painting operations, full image loading, desktop icon startup,
+execution on the Kaffeine JIT, an FPU, general asynchronous device I/O and
+physical hardware remain separate validation work.
 
 ## Offline runner checks
 

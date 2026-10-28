@@ -35,7 +35,12 @@ failure boundary for an unsupported instruction. Each case releases its
 backend and guest arena.
 
 The initial AROS ARM/QEMU run passed all 38 checks in both Shell and `Run`
-modes. This establishes execution of the subset on that VM. It does not
-establish physical Raspberry Pi cache behavior, full instruction coverage,
-guest-task support, application performance or Personal Paint on the JIT.
-Those require subsequent backend integration and target validation.
+modes. A separate instruction-corpus validation also passed 490 checks in
+each mode: 432 programs, encoder/backend availability and eight callback
+bitfield boundary cases. Its expected results were computed with Moira on
+the host; the native executable runs only the JIT. The 38-check regression
+probe passed again with that translator revision. This establishes execution
+of the translated subset on that VM. It does not establish physical
+Raspberry Pi cache behavior, full instruction
+coverage, guest-task support, application performance or Personal Paint on
+the JIT. Those require subsequent backend integration and target validation.

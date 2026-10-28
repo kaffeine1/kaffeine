@@ -44,20 +44,31 @@ measured; these regression checks do not establish throughput or a speedup.
 Initialization, CPU model selection, the initial guest stack, exception setup,
 entry registers and the final return sentinel remain backend responsibilities.
 
-`flush_code()` is the one optional operation. A backend that keeps what it
-derived from guest code, such as translated blocks, forgets what came from
-the guest bytes of the range before that code runs again; address 0 with
-`KAFFEINE_FLUSH_ALL` means all guest memory. `CacheClearU()`, `CacheClearE()`
-with `CACRF_ClearI` and the loaders of 68k code call it through
+`flush_code()` is an optional operation for translating backends. A backend
+that keeps what it derived from guest code, such as translated blocks, forgets
+what came from the guest bytes of the range before that code runs again;
+address 0 with `KAFFEINE_FLUSH_ALL` means all guest memory. `CacheClearU()`,
+`CacheClearE()` with `CACRF_ClearI` and the loaders of 68k code call it through
 `Kaffeine_FlushCode()`, the loaders through `ctx->cpu`, which
 `Kaffeine_RunCPU()` sets while it runs. A call from a thunk arrives while
 `execute()` waits in the dispatcher, possibly inside a callback. Moira
 fetches every instruction from guest memory and leaves the operation NULL.
 
+The cooperative scheduler uses a separate `KaffeineCPUFactory` in
+`kaffeine_sched.h`, referenced by `ctx->cpu_factory`; these operations are
+outside `KaffeineCPUOps`. Its `create(ctx)` returns a complete reset CPU
+sharing the context's 32 MB arena. The scheduler then initializes the child's
+registers, user SR, stack pointer and initial PC. `RemTask()`, child return
+and context teardown release it through `destroy(ctx, cpu)`, after that CPU
+has stopped executing. The Moira adapter installs this factory while
+`Kaffeine_Execute()` runs. A backend without a factory cannot run `AddTask()`
+children; the standalone JIT probe does not provide one yet.
+
 This interface is deliberately not a complete serialized CPU state. It does
 not support switching backends during an execution, transferring FPU state,
-preemption, or arbitrary reentrant callbacks. Those require explicit designs
-and additional tests before being advertised.
+host-thread preemption, or arbitrary reentrant callbacks outside
+`Kaffeine_CallGuest()`. Those require explicit designs and additional tests
+before being advertised.
 
 ## Native library dispatch
 
@@ -101,10 +112,12 @@ The Emu68 source reviewed for this work was commit
 `2fb0e320f30cf9c47fa250cd84d2bcfff97d40fc` in
 [michalsc/Emu68](https://github.com/michalsc/Emu68).
 
-A hosted AArch64 translation probe in the host suite, written for this
-purpose and not derived from Emu68, meets these requirements on macOS and
-Linux for a subset of the instruction set, behind this interface and with
-the production dispatcher and callback primitive; see
+A standalone AArch64 translation probe in the host suite (`hosted_jit.c`) and
+its native AROS counterpart ([`developer/debug/test/kaffeine_native`](../../developer/debug/test/kaffeine_native/README.md)),
+written for this purpose and not derived from Emu68, meet these requirements
+on macOS, Linux and standalone AROS AArch64 (`AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)`
+and `CacheClearE`) for a subset of the instruction set, behind this interface
+and with the production dispatcher and callback primitive; see
 [the probe's note](../../docs/kaffeine/hosted-jit-probe.md). It implements
 `flush_code()`, which `CacheClearU()`, `CacheClearE()` and the loaders of
 68k code call.

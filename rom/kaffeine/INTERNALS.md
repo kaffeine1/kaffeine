@@ -13,9 +13,18 @@ see [README.md](README.md).
 - [Shadow Struct Engine](#shadow-struct-engine)
 - [Shadow Struct Layouts](#shadow-struct-layouts)
 - [Device I/O Path](#device-io-path)
+- [Icon metadata and ownership](#icon-metadata-and-ownership)
+- [RastPorts and Fonts](#rastports-and-fonts)
+- [Public Screens](#public-screens)
+- [Layer Snapshots](#layer-snapshots)
 - [Custom Chip Emulation](#custom-chip-emulation)
 - [Thunk Generator Toolchain](#thunk-generator-toolchain)
 - [Test Infrastructure](#test-infrastructure)
+- [ExAll() emulation](#exall-emulation)
+- [DOS packets](#dos-packets)
+- [DOS handler ports](#dos-handler-ports)
+- [Display query boundary](#display-query-boundary)
+- [Owned screen input and lifetime boundaries](#owned-screen-input-and-lifetime-boundaries)
 - [Known Bugs](#known-bugs)
 
 ## Memory Model
@@ -727,14 +736,16 @@ before `lib->gen_thunks[]` (generated).
 
 ### Complete Manual Thunk List
 
-**exec.library:**
+**exec.library (84 manual thunks):**
 
 | LVO | Function | Handling |
 |-----|----------|----------|
 | -30 | Supervisor | Stores user func addr, triggers 68020 exception frame trampoline |
 | -96 | FindResident | Checks the guest name and returns NULL; native residents contain native pointers/code |
-| -132 | Forbid | No-op (single-threaded) |
-| -138 | Permit | No-op (single-threaded) |
+| -120 | Disable | Increments guest `ExecBase.IDNestCnt` and prevents cooperative guest task switches (`kaffeine_sched.c`) |
+| -126 | Enable | Decrements guest `ExecBase.IDNestCnt` and yields if a higher-priority guest task is ready once nesting reaches -1 |
+| -132 | Forbid | Increments guest `ExecBase.TDNestCnt` and prevents cooperative guest task switches (`kaffeine_sched.c`) |
+| -138 | Permit | Decrements guest `ExecBase.TDNestCnt` and yields if a higher-priority guest task is ready once nesting reaches -1 |
 | -186 | Allocate | Guest MemHeader allocation (`kaffeine_memheader.c`) |
 | -192 | Deallocate | Guest MemHeader deallocation (`kaffeine_memheader.c`) |
 | -198 | AllocMem | Guest heap, honors MEMF_CLEAR on new and reused blocks (`kaffeine_thunks_memory.c`) |
@@ -751,17 +762,21 @@ before `lib->gen_thunks[]` (generated).
 | -264 | RemTail | Returns the guest node |
 | -270 | Enqueue | Guest signed-priority insertion |
 | -276 | FindName | Guest name lookup; native lookup only for registered list shadows |
-| -294 | FindTask | NULL returns the guest ExecBase ThisTask field; named native tasks reuse a registered Task shadow (`kaffeine_shadow.c`) |
-| -306 | SetSignal | Pass-through to native |
-| -324 | Signal | The current guest task signals the native task that runs the guest; any other task stops the guest with rc 20 (`kaffeine_exec_io.c`) |
-| -330 | AllocSignal | Native bit of the task that runs the guest, from the signed low byte of D0, recorded as the guest's |
+| -282 | AddTask | Creates a cooperative classic guest child task (up to 16) with its own Moira CPU, checked stack and initial PC (`kaffeine_sched.c`); invalid Task, PC, hooks or stack bounds stop with rc 20 |
+| -288 | RemTask | Removes a guest child task or self-removes the running child task, releasing its signals and switching to the next ready task (`kaffeine_sched.c`); removing the main process or an unknown task stops with rc 20 |
+| -294 | FindTask | NULL returns the guest ExecBase ThisTask field; named lookup searches registered guest tasks first and then reuses a registered native Task shadow (`kaffeine_sched.c`, `kaffeine_shadow.c`) |
+| -300 | SetTaskPri | Updates the priority of a registered guest task or the main process, reorders ready tasks, reschedules if needed and returns the previous signed BYTE priority (`kaffeine_sched.c`) |
+| -306 | SetSignal | Updates pending signals on the current guest task (`kaffeine_sched.c`) or passes through to native Exec |
+| -318 | Wait | Consumes matching pending signals on the current guest task, or blocks the current guest task and schedules other ready guest tasks while preserving `TDNestCnt`/`IDNestCnt`; falls back to native `Wait` for native host signals (`kaffeine_sched.c`) |
+| -324 | Signal | Delivers signal bits to any registered guest task or the main process (`kaffeine_sched.c`), waking a waiting guest task and scheduling by priority; any other task stops the guest with rc 20 (`kaffeine_exec_io.c`) |
+| -330 | AllocSignal | Allocates a native host signal bit from the signed low byte of D0 and records its guest owner; child tasks track their own allocations (`kaffeine_exec_io.c`, `kaffeine_sched.c`) |
 | -336 | FreeSignal | Frees only a bit the guest allocated; the App objects of a port with that bit go first, and its AppMessages with them (`kaffeine_workbench.c`) |
 | -354 | AddPort | Initializes and publishes the guest port in the context's ExecBase PortList |
 | -360 | RemPort | Checks membership and removes the guest port |
-| -366 | PutMsg | Retains the exact-shadow native path; ordinary guest queues use checked big-endian FIFO links, and recognized guest file-handler identities accept bounded ACTION_READ packets, and the guest ports of native DOS handlers their converted packets. NULL, mixed or unsupported protocols stop with rc 20 (`kaffeine_exec_compat.c`, `kaffeine_messages.c`, `kaffeine_filehandle.c`, `kaffeine_handlers.c`) |
+| -366 | PutMsg | Retains the exact-shadow native path; ordinary guest queues use checked big-endian FIFO links across registered guest tasks, and recognized guest file-handler identities accept FileHandle DOS packets, and the guest ports of native DOS handlers their converted packets. NULL, mixed or unsupported protocols stop with rc 20 (`kaffeine_exec_compat.c`, `kaffeine_messages.c`, `kaffeine_filehandle.c`, `kaffeine_handlers.c`) |
 | -372 | GetMsg | IDCMP port of a window: native GetMsg, a 68k IntuiMessage with every field and the 68k Window brought up to date; a 68k port: its first node (`kaffeine_window.c`), where the next AppMessage of a port of App objects comes as a 68k copy when the list is empty |
-| -378 | ReplyMsg | Keeps the IntuiMessage and AppMessage ownership paths. Ordinary guest replies queue type 7, or set type 6 for a NULL reply port; malformed or unsupported guest objects stop with rc 20. Other native-shadow protocols retain their ownership rules |
-| -384 | WaitPort | IDCMP port of a window: native WaitPort, returning a 68k message for the first message that becomes the one GetMsg gives for it; a port of App objects with an empty list: native WaitPort, then the 68k copy of the AppMessage at the tail of the list; another 68k port: its first node, or rc 20 when empty, as no message can reach it yet |
+| -378 | ReplyMsg | Keeps the IntuiMessage and AppMessage ownership paths. Ordinary guest replies queue type 7 and signal `mp_SigTask`, or set type 6 for a NULL reply port; malformed or unsupported guest objects stop with rc 20. Other native-shadow protocols retain their ownership rules |
+| -384 | WaitPort | IDCMP port of a window: native WaitPort (yielding to ready guest tasks while empty), returning a 68k message for the first message that becomes the one GetMsg gives for it; a port of App objects with an empty list: native WaitPort, then the 68k copy of the AppMessage at the tail of the list; another 68k port: its first node, or blocks the current guest task when other guest tasks can run, or stops with rc 20 when no task can deliver a message |
 | -390 | FindPort | Searches only the checked guest public port list |
 | -408 | OldOpenLibrary | As OpenLibrary, with version 0 |
 | -414 | CloseLibrary | Calls the `Close()` of a 68k library from disk, also for a base that its `Open()` made for the opener (one whose `Close()` lies in the hunks of the library); the library goes when `Close()` gives its seglist back after an expunge; nothing for the base of a native library (`kaffeine_m68klib.c`) |
@@ -818,17 +833,17 @@ native lookup misses. OldOpenLibrary follows the same routing with version
 zero. This matches the basename identity in `rom/lddemon/lddemon.c` and the
 classic-system observations recorded by `exec_library_paths`.
 
-**dos.library (97 manual thunks):**
+**dos.library (122 manual thunks):**
 
 | LVO | Function | Handling |
 |-----|----------|----------|
-| -30 | Open | Bounded guest name; native handle with the existing opaque BPTR convention (`kaffeine_thunks_dos.c`) |
-| -36 | Close | BPTR pass-through |
+| -30 | Open | Bounded guest name; publishes a managed guest `FileHandle` BPTR with a 52-byte classic view and private handler identity (`kaffeine_filehandle.c`, `kaffeine_thunks_dos.c`) |
+| -36 | Close | Resolves the managed guest `FileHandle` BPTR, closes the native file and quarantines the guest handle slot (`kaffeine_filehandle.c`) |
 | -42 | Read | Checks the whole D3-byte guest buffer and refuses a negative length; a zero length still goes to DOS, with the start of the arena for an unusable pointer; native DOS reports a NULL handle |
 | -48 | Write | As Read, for the source bytes |
-| -54 | Input | Pass-through |
-| -60 | Output | Pass-through |
-| -66 | Seek | BPTR pass-through |
+| -54 | Input | Publishes or returns the guest `FileHandle` BPTR for the current input stream (`kaffeine_filehandle.c`) |
+| -60 | Output | Publishes or returns the guest `FileHandle` BPTR for the current output stream (`kaffeine_filehandle.c`) |
+| -66 | Seek | Resolves the guest `FileHandle` BPTR and calls native `Seek` (`kaffeine_filehandle.c`) |
 | -72 | DeleteFile | Bounded guest name |
 | -78 | Rename | Two bounded guest names |
 | -84 | Lock | Bounded guest name; native lock with the existing opaque BPTR convention |
@@ -848,6 +863,8 @@ classic-system observations recorded by `exec_library_paths`.
 | -186 | SetProtection | Bounded guest name and unchanged scalar protection mask |
 | -192 | DateStamp | Native `DateStamp`, three big-endian longwords, returns the guest pointer |
 | -198 | Delay | Pass-through |
+| -204 | WaitForChar | Resolves the guest `FileHandle` BPTR and calls native `WaitForChar` (`kaffeine_filehandle.c`) |
+| -216 | IsInteractive | Resolves the guest `FileHandle` BPTR and calls native `IsInteractive` (`kaffeine_filehandle.c`) |
 | -222 | Execute | Bounded command string; the input and output handles pass through |
 | -228 | AllocDosObject | TagList translation; FIB returns shadow; RDArgs, ExAllControl and StandardPacket (its `sp_Pkt`) are 68k structures in guest memory |
 | -234 | FreeDosObject | Object from D2 (shadow lookup); a 68k RDArgs goes back to the guest heap, as does a 68k ExAllControl with its native scan state; freeing a control whose MatchFunc runs stops with rc 20; a StandardPacket from AllocDosObject goes back to the guest heap, others are ignored |
@@ -856,19 +873,35 @@ classic-system observations recorded by `exec_library_paths`.
 | -252 | WaitPkt | Next message of the guest `pr_MsgPort`, returns its `ln_Name`, leaves IoErr; stops with rc 20 if nothing is queued |
 | -258 | ReplyPkt | Writes the results, `ln_Name` and the guest `pr_MsgPort` into `dp_Port`, then routes to the old `dp_Port` as PutMsg |
 | -264 | AbortPkt | Does nothing, as AmigaOS V37 to V47 |
+| -270 | LockRecord | Resolves the guest `FileHandle` BPTR and calls native `LockRecord` (`kaffeine_filehandle.c`) |
+| -276 | LockRecords | Refuses guest `RecordLock` arrays by stopping with rc 20 (`kaffeine_filehandle.c`) |
+| -282 | UnLockRecord | Resolves the guest `FileHandle` BPTR and calls native `UnLockRecord` (`kaffeine_filehandle.c`) |
+| -288 | UnLockRecords | Refuses guest `RecordLock` arrays by stopping with rc 20 (`kaffeine_filehandle.c`) |
+| -294 | SelectInput | Resolves the guest `FileHandle` BPTR, updates the current input stream and returns the previous guest `FileHandle` BPTR (`kaffeine_filehandle.c`) |
+| -300 | SelectOutput | Resolves the guest `FileHandle` BPTR, updates the current output stream and returns the previous guest `FileHandle` BPTR (`kaffeine_filehandle.c`) |
+| -306 | FGetC | Resolves the guest `FileHandle` BPTR, calls native `FGetC` and synchronizes the guest buffer mirror (`kaffeine_filehandle.c`) |
+| -312 | FPutC | Resolves the guest `FileHandle` BPTR, calls native `FPutC` and synchronizes the guest buffer mirror (`kaffeine_filehandle.c`) |
+| -318 | UnGetC | Resolves the guest `FileHandle` BPTR, calls native `UnGetC` and synchronizes the guest buffer mirror (`kaffeine_filehandle.c`) |
 | -324 | FRead | Checks unsigned block-count multiplication and the entire guest buffer before buffered I/O; native block count or -1 |
 | -330 | FWrite | As FRead for the source bytes; zero block length or count is a no-op |
 | -336 | FGets | Native `FGets` into the guest buffer after checking the bytes it can write (two for `buflen` 1); `buflen` 0 or a range outside guest memory fails with `ERROR_BAD_NUMBER` before reading; returns the guest buffer (`kaffeine_thunks_dos.c`) |
 | -342 | FPuts | Bounded guest string; the handle passes through |
 | -348 | VFWritef | Bounded format string, then `m68k_to_native_fmt_stream` |
 | -354 | VFPrintf | The checked RawDoFmt formatter (`kaffeine_format.c`) checks the whole template and data stream, then hands each character to `FPutC()` as in AROS, without a native buffer: zero bytes are skipped, the result is the count or -1 from the first failed write |
+| -360 | Flush | Resolves the guest `FileHandle` BPTR, flushes the native buffered stream and synchronizes the guest buffer mirror (`kaffeine_filehandle.c`) |
 | -366 | SetVBuf | Validates mode, signed size and any used guest buffer; passes NULL so DOS owns the persistent buffer |
+| -372 | DupLockFromFH | Resolves the guest `FileHandle` BPTR and returns native `DupLockFromFH` (`kaffeine_filehandle.c`) |
+| -378 | OpenFromLock | Opens a native file from the lock BPTR and publishes a managed guest `FileHandle` BPTR (`kaffeine_filehandle.c`) |
+| -384 | ParentOfFH | Resolves the guest `FileHandle` BPTR and returns native `ParentOfFH` (`kaffeine_filehandle.c`) |
 | -390 | ExamineFH | Checks the whole guest FIB, examines into a native FIB and converts its public fields |
 | -396 | SetFileDate | Bounded name and converted 12-byte guest DateStamp |
 | -402 | NameFromLock | Checks positive capacity and the whole guest output; zero lock keeps native boot-volume semantics |
 | -408 | NameFromFH | Checks positive capacity, nonzero handle and the whole guest output |
 | -414 | SplitName | Bounded name, oldpos within its string, positive output capacity and no source/output overlap |
+| -426 | SetMode | Resolves the guest `FileHandle` BPTR and calls native `SetMode` (`kaffeine_filehandle.c`) |
 | -432 | ExAll | Emulated with native `Examine()`/`ExNext()` and a native FIB per guest `ExAllControl`; 68k `ExAllData` written into the guest buffer, longword aligned; `eac_MatchString` through a native copy, `eac_MatchFunc` called with A0 hook, A1 entry, A2 type as on AmigaOS (`kaffeine_thunks_dos.c`, see below) |
+| -450 | ChangeMode | Resolves `CHANGE_FH` handles via the guest `FileHandle` table before calling native `ChangeMode` (`kaffeine_filehandle.c`) |
+| -456 | SetFileSize | Resolves the guest `FileHandle` BPTR and calls native `SetFileSize` (`kaffeine_filehandle.c`) |
 | -462 | SetIoErr | Pass-through |
 | -468 | Fault | Nullable bounded header, nonoverlapping output, positive capacity and native write footprint (including unconditional header punctuation); returns the native spare-capacity value |
 | -474 | PrintFault | Nullable bounded header; native result and error code in `IoErr()` |
@@ -1011,7 +1044,7 @@ guest callbacks must preserve this stop state and exit code when returning
 to their caller. Callback integration and target execution remain separate
 validation work.
 
-**intuition.library (38 manual thunks):**
+**intuition.library (49 manual thunks):**
 
 | LVO | Function | Handling |
 |-----|----------|----------|
@@ -1019,6 +1052,9 @@ validation work.
 | -72 | CloseWindow | Takes the window's menu strip off it, takes the gadgets of the program off it, GadTools ones and those that it built itself, whose copies go, gives Intuition and GadTools back the messages of the window that the program has not replied, frees its 68k Window, RastPort, IDCMP port and messages, then closes the native window (`kaffeine_window.c`) |
 | -198 | OpenScreen | Bounded NewScreen/ExtNewScreen conversion with owned native inputs and protected classic screen snapshots (`kaffeine_screens.c`) |
 | -204 | OpenWindow | Reads m68k NewWindow fields after checking that the NewWindow lies in guest memory (else rc 20) and passes them as tags; Type picks the screen as Intuition does: WBENCHSCREEN the Workbench without reading Screen, PUBLICSCREEN `WA_PubScreen` with the native screen in Screen or NULL for the default public screen, any other type `WA_CustomScreen` with the native screen in Screen, or the Workbench for NULL, as before. A Screen that is not a screen of the program (one that it opened, or one from `LockPubScreen()`) stops it with rc 20 before Intuition. Creates a cleared 68k Window with size, limits, flags, borders, IDCMP flags, pens and title, its RastPort as a 68k RastPort, its IDCMP port as a 68k MsgPort, and `WScreen` for a screen of the program: the 68k screen that it named when the window lies there, else its 68k screen of that native screen (one that it opened first), else 0; without guest memory for any of them it closes the native window again and returns 0. A FirstGadget list goes on the window as for AddGList with -1: a GadTools list of the program as the native list, a list of Boolean gadgets that the program built itself as their native copies; a list of the program's own with other gadgets stays out of the window, as before (`kaffeine_window.c`) |
+| -306 | WindowToBack | Moves an owned guest window to the back via native `WindowToBack`; foreign or invalid windows stop with rc 20 (`kaffeine_window.c`) |
+| -312 | WindowToFront | Moves an owned guest window to the front via native `WindowToFront`; foreign or invalid windows stop with rc 20 (`kaffeine_window.c`) |
+| -330 | IntuiTextLength | Calls native IntuiTextLength with checked text and a converted font; ignores NextText and uses the system font when no TextAttr is supplied (`kaffeine_thunks.c`) |
 | -348 | AutoRequest | Translates IntuiText chains (up to 8 deep), calls native |
 | -432 | RefreshGList | Native for gadgets of the program on that window, GadTools ones or its own, with the native gadget and numGad; what the program changed of `GFLG_SELECTED` and `GFLG_DISABLED` in its own gadgets there, and of BufferPos, DispPos and LongInt of its own string gadgets that Intuition does not edit, reaches their copies first, and what rendering set goes back after; nothing for other gadgets (`kaffeine_gadgets.c`) |
 | -222 | RefreshGadgets | As RefreshGList with -1 (`kaffeine_gadgets.c`) |
@@ -1028,6 +1064,7 @@ validation work.
 | -228 | RemoveGadget | As RemoveGList of one gadget (`kaffeine_gadgets.c`) |
 | -606 | OpenWindowTagList | TagList translation through `TAG_MORE`, `TAG_SKIP` and `TAG_IGNORE`: WA_Title, WA_ScreenTitle and WA_PubScreenName as strings in guest memory; WA_CustomScreen and WA_PubScreen as the native screen of a screen of the program (one that it opened, or one from `LockPubScreen()`), NULL as NULL (for WA_PubScreen the default public screen), anything else stops the program with rc 20 before Intuition; WA_PubScreenFallBack and the other tags as they are; the last WA_Gadgets as FirstGadget of OpenWindow; a list outside guest memory stops the program with rc 20; the 68k Window as for OpenWindow, its `WScreen` the 68k screen of the last WA_CustomScreen or WA_PubScreen when the window lies there. A non-NULL classic NewWindow in A0 supplies the scalar defaults, checked title, typed screen and supported FirstGadget list; explicit tags override those defaults through native Intuition, including zero IDCMP. A0 NULL preserves the native tag-only AutoAdjust behavior. A guest ExtNewWindow is checked through byte 52; its Extension is flattened only when A1 is NULL, while the native ExtNewWindow always has a NULL Extension. Odd or out-of-arena guest extensions are ignored as in the AROS reference. The legacy NewWindow CheckMark is ignored as in native AROS and never forwarded. A non-NULL unimplemented NewWindow BitMap, an invalid required title/screen or a truncated structure stops with rc 20 before native access (`kaffeine_window.c`) |
 | -612 | OpenScreenTagList | Bounded shared open path; explicit A1 tags replace an ExtNewScreen extension, tags override NewScreen values; converts native-width fonts, titles, pens, SA_DClip and SA_ErrorCode without forwarding guest structures |
+| -618 | DrawImageState | Draws a checked classic `Image` chain (planar bitmap words or depth-0 `PlaneOnOff` fill) into a registered window, screen or offscreen layer RastPort (`kaffeine_screens.c`) |
 | -510 | LockPubScreen | Native LockPubScreen with the name in guest memory, a name that does not end there stops the program with rc 20; one 68k Screen for each native screen, the same at every lock, its fields filled in again: place, size, mouse, flags, bar and border sizes, Font as a 68k TextAttr named as the 68k TextFont of its RastPort, the display fields of the ViewPort, the sizes and depth of the BitMap, the pens; native pointers 0; the embedded ViewPort registered for the native one and the embedded RastPort as a 68k RastPort, whose native font the bridge holds open for the program. A screen that the program opened keeps its 68k Screen. 0, with the native lock given back, without memory or room, also for the 68k TextFont, when the font cannot be held open, and at 32767 locks of one screen (`kaffeine_screens.c`) |
 | -516 | UnlockPubScreen | Native UnlockPubScreen only for a lock that the program took: of the public screen of that name, found as Intuition finds it, else of its 68k Screen in A1; nothing for anything else. The 68k Screen goes with the last lock, unless a window of the program is still there or the program holds the list of public screens; a name that does not end in guest memory stops the program with rc 20 (`kaffeine_screens.c`) |
 | -522 | LockPubScreenList | Native lock and a 68k copy of the list, the same for nested locks and filled in again at each: names of at most 139 characters, types, priorities, flags, sizes, visitor counts and signal bits, psn_Screen the program's 68k Screen of a screen or 0, psn_SigTask 0; 0 without memory while the lock is held all the same; 32767 nested locks stop the program with rc 20 (`kaffeine_screens.c`) |
@@ -1044,7 +1081,10 @@ validation work.
 | -648 | SetAttrsA | A GadTools gadget of the program stops it with rc 20, since its class would get 68k tags; other objects with the tag list as the generated thunk converts it (`kaffeine_gadgets.c`) |
 | -654 | GetAttr | A GadTools gadget of the program stops it with rc 20, since its class would write a native IPTR into the 68k LONG; GT_GetGadgetAttrsA gives its attributes; other objects as the generated thunk passes them (`kaffeine_gadgets.c`) |
 | -660 | SetGadgetAttrsA | As SetAttrsA, with the window and the requester as the generated thunk passes them (`kaffeine_gadgets.c`) |
+| -690 | GetScreenDrawInfo | Builds and registers a version-1 68k `DrawInfo` snapshot (copied pens and retained `TextFont`) for an owned or locked public screen (`kaffeine_screens.c`) |
+| -696 | FreeScreenDrawInfo | Releases a `DrawInfo` snapshot returned by `GetScreenDrawInfo` (`kaffeine_screens.c`) |
 | -810 | DoGadgetMethodA | A GadTools gadget of the program stops it with rc 20, since its class would get a 68k message; other gadgets as the generated thunk passes them (`kaffeine_gadgets.c`) |
+| -936 | GetDrawInfoAttr | Stops the program with rc 20 (`kaffeine_screens.c`) |
 | -150 | ModifyIDCMP | Native ModifyIDCMP; the IDCMP port comes and goes as a 68k MsgPort with the flags, and a 68k port that cannot be made undoes the change and gives FALSE; a UserPort that the program set itself stops it with rc 20 (`kaffeine_window.c`) |
 | -372 | FreeSysRequest | Takes a menu strip off the requester's window, frees its 68k Window, then the native requester; 0 and 1 pass as Intuition takes them (`kaffeine_requester.c`) |
 | -588 | EasyRequestArgs | As AROS: the requester built as BuildEasyRequestArgs, handled until it gives a result, then freed; the 68k IDCMP flags both ways |
@@ -1058,38 +1098,65 @@ validation work.
 | -702 | ResetMenuStrip | As SetMenuStrip, through native ResetMenuStrip, but a strip that the program built takes the copy that windows show or that waits, with the flags that the program changed, without memory; a new copy, for a strip without one, goes through native SetMenuStrip, which works out its page sizes |
 | -816 | SetWindowPointerA | No-op (avoids X11 blocking) (`kaffeine_thunks_gfx.c`) |
 
-**graphics.library (26 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, LoadRGB4 in `kaffeine_thunks.c`):**
+**graphics.library (80 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
 
-RastPort thunks use the registered 68k RastPort of a window or a screen
-(see RastPorts and Fonts below). ReadPixel also reads bounded guest planar
+RastPort thunks use the registered 68k RastPort of a window, a screen or a
+private offscreen planar layer (see RastPorts and Fonts and Layer Snapshots
+below). ReadPixel also reads bounded guest planar
 bitmaps directly; unsupported RastPorts stop with rc 20. A thunk that stops the
 program returns 20, so that the code reaches D0, from which the CPU loop
 takes the exit code.
 
 | LVO | Function | Handling |
 |-----|----------|----------|
+| -30 | BltBitMap | Copies bitplanes between checked classic planar bitmaps and/or owned indexed screens with minterm `0xC0`; unsupported bitmaps, planes, masks or minterms stop with rc 20 (`kaffeine_bitmaps.c`) |
 | -54 | TextLength | Checks UWORD(count) characters of guest text |
 | -60 | Text | Checks the text as TextLength; the pen position comes back |
 | -66 | SetFont | Takes a 68k TextFont of graphics.library, or NULL for the default font; any other font, also one closed and gone, stops the program with rc 20 |
 | -72 | OpenFont | Converts the checked TextAttr/TTextAttr at A0, calls native OpenFont and returns the shared 68k TextFont with monochrome glyph data, counting the open |
 | -78 | CloseFont | Balances the native open; the final native close and guest snapshot release wait while a RastPort or pin retains the font. Foreign and repeated closes acquire no native close |
-| -192 | LoadRGB4 | Big-endian byte-swap of UWORD color array |
+| -192 | LoadRGB4 | Decodes a bounded big-endian UWORD color array for a registered screen ViewPort (`kaffeine_palette.c`) |
 | -240 | Move | WORD coordinates |
 | -246 | Draw | WORD coordinates, from the pen position the program may have written |
 | -306 | RectFill | WORD coordinates |
-| -318 | ReadPixel | WORD coordinates; native LONG for registered window/screen RastPorts. Guest-built unlayered planar bitmaps use checked guest bytes; unsupported layouts, planes or coordinates stop with rc 20 |
+| -318 | ReadPixel | WORD coordinates; native LONG for registered window/screen RastPorts. Guest-built unlayered planar bitmaps and offscreen planar layers use checked guest bytes; unsupported layouts, planes or coordinates stop with rc 20 |
 | -324 | WritePixel | WORD coordinates; the native LONG |
 | -342 | SetAPen | Pen to the native RastPort |
 | -348 | SetBPen | Pen to the native RastPort |
 | -354 | SetDrMd | Mode to the native RastPort |
+| -390 | InitBitMap | Initializes the 8-byte 68k `BitMap` header (`BytesPerRow`, `Rows`, `Flags = 0`, `Depth`, `pad = 0`) from D0/D1/D2 without clearing plane pointers (`kaffeine_bitmaps.c`) |
 | -396 | ScrollRaster | Signed WORD offsets and bounds |
+| -432 | LockLayerRom | Validates a registered or owned guest `Layer`, locks its native layer if present and increments its guest lock count (`kaffeine_layers.c`) |
+| -438 | UnlockLayerRom | Releases a lock acquired by `LockLayerRom` or `AttemptLockLayerRom` (`kaffeine_layers.c`) |
+| -444, -450 | SyncSBitMap, CopySBitMap | Stop the guest with rc 20 (`kaffeine_layers_Unsupported`) |
+| -510 | OrRectRegion | Unions a checked 8-byte 68k `Rectangle` into an owned 68k `Region` and splits non-overlapping `RegionRectangle` nodes (`kaffeine_regions.c`) |
+| -516 | NewRegion | Allocates an owned 20-byte 68k `Region` (`kaffeine_regions.c`) |
+| -534 | DisposeRegion | Frees an owned 68k `Region` and its `RegionRectangle` list (`kaffeine_regions.c`) |
+| -504, -522, -528, -558, -612, -618, -624, -1086..-1158 | Other region vectors (20 slots) | Stop the guest with rc 20 (`kaffeine_regions_Unsupported`) |
+| -606, -636, -678, -918, -924, -942, -1020, -1206 | Other bitmap vectors (8 slots) | Stop the guest with rc 20 (`kaffeine_bitmaps_Unsupported`) |
+| -654 | AttemptLockLayerRom | Non-blocking `LockLayerRom` returning TRUE or FALSE (`kaffeine_layers.c`) |
 | -690 | TextExtent | Checks the text and the 12-byte 68k TextExtent, writes the native result big-endian |
 | -696 | TextFit | Checks every character from string on, a WORD strDirection apart, and both 68k TextExtents; converts the constraint and the result |
+| -714 | OpenMonitor | Refuses owned monitor opens by stopping with rc 20 (`kaffeine_display.c`) |
+| -720 | CloseMonitor | Refuses monitor closes by stopping with rc 20 (`kaffeine_display.c`) |
+| -726 | FindDisplayInfo | Refuses display handle lookups by stopping with rc 20 (`kaffeine_display.c`) |
+| -756 | GetDisplayInfoData | Queries native display info for `DTAG_DISP`, `DTAG_DIMS`, `DTAG_NAME` or `DTAG_MNTR` (with NULL handle and mode ID in D2) and writes classic big-endian structures and borrowed `MonitorSpec` snapshots (`kaffeine_display.c`) |
 | -858 | GetAPen | Native getter after the fields of the 68k RastPort |
 | -864 | GetBPen | Native getter after the fields of the 68k RastPort |
 | -870 | GetDrMd | Native getter after the fields of the 68k RastPort |
 | -876 | GetOutlinePen | Native getter after the fields of the 68k RastPort |
 | -894 | SetABPenDrMd | Both pens and the mode to the native RastPort |
+| -960 | GetBitMapAttr | Returns `BMA_WIDTH`, `BMA_HEIGHT`, `BMA_DEPTH` or `BMA_FLAGS` for an owned screen `BitMap` or checked classic planar `BitMap` (`kaffeine_bitmaps.c`) |
+| -288 | SetRGB4 | Sets a palette entry on a registered screen ViewPort (`kaffeine_palette.c`) |
+| -576 | FreeColorMap | NULL is a no-op; freeing a borrowed screen ColorMap stops with rc 20 (`kaffeine_palette.c`) |
+| -582 | GetRGB4 | Reads a packed RGB4 palette entry from a checked borrowed screen ColorMap (`kaffeine_palette.c`) |
+| -630 | SetRGB4CM | Sets an RGB4 entry through a checked borrowed screen ColorMap (`kaffeine_palette.c`) |
+| -708 | VideoControl | Returns error 1 without forwarding unconverted pointer-bearing tags (`kaffeine_palette.c`) |
+| -852 | SetRGB32 | Sets an RGB32 entry on a registered screen ViewPort (`kaffeine_palette.c`) |
+| -882 | LoadRGB32 | Validates the full big-endian RGB32 stream before updating a registered screen palette (`kaffeine_palette.c`) |
+| -900 | GetRGB32 | Writes big-endian RGB components through a bounded native temporary (`kaffeine_palette.c`) |
+| -996 | SetRGB32CM | Sets an RGB32 entry through a checked borrowed screen ColorMap (`kaffeine_palette.c`) |
+| -570, -834, -840, -948, -954, -1008 | ColorMap/pen allocation and ownership operations (6 slots) | Stop the guest with rc 20 (`Kaffeine_PaletteUnsupported`) |
 
 **diskfont.library (one manual thunk, `kaffeine_thunks_diskfont.c`):**
 
@@ -1113,7 +1180,7 @@ RastPort lifetime are described below. Diagnostics record the request,
 selected native font and final guest identity; a native name is read before
 adoption can close a rejected font.
 
-**gadtools.library (15 manual thunks, table in `kaffeine_thunks.c`):**
+**gadtools.library (16 manual thunks, table in `kaffeine_thunks.c`):**
 
 | LVO | Function | Handling |
 |-----|----------|----------|
@@ -1570,6 +1637,40 @@ library returns 0.
 | -78 | RemoveAppMenuItem | Native RemoveAppMenuItem() and its BOOL |
 | -90 | WBInfo | The lock as the bridge passes every lock, a name of at most 1024 bytes in guest memory, a screen of the program or NULL |
 
+**layers.library (40 manual thunks, `kaffeine_layers.c`):**
+
+| LVO | Function | Handling |
+|-----|----------|----------|
+| -90 | DeleteLayer | Deletes a private offscreen planar layer created by `CreateUpfrontHookLayer`, releasing its owned RastPort, clip region state and guest layer structure; refuses window or screen layers (`kaffeine_layers.c`) |
+| -96 | LockLayer | Locks a registered window/screen layer or owned offscreen layer (`kaffeine_layers.c`) |
+| -102 | UnlockLayer | Releases a lock acquired by `LockLayer` (`kaffeine_layers.c`) |
+| -144 | NewLayerInfo | Allocates and registers an owned 102-byte 68k `Layer_Info` (`kaffeine_layers.c`) |
+| -150 | DisposeLayerInfo | Frees an owned `Layer_Info` with no remaining layers (`kaffeine_layers.c`) |
+| -174 | InstallClipRegion | Installs or removes an owned 68k `Region` as the clip region of a registered window layer or owned offscreen layer and returns the previous guest `Region` (`kaffeine_regions.c`, `kaffeine_layers.c`) |
+| -186 | CreateUpfrontHookLayer | Creates a private offscreen planar layer on an owned `Layer_Info` with a checked classic planar `BitMap`, an owned 68k `RastPort` and an optional synchronous 68k backfill hook (`LAYERS_BACKFILL`, `LAYERS_NOBACKFILL` or a checked classic `Hook` invoked with A0 hook, A2 RastPort and A1 `LayerHookMsg`) (`kaffeine_layers.c`) |
+| -198 | InstallLayerHook | Installs `LAYERS_BACKFILL`, `LAYERS_NOBACKFILL` or a checked 68k `Hook` on a registered window/screen layer or owned offscreen layer and returns the previous hook (`kaffeine_layers.c`) |
+| -204 | InstallLayerInfoHook | Accepts the `LAYERS_BACKFILL` and `LAYERS_NOBACKFILL` sentinel modes on an owned LayerInfo, returns the previous mode, and applies it to subsequent private layers; other hooks stop with rc 20 (`kaffeine_layers.c`) |
+| -30..-84, -108..-138, -156..-168, -180, -192, -210..-246, -258..-270 | Remaining 31 vectors | Stop the guest with rc 20 (`kaffeine_layers_Unsupported`) |
+
+**icon.library (21 manual thunks, `kaffeine_icon.c`):**
+
+| LVO | Function | Handling |
+|-----|----------|----------|
+| -78 | GetDiskObject | Opens the native icon by checked guest name and returns an owned 78-byte 68k `DiskObject` metadata snapshot with copied `DefaultTool`, `ToolWindow` and `ToolTypes` (`kaffeine_icon.c`) |
+| -90 | FreeDiskObject | Releases an owned `DiskObject` snapshot and its retained native icon (`kaffeine_icon.c`) |
+| -96 | FindToolType | Searches a checked 68k `ToolTypes` pointer array for a bounded guest `typeName` and returns the matching guest string address (`kaffeine_icon.c`) |
+| -102 | MatchToolValue | Checks whether a bounded guest `typeString` contains `value` as a `|`-separated token (`kaffeine_icon.c`) |
+| -120 | GetDefDiskObject | Returns an owned 68k `DiskObject` metadata snapshot for the requested `WB*` icon type (`kaffeine_icon.c`) |
+| -132 | GetDiskObjectNew | Returns an owned 68k `DiskObject` metadata snapshot from `GetDiskObject` or `GetDefDiskObject` fallback (`kaffeine_icon.c`) |
+| -174 | NewDiskObject | Allocates a fresh native default icon for the requested type and returns an owned 68k `DiskObject` metadata snapshot (`kaffeine_icon.c`) |
+| -54, -72, -84, -108, -126, -138, -150..-168, -180..-198 | Remaining 14 vectors | Stop the guest with rc 20 (`kaffeine_icon_Unsupported`) |
+
+**cybergraphics.library (5 manual thunks, `kaffeine_thunks.c` / `kaffeine_bitmaps.c`):**
+
+LVOs `-96`, `-168`, `-174`, `-180` and `-186` override generated bitmap
+allocation and locking vectors with `kaffeine_bitmaps_Unsupported`, stopping
+the guest with rc 20 before native CyberGfx sees a guest bitmap pointer.
+
 ### Guest semaphore rules
 
 All thirteen semaphore vectors in the NDK 3.2 `exec_lib.fd` are manual
@@ -1900,14 +2001,17 @@ m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
 ### Rules
 
 - Signals: `AllocSignal()`, `CreateMsgPort()` and the private reply ports take
-  native bits of the task that runs the guest. With a stack size, `RunHunk()`
+  native bits of the task that runs the guest, with child ownership tracked
+  by the cooperative scheduler. With a stack size, `RunHunk()`
   runs the guest in a child process, not in the task behind the guest's
-  ThisTask snapshot: `Signal()` of the current guest task goes to the running
-  task, and `Signal()` of any other task stops the guest with rc 20.
-  `FreeSignal()` frees only bits that the guest allocated.
-- Devices: only `timer.device` has an adapter so far. Another name fails with
+  ThisTask snapshot: `Signal()` of a registered guest task or the main process
+  delivers the signal bits across the cooperative guest scheduler
+  (`kaffeine_sched.c`), and `Signal()` of an unknown task stops the guest with
+  rc 20. `FreeSignal()` frees only bits that the guest allocated.
+- Devices: `timer.device` and `console.device` (`CONU_LIBRARY` unit -1 for
+  `RawKeyConvert`) have adapters so far. Another name fails with
   `IOERR_OPENFAIL`, as an unknown device does, without a native call. The
-  guest request needs room for a 40-byte timerequest. Units 0 to 4 open;
+  guest timer request needs room for a 40-byte timerequest. Units 0 to 4 open;
   `TR_ADDREQUEST` on `UNIT_ECLOCK` and `UNIT_WAITECLOCK` ends with
   `IOERR_NOCMD`, because the AROS driver never replies to it.
 - Commands: `TR_ADDREQUEST` and `TR_GETSYSTIME`. `TR_SETSYSTIME` would set the
@@ -3113,40 +3217,47 @@ Two generators exist:
 
 ### Host-Side Tests (no AROS required)
 
-| Test | File | What It Tests |
-|------|------|--------------|
-| t_ctx | test_kaffeine.cpp | Context create/destroy |
-| t_heap | test_kaffeine.cpp | Heap alloc/free/reuse |
-| t_stress | test_kaffeine.cpp | 1000 × 64B alloc, free all, 100KB alloc |
-| t_custom_window | test_kaffeine.cpp | The reserved custom chip window: the two free intervals, refused `AllocAbs()` ranges, exhaustion, `MEMF_TOTAL` and resizes |
-| (Exec memory) | test_exec_memory.cpp | Literal memory LVOs, clear/reuse, free/largest/total accounting, pool ownership/deletion, invalid pointers, corrupt metadata, native allocation failure and register preservation |
-| t_endian | test_kaffeine.cpp | Big-endian read16/write16/read32/write32 |
-| t_xlat | test_kaffeine.cpp | Pointer translation round-trip |
-| t_libbase | test_kaffeine.cpp | Fake lib base setup, A-line opcode verification |
-| t_exec_moveq_rts | test_moira_exec.cpp | MOVEQ #42,D0; RTS → result 42 |
-| t_exec_add | test_moira_exec.cpp | MOVEQ + ADDI → result 42 |
-| t_exec_loop | test_moira_exec.cpp | Loop summing 1..10 → result 55 |
-| t_exec_memory_access | test_moira_exec.cpp | MOVE.L store/load round-trip |
-| (integration) | test_hello_thunks.cpp | Full A-line trap → thunk dispatch → return |
+`developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
+plus `test_thunk_registrations.py` (which verifies 319 explicit native-vector
+cases and all 544 manual thunk registrations across the 18 production tables)
+and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
+[developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
+for coverage details; the host Makefile is the authoritative executable list.
 
-### AROS-Side Test
+Representative source files include:
 
-`test_kaffeine.c` — Opens `kaffeine.library`, writes an embedded m68k hunk binary
-(MOVEQ #42,D0; RTS) to `RAM:`, calls `RunFile`, and verifies the result is 42.
+| Area | Files | Coverage |
+|------|-------|----------|
+| CPU and loaders | `test_kaffeine.cpp`, `test_moira_exec.cpp`, `test_dispatch.cpp`, `test_hunk_loading.cpp`, `test_callbacks.cpp`, `test_hosted_jit.cpp` | Context, Moira execution, dispatcher, HUNK loading, callbacks and standalone AArch64 translation |
+| Memory and Exec | `test_exec_memory.cpp`, `test_memheader.cpp`, `test_memheader_moira.cpp`, `test_heap_scaling.cpp`, `test_exec_lists.cpp`, `test_exec_tasks.cpp`, `test_exec_messages.cpp`, `test_exec_io.cpp`, `test_guest_tasks.cpp` | Heap and pools, MemHeader, lists, task identities, messages, timer I/O and cooperative guest scheduling |
+| DOS | `test_dos_thunks.cpp`, `test_dos_packets.cpp`, `test_dos_packet_thunks.cpp`, `test_dos_handlers.cpp`, `test_readargs.cpp`, `test_cli.cpp` | Files, directory scans, FileHandle/DOS packets, native handler identities, argument parsing and CLI state |
+| Utility, locale and math | `test_utility_thunks.cpp`, `test_locale_thunks.cpp`, `test_locale_hooks.cpp`, `test_mathieee_thunks.cpp`, `test_mathffp_thunks.cpp` | Tags, hooks, dates, formatting, locale and floating-point library calls |
+| Graphics and GUI | `test_gfx_thunks.cpp`, `test_diskfont.cpp`, `test_display.cpp`, `test_fbgfx_refresh.cpp`, `test_screens.cpp`, `test_layers.cpp`, `test_layers_private.cpp`, `test_regions.cpp`, `test_window.cpp`, `test_menus.cpp`, `test_gadgets.cpp`, `test_icon.cpp`, `test_workbench.cpp`, `test_console.cpp` | Fonts, displays, screens/palettes, layers, regions, bitmaps, windows, menus, gadgets, icon metadata, AppMessages and console calls |
+
+### Standalone Native AROS AArch64 and Target 68k Suites
+
+- [`developer/debug/test/kaffeine_native/`](../../developer/debug/test/kaffeine_native/README.md):
+  `jit_probe` validates the standalone AArch64 translator with 38 checks
+  using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE`. A separate
+  instruction corpus passes 490 checks covering 432 programs and eight
+  callback boundary cases. Both pass in Shell and `Run` on AROS AArch64
+  in QEMU. Expected corpus results come from Moira on the host; the native
+  executable runs the JIT without Moira.
+- [`developer/debug/test/kaffeine_target/`](../../developer/debug/test/kaffeine_target/README.md):
+  68k HUNK target probes, the 6-step `bzip2 1.0.8` self-test and the 7-step
+  IJG JPEG `9f` self-test (`cjpeg`, `djpeg`, `jpegtran`) executed on AROS
+  AArch64 under QEMU (`run_qemu.py`) with expected results;
+  classic AmigaOS reference runs establish the relevant bridge contracts.
 
 ### Test Gaps
 
 - Custom chip tests cover POTGOR, VHPOSW and the single window at `$DFF000`
   (`test_guest_bounds`) and VHPOSR advancing on AROS (`exec_memory`), not the
   wrap of the beam counter
-- No tests for Supervisor() dispatch path
-- No tests for generated thunk fallback path
-- No tests for unimplemented LVO handling
-- No tests for hunk loader (LoadHunksFromMemory)
-- Heap alignment, exhaustion and guest pool ownership are covered by `test_exec_memory`
 - Longword bus accesses crossing the arena or 2^32 are split by Moira;
   callback bounds are tested, but whole-access refusal needs a backend change
-- Makefile builds and runs all host tests (`test_kaffeine`, `test_moira_exec`, `test_hello_thunks`) via `make test`
+- Physical ARM64 hardware validation remains separate from host and QEMU AROS
+  AArch64 test runs
 
 ## ExAll() emulation
 
@@ -3364,13 +3475,15 @@ native result, copies only the returned bytes and preserves caller IoErr.
 The DOS reply has type 5 and dp_Port becomes the guest handler; generic
 ReplyMsg instead uses type 7, or type 6 with no reply port. The other
 actions of these handlers and the DOS packet functions are described in
-"DOS packets" below. The final target candidate
+"DOS packets" above. The target candidate
 matches the measured 26 message checks, 28 packet checks and 20 raw
-observations in Shell and Run. Personal Paint completes repeated packet
-reads and replies, then stops at a contained CPU callback memory-access
-fault at PC 0x00c98d92 in both modes. The failing address and callback still
-need classification; the PC alone does not establish the cause. Complete
-application and hardware operation remain unverified.
+observations in Shell and Run. Personal Paint 7.2.1.0 now also has a verified
+native Shell session under Moira in QEMU: a 24-bit Workbench, a 1024×768
+256-color application canvas, rectangles/circles/text, an IFF/ILBM save
+whose decoded pixels match the visible canvas, and exit code zero. Loading
+the saved 1024×768 IFF and PNG reports “The image is too large”. Full image
+loading, other painting operations, desktop icon startup, application
+execution on the JIT and hardware operation remain open.
 
 ## Display query boundary
 
@@ -3437,11 +3550,6 @@ or FreeSysRequest according to the private requester marker. Screen cleanup
 then releases guest-acquired public/list locks, closes owned screens and
 releases retained font references. Native refusal by external visitors is
 logged; native retained inputs are preserved while that screen stays open.
-
-
-Classic AddTask and RemTask currently stop with return code20. Guest task
-records, stack pointers and 68k entry points must never reach native Exec's
-scheduler. Concurrent guest task execution requires a separate adapter.
 
 VisualInfo ownership is recorded in a bounded32-entry private table. A
 borrowed screen gets an independent LockPubScreen visitor reference under

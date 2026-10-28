@@ -317,8 +317,18 @@ The initial AROS ARM/QEMU run passed 38 checks in both direct Shell and
 big-endian memory, a native thunk, a nested translated callback, invalidated
 and retranslated guest code, and explicit unsupported-instruction failure.
 The callback used six translated blocks and nested execution; the code
-mutation case used seven blocks and one invalidation. The existing host
-suite also passed 3,295 checks with Clang, ASan/UBSan and GCC 15.
+mutation case used seven blocks and one invalidation.
+
+After the DIV.L, bitfield, CAS, MOVEP, TAS and RTD extension, native AROS
+AArch64 in QEMU passed the 38 regression checks and a separate 490-check
+instruction probe in both Shell and `Run` modes. The latter covers 432
+programs plus eight callback bitfield boundary cases, checking completed
+prefix stores when the trailing byte faults. Moira generated the expected
+program results on the host; the native executable does not link Moira.
+On macOS arm64 the full hosted JIT suite passed 3,778 checks, followed by
+20,000 additional randomized differential programs. Focused ASan/UBSan runs
+passed 304 boundary checks, 164 extended-instruction checks and 256
+randomized programs.
 
 These are separate results from the host timings above. No native speedup
 or physical-target cache result is claimed. The library application backend
