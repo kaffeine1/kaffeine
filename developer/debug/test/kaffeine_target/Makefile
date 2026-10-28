@@ -61,6 +61,35 @@ jpeg_c = $(addprefix $(JPEG_BUILD)/,$(addsuffix .c,$(1)))
 ifneq ($(JPEG_SRC),)
 PROGRAMS += cjpeg djpeg jpegtran
 endif
+
+# minigzip and zpipe of zlib 1.3.1, from the source the AROS build fetches
+# for its Ports (the zlib of Chromium): set ZLIB_SRC to its zlib directory
+# to build them. They leave out the SIMD paths of Chromium (CPU_NO_SIMD),
+# take the zconf.h.in of the distribution as zconf.h and define AMIGA, so
+# that a gzip header names the Amiga as its system. They keep the hash of
+# canonical zlib (USE_ZLIB_RABIN_KARP_ROLLING_HASH), so their output is the
+# one of canonical zlib; the hash of Chromium reads four bytes as a word and
+# is validated for little endian processors only.
+# They are built without peephole2: in m68k-amigaos-gcc 6.5.0b that pass
+# turns "s->bi_buf = 0; s->bi_valid = 0;", an unsigned short and the int
+# right after it, into one clr.l of four bytes, and the low half of
+# bi_valid keeps what was there. malloc() memory is not cleared on AmigaOS,
+# so every compressed stream then starts or ends with stray bits.
+# The battery compresses and decompresses zlib.h with them and compares the
+# outputs with the references that "make zlib-refs" writes to $(ZLIB_REFS).
+ZLIB_SRC ?=
+ZLIB_BUILD := $(BUILD_DIR)/zlib-src
+ZLIB_REFS := $(BUILD_DIR)/zlib-refs
+ZLIB_LIB := adler32 compress crc32 deflate gzclose gzlib gzread gzwrite infback \
+            inffast inflate inftrees trees uncompr zutil cpu_features
+ZLIB_SOURCES := $(addprefix $(ZLIB_SRC)/,$(addsuffix .c,$(ZLIB_LIB)))
+ZLIB_FLAGS := -DCPU_NO_SIMD -DUSE_ZLIB_RABIN_KARP_ROLLING_HASH -DHAVE_UNISTD_H \
+              -I$(ZLIB_BUILD) -I$(ZLIB_SRC)
+ZLIB_M68K_FLAGS := -DAMIGA -fno-peephole2
+ZLIB_GZ_MODES := 1 6 9 f h r
+ifneq ($(ZLIB_SRC),)
+PROGRAMS += minigzip zpipe
+endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
@@ -129,6 +158,35 @@ $(BUILD_DIR)/djpeg: $(JPEG_BUILD)/stamp $(JPEG_FLOAT)
 $(BUILD_DIR)/jpegtran: $(JPEG_BUILD)/stamp $(JPEG_FLOAT)
 	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $(call jpeg_c,$(JPEG_JPEGTRAN) $(JPEG_LIB)) $(JPEG_FLOAT) -lm
 
+$(ZLIB_BUILD)/zconf.h: $(ZLIB_SRC)/zconf.h.in
+	mkdir -p $(@D)
+	cp $< $@
+
+$(BUILD_DIR)/minigzip: $(ZLIB_SRC)/test/minigzip.c $(ZLIB_SOURCES) $(ZLIB_BUILD)/zconf.h | $(BUILD_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $(ZLIB_M68K_FLAGS) $(ZLIB_FLAGS) $(M68K_LDFLAGS) -o $@ $< $(ZLIB_SOURCES)
+
+$(BUILD_DIR)/zpipe: $(ZLIB_SRC)/examples/zpipe.c $(ZLIB_SOURCES) $(ZLIB_BUILD)/zconf.h | $(BUILD_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $(ZLIB_M68K_FLAGS) $(ZLIB_FLAGS) $(M68K_LDFLAGS) -o $@ $< $(ZLIB_SOURCES)
+
+# The zlib references: zlib.h through the same two programs built for the
+# host from the same sources, without AMIGA. The tenth byte of a gzip
+# header names the system that wrote it, so the references get the 1 of
+# the Amiga there, as the m68k build writes.
+HOST_CC ?= cc
+$(ZLIB_REFS)/stamp: $(ZLIB_SRC)/test/minigzip.c $(ZLIB_SRC)/examples/zpipe.c $(ZLIB_SOURCES) \
+                    $(ZLIB_BUILD)/zconf.h
+	mkdir -p $(@D)
+	$(HOST_CC) -O2 $(ZLIB_FLAGS) -o $(@D)/minigzip $(ZLIB_SRC)/test/minigzip.c $(ZLIB_SOURCES)
+	$(HOST_CC) -O2 $(ZLIB_FLAGS) -o $(@D)/zpipe $(ZLIB_SRC)/examples/zpipe.c $(ZLIB_SOURCES)
+	for m in $(ZLIB_GZ_MODES); do \
+	    $(@D)/minigzip -$$m < $(ZLIB_SRC)/zlib.h > $(@D)/zlib.h-$$m.gz || exit 1; \
+	    printf '\001' | dd of=$(@D)/zlib.h-$$m.gz bs=1 seek=9 count=1 conv=notrunc 2>/dev/null || exit 1; \
+	done
+	$(@D)/zpipe < $(ZLIB_SRC)/zlib.h > $(@D)/zlib.h.zz
+	touch $@
+
+zlib-refs: $(ZLIB_REFS)/stamp
+
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
 $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
@@ -144,18 +202,19 @@ $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LI
 $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
-# bzip2 and the JPEG programs too, also when they were built with a
-# BZIP2_SRC or JPEG_SRC that this make lacks
+# bzip2, the JPEG programs and the zlib ones too, also when they were built
+# with a BZIP2_SRC, JPEG_SRC or ZLIB_SRC that this make lacks
 clean:
 	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
-	rm -rf $(JPEG_BUILD)
+	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe
+	rm -rf $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner
+.PHONY: all clean check-runner zlib-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)
