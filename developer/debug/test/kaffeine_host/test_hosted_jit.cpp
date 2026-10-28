@@ -715,6 +715,67 @@ static void callback_faults()
     }
 }
 
+static void bitfield_boundaries()
+{
+    /* The reference backend accesses a longword even for a one-bit field.
+       Compare the observable boundary behavior, including partial word
+       stores outside a callback and the untouched host guard. */
+    for (unsigned op = 0; op < 8; ++op)
+        for (ULONG bytes : {1u, 2u, 3u, 4u})
+        {
+            Seen reference = {};
+            std::vector<UBYTE> memory;
+            for (Backend which : {MOIRA, JIT})
+            {
+                Machine m;
+                const ULONG at = m.size - bytes;
+                m.mem[at] = 0x80;
+                m.a(0, at); m.d(1, 0x89ABCDEF);
+                m.word(0x44FC); m.word(0x001B);
+                m.word((UWORD)(0xE8D0 + (op << 8)));
+                m.word((UWORD)(0x0001 + ((op & 1) ? 0x1000 : 0)));
+                m.jsr(Layout::probe, 36); m.rts();
+                snap = {}; snap_calls = 0;
+                CHECK(m.run(which) == 0 && snap_calls == 1);
+                CHECK(!m.ctx.callback_failed);
+                CHECK(std::all_of(m.mem.begin() + m.size, m.mem.end(),
+                                  [](UBYTE b) { return b == 0; }));
+                std::vector<UBYTE> tail(m.mem.begin() + m.size - 8, m.mem.end());
+                if (which == MOIRA) { reference = snap; memory = tail; }
+                else CHECK(snap == reference && tail == memory);
+            }
+        }
+
+    /* A five-byte field can finish its first longword write before the
+       fifth byte faults inside a callback. Failure does not roll back
+       those completed stores or resume the caller. */
+    const ULONG expected[] = {0x12345678, 0x12345678, 0x13CBA987, 0x12345678,
+                              0x12000000, 0x12345678, 0x13FFFFFF, 0x1313579B};
+    for (Backend which : {MOIRA, JIT})
+        for (unsigned op = 0; op < 8; ++op)
+        {
+            Machine m;
+            const ULONG at = m.size - 4;
+            m68k_write32(&m.ctx, at, 0x12345678);
+            m.code(Layout::hook_code, {
+                0x207C, (UWORD)(at >> 16), (UWORD)at,
+                0x223C, 0x89AB, 0xCDEF, (UWORD)(0xE8D0 + (op << 8)),
+                (UWORD)(0x01C0 + ((op & 1) ? 0x1000 : 0)), 0x4E75});
+            m.hook_at(Layout::hook, Layout::hook_code); m.hook_call();
+            m.word(0x13FC); m.word(0x003C); m.longword(Layout::buffer); m.rts();
+            CHECK(m.run(which) == 20);
+            CHECK(m.ctx.callback_failed && !m.ctx.callback_depth);
+            CHECK(m.mem[Layout::buffer] == 0xA5);
+            if (m.read(at) != expected[op])
+                std::printf("  bitfield %u %s: completed prefix %08lx, expected %08lx\n",
+                            op, which == MOIRA ? "Moira" : "JIT",
+                            (unsigned long)m.read(at), (unsigned long)expected[op]);
+            CHECK(m.read(at) == expected[op]);
+            CHECK(std::all_of(m.mem.begin() + m.size, m.mem.end(),
+                              [](UBYTE b) { return b == 0; }));
+        }
+}
+
 /* ------------------------------------------------------------------
    Guest code that changes, and the cache flushes that make it count
    ------------------------------------------------------------------ */
@@ -1981,7 +2042,8 @@ int main(int argc, char **argv)
         {"block-limits", block_limits, true}, {"code-reset", code_reset, true},
         {"library-calls", library_calls, true}, {"callback-depth", callback_depth, true},
         {"callback-registers", callback_registers, true}, {"callback-format", callback_format, true},
-        {"callback-faults", callback_faults, true}, {"code-changes", code_changes, true},
+        {"callback-faults", callback_faults, true}, {"bitfield-boundaries", bitfield_boundaries, true},
+        {"code-changes", code_changes, true},
         {"faults", faults, true}, {"extended-insns", extended_insns, true},
         {"random-programs", random_programs, true}
     };

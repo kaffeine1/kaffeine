@@ -1812,6 +1812,8 @@ static void emit_bf(struct HJTrans *t, const struct HJInsn *in)
     int dn = (ext >> 12) & 7;
     int do_reg = (ext >> 11) & 1, of = (ext >> 6) & 31;
     int dw_reg = (ext >> 5) & 1, wi = ext & 31;
+    int modifies = in->op == BF_CHG || in->op == BF_CLR ||
+                   in->op == BF_SET || in->op == BF_INS;
     unsigned br_no5, br_no5_w;
 
     if (in->dst.mode != EA_DN)
@@ -1893,16 +1895,19 @@ static void emit_bf(struct HJTrans *t, const struct HJInsn *in)
     emit_access(t, SLOW_R32, R_ADDR);
     put(e, a64_mov(R_RES, R_VAL));
     put(e, a64_bitfield(1, 2, R_RES, R_RES, 56, 55));
-    put(e, a64_logic_const(0, R_SCR, R_SRC, 7u));
-    put(e, a64_addsub_reg(0, 0, 0, R_SCR, R_SCR, R_F1, 0, 0));
-    put(e, a64_addsub_imm(0, 1, 1, ZR, R_SCR, 32, 0));
-    br_no5 = e->n;
-    put(e, a64_bcond(A64_LS, 0));
-    put(e, a64_addsub_imm(0, 0, 0, R_ADDR, R_ADDR, 4, 0));
-    emit_access(t, SLOW_R8, R_ADDR);
-    put(e, a64_addsub_imm(0, 1, 0, R_ADDR, R_ADDR, 4, 0));
-    put(e, a64_logic_reg(1, 1, 0, R_RES, R_RES, R_VAL, 0, 0));
-    patch(e, br_no5, e->n);
+    if (!modifies)
+    {
+        put(e, a64_logic_const(0, R_SCR, R_SRC, 7u));
+        put(e, a64_addsub_reg(0, 0, 0, R_SCR, R_SCR, R_F1, 0, 0));
+        put(e, a64_addsub_imm(0, 1, 1, ZR, R_SCR, 32, 0));
+        br_no5 = e->n;
+        put(e, a64_bcond(A64_LS, 0));
+        put(e, a64_addsub_imm(0, 0, 0, R_ADDR, R_ADDR, 4, 0));
+        emit_access(t, SLOW_R8, R_ADDR);
+        put(e, a64_addsub_imm(0, 1, 0, R_ADDR, R_ADDR, 4, 0));
+        put(e, a64_logic_reg(1, 1, 0, R_RES, R_RES, R_VAL, 0, 0));
+        patch(e, br_no5, e->n);
+    }
     emit_mov32(e, R_F2, 32u);
     put(e, a64_addsub_reg(0, 1, 0, R_F2, R_F2, R_F1, 0, 0));
 
@@ -1972,7 +1977,43 @@ static void emit_bf(struct HJTrans *t, const struct HJInsn *in)
     br_no5_w = e->n;
     put(e, a64_bcond(A64_LS, 0));
     put(e, a64_addsub_imm(0, 0, 0, R_ADDR, R_ADDR, 4, 0));
-    put(e, a64_mov(R_VAL, R_RES));
+    /* Moira commits the leading longword before it reads or writes the
+       fifth byte. A callback fault here must preserve that completed
+       prefix. The trailing byte also contributes to the original field's
+       Z flag (or the inserted field for BFINS). */
+    emit_access(t, SLOW_R8, R_ADDR);
+    put(e, a64_logic_const(0, R_SCR, R_SRC, 7u));
+    put(e, a64_addsub_reg(0, 0, 0, R_SCR, R_SCR, R_F1, 0, 0));
+    emit_mov32(e, R_F2, 40u);
+    put(e, a64_addsub_reg(0, 1, 0, R_F2, R_F2, R_SCR, 0, 0));
+    put(e, a64_movw(0, 0, R_RES, 0, 0));
+    put(e, a64_shiftv(0, 0, R_RES, R_RES, R_F2));
+    put(e, a64_logic_const(0, R_RES, R_RES, 255u));
+    if (in->op == BF_INS)
+    {
+        put(e, a64_shiftv(0, 0, R_SCR, REG_D(dn), R_F2));
+        put(e, a64_logic_const(0, R_SCR, R_SCR, 255u));
+    }
+    else
+        put(e, a64_logic_reg(0, 0, 0, R_SCR, R_VAL, R_RES, 0, 0));
+    if (in->need & HJF_Z)
+    {
+        unsigned br_zero = e->n;
+        put(e, a64_cbz(0, 0, R_SCR, 0));
+        put(e, a64_logic_const(0, R_FLAGS, R_FLAGS, ~HJF_Z));
+        patch(e, br_zero, e->n);
+    }
+    if (in->op == BF_CHG)
+        put(e, a64_logic_reg(0, 2, 0, R_VAL, R_VAL, R_RES, 0, 0));
+    else if (in->op == BF_CLR)
+        put(e, a64_logic_reg(0, 0, 1, R_VAL, R_VAL, R_RES, 0, 0));
+    else if (in->op == BF_SET)
+        put(e, a64_logic_reg(0, 1, 0, R_VAL, R_VAL, R_RES, 0, 0));
+    else
+    {
+        put(e, a64_logic_reg(0, 0, 1, R_VAL, R_VAL, R_RES, 0, 0));
+        put(e, a64_logic_reg(0, 1, 0, R_VAL, R_VAL, R_SCR, 0, 0));
+    }
     emit_access(t, SLOW_W8, R_ADDR);
     patch(e, br_no5_w, e->n);
 }

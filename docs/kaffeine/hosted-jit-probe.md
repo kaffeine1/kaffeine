@@ -201,6 +201,11 @@ copy taken at translation; the others are translated again.
   40000 chained blocks inside a callback, with the code memory emptied
   and a `CacheClearU()` while the caller waits in the dispatcher, and a
   16 MB arena with longs across both ends of the custom chip page.
+- `bitfield-boundaries` compares all eight memory bitfield operations at
+  the last one to four arena bytes with Moira, including its longword
+  access convention and untouched host guards. Five-byte callback cases
+  also check that a completed leading longword store survives a fault on
+  the fifth byte and that execution does not resume the caller.
 - 20000 random programs compared with Moira: registers, SR, the scratch
   memory, the stack and the beam counter. The generator keeps to the
   subset and to what both backends define the same way: pointers that stay
