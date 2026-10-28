@@ -3434,3 +3434,10 @@ VisualInfo references. execute_owned frees menus/gadgets and then all
 VisualInfos before releasing screens. FreeSysRequest and SysReqHandler
 validate the requester marker, and requester destruction runs gadget/menu
 close hooks before dropping window/message/port mirrors.
+
+BltBitMap() clips non-negative rectangles to the native dimensions of both
+bitmaps before creating call-local adapters or invoking the native blitter.
+Origins outside either bitmap and zero masks return zero without a blit.
+Negative coordinates, negative sizes and caller TempA buffers remain outside
+the supported boundary. The original gfx_blit_clip target probe checks the
+resulting pixels and intact memory guards against native AROS.

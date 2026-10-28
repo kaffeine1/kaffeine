@@ -1991,6 +1991,26 @@ static void guest_set(Fixture &f, ULONG plane, UWORD bpr, int x, int y, bool on)
     byte = on ? (UBYTE)(byte | bit) : (UBYTE)(byte & ~bit);
 }
 
+static void test_blit_empty_clip()
+{
+    Fixture f;
+    const ULONG src = f.bitmap(4, 8, 2), dst = f.bitmap(4, 8, 2);
+    /* The dispatcher fixture writes this synthetic JSR return on each call. */
+    m68k_write32(&f.ctx, Fixture::stack, 0x76543210);
+    for (auto d : { std::initializer_list<ULONG>{32,0,0,0,1,1,0xC0,0xFF},
+                    {0,8,0,0,1,1,0xC0,0xFF}, {0,0,32,0,1,1,0xC0,0xFF},
+                    {0,0,0,8,1,1,0xC0,0xFF}, {0,0,0,0,32767,32767,0xC0,0} })
+    {
+        const auto memory = f.memory;
+        const auto heap = f.heap();
+        const size_t n = blits.size();
+        const unsigned inits = init_bitmaps, waits = wait_blits;
+        assert(f.call(Fixture::graphics_base,30,{src,dst,0},d)==0 && f.ctx.running);
+        assert(blits.size()==n && init_bitmaps==inits && wait_blits==waits && f.ctx.bitmap_blits==0);
+        assert(f.memory==memory && f.heap_is(heap));
+    }
+}
+
 static void test_blit_mapping()
 {
     Fixture f;
@@ -2137,15 +2157,20 @@ static void test_blit_refusals()
         d[i] = i & 1 ? 0xFFFFu : 0x00018000u;
         assert(refused({ bm1, bm1, 0 }, { d[0], d[1], d[2], d[3], d[4], d[5], 0xC0, 0xFF }));
     }
-    /* rectangles outside either BitMap */
-    assert(refused({ bm1, bm1, 0 }, { 1, 0, 0, 0, 32, 1, 0xC0, 0xFF }));
-    assert(refused({ bm1, bm1, 0 }, { 0, 1, 0, 0, 1, 8, 0xC0, 0xFF }));
-    assert(refused({ bm1, bm1, 0 }, { 0, 0, 25, 0, 8, 1, 0xC0, 0xFF }));
-    assert(refused({ bm1, bm1, 0 }, { 0, 0, 0, 1, 1, 8, 0xC0, 0xFF }));
-    assert(refused({ bm1, bm1, 0 }, { 0, 0, 0, 0, 0x7FFF, 1, 0xC0, 0xFF }));
-    assert(refused({ bm1, bm1, 0 }, { 0, 0, 0, 0, 1, 0x7FFF, 0xC0, 0xFF }));
-    assert(refused({ big, bm1, 0 }, { 0, 0, 0, 0, 40, 4, 0xC0, 0xFF }));
-    assert(refused({ bm1, big, 0 }, { 0, 0, 0, 0, 4, 12, 0xC0, 0xFF }));
+    /* Native clipping keeps every delegated rectangle inside both sides. */
+    auto clipped = [&f](ULONG src, ULONG dst, std::initializer_list<ULONG> d, WORD w, WORD h) {
+        const size_t n = blits.size();
+        assert(f.call(Fixture::graphics_base, 30, { src, dst, 0 }, d) != 20 && f.ctx.running);
+        assert(blits.size() == n + 1 && blits.back().w == w && blits.back().h == h);
+    };
+    clipped(bm1, bm1, { 1, 0, 0, 0, 32, 1, 0xC0, 0xFF }, 31, 1);
+    clipped(bm1, bm1, { 0, 1, 0, 0, 1, 8, 0xC0, 0xFF }, 1, 7);
+    clipped(bm1, bm1, { 0, 0, 25, 0, 8, 1, 0xC0, 0xFF }, 7, 1);
+    clipped(bm1, bm1, { 0, 0, 0, 1, 1, 8, 0xC0, 0xFF }, 1, 7);
+    clipped(bm1, bm1, { 0, 0, 0, 0, 0x7FFF, 1, 0xC0, 0xFF }, 32, 1);
+    clipped(bm1, bm1, { 0, 0, 0, 0, 1, 0x7FFF, 0xC0, 0xFF }, 1, 8);
+    clipped(big, bm1, { 0, 0, 0, 0, 40, 4, 0xC0, 0xFF }, 32, 4);
+    clipped(bm1, big, { 0, 0, 0, 0, 4, 12, 0xC0, 0xFF }, 4, 8);
     assert(passes(big, bm1) && passes(bm1, big));
 
     /* a 68k BitMap that no longer describes its common BitMap */
@@ -2419,11 +2444,10 @@ static void test_blit_screen_refusals()
                wait_blits == w && bitmap_attrs == attrs && init_bitmaps == inits && f.heap_is(heap) &&
                f.ctx.bitmap_blits == 0;
     };
-    auto outside = [&f](std::initializer_list<ULONG> a, std::initializer_list<ULONG> d) {
+    auto clipped = [&f](std::initializer_list<ULONG> a, std::initializer_list<ULONG> d, WORD w, WORD h) {
         const size_t n = blits.size();
-        const unsigned inits = init_bitmaps;
-        return f.call(Fixture::graphics_base, 30, a, d) == 20 && f.stopped() && blits.size() == n &&
-               init_bitmaps == inits && f.ctx.bitmap_blits == 0;
+        return f.call(Fixture::graphics_base, 30, a, d) != 20 && f.ctx.running && blits.size() == n + 1 &&
+               blits.back().w == w && blits.back().h == h && f.ctx.bitmap_blits == 0;
     };
     auto passes = [&f](std::initializer_list<ULONG> a, std::initializer_list<ULONG> d) {
         const size_t n = blits.size();
@@ -2455,11 +2479,11 @@ static void test_blit_screen_refusals()
         assert(early({ handle, bm, 0 }, { d[0], d[1], d[2], d[3], d[4], d[5], 0xC0, 0xFF }));
     }
     /* outside the size of graphics, though inside BytesPerRow * 8 */
-    assert(outside({ bm, handle, 0 }, { 0, 0, 25, 0, 16, 1, 0xC0, 0xFF }));
-    assert(outside({ handle, bm, 0 }, { 25, 0, 0, 0, 16, 1, 0xC0, 0xFF }));
-    assert(outside({ handle, bm, 0 }, { 0, 5, 0, 0, 8, 8, 0xC0, 0xFF }));
-    assert(outside({ bm, handle, 0 }, { 0, 0, 0, 5, 8, 8, 0xC0, 0xFF }));
-    assert(outside({ handle, handle, 0 }, { 0, 0, 0, 0, 41, 1, 0xC0, 0xFF }));
+    assert(clipped({ bm, handle, 0 }, { 0, 0, 25, 0, 16, 1, 0xC0, 0xFF }, 15, 1));
+    assert(clipped({ handle, bm, 0 }, { 25, 0, 0, 0, 16, 1, 0xC0, 0xFF }, 15, 1));
+    assert(clipped({ handle, bm, 0 }, { 0, 5, 0, 0, 8, 8, 0xC0, 0xFF }, 8, 7));
+    assert(clipped({ bm, handle, 0 }, { 0, 0, 0, 5, 8, 8, 0xC0, 0xFF }, 8, 7));
+    assert(clipped({ handle, handle, 0 }, { 0, 0, 0, 0, 41, 1, 0xC0, 0xFF }, 40, 1));
     assert(passes({ handle, handle, 0 }, { 0, 0, 0, 0, 40, 12, 0xC0, 0xFF }));
 
     /* a screen whose native RastPort has no BitMap */
@@ -2930,11 +2954,12 @@ int main()
         { "Clearing private clipping is typed; foreign Regions and layers are refused", test_clear_clip_region },
         { "Private locks do not freeze screen snapshots; failed constructors retire their counts", test_private_lock_isolation },
         { "Another guest task's lock of any layer of a LayerInfo stops creation and deletion there", test_sibling_lock_contention },
+        { "BltBitMap() empty clipped rectangles leave bytes and resources unchanged", test_blit_empty_clip },
         { "BltBitMap() (-30) between common BitMaps: native identity, WORD/UBYTE/LONG mapping, copy, clear, mask", test_blit_mapping },
-        { "BltBitMap() takes ordinary planar BitMaps; refuses malformed, changed common, TempA and oversized inputs before native", test_blit_refusals },
+        { "BltBitMap() takes ordinary planar BitMaps; refuses malformed, changed common, TempA and negative inputs before native; clips oversized rectangles", test_blit_refusals },
         { "A blit keeps every LayerInfo until WaitBlit(); a disposed common's 68k BitMap gets a new call-local BitMap", test_blit_lifetime },
         { "BltBitMap() from an ordinary planar BitMap to an opened screen's BitMap and back, by identity", test_blit_screen_transfer },
-        { "BltBitMap() refuses borrowed, foreign, stale and NULL screen BitMaps and native-size overruns", test_blit_screen_refusals },
+        { "BltBitMap() refuses borrowed, foreign, stale and NULL screen BitMaps and clips to native bitmap dimensions", test_blit_screen_refusals },
         { "GetBitMapAttr() uses typed bitmap identity and preserves classic scalar flags", test_bitmap_attributes },
         { "Unconverted graphics and cybergraphics bitmap vectors stop before native code and guest writes", test_bitmap_vector_guards },
         { "InitBitMap() (-390) writes graphics' BE scalars from narrowed registers, never planes or other bytes", test_init_bitmap_scalars },

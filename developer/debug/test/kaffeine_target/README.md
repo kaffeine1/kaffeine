@@ -320,3 +320,8 @@ arbitrary unused `mn_ReplyPort` values. Replies follow `dp_Port`, preserve the
 unused message field and permit packet reuse. The same original source runs
 as native AROS AArch64 and classic 68k code; it checks the file contents and
 removes its temporary file.
+
+`gfx_blit_clip` checks positive bitmap-edge clipping, fully clipped no-ops,
+zero-width and zero-mask cases against exact planar pixel values. Prefix and
+suffix guards and all source bytes must remain intact. The same original
+source runs as native ARM and classic 68k code.
