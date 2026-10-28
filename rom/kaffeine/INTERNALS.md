@@ -1846,6 +1846,23 @@ Return values: void functions return 0; struct pointer returns get wrapped with 
 
 ## Shadow Struct Engine
 
+### Guest memory capacity
+
+`ExecBase.MemList` describes the actual containment heap intervals with
+owned classic 32-byte `MemHeader` capacity snapshots. The unified guest
+arena is chip-accessible (`MEMF_PUBLIC | MEMF_CHIP`); this describes guest
+memory, not physical Amiga Chip RAM. The custom-register window and the
+guest stack are excluded. Nodes, predecessor/successor links and the shared
+name stay inside guest memory; native headers and addresses are not copied.
+
+These descriptors report installed capacity only. `mh_First` and `mh_Free`
+are zero because the allocator free lists are private; callers use
+`AvailMem()` for free and largest-block queries. `FreeMem()`/`FreeVec()`
+cannot release snapshot storage, and `Allocate()`/`Deallocate()` reject
+these headers and overlapping free chunks without changing guest bytes.
+Snapshot allocation failure leaves a canonical empty list. Other native
+Exec lists keep their empty guest headers.
+
 ### API
 
 | Function | Purpose |
@@ -1855,7 +1872,7 @@ Return values: void functions return 0; struct pointer returns get wrapped with 
 | `shadow_destroy(ctx, layout, m68k_addr)` | Remove from registry, free m68k heap. |
 | `shadow_find_layout(name)` | Linear scan of 297-entry table (with static cache for last hit). |
 | `shadow_create_by_name(ctx, name, native)` | Convenience: find_layout + create. |
-| `shadow_init_execbase(ctx, m68k_base, native)` | Syncs fields and AttnFlags, uses `shadow_task()` for ThisTask, initializes guest public semaphore and port lists and registers the other 7 embedded lists. |
+| `shadow_init_execbase(ctx, m68k_base, native)` | Syncs fields and AttnFlags, uses `shadow_task()` for ThisTask, initializes guest public semaphore and port lists, registers the other 7 embedded lists and publishes guest heap capacity descriptors on MemList. |
 | `shadow_task(ctx, native, current)` | Reuses a Task shadow or allocates one cleared 228-byte Process-sized snapshot; only the current process gets this context's CLI, arguments and streams: `Input()`, `Output()` and the native `pr_CES`, the error stream that the Shell sets for `*>` and libnix uses as stderr. |
 | `shadow_register(ctx, m68k_addr, native, type)` | Append to shadow_map[] (max 1024). Defined with lookup/removal in `kaffeine_shadow.c`. |
 | `shadow_lookup(ctx, m68k_addr)` | Linear scan by m68k_addr, returns native pointer or NULL. |

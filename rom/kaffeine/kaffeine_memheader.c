@@ -60,7 +60,9 @@ static BOOL pool_range(struct KaffeineContext *ctx,
 {
     ULONG end;
 
-    if (!guest_range(ctx, addr, size))
+    if (!guest_range(ctx, addr, size) ||
+        (ctx->memory_info && addr < ctx->memory_info + KAFFEINE_MEMINFO_SIZE &&
+         addr + size > ctx->memory_info))
         return FALSE;
     end = addr + size;
     /* Free chunks must not overwrite their own MemHeader. Its location
@@ -78,7 +80,9 @@ static BOOL read_pool(struct KaffeineContext *ctx, ULONG header,
 {
     ULONG current, total = 0;
 
-    if (!guest_range(ctx, header, MEMHEADER_SIZE) || native_shadow(ctx, header))
+    if (!guest_range(ctx, header, MEMHEADER_SIZE) || native_shadow(ctx, header) ||
+        (ctx->memory_info && header < ctx->memory_info + KAFFEINE_MEMINFO_SIZE &&
+         header + MEMHEADER_SIZE > ctx->memory_info))
         return FALSE;
     pool->header = header;
     pool->first = m68k_read32(ctx, header + MH_FIRST);

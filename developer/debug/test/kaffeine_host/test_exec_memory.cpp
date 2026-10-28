@@ -892,6 +892,19 @@ static void test_entry_failures()
     small.unchanged([&] { assert(small.call(222, 0, 0, 0, input) == public_failure); });
 }
 
+static void test_capacity_storage()
+{
+    Fixture f;
+    const ULONG address = f.call(198, KAFFEINE_MEMINFO_SIZE, MEMF_CLEAR);
+    assert(address);
+    f.ctx->memory_info = address;
+    const auto before = f.snapshot();
+    const ULONG available = f.call(216);
+    f.call(210, KAFFEINE_MEMINFO_SIZE, 0, 0, 0, address);
+    f.call(690, 0, 0, 0, 0, address);
+    assert(f.snapshot() == before && f.call(216) == available);
+}
+
 static void test_fallbacks()
 {
     Fixture f;
@@ -955,6 +968,7 @@ int main(int argc, char **argv)
         { "copy", test_copy }, { "absolute", test_absolute },
         { "absolute-sequences", test_absolute_sequences },
         { "entries", test_entries }, { "entry-failures", test_entry_failures },
+        { "capacity-storage", test_capacity_storage },
         { "fallbacks", test_fallbacks }
     };
     unsigned groups = 0;

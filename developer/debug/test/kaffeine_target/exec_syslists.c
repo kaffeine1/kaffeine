@@ -6,6 +6,7 @@
 */
 #include <exec/execbase.h>
 #include <exec/lists.h>
+#include <exec/memory.h>
 #include <proto/exec.h>
 #include <stddef.h>
 #include "m68ktest.h"
@@ -64,6 +65,8 @@ int main(void)
                             "LibList", "TaskReady", "TaskWait" };
     struct Observation results[7];
     ULONG i;
+    ULONG capacity = 0, chip_capacity = 0;
+    BOOL memory_bounds = TRUE;
 
     lists[0] = &SysBase->MemList;
     lists[1] = &SysBase->ResourceList;
@@ -78,6 +81,21 @@ int main(void)
     Disable();
     for (i = 0; i < 7; i++)
         results[i] = observe(lists[i]);
+    if (results[0].terminated)
+    {
+        struct MemHeader *header = (struct MemHeader *)lists[0]->lh_Head;
+        for (i = 0; i < results[0].nodes; ++i)
+        {
+            ULONG lower = (ULONG)header->mh_Lower, upper = (ULONG)header->mh_Upper;
+            if (lower >= upper) memory_bounds = FALSE;
+            else
+            {
+                capacity += upper - lower;
+                if (header->mh_Attributes & MEMF_CHIP) chip_capacity += upper - lower;
+            }
+            header = (struct MemHeader *)header->mh_Node.ln_Succ;
+        }
+    }
     Enable();
     Permit();
 
@@ -89,5 +107,8 @@ int main(void)
         check(results[i].predecessors, "successor nodes retain the expected predecessor");
         check(results[i].tail, "embedded tail predecessor matches the last visited node");
     }
+    Printf("INFO MemList capacity=%ld chip-accessible=%ld\n", capacity, chip_capacity);
+    check(results[0].nodes && memory_bounds && capacity,
+          "MemList describes installed capacity with nonempty memory bounds");
     return test_done("exec_syslists");
 }

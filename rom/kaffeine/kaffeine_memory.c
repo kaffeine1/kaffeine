@@ -599,7 +599,7 @@ void Kaffeine_HeapFree(struct KaffeineContext *ctx, ULONG addr, ULONG size)
     struct M68KHeapAllocation *allocation;
 
     (void)size;
-    if (!addr || !heap_ready(ctx)) return;
+    if (!addr || addr == ctx->memory_info || !heap_ready(ctx)) return;
     allocation = heap_find(ctx, addr);
     if (allocation && (allocation->kind == HEAP_ALLOCATION || allocation->kind == HEAP_ABSOLUTE) &&
         !allocation->pool)

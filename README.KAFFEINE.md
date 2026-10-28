@@ -68,12 +68,17 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   the visible canvas exactly. Loading saved 1024×768 IFF and PNG images still
   reports “The image is too large”; full application compatibility is not
   established. The interpreter remains Moira.
+  Desktop icon launch works with the standard `CLI` tooltype and the CPU
+  blitting library selected in Personal Paint. Full Workbench `WBStartup`
+  message handling remains a separate compatibility boundary.
 
-The embedded native Exec lists currently have empty guest headers with
-valid head, tail and predecessor sentinels. Their native identities remain
-available to intercepted named lookups; direct guest traversal does not
-expose native memory headers, devices, libraries or tasks. The public
-guest port and semaphore lists have their own guest nodes.
+The guest `ExecBase.MemList` contains read-only capacity descriptors for
+the chip-accessible containment heap, excluding the custom-register window
+and the guest stack. Allocator free lists and native memory headers remain
+private; `AvailMem()` reports current free space. The other embedded native
+Exec lists retain empty guest headers with valid sentinels and native
+identities for intercepted lookups. Public guest ports and semaphores have
+their own guest nodes.
 
 The production AROS path still uses the Moira interpreter. Complete
 application operation, an FPU, new guest DOS processes (`CreateProc`,
@@ -155,14 +160,15 @@ steps pass in both launch modes, with output compared byte for byte. Host,
 standalone native AROS, QEMU and native-reference results describe their
 respective environments; physical hardware has not been validated.
 
-The embedded-list regression passes 28 checks on native AmigaOS and in
-each AROS Shell/Run execution. Its original host callback fixture reproduces
-the former arena-end fault with the old shadow initialization and passes
-all 91 task/list checks with the corrected headers.
+The original embedded-list regression passed 28 checks on native AmigaOS
+and in each AROS Shell/Run execution. Its capacity extension passes 29
+checks on AROS AArch64 in both modes; the former empty MemList fails that
+new check. The host task/list fixture passes 109 checks, including bounded
+Moira traversal, capacity descriptors, reuse and allocation failure.
 
 Personal Paint's editor, selected drawing tools, IFF/ILBM saving and return
 to the native Shell have been verified in QEMU with the original 68k binary.
-Loading saved 1024×768 images, remaining painting operations, desktop icon
+Loading saved 1024×768 images, remaining painting operations, full Workbench
 startup, responsiveness and the full application lifecycle remain open
 checks. Sampled mathffp SPDiv results include eight one-ULP differences from
 AmigaOS.

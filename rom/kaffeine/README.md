@@ -498,11 +498,18 @@ within the emulator.
 | olha | 291 KB | SFX archiver (6 hunks, relocations) | ✅ LH5 decompression, CreateDir |
 | ROLEX | 13 KB | Clock (custom screen, GUI loop) | ✅ Opens screen, event loop works |
 | SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders full UI (title, menus, buttons, text) |
-| Personal Paint 7.2.1.0 | 777,824 bytes | 68k paint / image editor | 🟡 Moira on AROS AArch64/QEMU: native Shell launch, 24-bit Workbench, 1024×768/256-color canvas, rectangles/circles/text, pixel-verified IFF/ILBM save and exit code zero. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; desktop icon launch, other operations and JIT execution remain open |
+| Personal Paint 7.2.1.0 | 777,824 bytes | 68k paint / image editor | 🟡 Moira on AROS AArch64/QEMU: native Shell launch, 24-bit Workbench, 1024×768/256-color canvas, rectangles/circles/text, pixel-verified IFF/ILBM save and exit code zero. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; full Workbench startup, other operations and JIT execution remain open |
 | Directory Opus 4.12 | 328 KB | File manager (GUI, m68k libraries) | ✅ Loads dopus.library, shows AutoRequest dialog, responds to button click |
 | AmigaTerm 1.0 | 82 KB | Terminal emulator (GUI) | ✅ Opens window, clean exit |
 | Textcraft Plus | 208 KB | Word processor (GUI, custom screen) | ✅ Opens screen/window, sets colors, clean exit |
 | reqtools.library | 56 KB | m68k shared library (29 functions) | ✅ |
+
+For Personal Paint on AROS ARM, add the standard `CLI` tooltype to its
+copied program icon and select CPU blitting (turn off **Settings / Graphics /
+Amiga Blitter**, or select the alternate `personal_cpu_blit.library` with
+`BLITLIBS` in the copied startup settings). The original 68k executable stays
+unchanged. This icon launch uses the supported CLI path; full `WBStartup`
+message handling remains separate.
 
 ## Known Limitations
 
@@ -532,7 +539,7 @@ within the emulator.
   asynchronous device I/O and other device adapters remain unsupported
 - Ordinary guest FIFO messages (`PutMsg`/`GetMsg`/`ReplyMsg`/`WaitPort`) work across registered guest tasks in the same context; cross-context messaging is unsupported
 - DOS packets (`DoPkt`/`SendPkt`/`WaitPkt`/`ReplyPkt`) are supported on FileHandle packet ports and on registered guest ports for native DOS handlers (`DeviceProc`, `GetDeviceProc`, `GetConsoleTask`, `GetFileSysTask`) for the documented action set; `AbortPkt` is a no-op
-- Personal Paint has verified editor use, rectangles/circles/text, pixel-checked IFF/ILBM saving and return to the native Shell with exit code zero under Moira in QEMU. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; other tools, full image loading, desktop icon startup and JIT execution remain open
+- Personal Paint has verified editor use, rectangles/circles/text, pixel-checked IFF/ILBM saving and return to the native Shell with exit code zero under Moira in QEMU. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; other tools, full image loading, full Workbench startup and JIT execution remain open
 - `Signal()` reaches any registered guest task or the main process in the context; unknown tasks stop with rc 20
 
 ### Graphics
