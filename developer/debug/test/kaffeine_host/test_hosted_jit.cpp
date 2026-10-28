@@ -765,7 +765,10 @@ static void faults()
 {
     struct { std::vector<UWORD> code; const char *why; } cases[] = {
         { {0x7005, 0x4AFC}, "ILLEGAL" },
-        { {0x7005, 0xC0C1}, "MUL/DIV" },                 /* MULU.W D1,D0 */
+        { {0x7005, 0x80C1}, "MUL/DIV" },                 /* DIVU.W D1,D0 */
+        { {0x7005, 0x0108, 0x0000}, "MOVEP" },           /* MOVEP.W (0,A0),D0 */
+        { {0x7005, 0x4C00, 0x8000}, "MUL.L extension" }, /* MULU.L with bit 15 set */
+        { {0x7005, 0xE9C0, 0x0000}, "bitfield" },        /* BFEXTU D0{0:32},D0 */
         { {0x7005, 0xF200, 0xB000}, "Line-F" },
         { {0x7005, 0x4E73}, "opcode outside the subset" } /* RTE */
     };
@@ -911,7 +914,7 @@ struct Gen
     void simple()
     {
         int s = size();
-        switch (rng.below(22))
+        switch (rng.below(31))
         {
         case 0: w((UWORD)(0x7000 | dreg() << 9 | (rng.next() & 0xFF))); break;
         case 1: case 2:
@@ -966,8 +969,10 @@ struct Gen
         case 8: case 9:
         {
             static const UWORD base[6] = { 0x0000, 0x0200, 0x0400, 0x0600, 0x0A00, 0x0C00 };
-            GenEa im = imm(s), dst = dest(s);
-            w((UWORD)(base[rng.below(6)] | sz(s) << 6 | dst.mode << 3 | dst.reg));
+            unsigned which = rng.below(6);
+            GenEa im = imm(s);
+            GenEa dst = (which == 5 && rng.chance(30)) ? memory(s, false) : dest(s);
+            w((UWORD)(base[which] | sz(s) << 6 | dst.mode << 3 | dst.reg));
             ea_ext(im); ea_ext(dst);
             break;
         }
@@ -992,23 +997,32 @@ struct Gen
         }
         case 13:
         {
-            static const UWORD base[4] = { 0x4200, 0x4400, 0x4600, 0x4A00 };
-            GenEa dst = dest(s);
-            w((UWORD)(base[rng.below(4)] | sz(s) << 6 | dst.mode << 3 | dst.reg));
+            static const UWORD base[5] = { 0x4000, 0x4200, 0x4400, 0x4600, 0x4A00 };
+            unsigned which = rng.below(5);
+            GenEa dst = (which == 4 && rng.chance(40)) ? source(s, s == 1) : dest(s);
+            w((UWORD)(base[which] | sz(s) << 6 | dst.mode << 3 | dst.reg));
             ea_ext(dst);
             break;
         }
         case 14:
         {
-            static const UWORD base[3] = { 0x4840, 0x4880, 0x48C0 };
-            w((UWORD)(base[rng.below(3)] | dreg()));
+            static const UWORD base[4] = { 0x4840, 0x4880, 0x48C0, 0x49C0 };
+            w((UWORD)(base[rng.below(4)] | dreg()));
             break;
         }
         case 15:
         {
-            /* LSL LSR ASR ROL ROR .L #n,Dn */
-            static const UWORD kind[5] = { 0x0108, 0x0008, 0x0000, 0x0118, 0x0018 };
-            w((UWORD)(0xE080 | (rng.below(8) << 9) | kind[rng.below(5)] | dreg()));
+            /* ASL ASR LSL LSR ROL ROR ROXL ROXR: register/immediate (.B/.W/.L) or 1-bit <ea>.W */
+            if (rng.chance(20))
+            {
+                GenEa dst = dest(2, true);
+                w((UWORD)(0xE0C0 | (rng.below(4) << 9) | (rng.below(2) << 8) | dst.mode << 3 | dst.reg));
+                ea_ext(dst);
+                break;
+            }
+            unsigned cnt = rng.below(8), reg_cnt = rng.chance(45) ? 1 : 0;
+            w((UWORD)(0xE000 | (cnt << 9) | (rng.below(2) << 8) | (sz(s) << 6) |
+                      (reg_cnt << 5) | (rng.below(4) << 3) | dreg()));
             break;
         }
         case 16:
@@ -1021,7 +1035,7 @@ struct Gen
         case 17:
         {
             GenEa dst = dest(2);
-            w((UWORD)(0x40C0 | dst.mode << 3 | dst.reg));
+            w((UWORD)((rng.chance(50) ? 0x40C0 : 0x42C0) | dst.mode << 3 | dst.reg));
             ea_ext(dst);
             break;
         }
@@ -1033,11 +1047,33 @@ struct Gen
             break;
         }
         case 19:
-            w(0x46FC); w((UWORD)(0x2000 | rng.below(8) << 8 | rng.below(32)));
+        {
+            unsigned form = rng.below(4);
+            if (form == 0)
+            {
+                w(0x46FC); w((UWORD)(0x2000 | rng.below(8) << 8 | rng.below(32)));
+            }
+            else if (form == 1 || form == 2)
+            {
+                static const UWORD ops[3] = { 0x003C, 0x023C, 0x0A3C };
+                w(ops[rng.below(3)]); w((UWORD)rng.below(32));
+            }
+            else
+            {
+                static const UWORD ops[3] = { 0x007C, 0x027C, 0x0A7C };
+                unsigned k = rng.below(3);
+                UWORD imm = (UWORD)((rng.below(8) << 8) | rng.below(32));
+                if (k == 1) imm |= 0x2000;
+                else if (k == 2) imm &= (UWORD)~0x2000u;
+                w(ops[k]); w(imm);
+            }
             break;
+        }
         case 20:
         {
-            /* MOVEM.L to and from the scratch area */
+            /* MOVEM.W and MOVEM.L to and from the scratch area */
+            bool wide = rng.chance(60);
+            UWORD szbit = wide ? 0x0040 : 0;
             UWORD mask = (UWORD)(rng.next() & 0x30FF & ~no_d);
             if (!mask) mask = 1u << dreg();
             if (rng.chance(50))
@@ -1046,18 +1082,90 @@ struct Gen
                 UWORD stored = (UWORD)(rng.next() & ~(1u << (8 + p)));
                 UWORD rev = 0;
                 for (int i = 0; i < 16; i++) if (stored & (1u << i)) rev |= (UWORD)(1u << (15 - i));
-                w((UWORD)(0x48E0 | p)); w(rev ? rev : 1);
+                w((UWORD)(0x48A0 | szbit | p)); w(rev ? rev : 1);
             }
             else
             {
-                GenEa src = memory(4, false);
+                GenEa src = memory(wide ? 4 : 2, false);
                 if (src.mode == 4) src.mode = 2;
                 if (src.mode == 3) mask &= (UWORD)~(1u << (8 + src.reg));
                 if (src.mode == 7 && src.reg == 1) src = { 5, ptr(), { 0 } };
                 if (!mask) mask = 1;
-                w((UWORD)(0x4CC0 | src.mode << 3 | src.reg)); w(mask);
+                w((UWORD)(0x4C80 | szbit | src.mode << 3 | src.reg)); w(mask);
                 ea_ext(src);
             }
+            break;
+        }
+        case 21: case 22:
+        {
+            /* BTST BCHG BCLR BSET (#imm or Dn) */
+            unsigned bop = rng.below(4);
+            bool dyn = rng.chance(50);
+            GenEa dst = (bop == 0 && rng.chance(30)) ? source(1, true) : dest(1);
+            if (bop == 0 && !dyn && dst.mode == 7 && dst.reg == 4)
+                dst = { 0, dreg(), {} };
+            if (dyn)
+            {
+                w((UWORD)(0x0100 | (rng.below(8) << 9) | (bop << 6) | dst.mode << 3 | dst.reg));
+                ea_ext(dst);
+            }
+            else
+            {
+                w((UWORD)(0x0800 | (bop << 6) | dst.mode << 3 | dst.reg));
+                w((UWORD)(rng.next() & 0xFF));
+                ea_ext(dst);
+            }
+            break;
+        }
+        case 23:
+        {
+            /* ADDX / SUBX (Dy,Dx or -(Ay),-(Ax)) */
+            UWORD base = rng.chance(50) ? 0xD100 : 0x9100;
+            if (rng.chance(65))
+                w((UWORD)(base | dreg() << 9 | sz(s) << 6 | rng.below(8)));
+            else
+                w((UWORD)(base | ptr() << 9 | sz(s) << 6 | 0x0008 | ptr()));
+            break;
+        }
+        case 24:
+        {
+            /* CMPM (Ay)+,(Ax)+ */
+            w((UWORD)(0xB108 | ptr() << 9 | sz(s) << 6 | ptr()));
+            break;
+        }
+        case 25:
+        {
+            /* EXG Dx,Dy / Ax,Ay / Dx,Ay */
+            unsigned mode = rng.below(3);
+            if (mode == 0)
+                w((UWORD)(0xC140 | dreg() << 9 | dreg()));
+            else if (mode == 1)
+            {
+                int a1 = rng.chance(50) ? ptr() : 4 + (int)rng.below(2);
+                int a2 = (a1 < 4) ? ptr() : 4 + (int)rng.below(2);
+                w((UWORD)(0xC148 | a1 << 9 | a2));
+            }
+            else
+                w((UWORD)(0xC188 | dreg() << 9 | (4 + (int)rng.below(2))));
+            break;
+        }
+        case 26: case 27:
+        {
+            /* MULU.W / MULS.W <ea>,Dn */
+            GenEa src = source(2, true);
+            w((UWORD)((rng.chance(50) ? 0xC0C0 : 0xC1C0) | dreg() << 9 | src.mode << 3 | src.reg));
+            ea_ext(src);
+            break;
+        }
+        case 28: case 29:
+        {
+            /* MULU.L / MULS.L <ea>,Dl or Dh:Dl */
+            GenEa src = source(4, true);
+            int dl = dreg(), dh = rng.chance(20) ? dl : dreg();
+            UWORD ext = (UWORD)((dl << 12) | (rng.below(2) << 11) | (rng.below(2) << 10) | dh);
+            w((UWORD)(0x4C00 | src.mode << 3 | src.reg));
+            w(ext);
+            ea_ext(src);
             break;
         }
         default:
@@ -1126,6 +1234,26 @@ struct Gen
     void push_pop()
     {
         if (rng.chance(25))
+        {
+            /* LINK.W or LINK.L on A4/A5, frame accesses, then UNLK */
+            int an = 4 + (int)rng.below(2);
+            int disp = -((int)(1 + rng.below(8)) * 4);
+            if (rng.chance(50))
+            {
+                w((UWORD)(0x4E50 | an));
+                w((UWORD)(int16_t)disp);
+            }
+            else
+            {
+                w((UWORD)(0x4808 | an));
+                l((ULONG)(int32_t)disp);
+            }
+            w((UWORD)(0x2940 | dreg() | (an << 9))); w((UWORD)(int16_t)-4); /* MOVE.L Dn,-4(An) */
+            w((UWORD)(0x2028 | (dreg() << 9) | an)); w((UWORD)(int16_t)-4); /* MOVE.L -4(An),Dm */
+            w((UWORD)(0x4E58 | an));                                        /* UNLK An */
+            return;
+        }
+        if (rng.chance(30))
         {
             /* PEA, then the address into A4 or A5, or dropped */
             switch (rng.below(3))
@@ -1206,9 +1334,19 @@ struct Gen
         for (unsigned s = 0; s < subs; s++)
         {
             sub_at.push_back(out.size());
+            bool use_rtr = rng.chance(40);
+            if (use_rtr)
+            {
+                if (rng.chance(50))
+                    w(0x40E7);                               /* MOVE SR,-(A7) */
+                else
+                {
+                    w(0x3F3C); w((UWORD)rng.below(256));     /* MOVE.W #imm,-(A7) */
+                }
+            }
             unsigned n = 2 + rng.below(7);
             for (unsigned i = 0; i < n; i++) rng.chance(15) ? skip() : simple();
-            w(0x4E75);
+            w(use_rtr ? 0x4E77 : 0x4E75);
         }
         patch_calls(sub_at, base);
         return out;
@@ -1260,6 +1398,235 @@ static Outcome run_program(const std::vector<UWORD> &code, const std::vector<UBY
         }
     }
     return o;
+}
+
+static void check_same_program(const std::vector<UWORD> &code, const std::vector<UBYTE> &data)
+{
+    const ULONG arena = 1u << 20;
+    Outcome ref = run_program(code, data, MOIRA, arena, nullptr);
+    Outcome got = run_program(code, data, JIT, arena, nullptr);
+    bool same = ref.rc == got.rc && ref.snaps == 1 && got.snaps == 1 &&
+                ref.regs == got.regs && ref.scratch == got.scratch && ref.stack == got.stack &&
+                ref.beam_v == got.beam_v && ref.beam_h == got.beam_h;
+    if (!same)
+    {
+        std::printf("  mismatch (check %u): rc %ld/%ld snaps %u/%u SR %04x/%04x scratch %s stack %s %s\n",
+                    checks + 1, (long)ref.rc, (long)got.rc, ref.snaps, got.snaps,
+                    ref.regs.sr, got.regs.sr,
+                    ref.scratch == got.scratch ? "same" : "differs",
+                    ref.stack == got.stack ? "same" : "differs",
+                    got.fault.c_str());
+        for (int i = 0; i < 8; i++)
+            if (ref.regs.d[i] != got.regs.d[i] || ref.regs.a[i] != got.regs.a[i])
+                std::printf("  D%d %08lx/%08lx A%d %08lx/%08lx\n", i,
+                            (unsigned long)ref.regs.d[i], (unsigned long)got.regs.d[i], i,
+                            (unsigned long)ref.regs.a[i], (unsigned long)got.regs.a[i]);
+    }
+    CHECK(same);
+}
+
+static void extended_insns()
+{
+    std::vector<UBYTE> data(Layout::scratch_end - Layout::scratch);
+    for (size_t i = 0; i < data.size(); i++)
+        data[i] = (UBYTE)((i * 73u + 19u) & 0xFFu);
+
+    /* 1. LINK.W, LINK.L, UNLK (including A7), RTR, EXG, CMPM, EXTB.L, MOVEM.W */
+    check_same_program({
+        0x2C7C, (UWORD)(Layout::probe >> 16), (UWORD)Layout::probe,
+        0x207C, (UWORD)((Layout::scratch + 0x100) >> 16), (UWORD)(Layout::scratch + 0x100),
+        0x227C, (UWORD)((Layout::scratch + 0x200) >> 16), (UWORD)(Layout::scratch + 0x200),
+        0x4E55, 0xFFF0,                         /* LINK.W A5,#-16 */
+        0x2B7C, 0x1122, 0x3344, 0xFFF8,         /* MOVE.L #$11223344,-8(A5) */
+        0x480C, 0xFFFF, 0xFFE0,                 /* LINK.L A4,#-32 */
+        0x202D, 0xFFF8,                         /* MOVE.L -8(A5),D0 */
+        0x4E5C,                                 /* UNLK A4 */
+        0x4E5D,                                 /* UNLK A5 */
+        0x4E57, 0xFFF8,                         /* LINK.W A7,#-8 */
+        0x222F, 0x0008,                         /* MOVE.L 8(A7),D1 */
+        0x508F,                                 /* ADDQ.L #8,A7 */
+        0x4E5F,                                 /* UNLK A7 */
+        0x588F,                                 /* ADDQ.L #4,A7 */
+        0x6104,                                 /* BSR.S sub */
+        0x40C2,                                 /* MOVE SR,D2 */
+        0x6008,                                 /* BRA.S after_sub */
+        0x3F3C, 0x001B,                         /* sub: MOVE.W #$001B,-(A7) */
+        0x7663,                                 /* MOVEQ #99,D3 */
+        0x4E77,                                 /* RTR */
+        0xC343,                                 /* after_sub: EXG D1,D3 */
+        0xC149,                                 /* EXG A0,A1 */
+        0xC588,                                 /* EXG D2,A0 */
+        0xC588,                                 /* EXG D2,A0 */
+        0x20BC, 0x8001, 0xFFFE,                 /* MOVE.L #$8001FFFE,(A0) */
+        0x217C, 0x7FFF, 0x8000, 0x0004,         /* MOVE.L #$7FFF8000,4(A0) */
+        0x4CD8, 0x0C30,                         /* MOVEM.W (A0)+,D4-D5/A2-A3 */
+        0x48A1, 0x0C30,                         /* MOVEM.W D4-D5/A2-A3,-(A1) */
+        0xB149,                                 /* CMPM.W (A1)+,(A0)+ */
+        0xB349,                                 /* CMPM.W (A1)+,(A1)+ */
+        0x2C3C, 0x1234, 0x5680,                 /* MOVE.L #$12345680,D6 */
+        0x49C6,                                 /* EXTB.L D6 */
+        0x2E3C, 0xABCD, 0x007F,                 /* MOVE.L #$ABCD007F,D7 */
+        0x49C7,                                 /* EXTB.L D7 */
+        0x4EAE, (UWORD)-36,
+        0x4E75
+    }, data);
+
+    /* 2. 68020 TST, CMPI PC-relative, MOVE from CCR, ORI/ANDI/EORI to CCR and SR */
+    check_same_program({
+        0x2C7C, (UWORD)(Layout::probe >> 16), (UWORD)Layout::probe,
+        0x207C, 0x8000, 0x0000,                 /* MOVEA.L #$80000000,A0 */
+        0x4A88,                                 /* TST.L A0 */
+        0x72FF,                                 /* MOVEQ #-1,D1 */
+        0x42C1,                                 /* MOVE CCR,D1 */
+        0x327C, 0xFFFF,                         /* MOVEA.W #-1,A1 */
+        0x4A49,                                 /* TST.W A1 */
+        0x42C2,                                 /* MOVE CCR,D2 */
+        0x4A3C, 0x0080,                         /* TST.B #$80 */
+        0x4A7C, 0x0000,                         /* TST.W #$0000 */
+        0x4ABC, 0x7FFF, 0xFFFF,                 /* TST.L #$7FFFFFFF */
+        0x4ABA, 0xFFE2,                         /* TST.L (-30,PC) */
+        0x0CBA, 0x8000, 0x0000, 0xFFD6,         /* CMPI.L #$80000000,(-42,PC) */
+        0x003C, 0x001F,                         /* ORI #$1F,CCR */
+        0x42C3,                                 /* MOVE CCR,D3 */
+        0x023C, 0x0015,                         /* ANDI #$15,CCR */
+        0x42C4,                                 /* MOVE CCR,D4 */
+        0x0A3C, 0x000F,                         /* EORI #$0F,CCR */
+        0x42C5,                                 /* MOVE CCR,D5 */
+        0x007C, 0x0503,                         /* ORI #$0503,SR */
+        0x027C, 0x231C,                         /* ANDI #$231C,SR */
+        0x0A7C, 0x0106,                         /* EORI #$0106,SR */
+        0x40C6,                                 /* MOVE SR,D6 */
+        0x4EAE, (UWORD)-36,
+        0x4E75
+    }, data);
+
+    /* 3. BTST, BCHG, BCLR, BSET (static and dynamic, Dn and memory) */
+    check_same_program({
+        0x2C7C, (UWORD)(Layout::probe >> 16), (UWORD)Layout::probe,
+        0x207C, (UWORD)((Layout::scratch + 0x100) >> 16), (UWORD)(Layout::scratch + 0x100),
+        0x203C, 0x8000, 0x0005,                 /* MOVE.L #$80000005,D0 */
+        0x7223,                                 /* MOVEQ #35,D1 (bit 3) */
+        0x0800, 0x001F,                         /* BTST #31,D0 */
+        0x42C2,                                 /* MOVE CCR,D2 */
+        0x0840, 0x001F,                         /* BCHG #31,D0 */
+        0x0880, 0x0000,                         /* BCLR #0,D0 */
+        0x08C0, 0x000F,                         /* BSET #15,D0 */
+        0x03C0,                                 /* BSET D1,D0 */
+        0x0140,                                 /* BCHG D0,D0 (same register) */
+        0x033C, 0x00A5,                         /* BTST D1,#$A5 */
+        0x42C3,                                 /* MOVE CCR,D3 */
+        0x10BC, 0x0081,                         /* MOVE.B #$81,(A0) */
+        0x0810, 0x0007,                         /* BTST #7,(A0) */
+        0x42C4,                                 /* MOVE CCR,D4 */
+        0x0858, 0x0007,                         /* BCHG #7,(A0)+ */
+        0x08A0, 0x0000,                         /* BCLR #0,-(A0) */
+        0x03D0,                                 /* BSET D1,(A0) */
+        0x1A10,                                 /* MOVE.B (A0),D5 */
+        0x4EAE, (UWORD)-36,
+        0x4E75
+    }, data);
+
+    /* 4. ADDX, SUBX, NEGX (.B, .W, .L, sticky Z, signed overflow with X, -(Ay),-(Ax)) */
+    check_same_program({
+        0x2C7C, (UWORD)(Layout::probe >> 16), (UWORD)Layout::probe,
+        0x207C, (UWORD)((Layout::scratch + 0x110) >> 16), (UWORD)(Layout::scratch + 0x110),
+        0x227C, (UWORD)((Layout::scratch + 0x120) >> 16), (UWORD)(Layout::scratch + 0x120),
+        /* -128 + (-1) + X(1) = -128 in .B: no signed overflow (V = 0) */
+        0x7080,                                 /* MOVEQ #-128,D0 */
+        0x72FF,                                 /* MOVEQ #-1,D1 */
+        0x44FC, 0x0014,                         /* MOVE #$14,CCR (X=1, Z=1) */
+        0xD101,                                 /* ADDX.B D1,D0 */
+        0x42C2,                                 /* MOVE CCR,D2 */
+        /* 127 + 0 + X(1) = -128 in .B: signed overflow (V = 1) */
+        0x707F,                                 /* MOVEQ #127,D0 */
+        0x7200,                                 /* MOVEQ #0,D1 */
+        0x44FC, 0x0014,                         /* MOVE #$14,CCR (X=1, Z=1) */
+        0xD101,                                 /* ADDX.B D1,D0 */
+        0x42C3,                                 /* MOVE CCR,D3 */
+        /* 64-bit SUBX with sticky Z: (0:1) - (0:1) -> Z=1 vs (0:2) - (0:1) -> Z=0 */
+        0x7001, 0x7200, 0x7801, 0x7A00,
+        0x9084,                                 /* SUB.L D4,D0 (Z=1, X=0) */
+        0x9385,                                 /* SUBX.L D5,D1 (Z stays 1) */
+        0x42C6,                                 /* MOVE CCR,D6 */
+        0x7002, 0x7200, 0x7801, 0x7A00,
+        0x9084,                                 /* SUB.L D4,D0 (Z=0, X=0) */
+        0x9385,                                 /* SUBX.L D5,D1 (0 result, Z stays 0) */
+        0x42C7,                                 /* MOVE CCR,D7 */
+        /* NEGX.W and memory ADDX/SUBX -(A0),-(A1) and -(A0),-(A0) */
+        0x303C, 0x8000,
+        0x44FC, 0x0014,
+        0x4040,                                 /* NEGX.W D0 */
+        0xD348,                                 /* ADDX.W -(A0),-(A1) */
+        0x9188,                                 /* SUBX.L -(A0),-(A0) */
+        0x4EAE, (UWORD)-36,
+        0x4E75
+    }, data);
+
+    /* 5. MULU.W, MULS.W, MULU.L, MULS.L (32-bit, 64-bit Dh:Dl, Dh == Dl, overflow V) */
+    check_same_program({
+        0x2C7C, (UWORD)(Layout::probe >> 16), (UWORD)Layout::probe,
+        0x303C, 0xFFFF, 0xC0FC, 0xFFFF,         /* MULU.W #$FFFF,D0 */
+        0x323C, 0x8000, 0xC3FC, 0x7FFF,         /* MULS.W #$7FFF,D1 */
+        /* MULU.L #$10000,D2 (overflows 32-bit -> V=1) */
+        0x243C, 0x0002, 0x0000,
+        0x4C3C, 0x2000, 0x0001, 0x0000,
+        0x42C3,                                 /* MOVE CCR,D3 */
+        /* MULS.L #-1,D4 with D4 = $80000000 (overflows 32-bit signed -> V=1) */
+        0x283C, 0x8000, 0x0000,
+        0x4C3C, 0x4800, 0xFFFF, 0xFFFF,
+        0x42C4,                                 /* MOVE CCR,D4 */
+        /* MULU.L 64-bit $FFFFFFFF * $FFFFFFFF -> D6:D5 */
+        0x2A3C, 0xFFFF, 0xFFFF,
+        0x4C3C, 0x5406, 0xFFFF, 0xFFFF,
+        /* MULS.L 64-bit with Dh == Dl (D7:D7, Dl wins) */
+        0x2E3C, 0x8000, 0x0003,
+        0x4C3C, 0x7C07, 0xFFFF, 0xFFFE,
+        0x4EAE, (UWORD)-36,
+        0x4E75
+    }, data);
+
+    /* 6. All 8 shifts/rotates across .B/.W/.L, counts 0..63, ASL overflow V, and <ea>.W */
+    static const unsigned counts[] = { 0, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63 };
+    static const ULONG inputs[] = { 0x00000000u, 0x80000001u, 0x40008040u, 0x7FFF7F7Fu, 0xFFFFFFFFu, 0xA55AA55Au };
+    for (unsigned cnt : counts)
+        for (ULONG init : inputs)
+            for (UWORD ccr : { (UWORD)0x00, (UWORD)0x1F })
+            {
+                std::vector<UWORD> code = {
+                    0x2C7C, (UWORD)(Layout::probe >> 16), (UWORD)Layout::probe,
+                    0x207C, (UWORD)((Layout::scratch + 0x100) >> 16), (UWORD)(Layout::scratch + 0x100),
+                    0x7E00,                                                 /* MOVEQ #0,D7 */
+                    0x1E3C, (UWORD)cnt                                      /* MOVE.B #cnt,D7 */
+                };
+                for (int op = 0; op < 8; op++)
+                    for (int s = 0; s < 3; s++)
+                    {
+                        int type = op >> 1, left = op & 1;
+                        code.push_back(0x203C);
+                        code.push_back((UWORD)(init >> 16));
+                        code.push_back((UWORD)init);
+                        code.push_back(0x44FC);
+                        code.push_back(ccr);
+                        code.push_back((UWORD)(0xE020 | (7 << 9) | (left << 8) | (s << 6) | (type << 3) | 0));
+                        code.push_back(0x42C1);                             /* MOVE CCR,D1 */
+                        code.push_back(0x20C0);                             /* MOVE.L D0,(A0)+ */
+                        code.push_back(0x30C1);                             /* MOVE.W D1,(A0)+ */
+                    }
+                for (int op = 0; op < 8; op++)
+                {
+                    int type = op >> 1, left = op & 1;
+                    code.push_back(0x30BC);
+                    code.push_back((UWORD)init);
+                    code.push_back(0x44FC);
+                    code.push_back(ccr);
+                    code.push_back((UWORD)(0xE0C0 | (type << 9) | (left << 8) | 0x0018)); /* OP.W (A0)+ */
+                    code.push_back(0x42D8);                                 /* MOVE CCR,(A0)+ */
+                }
+                code.push_back(0x4EAE);
+                code.push_back((UWORD)-36);
+                code.push_back(0x4E75);
+                check_same_program(code, data);
+            }
 }
 
 static unsigned fuzz_programs = 3000;
@@ -1413,7 +1780,8 @@ int main(int argc, char **argv)
         {"library-calls", library_calls, true}, {"callback-depth", callback_depth, true},
         {"callback-registers", callback_registers, true}, {"callback-format", callback_format, true},
         {"callback-faults", callback_faults, true}, {"code-changes", code_changes, true},
-        {"faults", faults, true}, {"random-programs", random_programs, true}
+        {"faults", faults, true}, {"extended-insns", extended_insns, true},
+        {"random-programs", random_programs, true}
     };
     unsigned skipped = 0;
     for (auto test : tests)
