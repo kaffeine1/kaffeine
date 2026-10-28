@@ -68,6 +68,9 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   the visible canvas exactly. Loading saved 1024×768 IFF and PNG images still
   reports “The image is too large”; full application compatibility is not
   established. The interpreter remains Moira.
+  Desktop icon launch works with the standard `CLI` tooltype and the CPU
+  blitting library selected in Personal Paint. Full Workbench `WBStartup`
+  message handling remains a separate compatibility boundary.
 
 The guest `ExecBase.MemList` contains read-only capacity descriptors for
 the chip-accessible containment heap, excluding the custom-register window
@@ -165,7 +168,7 @@ Moira traversal, capacity descriptors, reuse and allocation failure.
 
 Personal Paint's editor, selected drawing tools, IFF/ILBM saving and return
 to the native Shell have been verified in QEMU with the original 68k binary.
-Loading saved 1024×768 images, remaining painting operations, desktop icon
+Loading saved 1024×768 images, remaining painting operations, full Workbench
 startup, responsiveness and the full application lifecycle remain open
 checks. Sampled mathffp SPDiv results include eight one-ULP differences from
 AmigaOS.

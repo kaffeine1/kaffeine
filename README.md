@@ -33,8 +33,10 @@ AROS Shell in QEMU. A verified run uses a 24-bit Workbench and selects a
 circles and text, saves an IFF/ILBM image, and returns to the Shell with
 exit code zero. The decoded file matches the visible canvas pixel for pixel.
 Loading saved 1024×768 IFF and PNG images still reports “The image is too
-large”; complete application compatibility, desktop icon startup and
-responsiveness remain open milestones. This run uses Moira.
+large”; complete application compatibility, full Workbench startup and
+responsiveness remain open milestones. Desktop icon launch uses the standard
+`CLI` tooltype with Personal Paint configured for CPU blitting. This run uses
+Moira.
 
 PPC guests, RISC-V hosting, a general hybrid CPU backend and multicore
 execution are future work. The manifesto does not claim them as implemented.
