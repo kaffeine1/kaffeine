@@ -2269,10 +2269,16 @@ IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu)
             side[i]->width = (ULONG)GetBitMapAttr(side[i]->native, BMA_WIDTH);
             side[i]->height = (ULONG)GetBitMapAttr(side[i]->native, BMA_HEIGHT);
         }
-    /* each at most 32767 + 32767: no overflow */
-    if ((ULONG)(xs + w) > src.width || (ULONG)(ys + h) > src.height ||
-        (ULONG)(xd + w) > dst.width || (ULONG)(yd + h) > dst.height)
-        return layers_refuse(ctx, "BltBitMap(): a rectangle outside its BitMap");
+    /* Native graphics clips non-negative blits to both bitmap bounds.
+       Clip before constructing adapters or entering native code, so even
+       its accelerated path receives a completely bounded rectangle. */
+    if (!mask || (ULONG)xs >= src.width || (ULONG)ys >= src.height ||
+        (ULONG)xd >= dst.width || (ULONG)yd >= dst.height)
+        return 0;
+    if ((ULONG)w > src.width - (ULONG)xs) w = (WORD)(src.width - (ULONG)xs);
+    if ((ULONG)w > dst.width - (ULONG)xd) w = (WORD)(dst.width - (ULONG)xd);
+    if ((ULONG)h > src.height - (ULONG)ys) h = (WORD)(src.height - (ULONG)ys);
+    if ((ULONG)h > dst.height - (ULONG)yd) h = (WORD)(dst.height - (ULONG)yd);
     /* one native BitMap for the same ordinary 68k BitMap on both sides, so
        that graphics sees a blit inside one BitMap */
     if (src.kind == BLIT_PLANAR && !layers_blit_adapter(ctx, &src))
