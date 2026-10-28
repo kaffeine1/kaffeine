@@ -82,7 +82,7 @@ ICON_REFUSED = frozenset((54, 72, 84, 108, 126, 138, 150, 156, 162, 168, 180, 18
 # would otherwise run guest Hooks from native code).
 LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114, 120,
                             126, 132, 138, 156, 162, 168, 180, 192,
-                            204, 210, 216, 222, 228, 234, 240, 246, 258, 264, 270))
+                            210, 216, 222, 228, 234, 240, 246, 258, 264, 270))
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
 CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
 GRAPHICS_BITMAP_REFUSED = frozenset((606, 636, 678, 918, 924, 942, 1020, 1206))

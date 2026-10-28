@@ -2997,6 +2997,12 @@ Screen of.
    layer lock. Native failure rolls back allocations and keeps any objects
    still referenced by a surviving native root. Cleanup deletes layers before
    LayerInfos, then releases their persistent bitmap adapters.
+   `InstallLayerInfoHook()` (-204) accepts the standard backfill sentinels
+   0 and 1 for an owned `NewLayerInfo()` or opened screen's LayerInfo. It delegates the change
+   to native layers, including its hidden root, returns the previous mode
+   and updates the classic `BlankHook` field. Foreign/stale LayerInfos,
+   real guest hooks, unrepresentable native hooks and calls during a
+   callback, blit or held layer lock are refused before the native call.
 9. `kaffeine_regions.c` owns up to 16 native graphics Regions. `NewRegion()`
    (-516) returns a stable protected 12-byte classic Region; its bounded list
    has up to 64 big-endian 16-byte RegionRectangles linked only by guest

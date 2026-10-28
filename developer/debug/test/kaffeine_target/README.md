@@ -335,3 +335,8 @@ through the 68k bridge.
 256-entry ColorMap metadata, multi-block RGB32 streams, RGB4 loads, scalar
 setters through both ViewPort and ColorMap, and guarded RGB32 output. The
 same original program performs 24 checks and closes its indexed screen.
+
+`gfx_layerinfo_mode` checks standard backfill-mode transitions on a new
+LayerInfo, with a private planar layer, and after deleting that layer while
+the native hidden root remains, plus an opened screen's LayerInfo. It runs unchanged as native ARM
+and classic 68k code, with all resources released before exit.
