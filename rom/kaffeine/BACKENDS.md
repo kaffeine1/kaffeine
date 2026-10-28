@@ -54,13 +54,15 @@ address 0 with `KAFFEINE_FLUSH_ALL` means all guest memory. `CacheClearU()`,
 `execute()` waits in the dispatcher, possibly inside a callback. Moira
 fetches every instruction from guest memory and leaves the operation NULL.
 
-`create_task_cpu()` and `destroy_task_cpu()` are optional per-task CPU factory
-operations used by the cooperative guest task scheduler (`kaffeine_sched.c`).
-When a guest program calls `AddTask()`, the scheduler asks the active backend
-to create an independent CPU instance sharing the same 32 MB containment arena
-and initialized with the child task's stack pointer, initial PC and user SR;
-`RemTask()`, child return and context teardown release it through
-`destroy_task_cpu()`. The Moira adapter implements both operations.
+The cooperative scheduler uses a separate `KaffeineCPUFactory` in
+`kaffeine_sched.h`, referenced by `ctx->cpu_factory`; these operations are
+outside `KaffeineCPUOps`. Its `create(ctx)` returns a complete reset CPU
+sharing the context's 32 MB arena. The scheduler then initializes the child's
+registers, user SR, stack pointer and initial PC. `RemTask()`, child return
+and context teardown release it through `destroy(ctx, cpu)`, after that CPU
+has stopped executing. The Moira adapter installs this factory while
+`Kaffeine_Execute()` runs. A backend without a factory cannot run `AddTask()`
+children; the standalone JIT probe does not provide one yet.
 
 This interface is deliberately not a complete serialized CPU state. It does
 not support switching backends during an execution, transferring FPU state,

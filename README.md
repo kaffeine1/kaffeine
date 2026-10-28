@@ -27,13 +27,14 @@ the bzip2 1.0.8 self-test and the IJG JPEG library 9f self-test (`cjpeg`,
 both on the host and inside native AROS AArch64 (`jit_probe`) as a step
 toward the Kaffeine JIT, separate from the production AROS execution path.
 
-Personal Paint is the first substantial graphical application target. Under
-Moira on AROS AArch64 in QEMU, startup loads fonts and 68k support libraries,
-completes DOS packet reads and replies, passes its initial notice requester,
-opens its custom 8-bit indexed screen and main window, and reaches the
-editor canvas and toolbar. Interactive drawing and tool use, loading and
-saving images, clean exit, desktop startup, responsiveness and execution on
-the Kaffeine JIT remain milestones to verify.
+The original 68k Personal Paint 7.2.1.0 reaches its editor from the native
+AROS Shell in QEMU. A verified run uses a 24-bit Workbench and selects a
+1024×768, 256-color canvas inside Personal Paint, draws with rectangles,
+circles and text, saves an IFF/ILBM image, and returns to the Shell with
+exit code zero. The decoded file matches the visible canvas pixel for pixel.
+Loading saved 1024×768 IFF and PNG images still reports “The image is too
+large”; complete application compatibility, desktop icon startup and
+responsiveness remain open milestones. This run uses Moira.
 
 PPC guests, RISC-V hosting, a general hybrid CPU backend and multicore
 execution are future work. The manifesto does not claim them as implemented.

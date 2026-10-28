@@ -851,8 +851,9 @@ LONG CONMain(struct ExecBase *SysBase)
     struct DosPacket *dp;
     struct Message *mn;
     struct FileHandle *dosfh;
+    SIPTR result = DOSFALSE;
     LONG error;
-    struct filehandle *fh;
+    struct filehandle *fh = NULL;
     struct FileLock *fl;
     struct DosPacket *waitingdp = NULL;
 
@@ -1248,8 +1249,12 @@ LONG CONMain(struct ExecBase *SysBase)
                             waitingdp = NULL;
                             fh->flags = (fh->flags & ~FHFLG_READPENDING) | FHFLG_WAITFORCLOSE;
                         }
-                        else
+                        else {
+                            /* The last close went fine: Close() returns
+                               DOSTRUE, once the window is gone. */
+                            result = DOSTRUE;
                             goto end;
+                        }
                     }
                     replypkt(dp, DOSTRUE);
                     break;
@@ -1445,7 +1450,7 @@ end:
 
     if (dp) {
         D(bug("[con:handler] Replying packet 0x%p, error %ld\n", dp, error));
-        replypkt2(dp, DOSFALSE, error);
+        replypkt2(dp, result, error);
     }
 
     if (mp)

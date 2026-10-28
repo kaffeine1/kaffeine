@@ -8,6 +8,12 @@
 #include <proto/graphics.h>
 #include <proto/layers.h>
 
+__attribute__((weak)) struct Hook *InstallLayerInfoHook(struct Layer_Info *li, struct Hook *hook)
+{
+    (void)li; (void)hook;
+    abort();
+}
+
 __attribute__((weak)) struct Layer *CreateUpfrontHookLayer(struct Layer_Info *li, struct BitMap *bm,
                                                            LONG x0, LONG y0, LONG x1, LONG y1,
                                                            LONG flags, struct Hook *hook,

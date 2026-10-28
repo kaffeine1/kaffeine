@@ -60,13 +60,14 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   queues, `ExAll`/`ExAllEnd`, FileHandle DOS packets and guest ports for
   native DOS handlers (`DeviceProc`, `GetDeviceProc`, `FreeDeviceProc`,
   `GetConsoleTask`, `SetConsoleTask`, `GetFileSysTask`, `SetFileSysTask`).
-- Personal Paint starts under Moira on AROS AArch64 in QEMU, loads fonts
-  and its 68k blitter and image I/O libraries, completes DOS packet reads
-  and `WaitPort`/`GetMsg` replies, passes its initial notice requester,
-  opens its custom 8-bit indexed screen and main window, and reaches the
-  editor canvas and toolbar. Interactive drawing and tool use, loading and
-  saving images, clean exit, desktop startup and execution on the Kaffeine
-  JIT have not been validated yet.
+- The original 68k Personal Paint 7.2.1.0 reaches the editor from the native
+  AROS Shell in QEMU. A verified run starts with a 24-bit Workbench, selects
+  a 1024×768 canvas with a 256-entry palette inside the application, draws
+  with rectangles, circles and text, saves an IFF/ILBM image, and returns to
+  the Shell with exit code zero. Independently decoded image pixels match
+  the visible canvas exactly. Loading saved 1024×768 IFF and PNG images still
+  reports “The image is too large”; full application compatibility is not
+  established. The interpreter remains Moira.
 
 The embedded native Exec lists currently have empty guest headers with
 valid head, tail and predecessor sentinels. Their native identities remain
@@ -88,9 +89,11 @@ interpreter and the reference for extending the execution engine.
 
 A [standalone AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md)
 executes a growing 68k instruction subset through the same interface and
-compares results with Moira on the host and inside native AROS AArch64
-([`jit_probe`](developer/debug/test/kaffeine_native/README.md), using
-`AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE`). Its
+compares results with Moira on the host. Native AROS AArch64 tests execute
+the JIT using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE`;
+the instruction corpus carries expected results computed with Moira on
+the host, without linking Moira into the native executable. See
+the [native probe](developer/debug/test/kaffeine_native/README.md). Its
 microbenchmarks do not establish application speed inside AROS. A production
 JIT or hybrid backend needs explicit state and transition contracts covering
 the relevant exception, stack, prefetch, control-register, per-task CPU and
@@ -139,10 +142,9 @@ The current test and target baseline includes:
 
 | Environment | Result |
 | --- | --- |
-| macOS arm64 and Linux GCC 14 | All 47 host executables pass (`test_thunk_registrations.py` checks 319 native-vector cases and 528 manual thunks across 18 tables) |
-| Unsigned-char host build | All 47 executables pass |
-| Focused ASan/UBSan build | Passes across the host suites (`run_sanitizers.sh`) |
-| Standalone AROS AArch64 JIT probe | `jit_probe` passes 38 checks in Shell and `Run`, and the extended instruction corpus passes 431 checks across 429 programs in Shell and `Run` |
+| macOS arm64 and Linux CI | All 47 host executables pass; the macOS JIT run passes 3,778 checks. The registration audit checks 319 native-vector cases and 544 manual thunks across 18 tables |
+| Focused ASan/UBSan JIT build | 304 bitfield boundary checks, 164 extended-instruction checks and 256 randomized programs pass |
+| Standalone AROS AArch64 JIT probe in QEMU | `jit_probe` passes 38 checks in Shell and `Run`; a separate instruction corpus passes 490 checks covering 432 programs and eight callback boundary cases in each mode |
 | AROS AArch64 in QEMU | Synthetic CLI/GUI probes, the 6-step `bzip2 1.0.8` self-test and the 7-step IJG JPEG `9f` self-test pass in both Shell and `Run` modes |
 | Native AmigaOS reference | Message, packet, `ExAll`, `icon.library`, `AppIcon`, layer, region, bitmap, screen and `NewWindow` observations match the bridged AROS contract |
 
@@ -158,14 +160,12 @@ each AROS Shell/Run execution. Its original host callback fixture reproduces
 the former arena-end fault with the old shadow initialization and passes
 all 91 task/list checks with the corrected headers.
 
-Personal Paint starts under Moira on AROS AArch64 in QEMU, loads fonts and
-68k support libraries, completes DOS packet reads and `WaitPort`/`GetMsg`
-replies, passes its initial notice requester, opens its custom 8-bit
-indexed screen and main window, and reaches the editor canvas and toolbar.
-Interactive drawing and tool operations, loading and saving images, clean
-exit, desktop launch and execution on the Kaffeine JIT remain to be
-validated. Sampled mathffp `SPDiv` results include eight one-ULP
-differences from AmigaOS.
+Personal Paint's editor, selected drawing tools, IFF/ILBM saving and return
+to the native Shell have been verified in QEMU with the original 68k binary.
+Loading saved 1024×768 images, remaining painting operations, desktop icon
+startup, responsiveness and the full application lifecycle remain open
+checks. Sampled mathffp SPDiv results include eight one-ULP differences from
+AmigaOS.
 
 ## Building and testing
 
@@ -188,9 +188,9 @@ The full [roadmap](docs/kaffeine/MANIFESTO.md#7-a-roadmap-based-on-observable-re
 uses observable application outcomes:
 
 1. Complete useful 68k application operations on AROS ARM64, prioritizing
-   Personal Paint's interactive drawing and tools, image load/save, clean
-   shutdown and desktop startup now that startup reaches the editor under
-   Moira.
+   Personal Paint's editor, tools, load/save, cleanup and desktop use.
+   The current application blocker is loading saved 1024×768 images, which
+   reports “The image is too large”.
 2. Accelerate the same binaries with the Kaffeine JIT or a verified hybrid
    mode, preserving behavior and measuring end-to-end benefits.
 3. Validate interaction, stability, memory and performance on real hardware.

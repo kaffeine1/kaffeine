@@ -769,7 +769,7 @@ before `lib->gen_thunks[]` (generated).
 | -306 | SetSignal | Updates pending signals on the current guest task (`kaffeine_sched.c`) or passes through to native Exec |
 | -318 | Wait | Consumes matching pending signals on the current guest task, or blocks the current guest task and schedules other ready guest tasks while preserving `TDNestCnt`/`IDNestCnt`; falls back to native `Wait` for native host signals (`kaffeine_sched.c`) |
 | -324 | Signal | Delivers signal bits to any registered guest task or the main process (`kaffeine_sched.c`), waking a waiting guest task and scheduling by priority; any other task stops the guest with rc 20 (`kaffeine_exec_io.c`) |
-| -330 | AllocSignal | Native bit of the task that runs the guest, from the signed low byte of D0, recorded as the guest's |
+| -330 | AllocSignal | Allocates a native host signal bit from the signed low byte of D0 and records its guest owner; child tasks track their own allocations (`kaffeine_exec_io.c`, `kaffeine_sched.c`) |
 | -336 | FreeSignal | Frees only a bit the guest allocated; the App objects of a port with that bit go first, and its AppMessages with them (`kaffeine_workbench.c`) |
 | -354 | AddPort | Initializes and publishes the guest port in the context's ExecBase PortList |
 | -360 | RemPort | Checks membership and removes the guest port |
@@ -1044,7 +1044,7 @@ guest callbacks must preserve this stop state and exit code when returning
 to their caller. Callback integration and target execution remain separate
 validation work.
 
-**intuition.library (48 manual thunks):**
+**intuition.library (49 manual thunks):**
 
 | LVO | Function | Handling |
 |-----|----------|----------|
@@ -1054,6 +1054,7 @@ validation work.
 | -204 | OpenWindow | Reads m68k NewWindow fields after checking that the NewWindow lies in guest memory (else rc 20) and passes them as tags; Type picks the screen as Intuition does: WBENCHSCREEN the Workbench without reading Screen, PUBLICSCREEN `WA_PubScreen` with the native screen in Screen or NULL for the default public screen, any other type `WA_CustomScreen` with the native screen in Screen, or the Workbench for NULL, as before. A Screen that is not a screen of the program (one that it opened, or one from `LockPubScreen()`) stops it with rc 20 before Intuition. Creates a cleared 68k Window with size, limits, flags, borders, IDCMP flags, pens and title, its RastPort as a 68k RastPort, its IDCMP port as a 68k MsgPort, and `WScreen` for a screen of the program: the 68k screen that it named when the window lies there, else its 68k screen of that native screen (one that it opened first), else 0; without guest memory for any of them it closes the native window again and returns 0. A FirstGadget list goes on the window as for AddGList with -1: a GadTools list of the program as the native list, a list of Boolean gadgets that the program built itself as their native copies; a list of the program's own with other gadgets stays out of the window, as before (`kaffeine_window.c`) |
 | -306 | WindowToBack | Moves an owned guest window to the back via native `WindowToBack`; foreign or invalid windows stop with rc 20 (`kaffeine_window.c`) |
 | -312 | WindowToFront | Moves an owned guest window to the front via native `WindowToFront`; foreign or invalid windows stop with rc 20 (`kaffeine_window.c`) |
+| -330 | IntuiTextLength | Calls native IntuiTextLength with checked text and a converted font; ignores NextText and uses the system font when no TextAttr is supplied (`kaffeine_thunks.c`) |
 | -348 | AutoRequest | Translates IntuiText chains (up to 8 deep), calls native |
 | -432 | RefreshGList | Native for gadgets of the program on that window, GadTools ones or its own, with the native gadget and numGad; what the program changed of `GFLG_SELECTED` and `GFLG_DISABLED` in its own gadgets there, and of BufferPos, DispPos and LongInt of its own string gadgets that Intuition does not edit, reaches their copies first, and what rendering set goes back after; nothing for other gadgets (`kaffeine_gadgets.c`) |
 | -222 | RefreshGadgets | As RefreshGList with -1 (`kaffeine_gadgets.c`) |
@@ -1097,7 +1098,7 @@ validation work.
 | -702 | ResetMenuStrip | As SetMenuStrip, through native ResetMenuStrip, but a strip that the program built takes the copy that windows show or that waits, with the flags that the program changed, without memory; a new copy, for a strip without one, goes through native SetMenuStrip, which works out its page sizes |
 | -816 | SetWindowPointerA | No-op (avoids X11 blocking) (`kaffeine_thunks_gfx.c`) |
 
-**graphics.library (65 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
+**graphics.library (80 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
 
 RastPort thunks use the registered 68k RastPort of a window, a screen or a
 private offscreen planar layer (see RastPorts and Fonts and Layer Snapshots
@@ -1114,7 +1115,7 @@ takes the exit code.
 | -66 | SetFont | Takes a 68k TextFont of graphics.library, or NULL for the default font; any other font, also one closed and gone, stops the program with rc 20 |
 | -72 | OpenFont | Converts the checked TextAttr/TTextAttr at A0, calls native OpenFont and returns the shared 68k TextFont with monochrome glyph data, counting the open |
 | -78 | CloseFont | Balances the native open; the final native close and guest snapshot release wait while a RastPort or pin retains the font. Foreign and repeated closes acquire no native close |
-| -192 | LoadRGB4 | Big-endian byte-swap of UWORD color array |
+| -192 | LoadRGB4 | Decodes a bounded big-endian UWORD color array for a registered screen ViewPort (`kaffeine_palette.c`) |
 | -240 | Move | WORD coordinates |
 | -246 | Draw | WORD coordinates, from the pen position the program may have written |
 | -306 | RectFill | WORD coordinates |
@@ -1146,6 +1147,16 @@ takes the exit code.
 | -876 | GetOutlinePen | Native getter after the fields of the 68k RastPort |
 | -894 | SetABPenDrMd | Both pens and the mode to the native RastPort |
 | -960 | GetBitMapAttr | Returns `BMA_WIDTH`, `BMA_HEIGHT`, `BMA_DEPTH` or `BMA_FLAGS` for an owned screen `BitMap` or checked classic planar `BitMap` (`kaffeine_bitmaps.c`) |
+| -288 | SetRGB4 | Sets a palette entry on a registered screen ViewPort (`kaffeine_palette.c`) |
+| -576 | FreeColorMap | NULL is a no-op; freeing a borrowed screen ColorMap stops with rc 20 (`kaffeine_palette.c`) |
+| -582 | GetRGB4 | Reads a packed RGB4 palette entry from a checked borrowed screen ColorMap (`kaffeine_palette.c`) |
+| -630 | SetRGB4CM | Sets an RGB4 entry through a checked borrowed screen ColorMap (`kaffeine_palette.c`) |
+| -708 | VideoControl | Returns error 1 without forwarding unconverted pointer-bearing tags (`kaffeine_palette.c`) |
+| -852 | SetRGB32 | Sets an RGB32 entry on a registered screen ViewPort (`kaffeine_palette.c`) |
+| -882 | LoadRGB32 | Validates the full big-endian RGB32 stream before updating a registered screen palette (`kaffeine_palette.c`) |
+| -900 | GetRGB32 | Writes big-endian RGB components through a bounded native temporary (`kaffeine_palette.c`) |
+| -996 | SetRGB32CM | Sets an RGB32 entry through a checked borrowed screen ColorMap (`kaffeine_palette.c`) |
+| -570, -834, -840, -948, -954, -1008 | ColorMap/pen allocation and ownership operations (6 slots) | Stop the guest with rc 20 (`Kaffeine_PaletteUnsupported`) |
 
 **diskfont.library (one manual thunk, `kaffeine_thunks_diskfont.c`):**
 
@@ -1638,7 +1649,8 @@ library returns 0.
 | -174 | InstallClipRegion | Installs or removes an owned 68k `Region` as the clip region of a registered window layer or owned offscreen layer and returns the previous guest `Region` (`kaffeine_regions.c`, `kaffeine_layers.c`) |
 | -186 | CreateUpfrontHookLayer | Creates a private offscreen planar layer on an owned `Layer_Info` with a checked classic planar `BitMap`, an owned 68k `RastPort` and an optional synchronous 68k backfill hook (`LAYERS_BACKFILL`, `LAYERS_NOBACKFILL` or a checked classic `Hook` invoked with A0 hook, A2 RastPort and A1 `LayerHookMsg`) (`kaffeine_layers.c`) |
 | -198 | InstallLayerHook | Installs `LAYERS_BACKFILL`, `LAYERS_NOBACKFILL` or a checked 68k `Hook` on a registered window/screen layer or owned offscreen layer and returns the previous hook (`kaffeine_layers.c`) |
-| -30..-84, -108..-138, -156..-168, -180, -192, -204..-246, -258..-270 | Remaining 32 vectors | Stop the guest with rc 20 (`kaffeine_layers_Unsupported`) |
+| -204 | InstallLayerInfoHook | Accepts the `LAYERS_BACKFILL` and `LAYERS_NOBACKFILL` sentinel modes on an owned LayerInfo, returns the previous mode, and applies it to subsequent private layers; other hooks stop with rc 20 (`kaffeine_layers.c`) |
+| -30..-84, -108..-138, -156..-168, -180, -192, -210..-246, -258..-270 | Remaining 31 vectors | Stop the guest with rc 20 (`kaffeine_layers_Unsupported`) |
 
 **icon.library (21 manual thunks, `kaffeine_icon.c`):**
 
@@ -1989,7 +2001,8 @@ m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
 ### Rules
 
 - Signals: `AllocSignal()`, `CreateMsgPort()` and the private reply ports take
-  native bits of the task that runs the guest. With a stack size, `RunHunk()`
+  native bits of the task that runs the guest, with child ownership tracked
+  by the cooperative scheduler. With a stack size, `RunHunk()`
   runs the guest in a child process, not in the task behind the guest's
   ThisTask snapshot: `Signal()` of a registered guest task or the main process
   delivers the signal bits across the cooperative guest scheduler
@@ -2950,9 +2963,21 @@ m68k: SetAPen(rp, 2); rp->cp_x = 10; Draw(rp, 50, 10)
    as the one of the 68k TextFonts, and each held font has a 68k TextFont
    that stays, so it fills only with it. Without the 68k TextFont there is
    no 68k Screen either. Native pointers are not shown: NextScreen,
-   FirstWindow, Title, DefaultTitle, the ColorMap and RasInfo of the
+   FirstWindow, Title, DefaultTitle and RasInfo of the
    ViewPort, the planes of the BitMap, the LayerInfo, FirstGadget,
    BarLayer, ExtData and UserData stay 0.
+   `ViewPort.ColorMap` is a borrowed classic identity owned by that screen.
+   Its 52-byte snapshot contains scalar flags/type/count, the guest ViewPort
+   link and mode ID; native palette arrays and backend pointers stay private.
+   Palette thunks resolve only that exact live identity. `LoadRGB4()` and
+   `LoadRGB32()` decode big-endian arrays into bounded native temporaries;
+   the complete RGB32 stream is checked before any palette update.
+   `GetRGB32()` writes big-endian components through a bounded temporary.
+   Scalar RGB4/RGB32 getters and setters use the same checked identities.
+   This covers at most 256 colors per call. Closing or releasing the last
+   holder of a screen retires its palette identity. Standalone ColorMap/pen
+   allocation and freeing a borrowed palette stop the guest; `VideoControl()`
+   reports an error until its pointer-bearing tags have typed conversions.
 3. The 68k Screen stays while the program holds a lock on the screen, has
    a window there or holds the list of public screens, and goes with the
    last of them: `Kaffeine_WindowDelete()` calls `ctx->screen_release` once
@@ -3076,6 +3101,12 @@ Screen of.
    layer lock. Native failure rolls back allocations and keeps any objects
    still referenced by a surviving native root. Cleanup deletes layers before
    LayerInfos, then releases their persistent bitmap adapters.
+   `InstallLayerInfoHook()` (-204) accepts the standard backfill sentinels
+   0 and 1 for an owned `NewLayerInfo()` or opened screen's LayerInfo. It delegates the change
+   to native layers, including its hidden root, returns the previous mode
+   and updates the classic `BlankHook` field. Foreign/stale LayerInfos,
+   real guest hooks, unrepresentable native hooks and calls during a
+   callback, blit or held layer lock are refused before the native call.
 9. `kaffeine_regions.c` owns up to 16 native graphics Regions. `NewRegion()`
    (-516) returns a stable protected 12-byte classic Region; its bounded list
    has up to 64 big-endian 16-byte RegionRectangles linked only by guest
@@ -3188,31 +3219,35 @@ Two generators exist:
 
 `developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
 plus `test_thunk_registrations.py` (which verifies 319 explicit native-vector
-cases and all 528 manual thunk registrations across the 18 production tables)
+cases and all 544 manual thunk registrations across the 18 production tables)
 and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
 [developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
-for the complete executable table and coverage details.
+for coverage details; the host Makefile is the authoritative executable list.
 
-| Suite | Files | What It Tests |
-|-------|-------|---------------|
-| Core & CPU | `test_kaffeine.cpp`, `test_moira_exec.cpp`, `test_hello_thunks.cpp`, `test_guest_bounds.cpp`, `test_cpu_backend.cpp`, `test_hosted_jit.cpp` | Context/heap, custom chip window, Moira execution, A-line trap dispatch, guest bounds, pluggable CPU backend, AArch64 translation probe |
-| Exec | `test_exec_memory.cpp`, `test_exec_tasks.cpp`, `test_exec_semaphores.cpp`, `test_exec_ports.cpp`, `test_exec_io.cpp`, `test_guest_tasks.cpp`, `test_m68klib.cpp` | Heap/pools/MemHeader/AllocEntry, `FindTask` and embedded lists, semaphores, public ports and FIFO messages, `timer.device`/`console.device`, cooperative `AddTask`/`RemTask` scheduler, 68k disk libraries |
-| DOS | `test_dos_base_calls.cpp`, `test_dos_buffer_strings.cpp`, `test_dos_second_batch.cpp`, `test_dos_match.cpp`, `test_dos_exall.cpp`, `test_dos_filehandle.cpp`, `test_dos_packets.cpp`, `test_dos_handlers.cpp`, `test_readargs.cpp` | Base file/lock/CLI calls, bounded buffer/string calls, `Examine`/`Info`/`DateToStr`/`StrToDate`/assigns/vars, `MatchFirst`/`MatchNext`/`MatchEnd`, `ExAll`/`ExAllEnd`, managed `FileHandle`s, `DoPkt`/`SendPkt`/`WaitPkt`/`ReplyPkt`, handler ports (`DeviceProc`/`GetDeviceProc`), `ReadArgs` |
-| Utility, Locale & Math | `test_utility_tags.cpp`, `test_utility_hooks_math.cpp`, `test_utility_dates.cpp`, `test_format.cpp`, `test_locale_thunks.cpp`, `test_locale_dates.cpp`, `test_locale_formatstring.cpp`, `test_mathieee_thunks.cpp`, `test_mathffp_thunks.cpp` | Tag walkers/clones/filters, `CallHookPkt` and 32/64-bit integer math, dates, `RawDoFmt`/`VSNPrintf`, `locale.library` catalogs/locales/dates/`FormatString`, IEEE single/double math, `mathffp` |
-| Graphics, Layers, Intuition, GadTools, Icons & Workbench | `test_rastport.cpp`, `test_diskfont_thunks.cpp`, `test_display_info.cpp`, `test_layers.cpp`, `test_regions.cpp`, `test_bitmaps.cpp`, `test_screens.cpp`, `test_window_idcmp.cpp`, `test_menus.cpp`, `test_gadgets.cpp`, `test_classic_gadgets.cpp`, `test_gadtools_Phase5.cpp`, `test_requesters.cpp`, `test_icon_thunks.cpp`, `test_workbench.cpp`, `test_console_thunks.cpp` | RastPorts and monochrome fonts, `OpenDiskFont`, `GetDisplayInfoData` and `MonitorSpec`s, layers and backfill hooks, clip regions, `InitBitMap`/`BltBitMap`/`GetBitMapAttr`, owned and public screens and `DrawInfo`, windows and IDCMP, GadTools and classic menus and gadgets, requesters, `icon.library` snapshots, Workbench `AppWindow`/`AppIcon`/`AppMenuItem` |
+Representative source files include:
+
+| Area | Files | Coverage |
+|------|-------|----------|
+| CPU and loaders | `test_kaffeine.cpp`, `test_moira_exec.cpp`, `test_dispatch.cpp`, `test_hunk_loading.cpp`, `test_callbacks.cpp`, `test_hosted_jit.cpp` | Context, Moira execution, dispatcher, HUNK loading, callbacks and standalone AArch64 translation |
+| Memory and Exec | `test_exec_memory.cpp`, `test_memheader.cpp`, `test_memheader_moira.cpp`, `test_heap_scaling.cpp`, `test_exec_lists.cpp`, `test_exec_tasks.cpp`, `test_exec_messages.cpp`, `test_exec_io.cpp`, `test_guest_tasks.cpp` | Heap and pools, MemHeader, lists, task identities, messages, timer I/O and cooperative guest scheduling |
+| DOS | `test_dos_thunks.cpp`, `test_dos_packets.cpp`, `test_dos_packet_thunks.cpp`, `test_dos_handlers.cpp`, `test_readargs.cpp`, `test_cli.cpp` | Files, directory scans, FileHandle/DOS packets, native handler identities, argument parsing and CLI state |
+| Utility, locale and math | `test_utility_thunks.cpp`, `test_locale_thunks.cpp`, `test_locale_hooks.cpp`, `test_mathieee_thunks.cpp`, `test_mathffp_thunks.cpp` | Tags, hooks, dates, formatting, locale and floating-point library calls |
+| Graphics and GUI | `test_gfx_thunks.cpp`, `test_diskfont.cpp`, `test_display.cpp`, `test_fbgfx_refresh.cpp`, `test_screens.cpp`, `test_layers.cpp`, `test_layers_private.cpp`, `test_regions.cpp`, `test_window.cpp`, `test_menus.cpp`, `test_gadgets.cpp`, `test_icon.cpp`, `test_workbench.cpp`, `test_console.cpp` | Fonts, displays, screens/palettes, layers, regions, bitmaps, windows, menus, gadgets, icon metadata, AppMessages and console calls |
 
 ### Standalone Native AROS AArch64 and Target 68k Suites
 
 - [`developer/debug/test/kaffeine_native/`](../../developer/debug/test/kaffeine_native/README.md):
-  `jit_probe` validates the standalone AArch64 translator inside native AROS
-  AArch64 using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE`
-  (38 regression checks plus 431 instruction-corpus checks across 429 programs
-  in Shell and `Run`).
+  `jit_probe` validates the standalone AArch64 translator with 38 checks
+  using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE`. A separate
+  instruction corpus passes 490 checks covering 432 programs and eight
+  callback boundary cases. Both pass in Shell and `Run` on AROS AArch64
+  in QEMU. Expected corpus results come from Moira on the host; the native
+  executable runs the JIT without Moira.
 - [`developer/debug/test/kaffeine_target/`](../../developer/debug/test/kaffeine_target/README.md):
   68k HUNK target probes, the 6-step `bzip2 1.0.8` self-test and the 7-step
   IJG JPEG `9f` self-test (`cjpeg`, `djpeg`, `jpegtran`) executed on AROS
-  AArch64 under QEMU (`run_qemu.py`) and compared against native AmigaOS 3.2.3
-  reference logs.
+  AArch64 under QEMU (`run_qemu.py`) with expected results;
+  classic AmigaOS reference runs establish the relevant bridge contracts.
 
 ### Test Gaps
 
@@ -3442,12 +3477,13 @@ ReplyMsg instead uses type 7, or type 6 with no reply port. The other
 actions of these handlers and the DOS packet functions are described in
 "DOS packets" above. The target candidate
 matches the measured 26 message checks, 28 packet checks and 20 raw
-observations in Shell and Run. With the subsequent screen, layer, region,
-bitmap, DrawInfo and NewWindow bridges in place, Personal Paint completes
-packet reads and replies, passes its initial notice requester, opens its
-custom 8-bit indexed screen and main window, and reaches the editor under
-Moira in QEMU; interactive tool use, load/save, clean exit and hardware
-operation remain to be validated.
+observations in Shell and Run. Personal Paint 7.2.1.0 now also has a verified
+native Shell session under Moira in QEMU: a 24-bit Workbench, a 1024×768
+256-color application canvas, rectangles/circles/text, an IFF/ILBM save
+whose decoded pixels match the visible canvas, and exit code zero. Loading
+the saved 1024×768 IFF and PNG reports “The image is too large”. Full image
+loading, other painting operations, desktop icon startup, application
+execution on the JIT and hardware operation remain open.
 
 ## Display query boundary
 
@@ -3524,3 +3560,17 @@ VisualInfo references. execute_owned frees menus/gadgets and then all
 VisualInfos before releasing screens. FreeSysRequest and SysReqHandler
 validate the requester marker, and requester destruction runs gadget/menu
 close hooks before dropping window/message/port mirrors.
+
+BltBitMap() clips non-negative rectangles to the native dimensions of both
+bitmaps before creating call-local adapters or invoking the native blitter.
+Origins outside either bitmap and zero masks return zero without a blit.
+Negative coordinates, negative sizes and caller TempA buffers remain outside
+the supported boundary. The original gfx_blit_clip target probe checks the
+resulting pixels and intact memory guards against native AROS.
+
+IntuiTextLength() (-330) measures one checked classic IntuiText through
+native Intuition. A NULL descriptor returns zero. Its guest text must be
+NUL-terminated in the arena; optional TextAttr/TaggedTextAttr inputs use the
+shared font converter. NextText stays NULL in the native copy, matching
+Intuition's single-text contract. Native Intuition chooses the system font
+and handles unavailable-font fallback; no guest byte is written.

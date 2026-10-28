@@ -174,6 +174,7 @@
 #define M68K_IT_DRAWMODE            2
 #define M68K_IT_LEFTEDGE            4
 #define M68K_IT_TOPEDGE             6
+#define M68K_IT_FONT                8
 #define M68K_IT_ITEXT               12
 #define M68K_IT_NEXTTEXT            16
 

@@ -38,7 +38,7 @@ all AmigaOS library calls to forward them to the native AROS implementations.
                   │  exec.library    dos.library      │
                   │  intuition.library  graphics.lib  │
                   │  ... 22 libs + 2 devs (789 auto,  │
-                  │      528 manual registrations)    │
+                  │      544 manual registrations)    │
                   └───────────────────────────────────┘
 ```
 
@@ -149,7 +149,7 @@ and native AROS C functions. There are two kinds:
   TagItem arrays, `resolve_rp` for RastPort resolution, and
   `shadow_create_by_name` for return values that need shadow wrapping.
 
-- **Manual thunks** (528 registrations across 18 tables) for functions needing
+- **Manual thunks** (544 registrations across 18 tables) for functions needing
   bounded conversion, guest-memory ownership, or explicit refusal:
   - **exec** (84): `OpenLibrary`/`OldOpenLibrary`/`CloseLibrary` (fake base creation + m68k library fallback),
     `AllocMem`/`FreeMem`/`AllocAbs`/`AvailMem`/`AllocEntry`/`FreeEntry`/`AllocVec`/`FreeVec`/`TypeOfMem` (containment heap),
@@ -171,7 +171,7 @@ and native AROS C functions. There are two kinds:
     `DeviceProc`/`GetDeviceProc`/`FreeDeviceProc`/`GetConsoleTask`/`SetConsoleTask`/`GetFileSysTask`/`SetFileSysTask` (`kaffeine_handlers.c`),
     `Execute`/`SystemTagList`/`RunCommand`, `VPrintf`/`VFPrintf`/`VFWritef`/`PutStr`/`WriteChars`,
     `GetProgramName`/`GetArgStr`/`SetArgStr`, `MatchFirst`/`MatchNext`/`MatchEnd`, pattern/path/date/variable/assign helpers and `Exit`
-  - **intuition** (48): `OpenScreen`/`OpenScreenTagList`/`CloseScreen` (bounded inputs and owned screen snapshots),
+  - **intuition** (49): `OpenScreen`/`OpenScreenTagList`/`CloseScreen` (bounded inputs and owned screen snapshots),
     `GetScreenDrawInfo`/`FreeScreenDrawInfo` (version-1 `DrawInfo` snapshots with copied pens and retained `TextFont`),
     `OpenWindow`/`OpenWindowTagList`/`CloseWindow`/`WindowToFront`/`WindowToBack` (`NewWindow` defaults and tag translation, a
     68k Window with its fields, a 68k RastPort, a 68k Layer and a 68k IDCMP port, the
@@ -202,7 +202,7 @@ and native AROS C functions. There are two kinds:
     listview), `GT_GetGadgetAttrsA`/`GT_SetGadgetAttrsA`
     (the attributes that their autodocs give for each kind, as 68k LONGs,
     converted and checked for the classes)
-  - **graphics** (65): `OpenFont`/`CloseFont`/`SetFont` (68k TextFonts),
+  - **graphics** (80): `OpenFont`/`CloseFont`/`SetFont` (68k TextFonts),
     `LoadRGB4` (big-endian byte-swap), and the calls on a registered window, screen or offscreen planar layer RastPort:
     `Move`/`Draw`/`RectFill`/`ReadPixel`/`WritePixel`,
     the pens and the drawing mode, `ScrollRaster`, and
@@ -457,8 +457,8 @@ The bridge provides generated or manual thunks for the following libraries and d
 |---------|------|--------|-------|-------------|
 | exec.library | 79 | 84 | 112 | Memory, pools, cooperative guest tasks, signals, semaphores, messages, devices, libraries, AVL |
 | dos.library | 112 | 122 | 158 | File I/O, locks, CLI, pattern matching, ReadArgs, ExAll/ExAllEnd, DOS packets, handler ports |
-| intuition.library | 127 | 48 | 136 | Windows, owned and public screens, DrawInfo, gadgets, menus, IDCMP, requesters |
-| graphics.library | 167 | 65 | 179 | Rendering, text, planar/screen blitting, layer locks, clip regions, fonts, colors, display metadata |
+| intuition.library | 127 | 49 | 137 | Windows, owned and public screens, DrawInfo, gadgets, menus, IDCMP, requesters |
+| graphics.library | 167 | 80 | 179 | Rendering, text, planar/screen blitting, layer locks, clip regions, fonts, colors, display metadata |
 | layers.library | 40 | 40 | 40 | Live Layer snapshots, owned screen-bar drawing, layer locks/hooks, owned LayerInfos, private offscreen layers and clip Regions; remaining slots stop with 20 |
 | utility.library | 41 | 23 | 42 | TagItem processing, hooks, date functions, 32/64-bit integer math, case-insensitive string comparisons, VSNPrintf |
 | locale.library | 25 | 24 | 25 | OpenLocale/CloseLocale, FormatDate/ParseDate, FormatString, character classes, string conversion |
@@ -492,13 +492,13 @@ within the emulator.
 
 | Program | Size | Type | Status |
 |---------|------|------|--------|
-| bzip2 1.0.8 | CLI | Compression self-test (6 steps) | ✅ Matches reference outputs byte for byte in Shell and `Run` |
-| IJG JPEG 9f (`cjpeg`, `djpeg`, `jpegtran`) | CLI | Image compression/decompression self-test (7 steps) | ✅ Matches reference outputs byte for byte in Shell and `Run` |
+| bzip2 1.0.8 | — | CLI compression self-test (6 steps) | ✅ Matches reference outputs byte for byte in Shell and `Run` |
+| IJG JPEG 9f (`cjpeg`, `djpeg`, `jpegtran`) | — | CLI image compression/decompression self-test (7 steps) | ✅ Matches reference outputs byte for byte in Shell and `Run` |
 | LZX | 83 KB | CLI archiver (commercial) | ✅ Full functionality |
 | olha | 291 KB | SFX archiver (6 hunks, relocations) | ✅ LH5 decompression, CreateDir |
 | ROLEX | 13 KB | Clock (custom screen, GUI loop) | ✅ Opens screen, event loop works |
-| SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders UI, `SPEED`, `DRIVES`, `BOARDS`, `MEMORY` and `QUIT` |
-| Personal Paint | GUI | Paint / image editor (custom 8-bit screen, 68k libraries) | 🟡 Starts under Moira in QEMU, loads fonts and 68k libraries, passes notice requester, opens 8-bit screen/window and reaches editor; tools, load/save, exit and JIT remain to be validated |
+| SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders full UI (title, menus, buttons, text) |
+| Personal Paint 7.2.1.0 | 777,824 bytes | 68k paint / image editor | 🟡 Moira on AROS AArch64/QEMU: native Shell launch, 24-bit Workbench, 1024×768/256-color canvas, rectangles/circles/text, pixel-verified IFF/ILBM save and exit code zero. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; desktop icon launch, other operations and JIT execution remain open |
 | Directory Opus 4.12 | 328 KB | File manager (GUI, m68k libraries) | ✅ Loads dopus.library, shows AutoRequest dialog, responds to button click |
 | AmigaTerm 1.0 | 82 KB | Terminal emulator (GUI) | ✅ Opens window, clean exit |
 | Textcraft Plus | 208 KB | Word processor (GUI, custom screen) | ✅ Opens screen/window, sets colors, clean exit |
@@ -532,12 +532,12 @@ within the emulator.
   asynchronous device I/O and other device adapters remain unsupported
 - Ordinary guest FIFO messages (`PutMsg`/`GetMsg`/`ReplyMsg`/`WaitPort`) work across registered guest tasks in the same context; cross-context messaging is unsupported
 - DOS packets (`DoPkt`/`SendPkt`/`WaitPkt`/`ReplyPkt`) are supported on FileHandle packet ports and on registered guest ports for native DOS handlers (`DeviceProc`, `GetDeviceProc`, `GetConsoleTask`, `GetFileSysTask`) for the documented action set; `AbortPkt` is a no-op
-- Personal Paint starts under Moira on AROS AArch64 in QEMU, completes DOS packet reads and replies, passes its initial notice requester, opens its custom 8-bit indexed screen and main window, and reaches the editor; interactive drawing, loading/saving images, clean exit, desktop launch and JIT execution remain to be validated
+- Personal Paint has verified editor use, rectangles/circles/text, pixel-checked IFF/ILBM saving and return to the native Shell with exit code zero under Moira in QEMU. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; other tools, full image loading, desktop icon startup and JIT execution remain open
 - `Signal()` reaches any registered guest task or the main process in the context; unknown tasks stop with rc 20
 
 ### Graphics
 
-- Graphics drawing calls accept the registered RastPort of a window or screen, the owned `BarLayer->rp` of an owned screen, or the RastPort of a private offscreen planar layer created through `CreateUpfrontHookLayer` / `CreateBehindHookLayer`. `ReadPixel` also accepts an unlayered guest-built RastPort with a checked classic planar BitMap; other unbridged RastPorts stop with rc 20
+- Graphics drawing calls accept the registered RastPort of a window or screen, the owned `BarLayer->rp` of an owned screen, or the RastPort of a private offscreen planar layer created through `CreateUpfrontHookLayer`. `ReadPixel` also accepts an unlayered guest-built RastPort with a checked classic planar BitMap; other unbridged RastPorts stop with rc 20
 - Window and screen snapshots publish registered `Layer` snapshots (`WLayer`, `Layer_Info.top_layer`, `BarLayer`), and owned screens share a registered `BitMap` handle across `Screen.BitMap`, `ViewPort.RasInfo->BitMap`, `Screen.RastPort.BitMap`, and `Window.RPort->BitMap`. Supported monochrome TextFonts have owned guest bitmap and character data
 - `InitBitMap`, `BltBitMap` (with minterm `0xC0` between classic planar bitmaps and/or owned indexed screens) and `GetBitMapAttr` are supported; other direct bitmap allocation and locking calls stop with rc 20
 - `NewRegion`, `OrRectRegion`, `DisposeRegion` and `InstallClipRegion` are supported for clip regions on registered window/offscreen layers; other region boolean operations stop with rc 20
@@ -698,9 +698,9 @@ within the emulator.
 |------|-------------|
 | `kaffeine.conf` | AROS library definition (LVO 5: RunHunk, LVO 6: RunFile) |
 | `kaffeine_intern.h` | Context struct, fake lib bases, inline helpers, memory accessors |
-| `kaffeine_cpu.h` | Pluggable CPU backend contract (`KaffeineCPUOps`, per-task CPU factory hooks) |
-| `moira_backend.cpp` / `kaffeine_moira.cpp` | Moira CPU backend, A-line exception handler, sentinel detection, per-task CPU instances |
-| `kaffeine_sched.c` / `kaffeine_sched.h` | Cooperative guest child task scheduler (`AddTask`, `RemTask`, `SetTaskPri`, `Wait`, `Signal`, `Forbid`/`Permit`, `Disable`/`Enable`) |
+| `kaffeine_cpu.h` | Pluggable CPU register, execution and code-flush contract (`KaffeineCPUOps`) |
+| `kaffeine_moira.cpp` | Moira CPU backend, A-line exception handler, sentinel detection, per-task CPU instances |
+| `kaffeine_sched.c` / `kaffeine_sched.h` | Cooperative guest child task scheduler and separate `KaffeineCPUFactory` (`AddTask`, `RemTask`, `SetTaskPri`, `Wait`, `Signal`, `Forbid`/`Permit`, `Disable`/`Enable`) |
 | `kaffeine_callback.c` / `kaffeine_callback.h` | Synchronous 68k callback trampoline (`Kaffeine_CallGuest`) and classic Hook adapter (`CallHookPkt`) |
 | `kaffeine_run.c` | RunHunk/RunFile entry points, process creation, ExecBase shadow init |
 | `kaffeine_memory.c` | Containment memory allocation, heap and pool allocators, hunk loaders |
@@ -729,6 +729,7 @@ within the emulator.
 | `kaffeine_thunks_diskfont.c` | Checked OpenDiskFont using the shared graphics font identity and ownership |
 | `kaffeine_fontattr.c` | TextAttr/TTextAttr validation and native copies of scalar DPI tags for both font-open APIs |
 | `kaffeine_rastport.c` | 68k RastPorts, read-only monochrome TextFont snapshots with glyph data, and shared font lifetimes |
+| `kaffeine_palette.c` / `kaffeine_palette.h` | Checked borrowed ColorMap identities, RGB4/RGB32 palette reads and writes, and refusal guards for unsupported allocation/control operations |
 | `kaffeine_screens.c` | Owned and locked public Screen snapshots, `GetScreenDrawInfo`/`FreeScreenDrawInfo` and `DrawImageState` |
 | `kaffeine_display.c` | `GetDisplayInfoData` and borrowed `MonitorSpec` snapshots (`OpenMonitor`/`CloseMonitor`/`FindDisplayInfo` guards) |
 | `kaffeine_layers.c` | Live window/screen `Layer` snapshots, owned `BarLayer->rp`, layer locks/hooks, owned `LayerInfo`s and private offscreen planar layers |
@@ -806,7 +807,7 @@ grep -oP '(OFF|SIZ)\|[^"]*' m68k.s | sed 's/#//g' > m68k_offsets.txt
 
 | Path | Description |
 |------|-------------|
-| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (319 native-vector cases and 528 manual thunks across 18 tables) and `run_sanitizers.sh` |
+| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (319 native-vector cases and 544 manual thunks across 18 tables) and `run_sanitizers.sh` |
 | [`developer/debug/test/kaffeine_native/`](../../developer/debug/test/kaffeine_native/README.md) | Standalone native AROS AArch64 translation probe (`jit_probe`) using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE` |
 | [`developer/debug/test/kaffeine_target/`](../../developer/debug/test/kaffeine_target/README.md) | Classic 68k HUNK target probes, bzip2 1.0.8 and IJG JPEG 9f self-tests, and QEMU AROS AArch64 runner (`run_qemu.py`) |
 | `developer/debug/test/kaffeine/test_kaffeine.c` | AROS-side smoke test that opens `kaffeine.library` |
@@ -816,14 +817,13 @@ grep -oP '(OFF|SIZ)\|[^"]*' m68k.s | sed 's/#//g' > m68k_offsets.txt
 ### Prerequisites
 
 - AROS source tree
-- GCC 14 or Clang with C++20 support (for Moira)
+- A toolchain for the configured AROS target, with C++20 support for Moira
 - Python 3 (for code generators and registration audits)
 
 ### Build Commands
 
 ```bash
-cd $AROS_BUILD_DIR
-rm -rf bin/linux-x86_64/gen/rom/kaffeine
+cd "$AROS_BUILD_DIR"
 make kernel-kaffeine
 ```
 

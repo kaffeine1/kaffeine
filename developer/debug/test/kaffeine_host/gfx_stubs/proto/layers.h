@@ -19,6 +19,7 @@ void UnlockLayerInfo(struct Layer_Info *li);
 ULONG AttemptSemaphore(struct SignalSemaphore *lock);
 void ReleaseSemaphore(struct SignalSemaphore *lock);
 struct Hook *InstallLayerHook(struct Layer *layer, struct Hook *hook);
+struct Hook *InstallLayerInfoHook(struct Layer_Info *li, struct Hook *hook);
 struct Layer_Info *NewLayerInfo(void);
 void DisposeLayerInfo(struct Layer_Info *li);
 struct Layer *CreateUpfrontHookLayer(struct Layer_Info *li, struct BitMap *bm, LONG x0, LONG y0,

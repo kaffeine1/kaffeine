@@ -38,6 +38,7 @@
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_screens.h"
+#include "kaffeine_palette.h"
 #include "kaffeine_layers.h"
 #include "kaffeine_dispatch.h"
 
@@ -58,6 +59,7 @@ struct NativeScreen
     /* What an opened screen draws into, as a HIDD BitMap of AROS: no
        planes the guest could reach, and not the obsolete copy. */
     BitMap drawn{};
+    ColorMap colormap{};
     /* The DrawInfo that Intuition keeps in the screen (IntScreen.DInfo),
        filled in at the first GetScreenDrawInfo() unless a test did, and a
        second one that use_alt hands out instead, as another native
@@ -390,7 +392,8 @@ extern "C" struct Screen *OpenScreenTagList(struct NewScreen *ns, struct TagItem
     s.DetailPen = o.detail; s.BlockPen = o.block; s.SaveColor0 = 0x0AAA;
     s.RastPort.Font = native->screen_font;
     // native pointers that never reach the guest
-    s.ViewPort.ColorMap = reinterpret_cast<ColorMap *>(&s);
+    n.colormap.Count = 256; n.colormap.Type = 2;
+    s.ViewPort.ColorMap = &n.colormap;
     s.RastPort.BitMap = &n.drawn;
     std::memset(s.BitMap_OBSOLETE.Planes, 0x77, sizeof(s.BitMap_OBSOLETE.Planes));
     for (auto &p : n.drawn.Planes) p = reinterpret_cast<PLANEPTR>(&n.drawn);
@@ -749,6 +752,7 @@ static void screen_image(Fixture &f, ULONG g, Screen &s, ULONG ta, ULONG tf, ULO
     want[33] = s.MenuVBorder; want[34] = s.MenuHBorder; want[35] = s.WBorTop;
     want[36] = s.WBorLeft; want[37] = s.WBorRight; want[38] = s.WBorBottom;
     l(40, ta);
+    l(VP + 4, f.ctx.pubscreens[f.entry(g)].colormap);
     w(VP + 24, s.ViewPort.DWidth); w(VP + 26, s.ViewPort.DHeight);
     w(VP + 28, s.ViewPort.DxOffset); w(VP + 30, s.ViewPort.DyOffset);
     w(VP + 32, s.ViewPort.Modes); want[VP + 34] = s.ViewPort.SpritePriorities;
@@ -836,7 +840,8 @@ static void test_screen_fields_and_relock()
         s.NextScreen = &s; s.FirstWindow = &pointer_window;
         s.Title = f.memory.data(); s.DefaultTitle = f.memory.data() + 1;
         s.ViewPort.Next = &s.ViewPort;
-        s.ViewPort.ColorMap = reinterpret_cast<ColorMap *>(&s);
+        n.colormap.Count = 256; n.colormap.Type = 2;
+        s.ViewPort.ColorMap = &n.colormap;
         s.ViewPort.DspIns = s.ViewPort.SprIns = s.ViewPort.ClrIns = reinterpret_cast<CopList *>(&s);
         s.ViewPort.UCopIns = reinterpret_cast<UCopList *>(&s);
         s.ViewPort.RasInfo = reinterpret_cast<RasInfo *>(&s);
@@ -2910,6 +2915,116 @@ static void test_drawinfo_cleanup()
 
 /* Both remaining DrawInfo consumers must override their generated
    fallbacks, even for NULL, a live copy or an invalid guest address. */
+/* Record native palette arguments independently of the guest wire image. */
+static struct PaletteCalls
+{
+    unsigned calls = 0;
+    const void *object = nullptr;
+    std::vector<ULONG> values;
+} palette;
+extern "C" void LoadRGB4(ViewPort *vp, UWORD *table, WORD n)
+{
+    ++palette.calls; palette.object = vp;
+    palette.values.assign(table, table + n);
+}
+extern "C" void LoadRGB32(ViewPort *vp, const ULONG *table)
+{
+    ++palette.calls; palette.object = vp; palette.values.clear();
+    while (*table >> 16)
+    {
+        ULONG n = (*table >> 16) * 3 + 1;
+        palette.values.insert(palette.values.end(), table, table + n); table += n;
+        assert(palette.values.size() <= 1024);
+    }
+    palette.values.push_back(*table);
+}
+extern "C" void GetRGB32(ColorMap *cm, ULONG first, ULONG n, ULONG *table)
+{
+    ++palette.calls; palette.object = cm; palette.values = {first, n};
+    for (ULONG i = 0; i < n * 3; ++i) table[i] = 0x12345678 + i;
+}
+extern "C" ULONG GetRGB4(ColorMap *cm, LONG n)
+{
+    ++palette.calls; palette.object = cm; palette.values = {ULONG(n)}; return 0xA5B;
+}
+extern "C" void SetRGB32(ViewPort *vp, ULONG n, ULONG r, ULONG g, ULONG b)
+{
+    ++palette.calls; palette.object = vp; palette.values = {n, r, g, b};
+}
+extern "C" void SetRGB4(ViewPort *vp, WORD n, UBYTE r, UBYTE g, UBYTE b)
+{
+    SetRGB32(vp, n, r, g, b);
+}
+extern "C" void SetRGB32CM(ColorMap *cm, ULONG n, ULONG r, ULONG g, ULONG b)
+{
+    ++palette.calls; palette.object = cm; palette.values = {n, r, g, b};
+}
+extern "C" void SetRGB4CM(ColorMap *cm, WORD n, UBYTE r, UBYTE g, UBYTE b)
+{
+    SetRGB32CM(cm, n, r, g, b);
+}
+static ULONG palette_call(Fixture &f, ULONG lvo, ULONG a0, ULONG a1 = 0,
+                          ULONG d0 = 0, ULONG d1 = 0, ULONG d2 = 0, ULONG d3 = 0)
+{
+    static const M68KThunkEntry table[] = { KAFFEINE_GRAPHICS_PALETTE_THUNKS };
+    auto saved = f.ctx.libs[0]; auto &lib = f.ctx.libs[0];
+    lib.thunks = table; lib.num_thunks = std::size(table); lib.gen_thunks = nullptr; lib.num_gen_thunks = 0;
+    f.state.a[0] = a0; f.state.a[1] = a1; f.state.a[7] = f.stack;
+    f.state.d[0] = d0; f.state.d[1] = d1; f.state.d[2] = d2; f.state.d[3] = d3;
+    f.ctx.running = TRUE; f.ctx.exit_code = 0;
+    KaffeineDispatchResult result{};
+    assert(Kaffeine_DispatchLibraryCall(&f.ctx, &f.cpu, f.intuition - lvo, &result));
+    assert(result.return_pc == 0x76543210 && !result.supervisor && f.state.a[7] == f.stack + 4);
+    f.ctx.libs[0] = saved; return f.state.d[0];
+}
+static void test_screen_palette()
+{
+    Fixture f;
+    f.put_ns(f.ns_at, 0, 0, 320, 200, 8, 1, 2, 0, CUSTOMSCREEN, 0, 0);
+    ULONG screen = f.open_ns(f.ns_at); assert(screen);
+    Screen *s = Kaffeine_ScreenNative(&f.ctx, screen);
+    ULONG cm = f.lng(screen + VP + 4), vp = screen + VP;
+    assert(cm && f.memory[cm + 1] == 2 && f.word(cm + 2) == 256);
+    assert(f.lng(cm + 4) == 0 && f.lng(cm + 8) == 0 && f.lng(cm + 20) == vp);
+    const ULONG in = 0x1100, out = 0x1800;
+    const std::vector<ULONG> want = {0x00020004, 0x12345678, 0x89ABCDEF, 0x10203040,
+                                    0x11223344, 0x55667788, 0x99AABBCC, 0x0001000A,
+                                    0xDEADBEEF, 0xA1B2C3D4, 0x31415926, 0};
+    for (size_t i = 0; i < want.size(); ++i) m68k_write32(&f.ctx, in + 4 * i, want[i]);
+    auto before = f.memory; palette = {};
+    assert(palette_call(f, 882, vp, in) == 0 && !f.stopped());
+    assert(palette.calls == 1 && palette.object == &s->ViewPort && palette.values == want && before == f.memory);
+    // Guest edits to the snapshot never replace the native identity/count.
+    m68k_write16(&f.ctx, cm + 2, 0); m68k_write32(&f.ctx, cm + 4, 0xDEADBEEF);
+    assert(palette_call(f, 900, cm, out, 4, 2) == 0 && palette.object == s->ViewPort.ColorMap);
+    for (ULONG i = 0; i < 6; ++i) assert(f.lng(out + i * 4) == 0x12345678 + i);
+    assert(f.memory[out - 1] == before[out - 1] && f.memory[out + 24] == before[out + 24]);
+    m68k_write16(&f.ctx, in, 0x123); m68k_write16(&f.ctx, in + 2, 0xABC);
+    assert(palette_call(f, 192, vp, in, 2) == 0 && palette.values == std::vector<ULONG>({0x123, 0xABC}));
+    for (ULONG lvo : {288U, 852U, 630U, 996U})
+    {
+        assert(palette_call(f, lvo, lvo == 288 || lvo == 852 ? vp : cm, 0, 7, 1, 2, 3) == 0);
+        assert(palette.values == std::vector<ULONG>({7, 1, 2, 3}));
+    }
+    assert(palette_call(f, 582, cm, 0, 9) == 0xA5B);
+    // Malformed later blocks are rejected before any native palette update.
+    m68k_write32(&f.ctx, in, 0x00010000); m68k_write32(&f.ctx, in + 16, 0x00020100);
+    auto count = palette.calls; before = f.memory;
+    assert(palette_call(f, 882, vp, in) == 20 && f.stopped());
+    assert(palette.calls == count && f.memory == before);
+    for (auto input : {std::array<ULONG, 4>{900, cm, 0xFFF8, 2}, {900, cm, out, 257},
+                       {900, cm + 2, out, 1}, {882, vp + 2, in, 0}, {192, vp, in + 1, 2}})
+    {
+        before = f.memory;
+        assert(palette_call(f, input[0], input[1], input[2], input[0] == 192 ? input[3] : 0,
+                            input[0] == 900 ? input[3] : 0) == 20 && f.stopped());
+        assert(palette.calls == count && before == f.memory);
+    }
+    assert(palette_call(f, 576, cm) == 20 && f.stopped() && palette.calls == count);
+    assert(palette_call(f, 708, cm, in) == 1 && !f.stopped() && palette.calls == count);
+    assert(f.close(screen) == 1);
+    assert(palette_call(f, 900, cm, out, 0, 1) == 20 && f.stopped() && palette.calls == count);
+}
 static void test_drawinfo_consumer_refusals()
 {
     Fixture f;
@@ -2930,6 +3045,7 @@ int main()
 {
     const struct Test { const char *name; void (*run)(); } tests[] =
     {
+        { "Screen-owned ColorMap identity, BE palette streams and RGB output, atomic bounds and lifetime guards", test_screen_palette },
         { "Layer snapshots follow 68k Screens and end before CloseScreen, forget and cleanup unlocks", test_layer_notifications },
         { "Thirteen ABI registrations override poisoned generated fallbacks", test_registrations },
         { "Screen.RastPort.BitMap is a typed handle of the drawn BitMap, resolved only for opened screens", test_screen_bitmap_handle },

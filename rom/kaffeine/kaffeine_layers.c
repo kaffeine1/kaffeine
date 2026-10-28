@@ -1411,11 +1411,45 @@ IPTR Kaffeine_NewLayerInfo(struct KaffeineContext *ctx, void *cpu)
     }
     layers_semaphore(ctx, guest + M68K_LI_LOCK);
     m68k_write16(ctx, guest + M68K_LI_FLAGS, native->Flags & NEWLAYERINFO_CALLED);
+    if ((IPTR)native->BlankHook <= 1)
+        m68k_write32(ctx, guest + M68K_LI_BLANKHOOK, (ULONG)(IPTR)native->BlankHook);
     st->infos[slot].guest = guest;
     st->infos[slot].native = native;
     st->infos[slot].common = NULL;
     st->infos[slot].stuck = FALSE;
     return guest;
+}
+
+/* layers -204: InstallLayerInfoHook(A0=li, A1=hook). The two native
+   sentinel modes, LAYERS_BACKFILL (0) and LAYERS_NOBACKFILL (1), for a
+   LayerInfo owned by the program, including an opened screen's embedded
+   LayerInfo. Native layers also updates its hidden
+   root. Real guest Hooks need a separate callback/lifetime adapter. */
+IPTR Kaffeine_InstallLayerInfoHook(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    ULONG guest = THUNK_A(0), hook = THUNK_A(1), old;
+    int i = layers_info_owned(st, guest), screen;
+    struct Layer_Info *li = i >= 0 ? st->infos[i].native : NULL;
+    struct Hook *result;
+
+    for (screen = 0; !li && screen < KAFFEINE_MAX_PUBSCREENS; screen++)
+        if (ctx->pubscreens[screen].owned && ctx->pubscreens[screen].native && ctx->pubscreens[screen].guest &&
+            guest == ctx->pubscreens[screen].guest + M68K_SCR_LAYERINFO &&
+            Kaffeine_ScreenNative(ctx, ctx->pubscreens[screen].guest) == ctx->pubscreens[screen].native)
+            li = &ctx->pubscreens[screen].native->LayerInfo;
+    if (!li || hook > 1)
+        return layers_refuse(ctx, "InstallLayerInfoHook(): requires an owned LayerInfo and a sentinel hook");
+    if ((st && (st->gate || st->callbacks || st->locks || st->private_locks)) || ctx->bitmap_blits)
+        return layers_refuse(ctx, "InstallLayerInfoHook(): during a backfill, blit or layer lock");
+    if ((IPTR)li->BlankHook > 1)
+        return layers_refuse(ctx, "InstallLayerInfoHook(): previous native hook has no guest identity");
+    old = (ULONG)(IPTR)li->BlankHook;
+    result = InstallLayerInfoHook(li, (struct Hook *)(IPTR)hook);
+    m68k_write32(ctx, guest + M68K_LI_BLANKHOOK, hook);
+    if ((IPTR)result != old)
+        return layers_refuse(ctx, "InstallLayerInfoHook(): unexpected previous native hook");
+    return old;
 }
 
 /* layers -150: DisposeLayerInfo(A0=li). Only a LayerInfo of
@@ -2269,10 +2303,16 @@ IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu)
             side[i]->width = (ULONG)GetBitMapAttr(side[i]->native, BMA_WIDTH);
             side[i]->height = (ULONG)GetBitMapAttr(side[i]->native, BMA_HEIGHT);
         }
-    /* each at most 32767 + 32767: no overflow */
-    if ((ULONG)(xs + w) > src.width || (ULONG)(ys + h) > src.height ||
-        (ULONG)(xd + w) > dst.width || (ULONG)(yd + h) > dst.height)
-        return layers_refuse(ctx, "BltBitMap(): a rectangle outside its BitMap");
+    /* Native graphics clips non-negative blits to both bitmap bounds.
+       Clip before constructing adapters or entering native code, so even
+       its accelerated path receives a completely bounded rectangle. */
+    if (!mask || (ULONG)xs >= src.width || (ULONG)ys >= src.height ||
+        (ULONG)xd >= dst.width || (ULONG)yd >= dst.height)
+        return 0;
+    if ((ULONG)w > src.width - (ULONG)xs) w = (WORD)(src.width - (ULONG)xs);
+    if ((ULONG)w > dst.width - (ULONG)xd) w = (WORD)(dst.width - (ULONG)xd);
+    if ((ULONG)h > src.height - (ULONG)ys) h = (WORD)(src.height - (ULONG)ys);
+    if ((ULONG)h > dst.height - (ULONG)yd) h = (WORD)(dst.height - (ULONG)yd);
     /* one native BitMap for the same ordinary 68k BitMap on both sides, so
        that graphics sees a blit inside one BitMap */
     if (src.kind == BLIT_PLANAR && !layers_blit_adapter(ctx, &src))
