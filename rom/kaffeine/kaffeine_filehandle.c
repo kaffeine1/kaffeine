@@ -294,8 +294,8 @@ void Kaffeine_FileCleanup(struct KaffeineContext *ctx)
 
 /* A guest range that native I/O fills or reads must stay clear of the
    packet, its reply queue and every owned file structure. */
-static BOOL file_range(struct KaffeineContext *ctx, ULONG msg, const struct KaffeineQueue *reply,
-                       ULONG addr, ULONG length)
+BOOL Kaffeine_PacketRange(struct KaffeineContext *ctx, ULONG msg, const struct KaffeineQueue *reply,
+                          ULONG addr, ULONG length)
 {
     unsigned i;
     if (length > INT32_MAX || !Kaffeine_MessageMemory(ctx, addr, length) ||
@@ -314,14 +314,78 @@ static BOOL file_range(struct KaffeineContext *ctx, ULONG msg, const struct Kaff
 
 /* The DOS reply: PutMsg, not ReplyMsg, so type 5, packet identity kept and
    dp_Port the handler. */
-static void file_reply(struct KaffeineContext *ctx, ULONG port, ULONG msg,
-                       const struct KaffeineQueue *reply, LONG res1, LONG res2)
+void Kaffeine_PacketReply(struct KaffeineContext *ctx, ULONG port, ULONG msg,
+                          const struct KaffeineQueue *reply, LONG res1, LONG res2)
 {
     m68k_write32(ctx, msg + 10, msg + 20);
     m68k_write32(ctx, msg + 24, port);
     m68k_write32(ctx, msg + 32, (ULONG)res1);
     m68k_write32(ctx, msg + 36, (ULONG)res2);
     Kaffeine_MessageAppend(ctx, reply, msg, 5);
+}
+
+/* A contiguous 68-byte StandardPacket with a reply queue that takes it;
+   SendPkt() sets mn_Length 68 when the program left it 0, as AmigaOS
+   AllocDosObject() does. */
+BOOL Kaffeine_PacketMessage(struct KaffeineContext *ctx, ULONG msg, struct KaffeineQueue *reply)
+{
+    return !(msg & 1) && Kaffeine_GuestBytes(ctx, msg, 68) &&
+        m68k_read16(ctx, msg + 18) == 68 && m68k_read32(ctx, msg + 20) == msg &&
+        (!m68k_read32(ctx, msg + 10) || m68k_read32(ctx, msg + 10) == msg + 20) &&
+        (!m68k_read32(ctx, msg + 14) || m68k_read32(ctx, msg + 14) == m68k_read32(ctx, msg + 24)) &&
+        Kaffeine_QueueRead(ctx, m68k_read32(ctx, msg + 24), reply) &&
+        Kaffeine_MessagePreflight(ctx, reply, msg, 68);
+}
+
+/* A synthetic handler port as the bridge made it: an empty PA_IGNORE port
+   that the program has not repurposed. */
+BOOL Kaffeine_PacketPort(struct KaffeineContext *ctx, ULONG port)
+{
+    return !m68k_read32(ctx, port) && !m68k_read32(ctx, port + 4) &&
+        ctx->mem[port + 8] == 4 && !ctx->mem[port + 9] && !m68k_read32(ctx, port + 10) &&
+        ctx->mem[port + 14] == 2 && !ctx->mem[port + 15] && !m68k_read16(ctx, port + 32) &&
+        !m68k_read32(ctx, port + 16) && m68k_read32(ctx, port + 20) == port + 24 &&
+        !m68k_read32(ctx, port + 24) && m68k_read32(ctx, port + 28) == port + 20;
+}
+
+/* Packets come from the program's process, not from a child task. */
+BOOL Kaffeine_PacketTask(struct KaffeineContext *ctx)
+{
+    return ctx->guest_exec_task && ctx->m68k_sysbase &&
+        m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK) == ctx->guest_exec_task;
+}
+
+/* An InfoData as Info() gives it: no native volume node or window pointer
+   reaches the program. A console handler ('CON\0' or 'RAW\0') puts its
+   native read IORequest in id_InUse, which classic programs follow to find
+   the console unit; there is no guest IORequest for it yet, so the program
+   gets 0. */
+void Kaffeine_InfoToGuest(struct KaffeineContext *ctx, ULONG out, const struct InfoData *info)
+{
+    m68k_write32(ctx, out, (ULONG)info->id_NumSoftErrors);
+    m68k_write32(ctx, out + 4, (ULONG)info->id_UnitNumber);
+    m68k_write32(ctx, out + 8, (ULONG)info->id_DiskState);
+    m68k_write32(ctx, out + 12, (ULONG)info->id_NumBlocks);
+    m68k_write32(ctx, out + 16, (ULONG)info->id_NumBlocksUsed);
+    m68k_write32(ctx, out + 20, (ULONG)info->id_BytesPerBlock);
+    m68k_write32(ctx, out + 24, (ULONG)info->id_DiskType);
+    m68k_write32(ctx, out + 28, 0);
+    m68k_write32(ctx, out + 32, (info->id_DiskType == 0x434F4E00 ||
+        info->id_DiskType == 0x52415700) ? 0 : (ULONG)info->id_InUse);
+}
+
+/* The native handler that a FileHandle port of the program stands for, as
+   SetConsoleTask(fh->fh_Type) uses it: its native fh_Type, NULL for NIL:. */
+BOOL Kaffeine_FilePort(struct KaffeineContext *ctx, ULONG port, struct MsgPort **native)
+{
+    unsigned i;
+    for (i = 0; i < KAFFEINE_MAX_FILES; ++i)
+        if (ctx->files[i].guest && ctx->files[i].handler == port && identity(ctx, &ctx->files[i]))
+        {
+            *native = ((struct FileHandle *)BADDR(ctx->files[i].native))->fh_Type;
+            return TRUE;
+        }
+    return FALSE;
 }
 
 /* ACTION_READ and ACTION_WRITE on the native file through a native buffer;
@@ -338,7 +402,7 @@ static IPTR file_transfer(struct KaffeineContext *ctx, struct KaffeineFile *f, U
        DoPkt4() leave the other argument registers as they were. */
     if (m68k_read32(ctx, msg + 40) != f->key)
         return Kaffeine_MessageFailure(ctx, write ? "ACTION_WRITE packet" : "ACTION_READ packet");
-    if (!file_range(ctx, msg, reply, buffer, length))
+    if (!Kaffeine_PacketRange(ctx, msg, reply, buffer, length))
         return Kaffeine_MessageFailure(ctx, write ? "ACTION_WRITE buffer" : "ACTION_READ buffer");
     caller_error = IoErr();
     temporary = AllocVec(length ? length : 1, MEMF_PUBLIC);
@@ -359,7 +423,7 @@ static IPTR file_transfer(struct KaffeineContext *ctx, struct KaffeineFile *f, U
     }
     if (!write && result > 0) memcpy(ctx->mem + buffer, temporary, (ULONG)result);
     FreeVec(temporary);
-    file_reply(ctx, port, msg, reply, result, error);
+    Kaffeine_PacketReply(ctx, port, msg, reply, result, error);
     /* Keep useful application-boundary evidence without unbounded serial I/O.
        This is private diagnostic state, independent for every context. */
     if (ctx->packet_trace_count < 16)
@@ -382,14 +446,7 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
     ULONG i;
     for (i = 0; i < KAFFEINE_MAX_FILES; ++i)
         if (ctx->files[i].guest && ctx->files[i].handler == port) f = &ctx->files[i];
-    /* A contiguous 68-byte StandardPacket; SendPkt() sets mn_Length 68 when
-       the program left it 0, as AmigaOS AllocDosObject() does. */
-    if (!identity(ctx, f) || (msg & 1) || !Kaffeine_GuestBytes(ctx, msg, 68) ||
-        m68k_read16(ctx, msg + 18) != 68 || m68k_read32(ctx, msg + 20) != msg ||
-        (m68k_read32(ctx, msg + 10) && m68k_read32(ctx, msg + 10) != msg + 20) ||
-        (m68k_read32(ctx, msg + 14) && m68k_read32(ctx, msg + 14) != m68k_read32(ctx, msg + 24)) ||
-        !Kaffeine_QueueRead(ctx, m68k_read32(ctx, msg + 24), &reply) ||
-        !Kaffeine_MessagePreflight(ctx, &reply, msg, 68))
+    if (!identity(ctx, f) || !Kaffeine_PacketMessage(ctx, msg, &reply))
         return Kaffeine_MessageFailure(ctx, "file handler packet");
     /* Handler identities are immutable, private protocols. Reject reuse as
        queues, forged fields, and aliases with any owned file storage. */
@@ -403,15 +460,9 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
               !Kaffeine_QueueDisjoint(&reply, other->mirror, KAFFEINE_FILE_BUFFER_LIMIT)))))
             return Kaffeine_MessageFailure(ctx, "file handler packet overlap");
     }
-    /* Check the synthetic handler itself has not been repurposed. */
-    if (m68k_read32(ctx, port) || m68k_read32(ctx, port + 4) ||
-        ctx->mem[port + 8] != 4 || ctx->mem[port + 9] || m68k_read32(ctx, port + 10) ||
-        ctx->mem[port + 14] != 2 || ctx->mem[port + 15] || m68k_read16(ctx, port + 32) ||
-        m68k_read32(ctx, port + 16) || m68k_read32(ctx, port + 20) != port + 24 ||
-        m68k_read32(ctx, port + 24) || m68k_read32(ctx, port + 28) != port + 20)
+    if (!Kaffeine_PacketPort(ctx, port))
         return Kaffeine_MessageFailure(ctx, "file handler");
-    if (!ctx->guest_exec_task || !ctx->m68k_sysbase ||
-        m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK) != ctx->guest_exec_task)
+    if (!Kaffeine_PacketTask(ctx))
         return Kaffeine_MessageFailure(ctx, "file handler packet from a foreign task");
 
     action = (LONG)m68k_read32(ctx, msg + 28);
@@ -459,16 +510,12 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
                 (SIPTR)(LONG)m68k_read32(ctx, msg + 40), 0, 0, 0, 0);
             res2 = (LONG)IoErr();
             break;
-        /* The InfoData of the handler, as Info() gives it: no native volume
-           node or window pointer reaches the program. A console handler
-           ('CON\0' or 'RAW\0') puts its native read IORequest in id_InUse,
-           which classic programs follow to find the console unit; there is
-           no guest IORequest for it yet, so the program gets 0. */
+        /* The InfoData of the handler (Kaffeine_InfoToGuest()) */
         case ACTION_DISK_INFO:
         {
             struct InfoData info;
             ULONG out = m68k_read32(ctx, msg + 40) << 2;
-            if ((m68k_read32(ctx, msg + 40) >> 30) || !file_range(ctx, msg, &reply, out, 36))
+            if ((m68k_read32(ctx, msg + 40) >> 30) || !Kaffeine_PacketRange(ctx, msg, &reply, out, 36))
                 return Kaffeine_MessageFailure(ctx, "ACTION_DISK_INFO buffer");
             if (!handler)
             {
@@ -479,18 +526,7 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
             res1 = (LONG)DoPkt(handler, ACTION_DISK_INFO, (SIPTR)MKBADDR(&info), 0, 0, 0, 0);
             res2 = (LONG)IoErr();
             if (res1)
-            {
-                m68k_write32(ctx, out, (ULONG)info.id_NumSoftErrors);
-                m68k_write32(ctx, out + 4, (ULONG)info.id_UnitNumber);
-                m68k_write32(ctx, out + 8, (ULONG)info.id_DiskState);
-                m68k_write32(ctx, out + 12, (ULONG)info.id_NumBlocks);
-                m68k_write32(ctx, out + 16, (ULONG)info.id_NumBlocksUsed);
-                m68k_write32(ctx, out + 20, (ULONG)info.id_BytesPerBlock);
-                m68k_write32(ctx, out + 24, (ULONG)info.id_DiskType);
-                m68k_write32(ctx, out + 28, 0);
-                m68k_write32(ctx, out + 32, (info.id_DiskType == 0x434F4E00 ||
-                    info.id_DiskType == 0x52415700) ? 0 : (ULONG)info.id_InUse);
-            }
+                Kaffeine_InfoToGuest(ctx, out, &info);
             break;
         }
         /* Every other action is answered as a handler answers one it does
@@ -501,7 +537,7 @@ IPTR Kaffeine_FilePacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
             break;
     }
     SetIoErr(caller_error);
-    file_reply(ctx, port, msg, &reply, res1, res2);
+    Kaffeine_PacketReply(ctx, port, msg, &reply, res1, res2);
     return 0;
 }
 

@@ -24,6 +24,7 @@
 #include "kaffeine_exec_compat.h"
 #include "kaffeine_exec_io.h"
 #include "kaffeine_filehandle.h"
+#include "kaffeine_handlers.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
@@ -74,7 +75,8 @@ static LONG write_override = INT_MIN;
 static std::vector<UBYTE> written_bytes;
 static unsigned native_packets;
 static MsgPort *packet_handler;
-static LONG packet_action, packet_result, packet_error;
+static LONG packet_action, packet_error;
+static SIPTR packet_result;
 static std::array<SIPTR, 5> packet_args;
 static InfoData packet_info;
 static SIPTR ioerr;
@@ -83,6 +85,55 @@ static std::map<BPTR, size_t> positions;
 static FileHandle *fixture_handles;
 static size_t fixture_handle_count;
 static std::array<UBYTE, 208> native_buffer;
+/* Native handler ports and DevProcs. The fake handler keeps the names, the
+   DateStamp and the FileInfoBlock that a packet brings, and fills the
+   FileInfoBlock and InfoData that it takes. */
+static std::array<MsgPort, 40> native_ports;
+static MsgPort *console_task, *filesys_task;
+static std::string packet_name1, packet_name2;
+static struct DateStamp packet_stamp;
+static FileInfoBlock packet_fib, packet_fib_in;
+static unsigned unlocks, devproc_frees, deviceprocs;
+static BPTR unlocked;
+static MsgPort *ram_port() { return &native_ports[0]; }
+extern "C" BOOL UnLock(BPTR lock) { ++unlocks; unlocked = lock; return -1; }
+extern "C" MsgPort *GetConsoleTask(void) { return console_task; }
+extern "C" MsgPort *SetConsoleTask(MsgPort *p) { MsgPort *o = console_task; console_task = p; return o; }
+extern "C" MsgPort *GetFileSysTask(void) { return filesys_task; }
+extern "C" MsgPort *SetFileSysTask(MsgPort *p) { MsgPort *o = filesys_task; filesys_task = p; return o; }
+/* RAM: is a device, WORK: an assign on it with the lock 0x1234560 in IoErr(),
+   and PORTn: the handler native_ports[n]. */
+extern "C" MsgPort *DeviceProc(CONST_STRPTR name)
+{
+    ++deviceprocs;
+    if (name && !std::strcmp(name, "RAM:")) { ioerr = 0; return ram_port(); }
+    if (name && !std::strcmp(name, "WORK:")) { ioerr = 0x1234560; return ram_port(); }
+    if (name && !std::strncmp(name, "PORT", 4)) { ioerr = 0; return &native_ports.at(std::atoi(name + 4)); }
+    ioerr = ERROR_DEVICE_NOT_MOUNTED;
+    return nullptr;
+}
+/* RAM: has no lock, MULTI: two drawers (locks 0x1000 and 0x2000) after
+   which the DevProc is freed, BIG: a lock past 32 bits. */
+extern "C" DevProc *GetDeviceProc(CONST_STRPTR name, DevProc *dp)
+{
+    ++deviceprocs;
+    if (dp)
+    {
+        if (dp->dvp_Lock == reinterpret_cast<BPTR>(0x1000)) { dp->dvp_Lock = reinterpret_cast<BPTR>(0x2000); return dp; }
+        FreeMem(dp, sizeof(*dp));
+        ioerr = ERROR_NO_MORE_ENTRIES;
+        return nullptr;
+    }
+    if (!name || (std::strcmp(name, "RAM:") && std::strcmp(name, "MULTI:") && std::strcmp(name, "BIG:")))
+    { ioerr = ERROR_DEVICE_NOT_MOUNTED; return nullptr; }
+    dp = static_cast<DevProc *>(AllocMem(sizeof(DevProc), MEMF_CLEAR));
+    dp->dvp_Port = ram_port();
+    dp->dvp_DevNode = reinterpret_cast<DosList *>(0x7777);
+    if (!std::strcmp(name, "MULTI:")) { dp->dvp_Lock = reinterpret_cast<BPTR>(0x1000); dp->dvp_Flags = DVPF_ASSIGN; }
+    if (!std::strcmp(name, "BIG:")) dp->dvp_Lock = reinterpret_cast<BPTR>(0x100000000ULL);
+    return dp;
+}
+extern "C" void FreeDeviceProc(DevProc *dp) { if (dp) { ++devproc_frees; FreeMem(dp, sizeof(*dp)); } }
 static constexpr char contents[] = "ABCDEFGHIJKL";
 extern "C" BYTE AllocSignal(LONG requested)
 {
@@ -170,6 +221,21 @@ extern "C" SIPTR DoPkt(MsgPort *handler, LONG action, SIPTR a1, SIPTR a2, SIPTR 
     assert(handler);
     if (action == ACTION_DISK_INFO)
         *static_cast<InfoData *>(BADDR(reinterpret_cast<BPTR>(a1))) = packet_info;
+    if (action == ACTION_INFO)
+        *static_cast<InfoData *>(BADDR(reinterpret_cast<BPTR>(a2))) = packet_info;
+    auto text = [](SIPTR a) { return std::string(reinterpret_cast<const char *>(a)); };
+    if (action == ACTION_LOCATE_OBJECT || action == ACTION_CREATE_DIR || action == ACTION_DELETE_OBJECT)
+        packet_name1 = text(a2);
+    if (action == ACTION_RENAME_OBJECT) { packet_name1 = text(a2); packet_name2 = text(a4); }
+    if (action == ACTION_SET_PROTECT || action == ACTION_SET_DATE) packet_name1 = text(a3);
+    if (action == ACTION_SET_COMMENT) { packet_name1 = text(a3); packet_name2 = text(a4); }
+    if (action == ACTION_SET_DATE) packet_stamp = *reinterpret_cast<struct DateStamp *>(a4);
+    if (action == ACTION_EXAMINE_OBJECT || action == ACTION_EXAMINE_NEXT)
+    {
+        auto *fib = static_cast<FileInfoBlock *>(BADDR(reinterpret_cast<BPTR>(a2)));
+        packet_fib_in = *fib;
+        if (packet_result) *fib = packet_fib;
+    }
     if (action == ACTION_SEEK)
     {
         /* The handler moves its own position, found by fh_Arg1, and sets
@@ -264,7 +330,7 @@ static const M68KThunkEntry exec_manual[]={
     {666,Kaffeine_CreateMsgPort},{672,Kaffeine_DeleteMsgPort},
     {372,Kaffeine_GetMsg},{378,Kaffeine_ReplyMsg},{384,Kaffeine_WaitPort}
 };
-static const M68KThunkEntry dos_manual[]={KAFFEINE_DOS_FILE_THUNKS,
+static const M68KThunkEntry dos_manual[]={KAFFEINE_DOS_FILE_THUNKS,KAFFEINE_DOS_HANDLER_THUNKS,
     {228,message_AllocDosObject},{234,kaffeine_dos_FreeDosObject},
     {240,kaffeine_dos_DoPkt},{246,kaffeine_dos_SendPkt},{252,kaffeine_dos_WaitPkt},
     {258,kaffeine_dos_ReplyPkt},{264,kaffeine_dos_AbortPkt},
@@ -281,7 +347,8 @@ static const M68KThunkEntry dos_poison[]={
     {294,poison},{300,poison},{306,poison},{312,poison},{318,poison},{360,poison},
     {366,poison},{372,poison},{378,poison},{384,poison},{426,poison},{450,poison},{456,poison},
     {324,poison},{330,poison},{336,poison},{342,poison},{348,poison},{354,poison},{390,poison},{408,poison},
-    {222,poison},{942,poison},{948,poison},{954,poison}};
+    {222,poison},{942,poison},{948,poison},{954,poison},
+    {174,poison},{510,poison},{516,poison},{522,poison},{528,poison},{642,poison},{648,poison}};
 static KaffeineContext *make_context()
 {
     auto *c=static_cast<KaffeineContext *>(AllocMem(sizeof(KaffeineContext),MEMF_CLEAR));
@@ -310,6 +377,10 @@ struct Fixture
         write_override=INT_MIN; written_bytes.clear(); native_packets=0; packet_handler=nullptr;
         packet_action=0; packet_result=-1; packet_error=37; packet_args={}; packet_info={};
         close_frees=nullptr;native_task.tc_Node.ln_Type=NT_PROCESS;native_process.pr_CES=nullptr;
+        native_process.pr_ConsoleTask=native_process.pr_FileSystemTask=nullptr;
+        native_ports={};console_task=&native_ports[1];filesys_task=&native_ports[2];
+        packet_name1.clear();packet_name2.clear();packet_stamp={};packet_fib={};packet_fib_in={};
+        unlocks=devproc_frees=deviceprocs=0;unlocked=nullptr;
         for (auto &n:native) { n.fh_Pos=n.fh_End=-1; n.fh_Type=reinterpret_cast<MsgPort *>(0x123456789ABCDEF0ULL); n.fh_Args=0xFEDCBA9876543210ULL+16*(&n-native.data()); }
         fixture_handles=native.data();fixture_handle_count=native.size();
         native_input=MKBADDR(&native[0]);native_output=MKBADDR(&native[1]);open_result=MKBADDR(&native[2]);
@@ -329,6 +400,7 @@ struct Fixture
     {
         allocation_countdown=-1;
         Kaffeine_FileCleanup(&ctx);
+        Kaffeine_HandlerCleanup(&ctx);
         for (auto &p:ctx.io_ports)
             if(p.guest) { state.a[0]=p.guest;Kaffeine_DeleteMsgPort(&ctx,&cpu); }
         Kaffeine_DestroyContext(&ctx);

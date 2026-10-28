@@ -21,6 +21,7 @@
 #include "kaffeine_tasks.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_filehandle.h"
+#include "kaffeine_handlers.h"
 
 /* Keep registry ownership with the engine that creates and destroys shadows. */
 ULONG shadow_register(struct KaffeineContext *ctx, ULONG m68k_addr, void *native, UWORD type)
@@ -292,6 +293,12 @@ ULONG shadow_task(struct KaffeineContext *ctx, void *native_task, BOOL current)
         /* The Shell sets the error stream for *>; libnix takes stderr from
            here and opens the console only when it is zero. */
         m68k_write32(ctx, guest + M68K_PR_CES, Kaffeine_FileImport(ctx, ((struct Process *)task)->pr_CES, FALSE));
+        /* The console and filesystem tasks are guest ports of the native
+           handlers, which take packets (kaffeine_handlers.c). */
+        m68k_write32(ctx, guest + M68K_PR_CONSOLETASK,
+                     Kaffeine_HandlerPort(ctx, ((struct Process *)task)->pr_ConsoleTask));
+        m68k_write32(ctx, guest + M68K_PR_FILESYSTEMTASK,
+                     Kaffeine_HandlerPort(ctx, ((struct Process *)task)->pr_FileSystemTask));
         /* pr_MsgPort is the program's packet port, an empty guest queue with
            the SIGB_DOS of the native process, which the bridge neither
            allocates nor frees. */

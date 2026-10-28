@@ -114,14 +114,24 @@ The Process packet port lives inside the registered Task shadow: guest queues
 take exactly that port, and the SIGB_DOS exception holds for it alone, with
 and without the scheduler.
 
+`test_dos_handlers` covers the guest ports of native handlers with the same
+objects and the handler module: one port for each native port and the limit
+of 32, `pr_ConsoleTask` and `pr_FileSystemTask`, `SetConsoleTask()` with the
+`fh_Type` of a file, `DeviceProc()` and its IoErr(), the DevProcs of
+`GetDeviceProc()` through a multi-assign and their cleanup, and every
+converted filesystem action: names as C strings (the message objects are
+built with `AROS_FAST_BSTR`, as for AROS aarch64), locks, FileInfoBlocks,
+InfoData and DateStamps, actions that never reach the handler, and the
+packets that stop the program.
+
 ```sh
 make -C developer/debug/test/kaffeine_host BUILD_DIR=/tmp/pkt-host -j4 test
 make -C developer/debug/test/kaffeine_host BUILD_DIR=/tmp/pkt-host-asan -j4 \
     CFLAGS="-g -fsanitize=address,undefined -fno-sanitize-recover=all" \
     CXXFLAGS="-g -fsanitize=address,undefined -fno-sanitize-recover=all" \
-    test_dos_thunks test_dos_packets test_dos_packet_thunks test_exec_messages \
+    test_dos_thunks test_dos_packets test_dos_packet_thunks test_dos_handlers test_exec_messages \
     test_exec_tasks test_guest_tasks test_icon test_display
-for test in test_dos_thunks test_dos_packets test_dos_packet_thunks \
+for test in test_dos_thunks test_dos_packets test_dos_packet_thunks test_dos_handlers \
     test_exec_messages test_exec_tasks test_guest_tasks test_icon test_display; do
     ASAN_OPTIONS=detect_leaks=0 /tmp/pkt-host-asan/"$test" || exit 1
 done

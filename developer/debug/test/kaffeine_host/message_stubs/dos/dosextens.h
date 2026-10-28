@@ -6,8 +6,11 @@
 #include <stdint.h>
 #include <exec/tasks.h>
 #define NT_PROCESS 13
-struct Process { struct Task pr_Task; BPTR pr_CES; };
 struct MsgPort;
+struct Process { struct Task pr_Task; BPTR pr_CES; struct MsgPort *pr_ConsoleTask, *pr_FileSystemTask; };
+struct DosList;
+struct DevProc { struct MsgPort *dvp_Port; BPTR dvp_Lock; ULONG dvp_Flags; struct DosList *dvp_DevNode; };
+#define DVPF_ASSIGN 2
 struct FileHandle
 {
     ULONG fh_Flags;

@@ -2,6 +2,7 @@
 #ifndef KAFFEINE_FILEHANDLE_H
 #define KAFFEINE_FILEHANDLE_H
 #include "kaffeine_intern.h"
+#include <dos/dos.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,6 +15,16 @@ BOOL Kaffeine_FileAllPrepare(struct KaffeineContext *);
 BOOL Kaffeine_FileAllFinish(struct KaffeineContext *);
 void Kaffeine_FileCleanup(struct KaffeineContext *);
 IPTR Kaffeine_FilePacket(struct KaffeineContext *, ULONG, ULONG);
+BOOL Kaffeine_FilePort(struct KaffeineContext *, ULONG, struct MsgPort **);
+/* Packets to the synthetic handler ports of files and of handlers */
+struct KaffeineQueue;
+struct InfoData;
+BOOL Kaffeine_PacketMessage(struct KaffeineContext *, ULONG, struct KaffeineQueue *);
+BOOL Kaffeine_PacketPort(struct KaffeineContext *, ULONG);
+BOOL Kaffeine_PacketTask(struct KaffeineContext *);
+BOOL Kaffeine_PacketRange(struct KaffeineContext *, ULONG, const struct KaffeineQueue *, ULONG, ULONG);
+void Kaffeine_PacketReply(struct KaffeineContext *, ULONG, ULONG, const struct KaffeineQueue *, LONG, LONG);
+void Kaffeine_InfoToGuest(struct KaffeineContext *, ULONG, const struct InfoData *);
 IPTR kaffeine_dos_Input(struct KaffeineContext *, void *);
 IPTR kaffeine_dos_Output(struct KaffeineContext *, void *);
 IPTR kaffeine_dos_Close(struct KaffeineContext *, void *);

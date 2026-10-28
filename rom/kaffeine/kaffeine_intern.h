@@ -45,6 +45,7 @@ struct KaffeineCPUFactory;
 struct IORequest;
 struct Message;
 struct MsgPort;
+struct DevProc;
 struct Task;
 struct Device;
 struct TextFont;
@@ -367,6 +368,13 @@ struct KaffeineContext
     ULONG packet_trace_count;
     ULONG guest_exec_task;
     IPTR (*file_packet)(struct KaffeineContext *, ULONG, ULONG);
+    /* Guest ports of native DOS handlers, one for each native port, and
+       the DevProcs of GetDeviceProc() (kaffeine_handlers.c) */
+    #define KAFFEINE_MAX_HANDLERS 32
+    struct { ULONG guest; struct MsgPort *native; } handlers[KAFFEINE_MAX_HANDLERS];
+    #define KAFFEINE_MAX_DEVPROCS 16
+    struct { ULONG guest; struct DevProc *native; } devprocs[KAFFEINE_MAX_DEVPROCS];
+    IPTR (*handler_packet)(struct KaffeineContext *, ULONG, ULONG);
     ULONG message_ports[KAFFEINE_MAX_MESSAGE_PORTS];
     struct KaffeineIcon icons[KAFFEINE_MAX_ICONS];
     /* Borrowed display records: snapshots live until context destruction.

@@ -38,6 +38,8 @@
 #define M68K_PR_CURRENTDIR          152
 #define M68K_PR_CIS                 156
 #define M68K_PR_COS                 160
+#define M68K_PR_CONSOLETASK         164
+#define M68K_PR_FILESYSTEMTASK      168
 #define M68K_PR_CLI                 172
 #define M68K_PR_PKTWAIT             180
 #define M68K_PR_WINDOWPTR           184
