@@ -60,17 +60,18 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   queues, `ExAll`/`ExAllEnd`, FileHandle DOS packets and guest ports for
   native DOS handlers (`DeviceProc`, `GetDeviceProc`, `FreeDeviceProc`,
   `GetConsoleTask`, `SetConsoleTask`, `GetFileSysTask`, `SetFileSysTask`).
-- The original 68k Personal Paint 7.2.1.0 reaches the editor from the native
-  AROS Shell in QEMU. A verified run starts with a 24-bit Workbench, selects
-  a 1024×768 canvas with a 256-entry palette inside the application, draws
-  with rectangles, circles and text, saves an IFF/ILBM image, and returns to
-  the Shell with exit code zero. Independently decoded image pixels match
-  the visible canvas exactly. Loading saved 1024×768 IFF and PNG images still
-  reports “The image is too large”; full application compatibility is not
-  established. The interpreter remains Moira.
-  Desktop icon launch works with the standard `CLI` tooltype and the CPU
-  blitting library selected in Personal Paint. Full Workbench `WBStartup`
-  message handling remains a separate compatibility boundary.
+- The original 68k Personal Paint 7.2.1.0 opens from a native desktop icon
+  in AROS AArch64/QEMU. The [recorded demonstration](docs/kaffeine/personal-paint-demo.md)
+  starts with a 24-bit Workbench, selects a 1024×768 canvas with a 256-entry
+  palette inside the application, draws with rectangles, circles and text,
+  saves an IFF/ILBM image and returns to the desktop. Independently decoded
+  image pixels match the visible canvas exactly. Desktop icon launch uses
+  the standard `CLI` tooltype and Personal Paint's CPU blitting library.
+  The unchanged 68k executable runs under Moira, without an “Attention /
+  Memory save mode” requester in this session. Earlier direct Shell tests
+  also returned exit code zero. Loading saved 1024×768 IFF and PNG images
+  still reports “The image is too large”; full application compatibility
+  and Workbench `WBStartup` message handling remain open.
 
 The guest `ExecBase.MemList` contains read-only capacity descriptors for
 the chip-accessible containment heap, excluding the custom-register window
@@ -151,6 +152,7 @@ The current test and target baseline includes:
 | Focused ASan/UBSan JIT build | 304 bitfield boundary checks, 164 extended-instruction checks and 256 randomized programs pass |
 | Standalone AROS AArch64 JIT probe in QEMU | `jit_probe` passes 38 checks in Shell and `Run`; a separate instruction corpus passes 490 checks covering 432 programs and eight callback boundary cases in each mode |
 | AROS AArch64 in QEMU | Synthetic CLI/GUI probes, the 6-step `bzip2 1.0.8` self-test and the 7-step IJG JPEG `9f` self-test pass in both Shell and `Run` modes |
+| Personal Paint 7.2.1.0 on AROS AArch64 in QEMU | Original 68k executable opens from a desktop icon through the `CLI` route, draws, saves a 1024×768 ILBM image and returns to the desktop; [video, screenshots and output](docs/kaffeine/personal-paint-demo.md) are available |
 | Native AmigaOS reference | Message, packet, `ExAll`, `icon.library`, `AppIcon`, layer, region, bitmap, screen and `NewWindow` observations match the bridged AROS contract |
 
 The target suite includes deliberate nonzero refusal/exit probes alongside
@@ -167,11 +169,13 @@ new check. The host task/list fixture passes 109 checks, including bounded
 Moira traversal, capacity descriptors, reuse and allocation failure.
 
 Personal Paint's editor, selected drawing tools, IFF/ILBM saving and return
-to the native Shell have been verified in QEMU with the original 68k binary.
-Loading saved 1024×768 images, remaining painting operations, full Workbench
-startup, responsiveness and the full application lifecycle remain open
-checks. Sampled mathffp SPDiv results include eight one-ULP differences from
-AmigaOS.
+to the native desktop have been recorded in QEMU with the original 68k
+binary. The published ILBM has eight bitplanes and a 256-entry palette;
+its decoded pixels match the visible canvas. The drawing uses a small
+subset of that palette. Loading saved 1024×768 images, remaining painting
+operations, full Workbench startup, responsiveness and complete resource
+cleanup remain open checks. Sampled mathffp SPDiv results include eight
+one-ULP differences from AmigaOS.
 
 ## Building and testing
 
@@ -212,6 +216,7 @@ the agreed scope.
 
 ## Documentation
 
+- [Personal Paint demonstration, screenshots and saved output](docs/kaffeine/personal-paint-demo.md).
 - [Project manifesto](docs/kaffeine/MANIFESTO.md) and [Italian original](docs/kaffeine/MANIFESTO.it.md).
 - [Licenses and component provenance](docs/kaffeine/LICENSING.md).
 - [CPU backend contract](rom/kaffeine/BACKENDS.md).

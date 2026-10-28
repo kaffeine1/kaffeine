@@ -27,22 +27,34 @@ the bzip2 1.0.8 self-test and the IJG JPEG library 9f self-test (`cjpeg`,
 both on the host and inside native AROS AArch64 (`jit_probe`) as a step
 toward the Kaffeine JIT, separate from the production AROS execution path.
 
-The original 68k Personal Paint 7.2.1.0 reaches its editor from the native
-AROS Shell in QEMU. A verified run uses a 24-bit Workbench and selects a
-1024×768, 256-color canvas inside Personal Paint, draws with rectangles,
-circles and text, saves an IFF/ILBM image, and returns to the Shell with
-exit code zero. The decoded file matches the visible canvas pixel for pixel.
-Loading saved 1024×768 IFF and PNG images still reports “The image is too
-large”; complete application compatibility, full Workbench startup and
-responsiveness remain open milestones. Desktop icon launch uses the standard
-`CLI` tooltype with Personal Paint configured for CPU blitting. This run uses
-Moira.
+The original 68k Personal Paint 7.2.1.0 opens from an icon on the native
+AROS desktop in QEMU. The recorded session starts on a 24-bit Workbench,
+selects a 1024×768, 256-color canvas inside Personal Paint, draws with
+rectangles, circles and text, saves an IFF/ILBM image and returns to the
+desktop. The decoded file matches the visible canvas pixel for pixel.
+Icon launch uses the standard `CLI` tooltype and CPU blitting; the CPU
+backend is Moira. Loading saved 1024×768 images, full Workbench `WBStartup`
+handling and broader application compatibility remain open checks.
 
 PPC guests, RISC-V hosting, a general hybrid CPU backend and multicore
 execution are future work. The manifesto does not claim them as implemented.
 
+## Personal Paint demonstration — 28 October 2026
+
+[![Original Personal Paint 68k running on AROS ARM64, with a drawing made in the application](docs/kaffeine/media/personal-paint-2026-10-28/drawing.png)](docs/kaffeine/personal-paint-demo.md)
+
+**[Watch the video (MP4, 3:41)](docs/kaffeine/media/personal-paint-2026-10-28/personal-paint-68k-aros-arm64.mp4)**
+— [screenshots, saved drawing, setup and verified limits](docs/kaffeine/personal-paint-demo.md).
+
+The capture starts directly in AROS and shows icon launch, drawing, saving
+and return to the desktop. It contains only the guest display; idle waits
+are shortened and drawing remains at its original speed. This is an AROS
+ARM64/QEMU compatibility demonstration using Moira, rather than a JIT or
+physical hardware benchmark.
+
 ## Documentation and tests
 
+- [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
 - [Current behavior, architecture and verified limits](README.KAFFEINE.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
 - [Standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).
