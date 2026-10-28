@@ -27,6 +27,7 @@
 #include "kaffeine_thunks_memory.h"
 #include "kaffeine_thunks_dos.h"
 #include "kaffeine_filehandle.h"
+#include "kaffeine_handlers.h"
 #include "kaffeine_thunks_utility.h"
 #include "kaffeine_thunks_locale.h"
 #include "kaffeine_thunks_mathieee.h"
@@ -526,6 +527,7 @@ const struct M68KThunkEntry kaffeine_thunks_dos[] = {
     { 126, thunk_dos_CurrentDir },
     KAFFEINE_DOS_READARGS_THUNKS,
     KAFFEINE_DOS_FILE_THUNKS,
+    KAFFEINE_DOS_HANDLER_THUNKS,
     KAFFEINE_DOS_BASE_THUNKS,
     KAFFEINE_DOS_MATCH_THUNKS,
     { 0, NULL }
