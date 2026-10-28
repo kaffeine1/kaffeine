@@ -26,27 +26,47 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   Most thunks are generated from the library descriptions; the manual ones,
   each described in [INTERNALS.md](rom/kaffeine/INTERNALS.md), convert the
   structures that differ between the two sides and keep 68k copies of the
-  native windows, screens, messages, gadgets and menus in step.
-- Native code calls back into 68k code where AmigaOS does, as with hooks
-  and the output routines of `RawDoFmt()`, nested up to 16 deep.
+  native windows, screens, layers, regions, bitmaps, messages, gadgets,
+  menus and icons in step.
+- Native code calls back into 68k code where AmigaOS does, as with hooks,
+  `ExAll()` match hooks, layer backfill hooks and the output routines of
+  `RawDoFmt()`, nested up to 16 deep.
+- Cooperative guest child tasks created with `AddTask()` and removed with
+  `RemTask()` run inside Moira in the same 32 MB guest arena, each with its
+  own Moira CPU and checked stack, scheduled by priority and round-robin
+  slices across `Forbid()`/`Permit()`, `Disable()`/`Enable()`, `Wait()`,
+  `WaitPort()`, `Signal()` and guest message queues.
 - A 68k library that AROS does not have, such as the `bullet.library` of
-  AmigaOS, loads from disk and runs as 68k code, made as Exec makes it.
+  AmigaOS or Personal Paint's 68k support libraries, loads from disk and
+  runs as 68k code, made as Exec makes it.
 
 ## What runs today
 
 - 68k HUNK programs run from the Shell and through `Run` on AROS AArch64
-  in QEMU. The six bzip2 1.0.8 self-test cases match their references byte for byte.
-- Targeted graphics tests cover windows, public screens, RastPorts, fonts,
+  in QEMU. The six bzip2 1.0.8 self-test cases and the seven IJG JPEG
+  library 9f self-test steps (`cjpeg`, `djpeg`, `jpegtran`) match their
+  references byte for byte.
+- Targeted graphics and system tests cover windows, owned and public
+  screens (including genuine 8-bit `LUT8` indexed screens on the Raspberry Pi
+  framebuffer driver), `DrawInfo` snapshots, display and monitor metadata
+  queries, RastPorts, fonts, live and offscreen planar layers, clip regions,
+  planar and screen bitmaps (`InitBitMap`, `BltBitMap`, `GetBitMapAttr`),
   IDCMP, GadTools and classic gadgets and menus, keyboard/mouse input,
-  and Workbench application objects.
+  `icon.library` metadata snapshots and Workbench application objects
+  (`AppWindow`, `AppIcon`, `AppMenuItem`).
 - The bridge loads 68k disk libraries and adapts native library paths,
-  mathffp calls, the no-window console unit, disk fonts, guest queues and
-  bounded DOS read packets.
-- Personal Paint loads fonts and image I/O libraries and completes packet
-  reads and WaitPort/GetMsg replies. Startup passes the blitter library's
-  Exec memory-list scan, then reaches a later DOS read packet rejected by
-  the bridge's boundary checks; the editor and full application lifecycle
-  have not been validated.
+  mathffp and IEEE math calls, the no-window console unit, disk fonts,
+  cooperative `AddTask`/`RemTask` child tasks, guest message and semaphore
+  queues, `ExAll`/`ExAllEnd`, FileHandle DOS packets and guest ports for
+  native DOS handlers (`DeviceProc`, `GetDeviceProc`, `FreeDeviceProc`,
+  `GetConsoleTask`, `SetConsoleTask`, `GetFileSysTask`, `SetFileSysTask`).
+- Personal Paint starts under Moira on AROS AArch64 in QEMU, loads fonts
+  and its 68k blitter and image I/O libraries, completes DOS packet reads
+  and `WaitPort`/`GetMsg` replies, passes its initial notice requester,
+  opens its custom 8-bit indexed screen and main window, and reaches the
+  editor canvas and toolbar. Interactive drawing and tool use, loading and
+  saving images, clean exit, desktop startup and execution on the Kaffeine
+  JIT have not been validated yet.
 
 The embedded native Exec lists currently have empty guest headers with
 valid head, tail and predecessor sentinels. Their native identities remain
@@ -55,8 +75,9 @@ expose native memory headers, devices, libraries or tasks. The public
 guest port and semaphore lists have their own guest nodes.
 
 The production AROS path still uses the Moira interpreter. Complete
-application operation, an FPU, new guest processes, general asynchronous
-device I/O, cross-task messages and physical hardware remain unverified or
+application operation, an FPU, new guest DOS processes (`CreateProc`,
+`CreateNewProc`), general asynchronous device I/O, communication between
+separate guest contexts and physical hardware remain unverified or
 unsupported within the current contracts.
 
 ## The CPU: Moira now, the kaffeine JIT next
@@ -65,12 +86,15 @@ unsupported within the current contracts.
 ([BACKENDS.md](rom/kaffeine/BACKENDS.md)). Moira is the operational 68k
 interpreter and the reference for extending the execution engine.
 
-A [hosted AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md)
-executes a subset through the same interface and compares results with
-Moira. Its host-side microbenchmarks do not establish application speed
-inside AROS. A production JIT or hybrid backend needs explicit state and
-transition contracts covering the relevant exception, stack, prefetch,
-control-register and FPU state, beyond D0-D7, A0-A7, PC and SR alone.
+A [standalone AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md)
+executes a growing 68k instruction subset through the same interface and
+compares results with Moira on the host and inside native AROS AArch64
+([`jit_probe`](developer/debug/test/kaffeine_native/README.md), using
+`AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE`). Its
+microbenchmarks do not establish application speed inside AROS. A production
+JIT or hybrid backend needs explicit state and transition contracts covering
+the relevant exception, stack, prefetch, control-register, per-task CPU and
+FPU state, beyond D0-D7, A0-A7, PC and SR alone.
 
 The compatibility environment, loading, guest CPU execution and host
 services are distinct architectural responsibilities. The current 68k
@@ -111,32 +135,37 @@ point of the provenance of the NDK data.
 
 ## Verified scope
 
-The combined message/packet compatibility baseline has these results:
+The current test and target baseline includes:
 
 | Environment | Result |
 | --- | --- |
-| macOS arm64 and Linux GCC 14 | All 38 host executables pass |
-| Unsigned-char host build | All 38 executables pass |
-| Focused ASan/UBSan build | Eight executables pass |
-| AROS AArch64 in QEMU | 63 boots and 126 Shell/Run executions give the expected results |
-| Native AmigaOS reference | 26 message checks, 28 packet checks and 20 raw observations match AROS |
+| macOS arm64 and Linux GCC 14 | All 47 host executables pass (`test_thunk_registrations.py` checks 319 native-vector cases and 528 manual thunks across 18 tables) |
+| Unsigned-char host build | All 47 executables pass |
+| Focused ASan/UBSan build | Passes across the host suites (`run_sanitizers.sh`) |
+| Standalone AROS AArch64 JIT probe | `jit_probe` passes 38 checks in Shell and `Run`, and the extended instruction corpus passes 431 checks across 429 programs in Shell and `Run` |
+| AROS AArch64 in QEMU | Synthetic CLI/GUI probes, the 6-step `bzip2 1.0.8` self-test and the 7-step IJG JPEG `9f` self-test pass in both Shell and `Run` modes |
+| Native AmigaOS reference | Message, packet, `ExAll`, `icon.library`, `AppIcon`, layer, region, bitmap, screen and `NewWindow` observations match the bridged AROS contract |
 
-The target results include sixteen deliberate nonzero refusal/exit probes.
-The six bzip2 compression and decompression cases pass in both launch
-modes, with output compared byte for byte. Host, QEMU and native-reference
-results describe their respective environments; physical hardware has
-not been validated.
+The target suite includes deliberate nonzero refusal/exit probes alongside
+positive functional checks. The six bzip2 compression/decompression steps
+and the seven IJG JPEG compression, decompression and lossless transform
+steps pass in both launch modes, with output compared byte for byte. Host,
+standalone native AROS, QEMU and native-reference results describe their
+respective environments; physical hardware has not been validated.
 
 The embedded-list regression passes 28 checks on native AmigaOS and in
 each AROS Shell/Run execution. Its original host callback fixture reproduces
 the former arena-end fault with the old shadow initialization and passes
 all 91 task/list checks with the corrected headers.
 
-Personal Paint progresses through font loading, DOS packet reads,
-WaitPort/GetMsg replies and the blitter library's memory-list scan. Its
-startup is still incomplete because a later DOS read packet is rejected by the
-bridge's boundary checks. Sampled mathffp
-SPDiv results include eight one-ULP differences from AmigaOS.
+Personal Paint starts under Moira on AROS AArch64 in QEMU, loads fonts and
+68k support libraries, completes DOS packet reads and `WaitPort`/`GetMsg`
+replies, passes its initial notice requester, opens its custom 8-bit
+indexed screen and main window, and reaches the editor canvas and toolbar.
+Interactive drawing and tool operations, loading and saving images, clean
+exit, desktop launch and execution on the Kaffeine JIT remain to be
+validated. Sampled mathffp `SPDiv` results include eight one-ULP
+differences from AmigaOS.
 
 ## Building and testing
 
@@ -149,8 +178,9 @@ make -C developer/debug/test/kaffeine_host test
 
 The native AROS library is built through the normal AROS build system.
 See the [library build instructions](rom/kaffeine/README.md#building),
-the [host suite](developer/debug/test/kaffeine_host/README.md) and the
-[target suite](developer/debug/test/kaffeine_target/README.md).
+the [host suite](developer/debug/test/kaffeine_host/README.md), the
+[standalone AROS JIT probe](developer/debug/test/kaffeine_native/README.md)
+and the [target suite](developer/debug/test/kaffeine_target/README.md).
 
 ## Remaining work
 
@@ -158,8 +188,9 @@ The full [roadmap](docs/kaffeine/MANIFESTO.md#7-a-roadmap-based-on-observable-re
 uses observable application outcomes:
 
 1. Complete useful 68k application operations on AROS ARM64, prioritizing
-   Personal Paint's editor, tools, load/save, cleanup and desktop use.
-   The current next blocker is the later DOS read-packet boundary.
+   Personal Paint's interactive drawing and tools, image load/save, clean
+   shutdown and desktop startup now that startup reaches the editor under
+   Moira.
 2. Accelerate the same binaries with the Kaffeine JIT or a verified hybrid
    mode, preserving behavior and measuring end-to-end benefits.
 3. Validate interaction, stability, memory and performance on real hardware.
@@ -178,7 +209,7 @@ the agreed scope.
 - [Project manifesto](docs/kaffeine/MANIFESTO.md) and [Italian original](docs/kaffeine/MANIFESTO.it.md).
 - [Licenses and component provenance](docs/kaffeine/LICENSING.md).
 - [CPU backend contract](rom/kaffeine/BACKENDS.md).
-- [Hosted AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md).
-- [Library implementation and supported boundaries](rom/kaffeine/INTERNALS.md).
+- [Hosted AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md) and [standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).
+- [Library overview](rom/kaffeine/README.md) and [internals reference](rom/kaffeine/INTERNALS.md).
 - [Host tests](developer/debug/test/kaffeine_host/README.md).
 - [Target programs and QEMU runner](developer/debug/test/kaffeine_target/README.md).

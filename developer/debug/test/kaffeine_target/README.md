@@ -234,11 +234,13 @@ fixed addresses can belong to live allocations. Custom-chip window and
 `$1DFF000` alias checks remain separate.
 
 The sampled mathffp SPDiv cases retain eight one-ULP differences from
-AmigaOS. Personal Paint progresses through packet reads and replies and
-the blitter library's memory-list scan, then stops at a later DOS read packet
-rejected by the bridge's boundary checks. Complete application
-startup, an FPU, general asynchronous/cross-task messaging and physical
-hardware have not been established.
+AmigaOS. Personal Paint starts under Moira on AROS AArch64 in QEMU, loads
+fonts and 68k support libraries, completes packet reads and replies, passes
+its initial notice requester, opens its custom 8-bit indexed screen and main
+window, and reaches the editor; interactive tool operations, loading and
+saving images, clean exit, desktop launch, execution on the Kaffeine JIT,
+an FPU, general asynchronous device I/O and physical hardware have not been
+established.
 
 ## Offline runner checks
 

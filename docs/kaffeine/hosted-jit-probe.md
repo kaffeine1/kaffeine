@@ -306,8 +306,11 @@ The initial AROS ARM/QEMU run passed 38 checks in both direct Shell and
 big-endian memory, a native thunk, a nested translated callback, invalidated
 and retranslated guest code, and explicit unsupported-instruction failure.
 The callback used six translated blocks and nested execution; the code
-mutation case used seven blocks and one invalidation. The existing host
-suite also passed 3,295 checks with Clang, ASan/UBSan and GCC 15.
+mutation case used seven blocks and one invalidation. Following the
+instruction-subset extension, the combined candidate also passed 431
+instruction-corpus checks (across 429 programs) and the 38 regression checks
+on native AROS ARM in both Shell and `Run` modes, alongside 3,522 host
+checks with Clang, ASan/UBSan and GCC 15.
 
 These are separate results from the host timings above. No native speedup
 or physical-target cache result is claimed. The library application backend

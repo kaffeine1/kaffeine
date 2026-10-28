@@ -35,7 +35,9 @@ failure boundary for an unsupported instruction. Each case releases its
 backend and guest arena.
 
 The initial AROS ARM/QEMU run passed all 38 checks in both Shell and `Run`
-modes. This establishes execution of the subset on that VM. It does not
-establish physical Raspberry Pi cache behavior, full instruction coverage,
-guest-task support, application performance or Personal Paint on the JIT.
-Those require subsequent backend integration and target validation.
+modes, and the extended instruction-coverage candidate additionally passed
+431 instruction-corpus checks across 429 programs in both Shell and `Run`
+modes. This establishes execution of the translated subset on that VM. It
+does not establish physical Raspberry Pi cache behavior, full instruction
+coverage, guest-task support, application performance or Personal Paint on
+the JIT. Those require subsequent backend integration and target validation.

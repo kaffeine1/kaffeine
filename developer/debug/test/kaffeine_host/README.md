@@ -53,15 +53,15 @@ Darwin-specific JIT constraints.
 ## Coverage
 
 The Makefile is the authoritative list of executables. The current suite
-has 43 test executables and a thunk-registration audit.
+has 47 test executables and a thunk-registration audit.
 
 | Area | Coverage |
 | --- | --- |
 | CPU and loaders | Real Moira instructions, A-line dispatch, registers and condition codes, HUNK loading and relocations, callback faults and guest bounds |
 | Exec | Heap and pools, lists, signals, task snapshots, embedded ExecBase list headers and bounded Moira callback traversal, semaphores, public ports, guest message queues, I/O requests and timer boundaries |
-| DOS | Handle identities and lifetimes, buffers, packet thunks and FileHandle actions, formatting, CLI state, argument parsing, data structures and directory traversal |
-| Graphics and Intuition | RastPorts, fonts, screens, windows, IDCMP, requests, menus, gadgets and Workbench objects |
-| Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, no-window console calls and diskfont snapshots |
+| DOS | Handle identities and lifetimes, buffers, packet thunks and FileHandle actions, handler ports (`DeviceProc`/`GetDeviceProc`), formatting, CLI state, argument parsing, data structures and directory traversal (`ExAll`/`ExAllEnd`) |
+| Graphics, Layers and Intuition | RastPorts, fonts, display and monitor metadata, owned and public screens, `DrawInfo`, live and offscreen planar layers and backfill hooks, clip regions, bitmaps (`InitBitMap`/`BltBitMap`/`GetBitMapAttr`), windows, IDCMP, requests, menus, gadgets and Workbench objects |
+| Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, `icon.library` metadata snapshots, no-window console calls and diskfont snapshots |
 | CPU backend extension | Hosted AArch64 translation probe behind the same CPU interface |
 | Guest scheduling | Separate complete Moira CPUs, task identity/priority, deferred Wait/WaitPort, Forbid/Disable, message exchange, native signal routing, removal, bounds, allocation rollback and cleanup |
 
@@ -147,8 +147,9 @@ each mutation. The original rom/kaffeine stays unchanged.
 `make test` also runs `test_thunk_registrations.py`. Its default inputs are
 the AROS configuration files in this tree. Optional NDK and AROS FD inputs
 can extend the audit; use the script's `--help` for the available options.
-The extended audit covers 278 explicit native-vector cases and 399 manual
-thunk registrations. External SDK files are not included in this repository.
+The audit covers 319 explicit native-vector cases and 528 manual thunk
+registrations across 18 tables. External SDK files are not included in this
+repository.
 
 ## Sanitizers and build variants
 

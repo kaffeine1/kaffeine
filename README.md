@@ -17,17 +17,23 @@ architectural boundaries and observable milestones.
 
 The current bridge runs 68k HUNK programs inside AROS AArch64 using Moira
 as the CPU interpreter. Supported library calls reach native AROS services;
-targeted graphics tests use AROS windows, fonts, menus and gadgets. CLI
-programs and the bzip2 self-test run in QEMU. A hosted AArch64 translation
-probe is a step toward the Kaffeine JIT, separate from the production AROS
-execution path.
+targeted graphics and system tests cover AROS windows, owned and public
+screens (including 8-bit `LUT8` indexed screens on the Raspberry Pi
+framebuffer driver), fonts, layers, regions, bitmaps, menus, gadgets,
+cooperative guest child tasks (`AddTask`/`RemTask`), DOS packets and handler
+ports, `ExAll`/`ExAllEnd`, and Workbench application objects. CLI programs,
+the bzip2 1.0.8 self-test and the IJG JPEG library 9f self-test (`cjpeg`,
+`djpeg`, `jpegtran`) run in QEMU. A standalone AArch64 translation probe runs
+both on the host and inside native AROS AArch64 (`jit_probe`) as a step
+toward the Kaffeine JIT, separate from the production AROS execution path.
 
-Personal Paint is the first substantial graphical application target.
-Startup passes font loading, DOS packet reads and the blitter library's
-Exec memory-list scan, then stops when a later DOS read packet is rejected
-by the bridge's boundary checks. Reaching the editor, loading and
-saving images, correct shutdown, desktop startup and responsiveness remain
-milestones to verify.
+Personal Paint is the first substantial graphical application target. Under
+Moira on AROS AArch64 in QEMU, startup loads fonts and 68k support libraries,
+completes DOS packet reads and replies, passes its initial notice requester,
+opens its custom 8-bit indexed screen and main window, and reaches the
+editor canvas and toolbar. Interactive drawing and tool use, loading and
+saving images, clean exit, desktop startup, responsiveness and execution on
+the Kaffeine JIT remain milestones to verify.
 
 PPC guests, RISC-V hosting, a general hybrid CPU backend and multicore
 execution are future work. The manifesto does not claim them as implemented.
@@ -36,8 +42,9 @@ execution are future work. The manifesto does not claim them as implemented.
 
 - [Current behavior, architecture and verified limits](README.KAFFEINE.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
+- [Standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).
 - [AROS target programs and QEMU runner](developer/debug/test/kaffeine_target/README.md).
-- [Library implementation](rom/kaffeine/README.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).
+- [Library implementation](rom/kaffeine/README.md), [internals reference](rom/kaffeine/INTERNALS.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).
 - [Licenses and provenance](docs/kaffeine/LICENSING.md).
 
 The project builds on AROS and its original `m68kemu.library`. The bridge is

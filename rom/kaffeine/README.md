@@ -37,7 +37,8 @@ all AmigaOS library calls to forward them to the native AROS implementations.
                   │                                   │
                   │  exec.library    dos.library      │
                   │  intuition.library  graphics.lib  │
-                  │  ... 17 libraries, ~910 thunks    │
+                  │  ... 22 libs + 2 devs (789 auto,  │
+                  │      528 manual registrations)    │
                   └───────────────────────────────────┘
 ```
 
@@ -140,33 +141,41 @@ Unimplemented LVOs return 0 with a debug log message.
 Thunks bridge the gap between the m68k calling convention (registers D0-D7/A0-A6)
 and native AROS C functions. There are two kinds:
 
-- **Auto-generated thunks** (810 across 17 libraries): Created by
+- **Auto-generated thunks** (789 across 17 libraries): Created by
   `kaffeine_thunkgen.py` from Amiga FD files and NDK clib prototype headers.
   The generator parses C prototypes for full type information, automatically
-  emitting correct pointer translation code: `m68k_to_host_or_shadow` for
-  struct pointers (256 uses), `m68k_to_host` for string pointers (133 uses),
-  `m68k_to_native_taglist` for TagItem arrays (73 uses), `resolve_rp` for
-  RastPort resolution (63 uses), and `shadow_create_by_name` for return values
-  that need shadow wrapping (34 uses).
+  emitting pointer translation code: `m68k_to_host_or_shadow` for struct
+  pointers, `m68k_to_host` for string pointers, `m68k_to_native_taglist` for
+  TagItem arrays, `resolve_rp` for RastPort resolution, and
+  `shadow_create_by_name` for return values that need shadow wrapping.
 
-- **Manual thunks** (~100) for functions needing special handling:
-  - **exec**: `OpenLibrary` (fake base creation + m68k library fallback),
-    `AllocMem`/`FreeMem`/`AllocVec`/`FreeVec` (containment heap),
+- **Manual thunks** (528 registrations across 18 tables) for functions needing
+  bounded conversion, guest-memory ownership, or explicit refusal:
+  - **exec** (84): `OpenLibrary`/`OldOpenLibrary`/`CloseLibrary` (fake base creation + m68k library fallback),
+    `AllocMem`/`FreeMem`/`AllocAbs`/`AvailMem`/`AllocEntry`/`FreeEntry`/`AllocVec`/`FreeVec`/`TypeOfMem` (containment heap),
     `CreatePool`/`DeletePool`/`AllocPooled`/`FreePooled` (guest pool objects and ownership),
-    `FindTask` (stable ThisTask and cached named Task shadows), `RawDoFmt` (custom %s/%d),
-    `WaitPort`/`GetMsg`/`ReplyMsg` (68k IntuiMessages of IDCMP ports),
+    `AddTask`/`RemTask`/`SetTaskPri` (cooperative guest child tasks in `kaffeine_sched.c`),
+    `FindTask` (stable ThisTask, registered guest tasks and cached named Task shadows),
+    `Forbid`/`Permit` and `Disable`/`Enable` (guest task-switch nesting counters),
+    `Wait`/`Signal`/`AllocSignal`/`FreeSignal`/`SetSignal` (guest task signals and native host signal fallback),
+    `RawDoFmt` (checked guest formatter and callback trampoline in `kaffeine_format.c`),
+    `PutMsg`/`GetMsg`/`ReplyMsg`/`WaitPort` and `CreateMsgPort`/`DeleteMsgPort`/`AddPort`/`RemPort`/`FindPort` (IDCMP ports, AppMessages, DOS packets and guest FIFO ports),
+    `OpenDevice`/`CloseDevice`/`DoIO`/`SendIO`/`CheckIO`/`WaitIO`/`AbortIO`/`CreateIORequest`/`DeleteIORequest` (`kaffeine_exec_io.c`),
     `Supervisor` (68020 exception frame trampoline),
-    `Forbid`/`Permit` (no-ops), semaphores (guest memory, one task per context)
-  - **dos**: `Open`/`Close`/`Read`/`Write`/`Seek` (BPTR pass-through),
+    `CacheClearU`/`CacheClearE`, list helpers, AVL helpers and guest semaphores (`kaffeine_exec_compat.c`)
+  - **dos** (122): `Open`/`Close`/`Read`/`Write`/`Seek`/`FGetC`/`FPutC`/`UnGetC`/`FRead`/`FWrite`/`FGets`/`FPuts`/`Flush` (managed guest `FileHandle`s and BPTR pass-through),
     `ReadArgs`/`FreeArgs` (results copied into guest memory),
-    `Lock`/`UnLock`/`CurrentDir`, `AllocDosObject`/`FreeDosObject` (a 68k
-    `RDArgs` in guest memory),
-    `Execute`/`SystemTagList`/`RunCommand`, `VPrintf`/`VFPrintf`,
-    `GetProgramName` (from context), `MatchFirst`/`MatchNext`/`MatchEnd`
-  - **intuition**: `OpenScreen`/`OpenScreenTagList`/`CloseScreen` (bounded inputs and owned screen snapshots),
-    `OpenWindow`/`OpenWindowTagList`/`CloseWindow` (NewWindow translation, a
-    68k Window with its fields, a 68k RastPort and a 68k IDCMP port, the
-    screen of `WA_PubScreen`, `WA_CustomScreen` or the NewWindow as the
+    `Lock`/`UnLock`/`DupLockFromFH`/`OpenFromLock`/`ParentOfFH`/`CurrentDir`/`Examine`/`ExNext`/`ExamineFH`/`ExAll`/`ExAllEnd`/`Info`,
+    `AllocDosObject`/`FreeDosObject` (`DOS_RDARGS`, `DOS_FIB`, `DOS_EXALLCONTROL` and `DOS_STDPKT` in guest memory),
+    `DoPkt`/`SendPkt`/`WaitPkt`/`ReplyPkt`/`AbortPkt` (FileHandle packet ports and native DOS handler ports),
+    `DeviceProc`/`GetDeviceProc`/`FreeDeviceProc`/`GetConsoleTask`/`SetConsoleTask`/`GetFileSysTask`/`SetFileSysTask` (`kaffeine_handlers.c`),
+    `Execute`/`SystemTagList`/`RunCommand`, `VPrintf`/`VFPrintf`/`VFWritef`/`PutStr`/`WriteChars`,
+    `GetProgramName`/`GetArgStr`/`SetArgStr`, `MatchFirst`/`MatchNext`/`MatchEnd`, pattern/path/date/variable/assign helpers and `Exit`
+  - **intuition** (48): `OpenScreen`/`OpenScreenTagList`/`CloseScreen` (bounded inputs and owned screen snapshots),
+    `GetScreenDrawInfo`/`FreeScreenDrawInfo` (version-1 `DrawInfo` snapshots with copied pens and retained `TextFont`),
+    `OpenWindow`/`OpenWindowTagList`/`CloseWindow`/`WindowToFront`/`WindowToBack` (`NewWindow` defaults and tag translation, a
+    68k Window with its fields, a 68k RastPort, a 68k Layer and a 68k IDCMP port, the
+    screen of `WA_PubScreen`, `WA_CustomScreen` or the `NewWindow` as the
     native one of a screen of the program, also one from `LockPubScreen`),
     `LockPubScreen`/`UnlockPubScreen` (one 68k Screen for each native screen,
     with the fields that programs read, its font as a 68k TextAttr, kept while
@@ -178,46 +187,49 @@ and native AROS C functions. There are two kinds:
     `BuildEasyRequestArgs`/`SysReqHandler`/`FreeSysRequest` (text and gadgets
     formatted by the bridge, the requester as a 68k Window),
     `SetMenuStrip`/`ResetMenuStrip`/`ClearMenuStrip`/`ItemAddress`/
-    `OffMenu`/`OnMenu` (on the 68k mirror of a GadTools menu strip),
+    `OffMenu`/`OnMenu` (on the 68k mirror of a GadTools menu strip or a native copy of a program-built strip),
     `AddGList`/`AddGadget`/`RemoveGList`/`RemoveGadget`/`RefreshGList`/
-    `RefreshGadgets` (a GadTools list of the program on its window, whole
-    batches), `ActivateGadget` (a GadTools gadget on its window, with the
-    BOOL of Intuition), `DisposeObject`/`SetAttrsA`/`GetAttr`/
-    `SetGadgetAttrsA`/`DoGadgetMethodA` (not for a GadTools gadget),
-    `OnGadget`/`OffGadget` (a GadTools gadget changes as in AROS, drawn on
-    the window that it is on, and its 68k mirror follows)
-  - **gadtools**: `GT_GetIMsg`/`GT_ReplyIMsg`/`GT_FilterIMsg`/
+    `RefreshGadgets` (GadTools batches or native copies of program-built Boolean, string, integer and proportional gadgets),
+    `ActivateGadget`, `ModifyProp`/`NewModifyProp`, `OnGadget`/`OffGadget`,
+    `DrawImageState`, and refusal guards on `SetEditHook`, `GetDrawInfoAttr` and GadTools gadgets passed to `DisposeObject`/`SetAttrsA`/`GetAttr`/`SetGadgetAttrsA`/`DoGadgetMethodA`
+  - **gadtools** (16): `GT_GetIMsg`/`GT_ReplyIMsg`/`GT_FilterIMsg`/
     `GT_PostFilterIMsg` (68k IntuiMessages of the GadTools copies),
     `CreateMenusA`/`LayoutMenusA`/`LayoutMenuItemsA`/`FreeMenus` (a 68k
     mirror of the native strip), `GetVisualInfoA`/`FreeVisualInfo` (68k
-    handles), `DrawBevelBoxA` (with such a handle, and only the tags that
+    handles retaining their screen), `DrawBevelBoxA` (with such a handle, and only the tags that
     GadTools reads), `CreateContext`/`CreateGadgetA`/`FreeGadgets` (a 68k mirror
     of every gadget of a list, and a native copy of the List of a
     listview), `GT_GetGadgetAttrsA`/`GT_SetGadgetAttrsA`
     (the attributes that their autodocs give for each kind, as 68k LONGs,
     converted and checked for the classes)
-  - **graphics**: `OpenFont`/`CloseFont`/`SetFont` (68k TextFonts),
-    `LoadRGB4` (big-endian byte-swap), and the calls on the RastPort of a
-    window or a screen: `Move`/`Draw`/`RectFill`/`ReadPixel`/`WritePixel`,
+  - **graphics** (65): `OpenFont`/`CloseFont`/`SetFont` (68k TextFonts),
+    `LoadRGB4` (big-endian byte-swap), and the calls on a registered window, screen or offscreen planar layer RastPort:
+    `Move`/`Draw`/`RectFill`/`ReadPixel`/`WritePixel`,
     the pens and the drawing mode, `ScrollRaster`, and
     `Text`/`TextLength`/`TextExtent`/`TextFit` with checked text and 68k
-    TextExtents. `ReadPixel` also reads bounded guest planar bitmaps without a
-    layer, using guest bytes directly
+    TextExtents; `GetDisplayInfoData` and `MonitorSpec` snapshots (`kaffeine_display.c`);
+    `LockLayerRom`/`UnlockLayerRom`/`AttemptLockLayerRom` (`kaffeine_layers.c`);
+    `InitBitMap`/`BltBitMap`/`GetBitMapAttr` (`kaffeine_bitmaps.c`);
+    `NewRegion`/`OrRectRegion`/`DisposeRegion` (`kaffeine_regions.c`);
+    plus explicit refusal slots for unimplemented bitmap, region and layer vectors
+  - **layers** (40), **utility** (23), **locale** (24), **icon** (21), **workbench** (7), **diskfont** (1), **cybergraphics** (5), **mathffp** (12), **mathieeedoubbas** (12), **mathieeedoubtrans** (17), **mathieeesingbas** (12), **timer.device** (7) and **console.device** (12)
 
 ### Device I/O
 
 Ports, I/O requests and signals of 68k code stay 68k structures in the
-guest memory (`kaffeine_exec_io.c`). `timer.device` works through `DoIO()`:
+guest memory (`kaffeine_exec_io.c`). `timer.device` works through `DoIO()`,
+and `console.device` supports `CONU_LIBRARY` (-1) for `RawKeyConvert`:
 
 1. `CreateMsgPort` → a 68k port with a signal of the guest, no native port
 2. `CreateIORequest` → a cleared 68k request of the requested size
-3. `OpenDevice("timer.device", ...)` → a native timerequest of the native size
-   with its own reply port stands behind the 68k request, which gets a guest
-   device base and the unit number
-4. `DoIO` with `TR_ADDREQUEST` or `TR_GETSYSTIME` → the command and both time
-   fields go to the native request and the results come back
+3. `OpenDevice("timer.device", ...)` or `OpenDevice("console.device", CONU_LIBRARY, ...)` →
+   a native request of the native size with its own reply port stands behind
+   the 68k request, which gets a guest device base and the unit number
+4. `DoIO` on `timer.device` with `TR_ADDREQUEST` or `TR_GETSYSTIME` → the command
+   and both time fields go to the native request and the results come back
 5. `AddTime`, `SubTime`, `CmpTime`, `ReadEClock` and `GetSysTime` through the
-   guest `TimerBase` (`kaffeine_thunks_timer.c`)
+   guest `TimerBase` (`kaffeine_thunks_timer.c`), and single-event default-keymap
+   `RawKeyConvert` through the guest `ConsoleDevice` base (`kaffeine_thunks_console.c`)
 6. `CloseDevice`/`DeleteIORequest`/`DeleteMsgPort` → native objects and guest
    memory freed; what a program leaves open is closed when it ends
 
@@ -439,29 +451,34 @@ This makes m68k binary execution fully transparent: no special commands needed.
 
 ## Supported Libraries
 
-The bridge provides generated or manual thunks for the following libraries:
+The bridge provides generated or manual thunks for the following libraries and devices (where `Distinct LVOs` is the union of generated and manual vectors, as manual registrations override generated slots at the same LVO):
 
-| Library | Auto | Manual | Total | Key Coverage |
+| Library / Device | Auto | Manual | Distinct LVOs | Key Coverage |
 |---------|------|--------|-------|-------------|
-| exec.library | 81 | 33 | 114 | Memory, tasks, signals, semaphores, messages, devices, libraries |
-| dos.library | 112 | 47 | 159 | File I/O, locks, CLI, pattern matching, ReadArgs, packets |
-| intuition.library | 130 | 8 | 138 | Windows, screens, gadgets, menus, IDCMP, requesters |
-| graphics.library | 172 | 26 | 198 | Rendering, text, blitting, layers, fonts, colors, display metadata |
+| exec.library | 79 | 84 | 112 | Memory, pools, cooperative guest tasks, signals, semaphores, messages, devices, libraries, AVL |
+| dos.library | 112 | 122 | 158 | File I/O, locks, CLI, pattern matching, ReadArgs, ExAll/ExAllEnd, DOS packets, handler ports |
+| intuition.library | 127 | 48 | 136 | Windows, owned and public screens, DrawInfo, gadgets, menus, IDCMP, requesters |
+| graphics.library | 167 | 65 | 179 | Rendering, text, planar/screen blitting, layer locks, clip regions, fonts, colors, display metadata |
 | layers.library | 40 | 40 | 40 | Live Layer snapshots, owned screen-bar drawing, layer locks/hooks, owned LayerInfos, private offscreen layers and clip Regions; remaining slots stop with 20 |
-| utility.library | 42 | — | 42 | TagItem processing, hooks, date functions |
-| gadtools.library | 18 | — | 18 | GadTools gadget toolkit |
-| asl.library | 8 | — | 8 | File/font/screenmode requesters |
-| commodities.library | 29 | — | 29 | Input event handling |
-| cybergraphics.library | 24 | — | 24 | RTG (retargetable graphics) |
-| datatypes.library | 30 | — | 30 | Multimedia data type system |
-| diskfont.library | 3 | — | 3 | AvailFonts, NewFontContents and DisposeFontContents |
-| expansion.library | 22 | — | 22 | Expansion board management |
-| icon.library | 21 | — | 21 | Workbench icon handling |
-| iffparse.library | 40 | — | 40 | IFF file parsing |
-| keymap.library | 4 | — | 4 | Keyboard mapping |
-| locale.library | 34 | — | 34 | Localization |
+| utility.library | 41 | 23 | 42 | TagItem processing, hooks, date functions, 32/64-bit integer math, case-insensitive string comparisons, VSNPrintf |
+| locale.library | 25 | 24 | 25 | OpenLocale/CloseLocale, FormatDate/ParseDate, FormatString, character classes, string conversion |
+| gadtools.library | 17 | 16 | 19 | GadTools gadget toolkit, menus, VisualInfo, DrawBevelBoxA, message filtering |
+| icon.library | 21 | 21 | 21 | Owned DiskObject metadata snapshots, FindToolType, MatchToolValue; unsupported slots stop with 20 |
+| cybergraphics.library | 24 | 5 | 24 | RTG queries; direct bitmap lock/allocation slots stop with 20 |
+| diskfont.library | 3 | 1 | 4 | Checked OpenDiskFont plus AvailFonts, NewFontContents and DisposeFontContents |
+| iffparse.library | 40 | 0 | 40 | IFF file parsing |
+| datatypes.library | 30 | 0 | 30 | Multimedia data type system |
+| commodities.library | 29 | 0 | 29 | Input event handling |
+| expansion.library | 22 | 0 | 22 | Expansion board management |
+| asl.library | 8 | 0 | 8 | File/font/screenmode requesters |
+| keymap.library | 4 | 0 | 4 | Keyboard mapping |
 | workbench.library | 0 | 7 | 7 | AppWindows, AppIcons and AppMenuItems with their AppMessages, WBInfo |
 | mathffp.library | 0 | 12 | 12 | FFP arithmetic and conversions with guest condition codes; see the precision limit in INTERNALS.md |
+| mathieeedoubbas.library | 0 | 12 | 12 | IEEE 754 double-precision basic arithmetic and comparisons with guest condition codes |
+| mathieeedoubtrans.library | 0 | 17 | 17 | IEEE 754 double-precision transcendentals and single/double conversions |
+| mathieeesingbas.library | 0 | 12 | 12 | IEEE 754 single-precision basic arithmetic and comparisons with guest condition codes |
+| timer.device | 0 | 7 | 7 | Synchronous `DoIO` (`TR_ADDREQUEST`, `TR_GETSYSTIME`) and `TimerBase` time helpers |
+| console.device | 0 | 12 | 12 | `CONU_LIBRARY` (-1) and single-event default-keymap `RawKeyConvert`; remaining slots stop with 20 |
 
 Native lookup uses the filename after the final `:` or `/`, keeping its
 exact case. Paths such as `LIBS:diskfont.library` share the canonical base
@@ -475,10 +492,13 @@ within the emulator.
 
 | Program | Size | Type | Status |
 |---------|------|------|--------|
+| bzip2 1.0.8 | CLI | Compression self-test (6 steps) | ✅ Matches reference outputs byte for byte in Shell and `Run` |
+| IJG JPEG 9f (`cjpeg`, `djpeg`, `jpegtran`) | CLI | Image compression/decompression self-test (7 steps) | ✅ Matches reference outputs byte for byte in Shell and `Run` |
 | LZX | 83 KB | CLI archiver (commercial) | ✅ Full functionality |
 | olha | 291 KB | SFX archiver (6 hunks, relocations) | ✅ LH5 decompression, CreateDir |
 | ROLEX | 13 KB | Clock (custom screen, GUI loop) | ✅ Opens screen, event loop works |
-| SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders full UI (title, menus, buttons, text) |
+| SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders UI, `SPEED`, `DRIVES`, `BOARDS`, `MEMORY` and `QUIT` |
+| Personal Paint | GUI | Paint / image editor (custom 8-bit screen, 68k libraries) | 🟡 Starts under Moira in QEMU, loads fonts and 68k libraries, passes notice requester, opens 8-bit screen/window and reaches editor; tools, load/save, exit and JIT remain to be validated |
 | Directory Opus 4.12 | 328 KB | File manager (GUI, m68k libraries) | ✅ Loads dopus.library, shows AutoRequest dialog, responds to button click |
 | AmigaTerm 1.0 | 82 KB | Terminal emulator (GUI) | ✅ Opens window, clean exit |
 | Textcraft Plus | 208 KB | Word processor (GUI, custom screen) | ✅ Opens screen/window, sets colors, clean exit |
@@ -488,8 +508,8 @@ within the emulator.
 
 ### CPU
 
-- No interrupt delivery to m68k code (INTREQR/INTENA return 0)
-- Single-threaded: one m68k instruction at a time, no cycle counting
+- No hardware interrupt delivery to m68k code (`INTREQR`/`INTENA` return 0)
+- Cooperative execution: one m68k instruction at a time across up to 16 classic guest child tasks (`AddTask`/`RemTask`), no per-instruction cycle counting
 
 ### Memory
 
@@ -499,31 +519,28 @@ within the emulator.
 
 ### Thunks
 
-- `RawDoFmt` only handles %s, %d, and %ld; other specifiers get basic fallback
+- `RawDoFmt` (`kaffeine_format.c`) supports `%d`, `%u`, `%x`, `%s`, `%c`, `%b`, field width, precision, flags and the `l` modifier with checked 68k `PutChProc` callbacks
 - Pools allocate each block directly from the guest heap; puddle and threshold
   sizes are recorded as hints, with no data-puddle reservation. Ownership and
   MEMF_CLEAR are preserved, and DeletePool frees all remaining owned blocks.
-- `Forbid`/`Permit` are no-ops. Semaphores operate only within one guest
-  context; a call that would wait stops it with rc 20. Procure/Vacate message
-  protocols are unsupported and also stop with rc 20. See
+- `Forbid`/`Permit` and `Disable`/`Enable` prevent guest task switches across the cooperative guest scheduler. Semaphores operate within one guest context; a semaphore call that would block stops the context with rc 20. `Procure`/`Vacate` message protocols are unsupported and also stop with rc 20. See
   [guest semaphore rules](INTERNALS.md#guest-semaphore-rules).
 
-### Device I/O
+### Device I/O and DOS Packets
 
-- `timer.device` through `DoIO()` and the no-window console library unit;
+- `timer.device` through `DoIO()` and the no-window `console.device` library unit (`CONU_LIBRARY`, `RawKeyConvert`);
   asynchronous device I/O and other device adapters remain unsupported
-- Ordinary guest FIFO messages and a bounded ACTION_READ packet adapter;
-  cross-task messaging and empty ordinary WaitPort remain unsupported
-- Personal Paint completes repeated packet reads and replies, then reaches
-  a contained CPU callback memory fault; see the target README
-- `Signal()` reaches only the current task
+- Ordinary guest FIFO messages (`PutMsg`/`GetMsg`/`ReplyMsg`/`WaitPort`) work across registered guest tasks in the same context; cross-context messaging is unsupported
+- DOS packets (`DoPkt`/`SendPkt`/`WaitPkt`/`ReplyPkt`) are supported on FileHandle packet ports and on registered guest ports for native DOS handlers (`DeviceProc`, `GetDeviceProc`, `GetConsoleTask`, `GetFileSysTask`) for the documented action set; `AbortPkt` is a no-op
+- Personal Paint starts under Moira on AROS AArch64 in QEMU, completes DOS packet reads and replies, passes its initial notice requester, opens its custom 8-bit indexed screen and main window, and reaches the editor; interactive drawing, loading/saving images, clean exit, desktop launch and JIT execution remain to be validated
+- `Signal()` reaches any registered guest task or the main process in the context; unknown tasks stop with rc 20
 
 ### Graphics
 
-- Only the RastPort of a window or a screen reaches graphics.library; a
-  RastPort that the program sets up itself, with its own BitMap, does not
-- `Layer`, `BitMap` and the area fill fields of a 68k RastPort stay 0, and
-  supported monochrome TextFonts have owned guest bitmap and character data
+- Graphics drawing calls accept the registered RastPort of a window or screen, the owned `BarLayer->rp` of an owned screen, or the RastPort of a private offscreen planar layer created through `CreateUpfrontHookLayer` / `CreateBehindHookLayer`. `ReadPixel` also accepts an unlayered guest-built RastPort with a checked classic planar BitMap; other unbridged RastPorts stop with rc 20
+- Window and screen snapshots publish registered `Layer` snapshots (`WLayer`, `Layer_Info.top_layer`, `BarLayer`), and owned screens share a registered `BitMap` handle across `Screen.BitMap`, `ViewPort.RasInfo->BitMap`, `Screen.RastPort.BitMap`, and `Window.RPort->BitMap`. Supported monochrome TextFonts have owned guest bitmap and character data
+- `InitBitMap`, `BltBitMap` (with minterm `0xC0` between classic planar bitmaps and/or owned indexed screens) and `GetBitMapAttr` are supported; other direct bitmap allocation and locking calls stop with rc 20
+- `NewRegion`, `OrRectRegion`, `DisposeRegion` and `InstallClipRegion` are supported for clip regions on registered window/offscreen layers; other region boolean operations stop with rc 20
 - At most 32 68k TextFonts at a time; the fonts of windows and screens stay
   for the whole program
 - The fields of a 68k Window are those at `OpenWindow()`; `WScreen` is 0 for a
@@ -552,12 +569,13 @@ within the emulator.
 
 - The fields of a 68k Window come up to date with its IDCMP messages, not
   after every Intuition call
-- `IAddress` of a message is 0 for gadgets and other native objects, until
-  gadgets have a bridge
+- `IAddress` of a message names the 68k Window, the 68k mirror of a GadTools
+  gadget, or the program's own bridged classic gadget; it is 0 for other
+  native objects and for `IDCMP_IDCMPUPDATE` tag lists
 - The 68k IDCMP port shows an empty list: programs take messages with
   `GetMsg()`, not by walking `mp_MsgList`
-- A UserPort shared among windows, and messages between 68k ports, stop the
-  program with rc 20
+- A UserPort shared among windows stops the program with rc 20; ordinary
+  messages between 68k guest ports are supported (`kaffeine_messages.c`)
 
 ### Menus
 
@@ -680,9 +698,12 @@ within the emulator.
 |------|-------------|
 | `kaffeine.conf` | AROS library definition (LVO 5: RunHunk, LVO 6: RunFile) |
 | `kaffeine_intern.h` | Context struct, fake lib bases, inline helpers, memory accessors |
-| `kaffeine_moira.cpp` | Moira subclass, A-line exception handler, sentinel detection |
+| `kaffeine_cpu.h` | Pluggable CPU backend contract (`KaffeineCPUOps`, per-task CPU factory hooks) |
+| `moira_backend.cpp` / `kaffeine_moira.cpp` | Moira CPU backend, A-line exception handler, sentinel detection, per-task CPU instances |
+| `kaffeine_sched.c` / `kaffeine_sched.h` | Cooperative guest child task scheduler (`AddTask`, `RemTask`, `SetTaskPri`, `Wait`, `Signal`, `Forbid`/`Permit`, `Disable`/`Enable`) |
+| `kaffeine_callback.c` / `kaffeine_callback.h` | Synchronous 68k callback trampoline (`Kaffeine_CallGuest`) and classic Hook adapter (`CallHookPkt`) |
 | `kaffeine_run.c` | RunHunk/RunFile entry points, process creation, ExecBase shadow init |
-| `kaffeine_memory.c` | Containment memory allocation, heap allocator, hunk loaders |
+| `kaffeine_memory.c` | Containment memory allocation, heap and pool allocators, hunk loaders |
 | `kaffeine_init.c` | Library init/open/close |
 | `kaffeine_stubs.c` | AROS library stubs |
 | `mmakefile.src` | Build rules (C++20 for Moira, links stdc++/stdcio/stdc/posixc) |
@@ -692,23 +713,40 @@ within the emulator.
 | File | Description |
 |------|-------------|
 | `kaffeine_thunks.h` | THUNK_D/A/PTR/DPTR/SET_D/SET_A macros, thunk entry/table structs |
-| `kaffeine_thunks.c` | ~100 manual thunks, shadow registration, OpenLibrary with auto-registration |
+| `kaffeine_thunks.c` | Manual thunk tables, shadow registration, OpenLibrary with auto-registration |
+| `kaffeine_exec_compat.c` | Guest Exec lists, public ports, semaphores, resident/resource stubs, cache control |
 | `kaffeine_exec_io.c` | Guest ports, signals and requests; native timer I/O and console CONU_LIBRARY open/close adapters with trusted device kinds |
+| `kaffeine_messages.c` | Checked guest MsgPort FIFO queues (`PutMsg`, `GetMsg`, `ReplyMsg`, `WaitPort`) and DOS packet delivery |
+| `kaffeine_thunks_dos.c` | Manual `dos.library` thunks, `AllocDosObject`/`FreeDosObject`, `ExAll`/`ExAllEnd`, locks, pattern/path/date/var/assign helpers |
+| `kaffeine_filehandle.c` | Guest `FileHandle` snapshots, `Input`/`Output`/buffered stream thunks and FileHandle DOS packet execution |
+| `kaffeine_handlers.c` | Guest ports for native DOS handlers (`DeviceProc`, `GetDeviceProc`, `FreeDeviceProc`, `GetConsoleTask`/`SetConsoleTask`, `GetFileSysTask`/`SetFileSysTask`) |
+| `kaffeine_thunks_utility.c` | Manual `utility.library` tag, hook, date, 32/64-bit integer math, string comparison and `VSNPrintf` thunks |
+| `kaffeine_taglist.c` | Checked in-place guest `TagItem` walker with cycle detection |
+| `kaffeine_format.c` | Checked `RawDoFmt` and `VSNPrintf` formatters |
+| `kaffeine_thunks_locale.c` | Manual `locale.library` locale/catalog, date formatting/parsing, `FormatString` and character-class thunks |
 | `kaffeine_thunks_console.c` | console.device CONU_LIBRARY and default-keymap RawKeyConvert for one marshalled guest InputEvent; explicit refusal slots for unsupported console operations |
 | `kaffeine_thunks_gfx.c` | Intuition compatibility slots, fonts and the graphics calls on a 68k RastPort |
 | `kaffeine_thunks_diskfont.c` | Checked OpenDiskFont using the shared graphics font identity and ownership |
 | `kaffeine_fontattr.c` | TextAttr/TTextAttr validation and native copies of scalar DPI tags for both font-open APIs |
 | `kaffeine_rastport.c` | 68k RastPorts, read-only monochrome TextFont snapshots with glyph data, and shared font lifetimes |
-| `kaffeine_window.c` | Fields and IDCMP ports of 68k windows, 68k IntuiMessages, ModifyIDCMP and the GadTools message calls |
+| `kaffeine_screens.c` | Owned and locked public Screen snapshots, `GetScreenDrawInfo`/`FreeScreenDrawInfo` and `DrawImageState` |
+| `kaffeine_display.c` | `GetDisplayInfoData` and borrowed `MonitorSpec` snapshots (`OpenMonitor`/`CloseMonitor`/`FindDisplayInfo` guards) |
+| `kaffeine_layers.c` | Live window/screen `Layer` snapshots, owned `BarLayer->rp`, layer locks/hooks, owned `LayerInfo`s and private offscreen planar layers |
+| `kaffeine_regions.c` | Owned `Region` snapshots (`NewRegion`, `OrRectRegion`, `DisposeRegion`) and `InstallClipRegion` |
+| `kaffeine_bitmaps.c` | `InitBitMap`, `BltBitMap` (planar and owned indexed screens), `GetBitMapAttr` and explicit bitmap refusal guards |
+| `kaffeine_window.c` | Fields and IDCMP ports of 68k windows, 68k IntuiMessages, ModifyIDCMP, `WindowToFront`/`WindowToBack` and the GadTools message calls |
 | `kaffeine_menus.c` | GadTools menu strips with their 68k mirror, strips that the program built with their native copy, VisualInfo handles, `DrawBevelBoxA()` and the Intuition menu calls |
 | `kaffeine_gadgets.c` | GadTools gadget lists with a 68k mirror of every gadget |
 | `kaffeine_classic.c` | Gadgets that the program built itself on its windows, as native copies: runs, the Flags passed by bit, links and messages |
 | `kaffeine_mirror.c` | 68k mirrors of native objects of GadTools: the tables of a strip or a list, strings, TextAttrs, IntuiTexts and images |
 | `kaffeine_copy.c` | Native copies of 68k structures that Intuition reads, checked against guest memory: IntuiText chains with their strings and TextAttrs, Image and Border chains, and gadgets |
 | `kaffeine_requester.c` | EasyRequests: 68k EasyStructs formatted by the bridge, requester windows as 68k Windows |
+| `kaffeine_icon.c` | Owned `icon.library` `DiskObject` metadata snapshots, `FindToolType` and `MatchToolValue` |
+| `kaffeine_workbench.c` | Workbench `AddAppWindowA`, `AddAppIconA`, `AddAppMenuItemA`, `WBInfo` and `AppMessage` delivery |
 | `kaffeine_thunks_timer.c` | timer.device functions behind the guest TimerBase |
 | `kaffeine_thunks_mathffp.c` | FFP arithmetic and conversions on 32-bit words, with guest N/Z/V and no hardware FPU |
-| `kaffeine_thunks_gen.c` | 810 auto-generated type-aware thunks across 17 libraries |
+| `kaffeine_thunks_mathieee.c` | IEEE 754 single- and double-precision math library thunks (`mathieeesingbas`, `mathieeedoubbas`, `mathieeedoubtrans`) |
+| `kaffeine_thunks_gen.c` | 789 auto-generated type-aware thunks across 17 libraries |
 | `kaffeine_thunkgen.py` | Generator: reads FD files + NDK clib protos → emits C thunks with correct pointer translation |
 
 ### Shadow Struct System
@@ -766,21 +804,20 @@ grep -oP '(OFF|SIZ)\|[^"]*' m68k.s | sed 's/#//g' > m68k_offsets.txt
 
 ### Tests
 
-| File | Description |
+| Path | Description |
 |------|-------------|
-| `tests/kaffeine_host/test_kaffeine.cpp` | Host-side unit tests: context, heap, endian, pointer translation, lib bases |
-| `tests/kaffeine_host/test_moira_exec.cpp` | Host-side Moira execution tests: MOVEQ/RTS, ADD, loops, memory access |
-| `tests/kaffeine_host/test_hello_thunks.cpp` | Host-side end-to-end: A-line trap → thunk dispatch → return |
-| `developer/debug/test/kaffeine/test_kaffeine.c` | AROS-side test: opens kaffeine.library (execution test incomplete) |
+| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (319 native-vector cases and 528 manual thunks across 18 tables) and `run_sanitizers.sh` |
+| [`developer/debug/test/kaffeine_native/`](../../developer/debug/test/kaffeine_native/README.md) | Standalone native AROS AArch64 translation probe (`jit_probe`) using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE` |
+| [`developer/debug/test/kaffeine_target/`](../../developer/debug/test/kaffeine_target/README.md) | Classic 68k HUNK target probes, bzip2 1.0.8 and IJG JPEG 9f self-tests, and QEMU AROS AArch64 runner (`run_qemu.py`) |
+| `developer/debug/test/kaffeine/test_kaffeine.c` | AROS-side smoke test that opens `kaffeine.library` |
 
 ## Building
 
 ### Prerequisites
 
-- AROS source tree with the `emu68-hosted` branch
-- GCC 14 (GCC 15 crashes the AROS linux-x86_64 hosted build)
-- C++20 support (for Moira)
-- Python 3 (for code generators)
+- AROS source tree
+- GCC 14 or Clang with C++20 support (for Moira)
+- Python 3 (for code generators and registration audits)
 
 ### Build Commands
 
@@ -790,13 +827,12 @@ rm -rf bin/linux-x86_64/gen/rom/kaffeine
 make kernel-kaffeine
 ```
 
-The built library appears at `bin/linux-x86_64/AROS/Libs/kaffeine.library`.
+The built library appears at `bin/<target>/AROS/Libs/kaffeine.library`.
 
 ### Installation
 
-Copy `kaffeine.library` to `AROS:Libs/`. With the `emu68-hosted` branch,
-`dos.library` automatically detects m68k hunk binaries and routes them through
-the emulator — no configuration needed.
+Copy `kaffeine.library` to `AROS:Libs/`. `dos.library` automatically detects
+m68k hunk binaries and routes them through the emulator.
 
 In this fork the library is called `kaffeine.library` since #87, and the
 `dos.library` of this tree opens it by that name: an `m68kemu.library` left
@@ -812,17 +848,11 @@ RunM68K <m68k-binary> [arguments]
 ### Running Tests
 
 ```bash
-# Host-side unit tests (no AROS required)
-cd tests/kaffeine_host
-make
-./test_kaffeine
+# Host-side regression suite and thunk registration audit (no AROS build required)
+make -C developer/debug/test/kaffeine_host test
 
-# Moira execution tests (manual build)
-g++ -std=c++20 -I../../rom/kaffeine/Moira -o test_moira_exec \
-    test_moira_exec.cpp -DNO_INLINE_STDARG
-
-# AROS-side test (built with AROS)
-make test-kaffeine
+# Target 68k test suite (see developer/debug/test/kaffeine_target/README.md)
+make -C developer/debug/test/kaffeine_target
 ```
 
 ## Dependencies
@@ -925,11 +955,6 @@ and screens at guest exit, the running task closes its remaining windows,
 replies to messages and runs menu/gadget close hooks. Known requester windows
 use `FreeSysRequest` so their native gadgets and request data are freed too.
 External visitors can still cause native Intuition to refuse a screen close.
-
-
-Classic AddTask and RemTask currently stop with return code20. Guest task
-records, stack pointers and 68k entry points must never reach native Exec's
-scheduler. Concurrent guest task execution requires a separate adapter.
 
 A VisualInfo owns its native DrawInfo/Screen reference until freed. At most
 32 handles are tracked per context. For a borrowed public screen the bridge
