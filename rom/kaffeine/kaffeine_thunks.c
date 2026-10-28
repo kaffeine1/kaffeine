@@ -37,6 +37,8 @@
 #include "kaffeine_exec_compat.h"
 #include "kaffeine_exec_io.h"
 #include "kaffeine_thunks_gfx.h"
+#include "kaffeine_fontattr.h"
+#include "kaffeine_messages.h"
 #include "kaffeine_display.h"
 #include "kaffeine_thunks_diskfont.h"
 #include "kaffeine_rastport.h"
@@ -579,8 +581,36 @@ static IPTR thunk_intuition_AutoRequest(struct KaffeineContext *ctx, void *cpu)
     return (IPTR)result;
 }
 
+/* intuition -330: IntuiTextLength(A0=iText). Native Intuition ignores
+   NextText and uses the system font when no TextAttr is supplied. */
+static IPTR thunk_intuition_IntuiTextLength(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG at = THUNK_A(0), chars, font;
+    struct IntuiText text;
+    struct KaffeineFontAttr attr;
+    if (!at) return 0; /* Intuition's SANITY_CHECKR(iText, 0). */
+    if ((at & 1) || !Kaffeine_GuestBytes(ctx, at, 20))
+        goto invalid;
+    chars = m68k_read32(ctx, at + M68K_IT_ITEXT);
+    font = m68k_read32(ctx, at + M68K_IT_FONT);
+    if (!Kaffeine_GuestBytes(ctx, chars, 1) ||
+        !memchr(ctx->mem + chars, 0, ctx->mem_size - chars) ||
+        (font && !Kaffeine_FontAttrIn(ctx, font, &attr)))
+        goto invalid;
+    memset(&text, 0, sizeof(text));
+    text.IText = (UBYTE *)(ctx->mem + chars);
+    text.ITextFont = font ? (struct TextAttr *)&attr.attr : NULL;
+    return (IPTR)IntuiTextLength(&text);
+invalid:
+    bug("[kaffeine] IntuiTextLength(): invalid guest text or font, stopping (20)\n");
+    ctx->running = FALSE;
+    ctx->exit_code = 20;
+    return 20;
+}
+
 /* ── Intuition manual thunks (shadow struct) ── */
 const struct M68KThunkEntry kaffeine_thunks_intuition_manual[] = {
+    { 330, thunk_intuition_IntuiTextLength },
     { 348, thunk_intuition_AutoRequest },
     KAFFEINE_INTUITION_COMPAT_THUNKS,
     KAFFEINE_INTUITION_WINDOW_THUNKS,
