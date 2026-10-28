@@ -124,6 +124,14 @@ extern "C" struct Hook *InstallLayerHook(struct Layer *l, struct Hook *h)
     events.push_back("InstallLayerHook");
     return old;
 }
+extern "C" struct Hook *InstallLayerInfoHook(struct Layer_Info *li, struct Hook *h)
+{
+    Hook *old = static_cast<Hook *>(li->BlankHook);
+    li->BlankHook = h;
+    if (li->check_lp) li->check_lp->BackFill = h;
+    events.push_back("InstallLayerInfoHook");
+    return old;
+}
 /* The screen of the window test: its LayerInfo is free at once. */
 extern "C" void LockLayerInfo(struct Layer_Info *) { events.push_back("LockLayerInfo"); }
 extern "C" void UnlockLayerInfo(struct Layer_Info *) { events.push_back("UnlockLayerInfo"); }
@@ -2933,11 +2941,67 @@ static void test_init_bitmap_from_constructor_hook()
     assert(creates.size() == 2 && init_bitmaps == 2);
 }
 
+static void test_layerinfo_backfill_mode()
+{
+    Fixture f;
+    const ULONG li = f.new_info(); assert(li && native_infos.size() == 1);
+    Layer_Info *n = native_infos[0];
+    auto install = [&](ULONG pointer, ULONG hook) {
+        return f.call(Fixture::layers_base, 204, {pointer, hook});
+    };
+    assert(install(li, 1) == 0 && n->BlankHook == LAYERS_NOBACKFILL);
+    assert(m68k_read32(&f.ctx, li + 94) == 1);
+    assert(install(li, 1) == 1 && install(li, 0) == 1 && n->BlankHook == LAYERS_BACKFILL);
+    const ULONG bm = f.bitmap(4, 8, 1), layer = f.create(li, bm, 0, 0, 31, 7, LAYERSIMPLE, 1);
+    assert(layer && n->check_lp);
+    assert(install(li, 1) == 0 && n->check_lp->BackFill == LAYERS_NOBACKFILL);
+    assert(install(li, 0) == 1 && n->check_lp->BackFill == LAYERS_BACKFILL);
+    // A changed guest snapshot cannot replace the native old identity.
+    m68k_write32(&f.ctx, li + 94, 0xDEADBEEF);
+    assert(install(li, 1) == 0 && m68k_read32(&f.ctx, li + 94) == 1);
+    for (auto bad : {std::pair<ULONG, ULONG>{0, 0}, {li + 2, 1}, {0xFFFFFFF0, 0}, {li, f.hook()}})
+    {
+        const auto before = f.memory; const auto count = events.size();
+        assert(install(bad.first, bad.second) == 20 && f.stopped());
+        assert(before == f.memory && events.size() == count && n->BlankHook == LAYERS_NOBACKFILL);
+    }
+    assert(f.call(Fixture::layers_base, 96, {0, layer}) == 0);
+    auto count = events.size(); auto before = f.memory;
+    assert(install(li, 0) == 20 && f.stopped() && count == events.size() && before == f.memory);
+    assert(f.call(Fixture::layers_base, 102, {layer}) == 0);
+    f.ctx.bitmap_blits = 1; count = events.size(); before = f.memory;
+    assert(install(li, 0) == 20 && f.stopped() && count == events.size() && before == f.memory);
+    f.ctx.bitmap_blits = 0;
+    Hook foreign{}; n->BlankHook = &foreign; count = events.size(); before = f.memory;
+    assert(install(li, 0) == 20 && f.stopped() && count == events.size() && before == f.memory);
+    n->BlankHook = LAYERS_NOBACKFILL;
+    assert(f.destroy(layer) == 1);
+    assert(install(li, 0) == 1 && n->check_lp->BackFill == LAYERS_BACKFILL);
+    assert(f.call(Fixture::layers_base, 150, {li}) == 0);
+    count = events.size(); before = f.memory;
+    assert(install(li, 1) == 20 && f.stopped() && count == events.size() && before == f.memory);
+
+    NativeScreenBitMap owned{}, borrowed{};
+    ULONG sg = f.open_screen(owned, 4, 8, 1, 32, true);
+    ULONG bg = f.open_screen(borrowed, 4, 8, 1, 32, false);
+    const ULONG sli = sg + M68K_SCR_LAYERINFO, bli = bg + M68K_SCR_LAYERINFO;
+    assert(install(sli, 1) == 0 && owned.screen.LayerInfo.BlankHook == LAYERS_NOBACKFILL);
+    assert(f.L(sli + M68K_LI_BLANKHOOK) == 1 && install(sli, 0) == 1);
+    count = events.size(); before = f.memory;
+    assert(install(bli, 1) == 20 && f.stopped() && count == events.size() && before == f.memory);
+    assert(install(sli + 2, 1) == 20 && f.stopped() && count == events.size());
+    f.close_screen(owned, sg);
+    count = events.size(); before = f.memory;
+    assert(install(sli, 1) == 20 && f.stopped() && count == events.size() && before == f.memory);
+    f.close_screen(borrowed, bg);
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
     const Test tests[] =
     {
+        { "LayerInfo backfill sentinel identity, hidden root update and ownership/lifetime guards", test_layerinfo_backfill_mode },
         { "LVO 186 and 90 are bridged; the other constructors stay refused", test_registration },
         { "Native planar BitMap over the guest planes; stable identities in native order; deletion", test_conversion_and_identity },
         { "A 68k backfill hook during the constructor sees bound guest objects; round trips; locks", test_hook_during_constructor },

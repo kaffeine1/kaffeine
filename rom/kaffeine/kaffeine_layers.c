@@ -1411,11 +1411,45 @@ IPTR Kaffeine_NewLayerInfo(struct KaffeineContext *ctx, void *cpu)
     }
     layers_semaphore(ctx, guest + M68K_LI_LOCK);
     m68k_write16(ctx, guest + M68K_LI_FLAGS, native->Flags & NEWLAYERINFO_CALLED);
+    if ((IPTR)native->BlankHook <= 1)
+        m68k_write32(ctx, guest + M68K_LI_BLANKHOOK, (ULONG)(IPTR)native->BlankHook);
     st->infos[slot].guest = guest;
     st->infos[slot].native = native;
     st->infos[slot].common = NULL;
     st->infos[slot].stuck = FALSE;
     return guest;
+}
+
+/* layers -204: InstallLayerInfoHook(A0=li, A1=hook). The two native
+   sentinel modes, LAYERS_BACKFILL (0) and LAYERS_NOBACKFILL (1), for a
+   LayerInfo owned by the program, including an opened screen's embedded
+   LayerInfo. Native layers also updates its hidden
+   root. Real guest Hooks need a separate callback/lifetime adapter. */
+IPTR Kaffeine_InstallLayerInfoHook(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    ULONG guest = THUNK_A(0), hook = THUNK_A(1), old;
+    int i = layers_info_owned(st, guest), screen;
+    struct Layer_Info *li = i >= 0 ? st->infos[i].native : NULL;
+    struct Hook *result;
+
+    for (screen = 0; !li && screen < KAFFEINE_MAX_PUBSCREENS; screen++)
+        if (ctx->pubscreens[screen].owned && ctx->pubscreens[screen].native && ctx->pubscreens[screen].guest &&
+            guest == ctx->pubscreens[screen].guest + M68K_SCR_LAYERINFO &&
+            Kaffeine_ScreenNative(ctx, ctx->pubscreens[screen].guest) == ctx->pubscreens[screen].native)
+            li = &ctx->pubscreens[screen].native->LayerInfo;
+    if (!li || hook > 1)
+        return layers_refuse(ctx, "InstallLayerInfoHook(): requires an owned LayerInfo and a sentinel hook");
+    if ((st && (st->gate || st->callbacks || st->locks || st->private_locks)) || ctx->bitmap_blits)
+        return layers_refuse(ctx, "InstallLayerInfoHook(): during a backfill, blit or layer lock");
+    if ((IPTR)li->BlankHook > 1)
+        return layers_refuse(ctx, "InstallLayerInfoHook(): previous native hook has no guest identity");
+    old = (ULONG)(IPTR)li->BlankHook;
+    result = InstallLayerInfoHook(li, (struct Hook *)(IPTR)hook);
+    m68k_write32(ctx, guest + M68K_LI_BLANKHOOK, hook);
+    if ((IPTR)result != old)
+        return layers_refuse(ctx, "InstallLayerInfoHook(): unexpected previous native hook");
+    return old;
 }
 
 /* layers -150: DisposeLayerInfo(A0=li). Only a LayerInfo of
