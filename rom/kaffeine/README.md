@@ -541,8 +541,9 @@ within the emulator.
 - In the 68k copy of `LockPubScreenList()`, `psn_Screen` is 0 for a screen
   that the program has not locked, and `NextPubScreen()` gives 0 after the
   last public screen, as AROS does
-- `OpenWindowTagList()` leaves its NewWindow out, and `OpenWindow()` the tags
-  of an `ExtNewWindow`
+- `OpenWindow()` leaves out the tags of an `ExtNewWindow`.
+  `OpenWindowTagList()` supports classic NewWindow defaults and checked
+  extension tags; non-NULL NewWindow CheckMark and BitMap inputs are refused.
 - On a hi- or truecolor screen `ReadPixel()` gives the low byte of the pixel
   rather than its pen, as on native AROS
 

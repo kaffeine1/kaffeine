@@ -257,6 +257,44 @@ struct PropInfo
 #define WA_PubScreenName     (WA_Dummy + 21)
 #define WA_PubScreen         (WA_Dummy + 22)
 #define WA_PubScreenFallBack (WA_Dummy + 23)
+#define WA_Checkmark         (WA_Dummy + 10)
+#define WA_SuperBitMap       (WA_Dummy + 14)
+#define WA_AutoAdjust        (WA_Dummy + 45)
+
+/* The NewWindow of OpenWindowTagList(), as AROS lays it out */
+struct BitMap;
+struct NewWindow
+{
+    WORD LeftEdge, TopEdge, Width, Height;
+    UBYTE DetailPen, BlockPen;
+    ULONG IDCMPFlags, Flags;
+    struct Gadget *FirstGadget;
+    struct Image *CheckMark;
+    UBYTE *Title;
+    struct Screen *Screen;
+    struct BitMap *BitMap;
+    WORD MinWidth, MinHeight;
+    UWORD MaxWidth, MaxHeight;
+    UWORD Type;
+};
+struct ExtNewWindow
+{
+    WORD LeftEdge, TopEdge, Width, Height;
+    UBYTE DetailPen, BlockPen;
+    ULONG IDCMPFlags, Flags;
+    struct Gadget *FirstGadget;
+    struct Image *CheckMark;
+    UBYTE *Title;
+    struct Screen *Screen;
+    struct BitMap *BitMap;
+    WORD MinWidth, MinHeight;
+    UWORD MaxWidth, MaxHeight;
+    UWORD Type;
+    struct TagItem *Extension;
+};
+#define WFLG_SIZEGADGET  0x00000001
+#define WFLG_ACTIVATE    0x00001000
+#define WFLG_NW_EXTENDED 0x00040000
 
 /* The screen types of a NewWindow, from intuition/screens.h */
 #define WBENCHSCREEN 0x0001

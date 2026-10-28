@@ -99,13 +99,17 @@
 #define M68K_NW_IDCMPFLAGS          10
 #define M68K_NW_FLAGS               14
 #define M68K_NW_FIRSTGADGET         18
+#define M68K_NW_CHECKMARK           22
 #define M68K_NW_TITLE               26
 #define M68K_NW_SCREEN              30
+#define M68K_NW_BITMAP              34
 #define M68K_NW_MINWIDTH            38
 #define M68K_NW_MINHEIGHT           40
 #define M68K_NW_MAXWIDTH            42
 #define M68K_NW_MAXHEIGHT           44
 #define M68K_NW_TYPE                46
+#define M68K_ENW_EXTENSION          48  /* ExtNewWindow, with WFLG_NW_EXTENDED */
+#define M68K_SIZEOF_EXTNEWWINDOW    52
 
 /* ── Window struct offsets (m68k) ────────────────────────────────── */
 
