@@ -19,6 +19,14 @@ LONG ChangeMode(ULONG, BPTR, LONG);
 BPTR SelectInput(BPTR);
 BPTR SelectOutput(BPTR);
 LONG Flush(BPTR);
+BOOL UnLock(BPTR);
+struct MsgPort *DeviceProc(CONST_STRPTR);
+struct DevProc *GetDeviceProc(CONST_STRPTR, struct DevProc *);
+void FreeDeviceProc(struct DevProc *);
+struct MsgPort *GetConsoleTask(void);
+struct MsgPort *SetConsoleTask(struct MsgPort *);
+struct MsgPort *GetFileSysTask(void);
+struct MsgPort *SetFileSysTask(struct MsgPort *);
 #ifdef __cplusplus
 }
 #endif

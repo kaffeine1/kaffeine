@@ -65,6 +65,8 @@ static BOOL ordinary(struct KaffeineContext *ctx, ULONG port, ULONG size)
             return FALSE;
     for (i = 0; i < KAFFEINE_MAX_APP_PORTS; ++i)
         if (ctx->app_ports[i].guest && Kaffeine_Overlap(port, size, ctx->app_ports[i].guest, 34)) return FALSE;
+    for (i = 0; i < KAFFEINE_MAX_HANDLERS; ++i)
+        if (ctx->handlers[i].guest && Kaffeine_Overlap(port, size, ctx->handlers[i].guest, 34)) return FALSE;
     for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; ++i)
         if (ctx->io_requests[i].guest && Kaffeine_Overlap(port, size, ctx->io_requests[i].guest,
             ctx->io_requests[i].capacity ? ctx->io_requests[i].capacity : 48)) return FALSE;

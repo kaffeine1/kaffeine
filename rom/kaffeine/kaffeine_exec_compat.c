@@ -479,8 +479,9 @@ static int shadow_entry(struct KaffeineContext *ctx, ULONG addr)
 
 /* -366: PutMsg(A0=port, A1=message). Only a known native UserPort and a
    taken IntuiMessage can use native Exec. An exact shadow of a Window,
-   Task or another object is not a Message or MsgPort. Guest queues and
-   owned DOS handlers use separate adapters. */
+   Task or another object is not a Message or MsgPort. Guest queues, the
+   handlers of the program's files and the ports of native DOS handlers
+   use separate adapters. */
 IPTR Kaffeine_PutMsg(struct KaffeineContext *ctx, void *cpu)
 {
     return Kaffeine_RoutePutMsg(ctx, THUNK_A(0), THUNK_A(1), THUNK_D(0));
@@ -511,6 +512,13 @@ IPTR Kaffeine_RoutePutMsg(struct KaffeineContext *ctx, ULONG gp, ULONG gm, ULONG
             if (ctx->files[i].guest && ctx->files[i].handler == gp)
             {
                 IPTR result = ctx->file_packet(ctx, gp, gm);
+                return ctx->running ? d0 : result;
+            }
+    if (gp && ctx->handler_packet)
+        for (i = 0; i < KAFFEINE_MAX_HANDLERS; ++i)
+            if (ctx->handlers[i].guest == gp)
+            {
+                IPTR result = ctx->handler_packet(ctx, gp, gm);
                 return ctx->running ? d0 : result;
             }
     if (!gp && guest_range(ctx, gm, 68) && m68k_read16(ctx, gm + 18) == 68 &&

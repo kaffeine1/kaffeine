@@ -6,6 +6,7 @@
    queues, heap and dispatcher with recording native DOS collaborators.
 */
 #include "kaffeine_filehandle.h"
+#include "kaffeine_handlers.h"
 ULONG Kaffeine_FileImport(struct KaffeineContext *ctx, BPTR native, BOOL owned)
 { (void)ctx; (void)owned; return (ULONG)(IPTR)native; }
 BOOL Kaffeine_FileResolve(struct KaffeineContext *ctx, ULONG token, BPTR *out)
@@ -19,3 +20,5 @@ BOOL Kaffeine_FileStreamPrepare(struct KaffeineContext *ctx, BOOL input, ULONG *
 { (void)ctx; (void)input; *token = 0; return TRUE; }
 BOOL Kaffeine_FileAllPrepare(struct KaffeineContext *ctx) { (void)ctx; return TRUE; }
 BOOL Kaffeine_FileAllFinish(struct KaffeineContext *ctx) { (void)ctx; return TRUE; }
+ULONG Kaffeine_HandlerPort(struct KaffeineContext *ctx, struct MsgPort *native)
+{ (void)ctx; return (ULONG)(IPTR)native; }
