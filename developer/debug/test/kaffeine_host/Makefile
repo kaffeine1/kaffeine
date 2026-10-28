@@ -60,7 +60,7 @@ GFX_THUNK_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o thunks_gf
 DISKFONT_CPPFLAGS := -I$(TEST_DIR)/memory_stubs $(GFX_CPPFLAGS)
 DISKFONT_OBJS := $(addprefix $(BUILD_DIR)/diskfont_,cpu.o dispatch.o thunks_diskfont.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
 WINDOW_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o format.o rastport.o memory.o taglist.o)
-SCREEN_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o rastport.o memory.o taglist.o fontattr.o)
+SCREEN_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o palette.o rastport.o memory.o taglist.o fontattr.o)
 # The layer bridge with the production run loop, window bridge and heap,
 # the native hook entry of its private layers and the Region bridge of
 # their clip Regions.

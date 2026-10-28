@@ -330,3 +330,8 @@ source runs as native ARM and classic 68k code.
 fixed-width font selection, unavailable-font fallback and ignored NextText
 links. Input objects stay unchanged. The same source runs natively and
 through the 68k bridge.
+
+`gfx_screen_palette` compares native ARM and classic 68k screen palettes:
+256-entry ColorMap metadata, multi-block RGB32 streams, RGB4 loads, scalar
+setters through both ViewPort and ColorMap, and guarded RGB32 output. The
+same original program performs 24 checks and closes its indexed screen.

@@ -291,7 +291,7 @@ struct KaffeineContext
        screen has gone. */
     #define KAFFEINE_MAX_PUBSCREENS 16
     struct {
-        struct Screen *native; ULONG guest; ULONG font; UWORD locks;
+        struct Screen *native; ULONG guest; ULONG font; ULONG colormap; UWORD locks;
         BOOL owned; struct KaffeineScreenKeep *keep;
     } pubscreens[KAFFEINE_MAX_PUBSCREENS];
     void (*screen_release)(struct KaffeineContext *ctx, struct Screen *screen);

@@ -17,8 +17,8 @@
     has gone; a screen whose font it cannot hold gets no 68k Screen. The
     name of the TextAttr is the one of that TextFont, as AskFont() of AROS
     gives it, so that it also holds in a copy of the TextAttr that the
-    program keeps. Native pointers, such as the windows, the titles, the
-    ColorMap, the layers and the planes, are not shown to 68k code and stay
+    program keeps. Native pointers, such as windows, titles, ColorMap
+    tables, layers and planes, are not shown to 68k code and stay
     0. A screen that the program opened keeps the 68k Screen of
     OpenScreen().
 
@@ -237,11 +237,26 @@ static int screen_index(struct KaffeineContext *ctx, const struct Screen *native
 }
 
 /* The fields that the program reads, from the native screen */
-static void screen_fill(struct KaffeineContext *ctx, ULONG guest, ULONG font, struct Screen *scr)
+static void screen_fill(struct KaffeineContext *ctx, ULONG guest, ULONG font, ULONG colormap,
+                        struct Screen *scr)
 {
     UBYTE *g = ctx->mem + guest;
     ULONG vp = guest + M68K_SCR_VIEWPORT, bm = guest + M68K_SCR_BITMAP;
     const struct BitMap *draw = scr->RastPort.BitMap;
+
+    /* A borrowed, screen-owned ColorMap identity. Native tables, HIDD
+       pointers and allocation metadata never enter the guest arena. */
+    m68k_write32(ctx, vp + 4, colormap);
+    if (colormap && scr->ViewPort.ColorMap)
+    {
+        const struct ColorMap *cm = scr->ViewPort.ColorMap;
+        memset(ctx->mem + colormap, 0, 52);
+        ctx->mem[colormap] = cm->Flags;
+        ctx->mem[colormap + 1] = cm->Type;
+        m68k_write16(ctx, colormap + 2, cm->Count);
+        m68k_write32(ctx, colormap + 20, vp);
+        m68k_write32(ctx, colormap + 36, cm->VPModeID);
+    }
 
     m68k_write16(ctx, guest + M68K_SCR_LEFTEDGE, (UWORD)scr->LeftEdge);
     m68k_write16(ctx, guest + M68K_SCR_TOPEDGE, (UWORD)scr->TopEdge);
@@ -360,19 +375,23 @@ static void font_unhold(struct KaffeineContext *ctx, int taken)
    held. type is the shadow type of the 68k Screen: KAFFEINE_SHADOW_SCREEN
    for a screen that the program opened, else KAFFEINE_SHADOW_PUBSCREEN. */
 static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULONG *font,
-                           UWORD type)
+                           ULONG *colormap, UWORD type)
 {
     const char *name = scr->Font ? (const char *)scr->Font->ta_Name : NULL;
     /* AskFont() points the name into the TextFont of the RastPort */
     BOOL own_name = name && !(scr->RastPort.Font &&
                               name == scr->RastPort.Font->tf_Message.mn_Node.ln_Name);
     ULONG length = own_name ? name_length(name, MAX_FONT_NAME) : 0;
-    ULONG size = M68K_SIZEOF_SCREEN, guest, rp;
+    ULONG size = M68K_SIZEOF_SCREEN, guest, rp, cm_offset;
     int held;
 
     *font = 0;
+    *colormap = 0;
     if (scr->Font)
         size += M68K_SIZEOF_TEXTATTR + (own_name ? length + 1 : 0);
+    cm_offset = (size + 1) & ~1UL;
+    if (scr->ViewPort.ColorMap)
+        size = cm_offset + 52;
     if (ctx->num_shadows > KAFFEINE_MAX_SHADOWS - 3)
     {
         bug("[kaffeine] shadow table full, no 68k Screen for %p\n", scr);
@@ -415,6 +434,8 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
             m68k_write32(ctx, *font + G_TA_NAME,
                          m68k_read32(ctx, m68k_read32(ctx, rp + G_RP_FONT) + G_LN_NAME));
     }
+    if (scr->ViewPort.ColorMap)
+        *colormap = guest + cm_offset;
     return guest;
 }
 
@@ -487,6 +508,9 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
         /* a BitMap handle that the program kept names nothing now, and
            describes no planar BitMap either */
         memset(ctx->mem + guest + M68K_SCR_BITMAP, 0, M68K_SIZEOF_BITMAP);
+        if (ctx->pubscreens[i].colormap)
+            memset(ctx->mem + ctx->pubscreens[i].colormap, 0, 52);
+        m68k_write32(ctx, guest + M68K_SCR_VIEWPORT + 4, 0);
         m68k_write32(ctx, guest + M68K_SCR_RASTPORT + M68K_RP_BITMAP, 0);
         Kaffeine_RastPortDetach(ctx, guest + M68K_SCR_RASTPORT);
         Kaffeine_ShadowForget(ctx, guest + M68K_SCR_VIEWPORT, KAFFEINE_SHADOW_VIEWPORT);
@@ -496,6 +520,7 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
     ctx->pubscreens[i].native = NULL;
     ctx->pubscreens[i].guest = 0;
     ctx->pubscreens[i].font = 0;
+    ctx->pubscreens[i].colormap = 0;
     ctx->pubscreens[i].locks = 0;
     ctx->pubscreens[i].owned = FALSE;
     ctx->pubscreens[i].keep = NULL;
@@ -540,7 +565,7 @@ static int screen_free_entry(struct KaffeineContext *ctx)
 static int screen_entry(struct KaffeineContext *ctx, struct Screen *scr)
 {
     int i = screen_index(ctx, scr, 0);
-    ULONG guest, font = 0;
+    ULONG guest, font = 0, colormap = 0;
 
     if (i >= 0)
         return i;
@@ -550,11 +575,12 @@ static int screen_entry(struct KaffeineContext *ctx, struct Screen *scr)
         return -1;
     }
     guest = Kaffeine_ShadowGuest(ctx, scr, KAFFEINE_SHADOW_SCREEN);
-    if (!guest && !(guest = screen_create(ctx, scr, &font, KAFFEINE_SHADOW_PUBSCREEN)))
+    if (!guest && !(guest = screen_create(ctx, scr, &font, &colormap, KAFFEINE_SHADOW_PUBSCREEN)))
         return -1;
     ctx->pubscreens[i].native = scr;
     ctx->pubscreens[i].guest = guest;
     ctx->pubscreens[i].font = font;
+    ctx->pubscreens[i].colormap = colormap;
     ctx->pubscreens[i].locks = 0;
     ctx->pubscreens[i].owned = FALSE;
     ctx->pubscreens[i].keep = NULL;
@@ -605,7 +631,8 @@ IPTR Kaffeine_LockPubScreen(struct KaffeineContext *ctx, void *cpu)
     ctx->pubscreens[i].locks++;
     /* a 68k Screen that the bridge did not make stays as it is */
     if (screen_mirrored(ctx, i))
-        screen_fill(ctx, ctx->pubscreens[i].guest, ctx->pubscreens[i].font, scr);
+        screen_fill(ctx, ctx->pubscreens[i].guest, ctx->pubscreens[i].font,
+                    ctx->pubscreens[i].colormap, scr);
     if (ctx->layer_ops)
         ctx->layer_ops->screen_mirrored(ctx, scr);
     return ctx->pubscreens[i].guest;
@@ -1081,7 +1108,7 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
     struct Screen *scr;
     const char *why;
     UWORD type = 0;
-    ULONG guest, font;
+    ULONG guest, font, colormap;
     int i;
 
     memset(&o, 0, sizeof(o));
@@ -1149,7 +1176,7 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
         /* the error of Intuition, or what the program had there */
         return open_failed(ctx, &o, o.error_value);
     }
-    if (!(guest = screen_create(ctx, scr, &font, KAFFEINE_SHADOW_SCREEN)))
+    if (!(guest = screen_create(ctx, scr, &font, &colormap, KAFFEINE_SHADOW_SCREEN)))
     {
         bug("[kaffeine] %s: no 68k Screen for %p, closed again\n", call, scr);
         if (CloseScreen(scr))
@@ -1158,7 +1185,7 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
             bug("[kaffeine] %s: Intuition did not close %p again\n", call, scr);
         return open_failed(ctx, &o, OSERR_NOMEM);
     }
-    screen_fill(ctx, guest, font, scr);
+    screen_fill(ctx, guest, font, colormap, scr);
     /* the program's own text, as Intuition keeps the pointer it got */
     m68k_write32(ctx, guest + M68K_SCR_TITLE, o.title);
     m68k_write32(ctx, guest + G_SCR_DEFAULTTITLE, o.title);
@@ -1166,6 +1193,7 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
     ctx->pubscreens[i].native = scr;
     ctx->pubscreens[i].guest = guest;
     ctx->pubscreens[i].font = font;
+    ctx->pubscreens[i].colormap = colormap;
     ctx->pubscreens[i].locks = 0;
     ctx->pubscreens[i].owned = TRUE;
     ctx->pubscreens[i].keep = keep;

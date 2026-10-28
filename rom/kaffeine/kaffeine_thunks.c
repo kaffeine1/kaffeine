@@ -46,6 +46,7 @@
 #include "kaffeine_menus.h"
 #include "kaffeine_gadgets.h"
 #include "kaffeine_screens.h"
+#include "kaffeine_palette.h"
 #include "kaffeine_tasks.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_workbench.h"
@@ -636,23 +637,6 @@ const struct M68KThunkEntry kaffeine_thunks_gadtools_manual[] = {
 const ULONG kaffeine_thunks_gadtools_manual_count =
     sizeof(kaffeine_thunks_gadtools_manual) / sizeof(kaffeine_thunks_gadtools_manual[0]) - 1;
 
-/* graphics -192: LoadRGB4(A0=vp, A1=colors, D0=count) */
-static IPTR thunk_gfx_LoadRGB4(struct KaffeineContext *ctx, void *cpu)
-{
-    struct ViewPort *vp = (struct ViewPort *)m68k_to_host_or_shadow(ctx, THUNK_A(0));
-    ULONG m68k_colors = THUNK_A(1);
-    LONG count = (LONG)THUNK_D(0);
-    if (!vp || !m68k_colors || count <= 0) return 0;
-    /* Byte-swap big-endian m68k UWORDs to native */
-    UWORD *native_colors = (UWORD *)AllocMem(count * sizeof(UWORD), 0);
-    if (!native_colors) return 0;
-    for (LONG i = 0; i < count; i++)
-        native_colors[i] = m68k_read16(ctx, m68k_colors + i * 2);
-    LoadRGB4(vp, native_colors, count);
-    FreeMem(native_colors, count * sizeof(UWORD));
-    return 0;
-}
-
 /* ── Graphics manual thunks (shadow RastPort) ── */
 const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
     KAFFEINE_GRAPHICS_COMPAT_THUNKS,
@@ -660,7 +644,7 @@ const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
     KAFFEINE_GRAPHICS_DISPLAY_THUNKS,
     KAFFEINE_GRAPHICS_LAYER_THUNKS,
     KAFFEINE_GRAPHICS_REGION_THUNKS,
-    { 192, thunk_gfx_LoadRGB4 },
+    KAFFEINE_GRAPHICS_PALETTE_THUNKS,
     { 0, NULL }
 };
 const ULONG kaffeine_thunks_graphics_manual_count =

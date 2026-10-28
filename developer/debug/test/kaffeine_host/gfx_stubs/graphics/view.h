@@ -1,6 +1,22 @@
 #pragma once
 #include <exec/types.h>
 
+struct ColorMap
+{
+    UBYTE Flags, Type;
+    UWORD Count;
+    UWORD *ColorTable;
+    struct ViewPortExtra *cm_vpe;
+    UWORD *LowColorBits;
+    UBYTE TransparencyPlane, SpriteResolution, SpriteResDefault, AuxFlags;
+    struct ViewPort *cm_vp;
+    void *NormalDisplayInfo, *CoerceDisplayInfo;
+    struct TagItem *cm_batch_items;
+    ULONG VPModeID;
+    struct PaletteExtra *PalExtra;
+    UWORD SpriteBase_Even, SpriteBase_Odd, Bp_0_base, Bp_1_base;
+};
+
 /* Field names, order and types from compiler/include/graphics/view.h. */
 struct ViewPort
 {
