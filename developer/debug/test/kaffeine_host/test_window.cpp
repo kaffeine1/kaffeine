@@ -254,8 +254,22 @@ extern "C" BOOL ModifyIDCMP(struct Window *window, ULONG flags)
     return TRUE;
 }
 
-/* Intuition opens a window from one flat native tag list. */
+/* No object of Intuition may lie in guest memory; only strings do. */
+static bool native_object(const void *p)
+{
+    if (!p || !live) return true;
+    const auto address = reinterpret_cast<std::uintptr_t>(p);
+    const auto start = reinterpret_cast<std::uintptr_t>(live->mem);
+    return address < start || address - start >= live->mem_size;
+}
+
+/* Intuition opens a window from a native NewWindow, NULL or not, and one
+   flat native tag list, NULL or not. The NewWindow is read as
+   openwindowtaglist.c reads it: an ExtNewWindow only with
+   WFLG_NW_EXTENDED, which ASan would see read past a NewWindow. */
 static std::vector<TagItem> opened_tags;
+static bool opened_tags_given, opened_nw_given;
+static ExtNewWindow opened_nw;
 static Window *open_result;
 static unsigned opened;
 extern "C" struct Window *OpenWindowTagList(struct NewWindow *newWindow, struct TagItem *tags)
@@ -263,17 +277,39 @@ extern "C" struct Window *OpenWindowTagList(struct NewWindow *newWindow, struct 
     ++native_calls;
     window_events.push_back("OpenWindowTagList");
     ++opened;
-    assert(!newWindow);
+    opened_nw_given = newWindow != nullptr;
+    opened_nw = {};
+    if (newWindow)
+    {
+        std::memcpy(&opened_nw, newWindow, newWindow->Flags & WFLG_NW_EXTENDED ?
+                                           sizeof(ExtNewWindow) : sizeof(NewWindow));
+        assert(!opened_nw.Extension && !opened_nw.CheckMark && !opened_nw.BitMap);
+        assert(native_object(opened_nw.FirstGadget) && native_object(opened_nw.Screen));
+    }
+    opened_tags_given = tags != nullptr;
     opened_tags.clear();
-    for (TagItem *t = tags;; ++t)
+    for (TagItem *t = tags; t; ++t)
     {
         opened_tags.push_back(*t);
+        if (t->ti_Tag == WA_CustomScreen || t->ti_Tag == WA_PubScreen || t->ti_Tag == WA_Gadgets)
+            assert(native_object(reinterpret_cast<void *>(t->ti_Data)));
         if (t->ti_Tag == TAG_DONE)
             break;
     }
+    if (open_result && newWindow)
+    {
+        /* openwindow.c: WA_IDCMP takes the place of IDCMPFlags, and
+           ModifyIDCMP() gives the window a port for flags */
+        ULONG idcmp = newWindow->IDCMPFlags;
+        for (const TagItem &t : opened_tags)
+            if (t.ti_Tag == WA_IDCMP)
+                idcmp = t.ti_Data;
+        open_result->IDCMPFlags = idcmp;
+        open_result->UserPort = idcmp ? &ports[3] : nullptr;
+    }
     if (open_result)
     {
-        Gadget *head = nullptr;
+        Gadget *head = newWindow ? newWindow->FirstGadget : nullptr;
         for (const TagItem &t : opened_tags)
             if (t.ti_Tag == WA_Gadgets)
                 head = reinterpret_cast<Gadget *>(t.ti_Data);
@@ -491,6 +527,8 @@ struct Fixture
         sync_guest = 0;
         prepare_refuses = false;
         opened_tags.clear();
+        opened_tags_given = opened_nw_given = false;
+        opened_nw = {};
         open_result = nullptr;
         opened = 0;
         easy.built = easy.handled = easy.freed = 0;
@@ -1540,17 +1578,18 @@ static void test_window_tags()
     /* the handler at -606 through the dispatcher: a refusal gives 20 in D0
        without Intuition, a window that Intuition does not open 0, an open
        one its 68k Window, or 0 without room for it, the native window
-       closed again; the NewWindow of A0 is left out */
+       closed again; without a NewWindow in A0 Intuition gets NULL */
     const unsigned before = opened;
     items(list, { { WA_Gadgets, gadget } });
-    f.call(Fixture::intuition, 606, { 0xDEAD0000, list });
+    f.call(Fixture::intuition, 606, { 0, list });
     assert(f.stopped() && opened == before);
     f.call(Fixture::intuition, 606, { 0, 0xFFFC });
     assert(f.stopped() && opened == before);
     items(list, { { WA_Width, 320 }, { TAG_MORE, more } });
     items(more, { { WA_Title, Fixture::title } });
     open_result = nullptr;
-    assert(f.call(Fixture::intuition, 606, { 0xDEAD0000, list }) == 0 && !f.stopped() && opened == before + 1);
+    assert(f.call(Fixture::intuition, 606, { 0, list }) == 0 && !f.stopped() && opened == before + 1);
+    assert(!opened_nw_given && opened_tags_given);
     assert(opened_tags.size() == 3 && opened_tags[0].ti_Tag == WA_Width && opened_tags[0].ti_Data == 320 &&
            opened_tags[1].ti_Tag == WA_Title &&
            opened_tags[1].ti_Data == (IPTR)(f.memory.data() + Fixture::title) && opened_tags[2].ti_Tag == TAG_DONE);
@@ -1783,7 +1822,7 @@ static void test_window_gadget_open_hooks()
     window_tagitems(f, tags, { { WA_Gadgets, first }, { WA_Width, 320 },
                               { TAG_SKIP, 1 }, { WA_Gadgets, 0xBAD0 }, { TAG_MORE, more } });
     window_tagitems(f, more, { { WA_Gadgets, last } });
-    const ULONG guest = f.call(Fixture::intuition, 606, { 0xDEAD0000, tags });
+    const ULONG guest = f.call(Fixture::intuition, 606, { 0, tags });
     assert(guest && !f.stopped() && f.is(guest, KAFFEINE_SHADOW_WINDOW, &w));
     assert((window_events == std::vector<std::string>{ "prepare", "OpenWindowTagList", "opened" }));
     assert(window_gadget_calls.size() == 2 && window_gadget_calls[0].name == "prepare" &&
@@ -2282,6 +2321,461 @@ static void test_window_layer_hooks()
     f.ctx.layer_ops = nullptr;
 }
 
+/* ── OpenWindowTagList() with a NewWindow ────────────────────────── */
+
+/* Where the NewWindow tests keep their guest structures, below the heap */
+static constexpr ULONG NW_AT = 0x3C00, NW_TAGS = 0x3B00, NW_MORE = 0x3B80;
+static constexpr ULONG NW_SCREEN = 0x3D00, NW_PUBSCREEN = 0x3D10, NW_AGAIN = 0x3D20;
+static constexpr ULONG NW_GADGET = 0x3D40, NW_OTHER_GADGET = 0x3D60;
+
+static std::vector<UBYTE> guest_bytes(Fixture &f, ULONG from = 0x3B00, ULONG to = 0x3E40)
+{
+    return std::vector<UBYTE>(f.memory.begin() + from, f.memory.begin() + to);
+}
+
+/* A classic 48-byte NewWindow whose fields each show their byte order
+   and sign: the bytes after it stay as they are. */
+static void classic_newwindow(Fixture &f, ULONG at, UWORD type, ULONG screen)
+{
+    std::memset(f.memory.data() + at, 0, M68K_SIZEOF_NEWWINDOW);
+    m68k_write16(&f.ctx, at + M68K_NW_LEFTEDGE, 0xFFFB);
+    m68k_write16(&f.ctx, at + M68K_NW_TOPEDGE, 0x0102);
+    m68k_write16(&f.ctx, at + M68K_NW_WIDTH, 0x0140);
+    m68k_write16(&f.ctx, at + M68K_NW_HEIGHT, 0x8000);
+    f.memory[at + M68K_NW_DETAILPEN] = 0xFF;
+    f.memory[at + M68K_NW_BLOCKPEN] = 0x02;
+    m68k_write32(&f.ctx, at + M68K_NW_IDCMPFLAGS, 0x00400208);
+    m68k_write32(&f.ctx, at + M68K_NW_FLAGS, 0x0000100F);
+    m68k_write32(&f.ctx, at + M68K_NW_TITLE, Fixture::title);
+    m68k_write32(&f.ctx, at + M68K_NW_SCREEN, screen);
+    m68k_write16(&f.ctx, at + M68K_NW_MINWIDTH, 0xFFF0);
+    m68k_write16(&f.ctx, at + M68K_NW_MINHEIGHT, 0x0064);
+    m68k_write16(&f.ctx, at + M68K_NW_MAXWIDTH, 0xFFFF);
+    m68k_write16(&f.ctx, at + M68K_NW_MAXHEIGHT, 0x1234);
+    m68k_write16(&f.ctx, at + M68K_NW_TYPE, type);
+}
+
+/* The scalar fields of classic_newwindow() as Intuition got them */
+static void assert_classic_scalars(UWORD type, ULONG flags = 0x100F)
+{
+    const ExtNewWindow &n = opened_nw;
+    assert(opened_nw_given);
+    assert(n.LeftEdge == -5 && n.TopEdge == 0x102 && n.Width == 320 && n.Height == -32768);
+    assert(n.DetailPen == 0xFF && n.BlockPen == 2 && n.IDCMPFlags == 0x00400208 && n.Flags == flags);
+    assert(n.MinWidth == -16 && n.MinHeight == 100 && n.MaxWidth == 0xFFFF && n.MaxHeight == 0x1234);
+    assert(n.Type == type && !n.CheckMark && !n.BitMap && !n.Extension);
+}
+
+static bool has_tag(Tag tag)
+{
+    return std::any_of(opened_tags.begin(), opened_tags.end(),
+                       [&](const TagItem &t) { return t.ti_Tag == tag; });
+}
+
+/* The fields of a NewWindow, without tags: Intuition gets its own
+   defaults for them, no WA_AutoAdjust, and the IDCMP flags give the
+   window its 68k port. Guest memory stays as it was. */
+static void test_newwindow_defaults()
+{
+    Fixture f;
+    static int native_screen;
+    assert(Kaffeine_ShadowAdd(&f.ctx, NW_SCREEN, &native_screen, KAFFEINE_SHADOW_SCREEN));
+    classic_newwindow(f, NW_AT, CUSTOMSCREEN, NW_SCREEN);
+    RastPort rp{};
+    Window win{};
+    win.RPort = &rp;
+    win.WScreen = reinterpret_cast<Screen *>(&native_screen);
+    open_result = &win;
+    const auto before = guest_bytes(f);
+    const ULONG m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(m && !f.stopped() && opened == 1 && f.is(m, KAFFEINE_SHADOW_WINDOW, &win));
+    assert_classic_scalars(CUSTOMSCREEN);
+    assert(opened_nw.Title == f.memory.data() + Fixture::title &&
+           opened_nw.Screen == reinterpret_cast<Screen *>(&native_screen) && !opened_nw.FirstGadget);
+    assert(!opened_tags_given);
+    assert(win.IDCMPFlags == 0x00400208 && win.UserPort == &ports[3]);
+    assert(f.lng(m + M68K_WIN_IDCMPFLAGS) == 0x00400208 &&
+           f.is(f.lng(m + M68K_WIN_USERPORT), KAFFEINE_SHADOW_USERPORT, &ports[3]));
+    assert(f.lng(m + M68K_WIN_WSCREEN) == NW_SCREEN);
+    assert(guest_bytes(f) == before);
+    f.closewindow(m);
+    assert(closed.size() == 1 && closed[0] == &win && Kaffeine_HeapAvail(&f.ctx, 0) == f.heap_avail);
+    open_result = nullptr;
+}
+
+/* Tags after the NewWindow: Intuition applies them over its fields, so
+   they reach it as they are, WA_IDCMP 0 too, which leaves the window
+   without a port. WA_Title and a screen tag take the place of Title and
+   of Type with Screen, which are not read then; WA_PubScreenName does not
+   take the place of Screen, which Intuition still falls back on. */
+static void test_newwindow_tag_overrides()
+{
+    Fixture f;
+    static int native_screen, native_pubscreen;
+    assert(Kaffeine_ShadowAdd(&f.ctx, NW_SCREEN, &native_screen, KAFFEINE_SHADOW_SCREEN));
+    assert(Kaffeine_ShadowAdd(&f.ctx, NW_PUBSCREEN, &native_pubscreen, KAFFEINE_SHADOW_PUBSCREEN));
+    Window win{};
+    win.WScreen = reinterpret_cast<Screen *>(&native_screen);
+    open_result = &win;
+
+    classic_newwindow(f, NW_AT, CUSTOMSCREEN, NW_SCREEN);
+    window_tagitems(f, NW_TAGS, { { WA_IDCMP, 0 }, { WA_Left, 7 }, { WA_Flags, WFLG_SIZEGADGET } });
+    const auto before = guest_bytes(f);
+    ULONG m = f.call(Fixture::intuition, 606, { NW_AT, NW_TAGS });
+    assert(m && !f.stopped() && opened_tags_given && opened_tags.size() == 4);
+    assert(opened_tags[0].ti_Tag == WA_IDCMP && opened_tags[0].ti_Data == 0 &&
+           opened_tags[1].ti_Tag == WA_Left && opened_tags[1].ti_Data == 7 &&
+           opened_tags[2].ti_Tag == WA_Flags && opened_tags[2].ti_Data == WFLG_SIZEGADGET &&
+           opened_tags[3].ti_Tag == TAG_DONE && !has_tag(WA_AutoAdjust));
+    assert_classic_scalars(CUSTOMSCREEN);
+    assert(opened_nw.Screen == reinterpret_cast<Screen *>(&native_screen));
+    assert(win.IDCMPFlags == 0 && !win.UserPort && f.lng(m + M68K_WIN_USERPORT) == 0 &&
+           f.lng(m + M68K_WIN_IDCMPFLAGS) == 0);
+    assert(guest_bytes(f) == before);
+    f.closewindow(m);
+
+    /* a Title outside guest memory and a Screen that is no screen are
+       not read under WA_Title and WA_PubScreen */
+    classic_newwindow(f, NW_AT, CUSTOMSCREEN, Fixture::raw);
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_TITLE, 0x00FFFFF0);
+    window_tagitems(f, NW_TAGS, { { WA_PubScreen, NW_PUBSCREEN }, { WA_Title, Fixture::title } });
+    win.WScreen = reinterpret_cast<Screen *>(&native_pubscreen);
+    m = f.call(Fixture::intuition, 606, { NW_AT, NW_TAGS });
+    assert(m && !f.stopped() && !opened_nw.Title && !opened_nw.Screen && opened_nw.Type == CUSTOMSCREEN);
+    assert(opened_tags[0].ti_Tag == WA_PubScreen && opened_tags[0].ti_Data == (IPTR)&native_pubscreen &&
+           opened_tags[1].ti_Tag == WA_Title &&
+           opened_tags[1].ti_Data == (IPTR)(f.memory.data() + Fixture::title));
+    assert(f.lng(m + M68K_WIN_WSCREEN) == NW_PUBSCREEN && win.UserPort == &ports[3]);
+    f.closewindow(m);
+
+    /* WA_CustomScreen NULL takes the place of a WBENCHSCREEN */
+    classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+    window_tagitems(f, NW_TAGS, { { WA_CustomScreen, 0 } });
+    m = f.call(Fixture::intuition, 606, { NW_AT, NW_TAGS });
+    assert(m && !f.stopped() && !opened_nw.Screen && opened_tags[0].ti_Tag == WA_CustomScreen &&
+           opened_tags[0].ti_Data == 0);
+    f.closewindow(m);
+
+    const unsigned opens = opened, calls = native_calls;
+    classic_newwindow(f, NW_AT, PUBLICSCREEN, Fixture::raw);
+    window_tagitems(f, NW_TAGS, { { WA_PubScreenName, Fixture::title } });
+    f.call(Fixture::intuition, 606, { NW_AT, NW_TAGS });
+    assert(f.stopped() && opened == opens && native_calls == calls);
+    open_result = nullptr;
+}
+
+/* A0 and A1 each NULL or not: without a NewWindow Intuition gets NULL and
+   adds its WA_AutoAdjust, as before; without tags it gets NULL for them. */
+static void test_newwindow_null_combinations()
+{
+    Fixture f;
+    Window win{};
+    open_result = &win;
+    window_tagitems(f, NW_TAGS, { { WA_Width, 99 } });
+
+    ULONG m = f.call(Fixture::intuition, 606, { 0, 0 });
+    assert(m && !f.stopped() && !opened_nw_given && opened_tags_given && opened_tags.size() == 1 &&
+           opened_tags[0].ti_Tag == TAG_DONE);
+    f.closewindow(m);
+    m = f.call(Fixture::intuition, 606, { 0, NW_TAGS });
+    assert(m && !opened_nw_given && opened_tags.size() == 2 && opened_tags[0].ti_Tag == WA_Width &&
+           opened_tags[0].ti_Data == 99);
+    f.closewindow(m);
+
+    /* a NewWindow of zeroes: no Title, Screen, gadgets or IDCMP port */
+    std::memset(f.memory.data() + NW_AT, 0, M68K_SIZEOF_NEWWINDOW);
+    m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(m && !f.stopped() && opened_nw_given && !opened_tags_given);
+    assert(!opened_nw.Title && !opened_nw.Screen && !opened_nw.FirstGadget && !opened_nw.Type &&
+           !opened_nw.IDCMPFlags && !opened_nw.Flags && !opened_nw.Width);
+    assert(!win.UserPort && f.lng(m + M68K_WIN_USERPORT) == 0);
+    f.closewindow(m);
+    m = f.call(Fixture::intuition, 606, { NW_AT, NW_TAGS });
+    assert(m && opened_nw_given && opened_tags_given && opened_tags.size() == 2 &&
+           opened_tags[0].ti_Data == 99);
+    f.closewindow(m);
+
+    /* Intuition opens nothing: 0, and the program goes on */
+    open_result = nullptr;
+    assert(f.call(Fixture::intuition, 606, { NW_AT, NW_TAGS }) == 0 && !f.stopped());
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) == f.heap_avail);
+}
+
+/* Type and Screen as Intuition reads them: WBENCHSCREEN without reading
+   Screen, PUBLICSCREEN the public screen named or the default one for
+   NULL, other types the screen named, NULL left to Intuition. A Screen
+   that is not a screen of the program stops before Intuition. */
+static void test_newwindow_screens()
+{
+    Fixture f;
+    static int native_screen, native_pubscreen, native_gadget;
+    assert(Kaffeine_ShadowAdd(&f.ctx, NW_SCREEN, &native_screen, KAFFEINE_SHADOW_SCREEN));
+    assert(Kaffeine_ShadowAdd(&f.ctx, NW_PUBSCREEN, &native_pubscreen, KAFFEINE_SHADOW_PUBSCREEN));
+    assert(Kaffeine_ShadowAdd(&f.ctx, NW_AGAIN, &native_pubscreen, KAFFEINE_SHADOW_PUBSCREEN));
+    assert(Kaffeine_ShadowAdd(&f.ctx, NW_GADGET, &native_gadget, KAFFEINE_SHADOW_GADGET));
+    Window win{};
+    open_result = &win;
+    const struct { UWORD type; ULONG screen; void *native, *lies_on; ULONG wscreen; } cases[] =
+    {
+        { PUBLICSCREEN, NW_AGAIN, &native_pubscreen, &native_pubscreen, NW_AGAIN },
+        { PUBLICSCREEN, NW_PUBSCREEN, &native_pubscreen, &native_pubscreen, NW_PUBSCREEN },
+        { PUBLICSCREEN, 0, nullptr, &native_pubscreen, NW_PUBSCREEN },
+        { CUSTOMSCREEN, NW_SCREEN, &native_screen, &native_screen, NW_SCREEN },
+        { 0, NW_SCREEN, &native_screen, &native_screen, NW_SCREEN },
+        { WBENCHSCREEN, 0xDEADBEEF, nullptr, nullptr, 0 },
+        { CUSTOMSCREEN, 0, nullptr, nullptr, 0 },
+    };
+    for (const auto &c : cases)
+    {
+        classic_newwindow(f, NW_AT, c.type, c.screen);
+        win.WScreen = static_cast<Screen *>(c.lies_on);
+        const ULONG m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+        assert(m && !f.stopped());
+        assert_classic_scalars(c.type);
+        assert(opened_nw.Screen == c.native && f.lng(m + M68K_WIN_WSCREEN) == c.wscreen);
+        f.closewindow(m);
+    }
+    const unsigned opens = opened, calls = native_calls;
+    for (UWORD type : { UWORD(PUBLICSCREEN), UWORD(CUSTOMSCREEN), UWORD(0) })
+        for (ULONG bad : { ULONG(Fixture::raw), f.window, NW_GADGET, ULONG(0x00FFFFF0) })
+        {
+            classic_newwindow(f, NW_AT, type, bad);
+            f.call(Fixture::intuition, 606, { NW_AT, 0 });
+            assert(f.stopped() && opened == opens && native_calls == calls);
+        }
+    open_result = nullptr;
+}
+
+/* FirstGadget goes through the gadget bridge as WA_Gadgets does, and
+   Intuition gets its native head in the NewWindow; WA_Gadgets, NULL
+   too, takes its place, and FirstGadget is not prepared then. */
+static void test_newwindow_gadgets()
+{
+    Fixture f;
+    Gadget source{}, other{}, native[2]{}, system{};
+    assert(Kaffeine_ShadowAdd(&f.ctx, NW_GADGET, &source, KAFFEINE_SHADOW_GADGET));
+    assert(Kaffeine_ShadowAdd(&f.ctx, NW_OTHER_GADGET, &other, KAFFEINE_SHADOW_GADGET));
+    f.ctx.window_gadgets = &recording_gadgets;
+    prepared_head = &native[0];
+    native[0].NextGadget = &native[1];
+    classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_FIRSTGADGET, NW_GADGET);
+
+    Window w{};
+    w.FirstGadget = &system;
+    open_result = &w;
+    ULONG m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(m && !f.stopped() && f.is(m, KAFFEINE_SHADOW_WINDOW, &w));
+    assert((window_events == std::vector<std::string>{ "prepare", "OpenWindowTagList", "opened" }));
+    assert(window_gadget_calls.size() == 2 && window_gadget_calls[0].guest == NW_GADGET &&
+           window_gadget_calls[0].call == "OpenWindowTagList()" && window_gadget_calls[1].head == &native[0]);
+    assert(opened_nw.FirstGadget == &native[0] && !opened_tags_given && system.NextGadget == &native[0]);
+    window_events.clear(); window_gadget_calls.clear();
+    f.closewindow(m);
+    assert(window_events.size() >= 2 && window_events[0] == "closing" && window_events[1] == "CloseWindow");
+
+    Window tagged{};
+    open_result = &tagged;
+    window_events.clear(); window_gadget_calls.clear();
+    window_tagitems(f, NW_TAGS, { { WA_Gadgets, NW_OTHER_GADGET } });
+    m = f.call(Fixture::intuition, 606, { NW_AT, NW_TAGS });
+    assert(m && !f.stopped() && window_gadget_calls.size() == 2 &&
+           window_gadget_calls[0].guest == NW_OTHER_GADGET && window_gadget_calls[1].name == "opened");
+    assert(!opened_nw.FirstGadget && opened_tags[0].ti_Tag == WA_Gadgets &&
+           opened_tags[0].ti_Data == (IPTR)&native[0] && tagged.FirstGadget == &native[0]);
+    f.closewindow(m);
+
+    Window none{};
+    open_result = &none;
+    window_events.clear(); window_gadget_calls.clear();
+    window_tagitems(f, NW_TAGS, { { WA_Gadgets, 0 } });
+    m = f.call(Fixture::intuition, 606, { NW_AT, NW_TAGS });
+    assert(m && !f.stopped() && window_gadget_calls.empty() &&
+           (window_events == std::vector<std::string>{ "OpenWindowTagList" }));
+    assert(!opened_nw.FirstGadget && opened_tags[0].ti_Tag == TAG_IGNORE && !none.FirstGadget);
+    f.closewindow(m);
+
+    /* without a gadget bridge the program's own gadgets stay out and a
+       GadTools one stops the program */
+    f.ctx.window_gadgets = nullptr;
+    Window plain{};
+    open_result = &plain;
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_FIRSTGADGET, Fixture::raw);
+    m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(m && !f.stopped() && !opened_nw.FirstGadget && !plain.FirstGadget);
+    f.closewindow(m);
+    const unsigned opens = opened;
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_FIRSTGADGET, NW_GADGET);
+    f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(f.stopped() && opened == opens);
+    open_result = nullptr;
+}
+
+/* Every way FirstGadget can fail leaves the gadget bridge, the heap and
+   the shadows as they were: a refusal before it is never prepared, a
+   refused prepare stops, a window that does not open drops the list, and
+   one without its 68k Window gives it back as it closes again. */
+static void test_newwindow_gadget_failures()
+{
+    enum Failure { REFUSED_BEFORE, PREPARE, NATIVE, WINDOW_SHADOW };
+    for (Failure failure : { REFUSED_BEFORE, PREPARE, NATIVE, WINDOW_SHADOW })
+    {
+        Fixture f;
+        Gadget source{}, native{};
+        Window w{};
+        assert(Kaffeine_ShadowAdd(&f.ctx, NW_GADGET, &source, KAFFEINE_SHADOW_GADGET));
+        f.ctx.window_gadgets = &recording_gadgets;
+        prepared_head = &native;
+        prepare_refuses = failure == PREPARE;
+        open_result = failure == NATIVE ? nullptr : &w;
+        classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+        m68k_write32(&f.ctx, NW_AT + M68K_NW_FIRSTGADGET, NW_GADGET);
+        if (failure == REFUSED_BEFORE)
+            m68k_write32(&f.ctx, NW_AT + M68K_NW_TITLE, 0x00FFFFF0);
+        if (failure == WINDOW_SHADOW)
+            f.leave_shadows(0);
+        const UWORD shadows = f.ctx.num_shadows;
+        const ULONG heap = Kaffeine_HeapAvail(&f.ctx, 0);
+        const bool stops = failure == REFUSED_BEFORE || failure == PREPARE;
+        expect_guest_window = failure != WINDOW_SHADOW;
+        assert(f.call(Fixture::intuition, 606, { NW_AT, 0 }) == (stops ? 20u : 0u));
+        expect_guest_window = true;
+        assert(stops == f.stopped() && opened == (stops ? 0u : 1u));
+        assert(f.ctx.num_shadows == shadows && Kaffeine_HeapAvail(&f.ctx, 0) == heap);
+        std::vector<std::string> names;
+        for (const auto &c : window_gadget_calls)
+            names.push_back(c.name);
+        switch (failure)
+        {
+        case REFUSED_BEFORE:
+            assert(names.empty());
+            break;
+        case PREPARE:
+            assert((names == std::vector<std::string>{ "prepare" }));
+            break;
+        case NATIVE:
+            assert((names == std::vector<std::string>{ "prepare", "dropped" }));
+            break;
+        case WINDOW_SHADOW:
+            assert((names == std::vector<std::string>{ "prepare", "opened", "closing" }));
+            assert(closed.size() == 1 && closed[0] == &w && w.FirstGadget == &native);
+            break;
+        }
+        f.free_shadows();
+        prepare_refuses = false;
+        open_result = nullptr;
+    }
+}
+
+/* Checked pointers and bounds: a NewWindow that ends at the end of guest
+   memory opens; one past it, an ExtNewWindow without room for its
+   Extension, a Title outside guest memory or without its end there, a
+   BitMap stop the program before Intuition. The legacy CheckMark is
+   ignored as in native AROS; no guest Image pointer reaches Intuition. */
+static void test_newwindow_bounds()
+{
+    Fixture f;
+    const ULONG last = 0x10000 - M68K_SIZEOF_NEWWINDOW;
+    Window win{};
+    open_result = &win;
+    classic_newwindow(f, last, WBENCHSCREEN, 0);
+    ULONG m = f.call(Fixture::intuition, 606, { last, 0 });
+    assert(m && !f.stopped());
+    assert_classic_scalars(WBENCHSCREEN);
+    f.closewindow(m);
+
+    const unsigned opens = opened, calls = native_calls;
+    auto refused = [&](ULONG nw, ULONG tags)
+    {
+        f.call(Fixture::intuition, 606, { nw, tags });
+        assert(f.stopped() && opened == opens && native_calls == calls);
+    };
+    window_tagitems(f, NW_TAGS, { { WA_Width, 10 } });
+    refused(last + 1, 0);
+    refused(ULONG(0xFFFFFFF0), NW_TAGS);
+    refused(ULONG(0x00FFFFF0), 0);
+    m68k_write32(&f.ctx, last + M68K_NW_FLAGS, WFLG_NW_EXTENDED);
+    refused(last, 0);
+    refused(last, NW_TAGS);
+
+    classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_TITLE, 0x00FFFFF0);
+    refused(NW_AT, 0);
+    std::memset(f.memory.data() + 0xFFF0, 'x', 16);
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_TITLE, 0xFFF0);
+    refused(NW_AT, NW_TAGS);
+    classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_BITMAP, Fixture::raw);
+    refused(NW_AT, 0);
+    refused(NW_AT, NW_TAGS);
+
+    /* a Title that ends in the last byte of guest memory */
+    classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+    f.memory[0xFFFF] = 0;
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_TITLE, 0xFFFF);
+    m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(m && !f.stopped() && opened_nw.Title == f.memory.data() + 0xFFFF);
+    f.closewindow(m);
+
+    /* Even an unusable legacy Image is not followed or forwarded. */
+    classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_CHECKMARK, 0xFFFFFFF0);
+    const auto before = guest_bytes(f);
+    m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(m && !f.stopped() && !opened_nw.CheckMark && guest_bytes(f) == before);
+    f.closewindow(m);
+    open_result = nullptr;
+}
+
+/* WFLG_NW_EXTENDED: Intuition gets an ExtNewWindow of the bridge with no
+   Extension of its own, and the flag. Without A1 the guest Extension is
+   flattened into the native tags; with A1 it is not read. An Extension
+   that 68k Intuition leaves out, NULL, odd or no memory, gives no tags;
+   one that runs out of guest memory stops the program. */
+static void test_newwindow_extended()
+{
+    Fixture f;
+    Window win{};
+    open_result = &win;
+    classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_FLAGS, 0x100F | WFLG_NW_EXTENDED);
+    m68k_write32(&f.ctx, NW_AT + M68K_ENW_EXTENSION, NW_TAGS);
+    window_tagitems(f, NW_TAGS, { { WA_Width, 123 }, { WA_Title, Fixture::title }, { WA_IDCMP, 0 } });
+    const auto before = guest_bytes(f);
+    ULONG m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(m && !f.stopped());
+    assert_classic_scalars(WBENCHSCREEN, 0x100F | WFLG_NW_EXTENDED);
+    assert(!opened_nw.Title && opened_tags_given && opened_tags.size() == 4);
+    assert(opened_tags[0].ti_Tag == WA_Width && opened_tags[0].ti_Data == 123 &&
+           opened_tags[1].ti_Tag == WA_Title &&
+           opened_tags[1].ti_Data == (IPTR)(f.memory.data() + Fixture::title) &&
+           opened_tags[2].ti_Tag == WA_IDCMP && opened_tags[2].ti_Data == 0);
+    assert(!win.UserPort && f.lng(m + M68K_WIN_USERPORT) == 0);
+    assert(guest_bytes(f) == before);
+    f.closewindow(m);
+
+    window_tagitems(f, NW_TAGS, { { WA_Width, 1 }, { TAG_MORE, 0xFFFFFFF0 } });
+    window_tagitems(f, NW_MORE, { { WA_Height, 77 } });
+    m = f.call(Fixture::intuition, 606, { NW_AT, NW_MORE });
+    assert(m && !f.stopped() && opened_tags.size() == 2 && opened_tags[0].ti_Tag == WA_Height &&
+           opened_tags[0].ti_Data == 77 && opened_nw.Title == f.memory.data() + Fixture::title &&
+           (opened_nw.Flags & WFLG_NW_EXTENDED));
+    f.closewindow(m);
+    const unsigned opens = opened;
+    f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(f.stopped() && opened == opens);
+
+    for (ULONG ext : { ULONG(0), ULONG(NW_TAGS + 1), ULONG(0x00FFFFF0) })
+    {
+        m68k_write32(&f.ctx, NW_AT + M68K_ENW_EXTENSION, ext);
+        m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+        assert(m && !f.stopped() && !opened_tags_given && (opened_nw.Flags & WFLG_NW_EXTENDED) &&
+               opened_nw.Title == f.memory.data() + Fixture::title);
+        f.closewindow(m);
+    }
+    open_result = nullptr;
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
@@ -2312,7 +2806,15 @@ int main()
         { "Messages: type-12 IAddress mapping and gadget sync through GetMsg, WaitPort and GT_GetIMsg", test_window_message_gadget_addresses },
         { "Messages: GT_GetIMsg and GT_FilterIMsg sync after GadTools filters or consumes input", test_window_filtered_message_sync },
         { "Messages: a gadget message for a freed gadget never reaches GadTools' reads or the program", test_window_stale_gadget_messages },
-        { "Messages: a filtered arrow address maps the returned scroller, with its native Code", test_window_filtered_address }
+        { "Messages: a filtered arrow address maps the returned scroller, with its native Code", test_window_filtered_address },
+        { "NewWindow at -606: signed scalars, pens, flags, limits and IDCMP reach Intuition, with a 68k IDCMP port", test_newwindow_defaults },
+        { "NewWindow at -606: tags apply over its fields, WA_IDCMP 0 too; WA_Title and screen tags replace unread fields", test_newwindow_tag_overrides },
+        { "NewWindow at -606: A0 and A1 each NULL or not", test_newwindow_null_combinations },
+        { "NewWindow at -606: typed public, custom and Workbench screens, and refused Screens", test_newwindow_screens },
+        { "NewWindow at -606: FirstGadget through the gadget bridge, and WA_Gadgets in its place", test_newwindow_gadgets },
+        { "NewWindow at -606: refusal, prepare, native and guest Window failures roll the gadgets back", test_newwindow_gadget_failures },
+        { "NewWindow at -606: checked bounds, Title and BitMap; unused legacy CheckMark is never followed", test_newwindow_bounds },
+        { "NewWindow at -606: WFLG_NW_EXTENDED flattens or leaves out the Extension, never forwards it", test_newwindow_extended }
     };
     for (const Test &test : tests)
     {

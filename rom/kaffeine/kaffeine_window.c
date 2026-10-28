@@ -95,16 +95,21 @@ BOOL Kaffeine_WindowGadgets(struct KaffeineContext *ctx, ULONG gadgets, const ch
     return TRUE;
 }
 
-struct TagItem *Kaffeine_WindowTags(struct KaffeineContext *ctx, ULONG list, ULONG *size,
-                                   ULONG *screen, struct Gadget **gadgets)
+/* The tags of a list that take the place of fields of a NewWindow */
+enum { SEEN_SCREEN = 1, SEEN_TITLE = 2, SEEN_GADGETS = 4 };
+
+/* Kaffeine_WindowTags() up to its gadgets: the last WA_Gadgets is left in
+   *guest, at item *last, as TAG_IGNORE; *seen holds which of the tags
+   above the list has. */
+static struct TagItem *window_tags(struct KaffeineContext *ctx, ULONG list, ULONG *size,
+                                   ULONG *screen, ULONG *guest, ULONG *last, ULONG *seen)
 {
     struct KaffeineTagWalk walk;
-    ULONG item, tag, data, n = 0, i = 0, guest = 0, last = 0, bad = 0;
+    ULONG item, tag, data, n = 0, i = 0, bad = 0;
     struct TagItem *tags;
     int step;
 
-    *screen = 0;
-    *gadgets = NULL;
+    *screen = *guest = *last = *seen = 0;
     Kaffeine_TagWalkInit(&walk, list);
     while ((step = Kaffeine_TagWalkNext(ctx, &walk, &item)) == KAFFEINE_TAG_ITEM)
         n++;
@@ -122,7 +127,11 @@ struct TagItem *Kaffeine_WindowTags(struct KaffeineContext *ctx, ULONG list, ULO
         tags[i].ti_Tag = tag = m68k_read32(ctx, item);
         data = m68k_read32(ctx, item + 4);
         if (tag == WA_Title || tag == WA_ScreenTitle || tag == WA_PubScreenName)
+        {
             tags[i].ti_Data = (IPTR)m68k_to_host(ctx, data);
+            if (tag == WA_Title)
+                *seen |= SEEN_TITLE;
+        }
         else if (tag == WA_CustomScreen || tag == WA_PubScreen)
         {
             /* NULL stays NULL, the default public screen for WA_PubScreen */
@@ -130,12 +139,14 @@ struct TagItem *Kaffeine_WindowTags(struct KaffeineContext *ctx, ULONG list, ULO
             if (data && !tags[i].ti_Data && !bad)
                 bad = tag;
             *screen = data;
+            *seen |= SEEN_SCREEN;
         }
         else if (tag == WA_Gadgets)
         {
             /* Intuition takes the last one */
-            guest = data;
-            last = i;
+            *guest = data;
+            *last = i;
+            *seen |= SEEN_GADGETS;
             tags[i].ti_Tag = TAG_IGNORE;
         }
         else
@@ -144,19 +155,47 @@ struct TagItem *Kaffeine_WindowTags(struct KaffeineContext *ctx, ULONG list, ULO
     tags[n].ti_Tag = TAG_DONE;
     /* Intuition would read a Screen at any other address. */
     if (bad)
+    {
         refuse(ctx, bad == WA_PubScreen ?
                     "OpenWindowTagList(): WA_PubScreen is not a screen of the program" :
                     "OpenWindowTagList(): WA_CustomScreen is not a screen of the program");
-    if (bad || !Kaffeine_WindowGadgets(ctx, guest, "OpenWindowTagList()", gadgets))
-    {
         FreeMem(tags, *size);
         return NULL;
     }
-    if (*gadgets)
+    return tags;
+}
+
+/* The native list of the gadgets guest of a new window, as WA_Gadgets at
+   item last of tags when the list came from there. FALSE, with tags
+   freed, when the program stops. */
+static BOOL window_tags_gadgets(struct KaffeineContext *ctx, struct TagItem *tags, ULONG size,
+                                ULONG guest, ULONG last, BOOL tagged, struct Gadget **gadgets)
+{
+    (void)size; /* Some host FreeMem macros do not evaluate their size argument. */
+    if (!Kaffeine_WindowGadgets(ctx, guest, "OpenWindowTagList()", gadgets))
+    {
+        if (tags)
+            FreeMem(tags, size);
+        return FALSE;
+    }
+    if (*gadgets && tagged)
     {
         tags[last].ti_Tag = WA_Gadgets;
         tags[last].ti_Data = (IPTR)*gadgets;
     }
+    return TRUE;
+}
+
+struct TagItem *Kaffeine_WindowTags(struct KaffeineContext *ctx, ULONG list, ULONG *size,
+                                   ULONG *screen, struct Gadget **gadgets)
+{
+    ULONG guest, last, seen;
+    struct TagItem *tags;
+
+    *gadgets = NULL;
+    tags = window_tags(ctx, list, size, screen, &guest, &last, &seen);
+    if (!tags || !window_tags_gadgets(ctx, tags, *size, guest, last, TRUE, gadgets))
+        return NULL;
     return tags;
 }
 
@@ -195,16 +234,119 @@ static ULONG window_opened(struct KaffeineContext *ctx, struct Window *w, ULONG 
     return guest;
 }
 
+/* A string that ends inside guest memory, else NULL */
+static UBYTE *guest_string(struct KaffeineContext *ctx, ULONG addr)
+{
+    if (!guest_range(ctx, addr, 1) || !memchr(ctx->mem + addr, 0, ctx->mem_size - addr))
+        return NULL;
+    return ctx->mem + addr;
+}
+
+/* OpenWindowTagList() with a NewWindow: Intuition gets a native
+   ExtNewWindow of its own, whose Extension is NULL, so that it never reads
+   past it whatever WFLG_NW_EXTENDED says, and the tags of A1 as one flat
+   native list. Without A1 the Extension of an ExtNewWindow is that list,
+   left out as 68k Intuition leaves it out when it is odd or no memory
+   (openwindow.c). As in Intuition, WA_Gadgets, WA_Title and the screen
+   tags take the place of FirstGadget, Title and Type with Screen, which
+   are not read then; the Screen of WBENCHSCREEN is not read either.
+   Otherwise the program stops before Intuition for a NewWindow outside
+   guest memory, a Title without an end there, a Screen that is not a
+   screen of the program, gadgets that the bridge refuses, and a BitMap,
+   which the bridge cannot give Intuition yet. The legacy CheckMark is
+   unused by native AROS OpenWindow(); the native copy keeps it NULL. */
+static IPTR open_newwindow(struct KaffeineContext *ctx, ULONG nw, ULONG list)
+{
+    struct ExtNewWindow enw;
+    struct TagItem *tags = NULL;
+    struct Gadget *gadgets = NULL;
+    struct Screen *scr = NULL;
+    struct Window *w;
+    UBYTE *title = NULL;
+    ULONG size = 0, screen = 0, guest = 0, last = 0, seen = 0, flags, addr;
+    UWORD type;
+
+    if (!guest_range(ctx, nw, M68K_SIZEOF_NEWWINDOW))
+        return refuse(ctx, "OpenWindowTagList(): a NewWindow outside guest memory");
+    flags = m68k_read32(ctx, nw + M68K_NW_FLAGS);
+    if (flags & WFLG_NW_EXTENDED)
+    {
+        if (!guest_range(ctx, nw, M68K_SIZEOF_EXTNEWWINDOW))
+            return refuse(ctx, "OpenWindowTagList(): an ExtNewWindow outside guest memory");
+        if (!list)
+        {
+            list = m68k_read32(ctx, nw + M68K_ENW_EXTENSION);
+            if ((list & 1) || !guest_range(ctx, list, 4))
+            {
+                if (list)
+                    bug("[kaffeine] OpenWindowTagList(): the Extension %08lx is left out\n",
+                        (unsigned long)list);
+                list = 0;
+            }
+        }
+    }
+    if (m68k_read32(ctx, nw + M68K_NW_BITMAP))
+        return refuse(ctx, "OpenWindowTagList(): a NewWindow with a BitMap");
+    if (list && !(tags = window_tags(ctx, list, &size, &screen, &guest, &last, &seen)))
+        return ctx->running ? 0 : (IPTR)ctx->exit_code;
+
+    type = m68k_read16(ctx, nw + M68K_NW_TYPE);
+    if (!(seen & SEEN_SCREEN) && type != WBENCHSCREEN &&
+        (screen = m68k_read32(ctx, nw + M68K_NW_SCREEN)) &&
+        !(scr = Kaffeine_ScreenNative(ctx, screen)))
+    {
+        if (tags)
+            FreeMem(tags, size);
+        return refuse(ctx, "OpenWindowTagList(): Screen is not a screen of the program");
+    }
+    if (!(seen & SEEN_TITLE) && (addr = m68k_read32(ctx, nw + M68K_NW_TITLE)) &&
+        !(title = guest_string(ctx, addr)))
+    {
+        if (tags)
+            FreeMem(tags, size);
+        return refuse(ctx, "OpenWindowTagList(): a Title outside guest memory");
+    }
+    if (!(seen & SEEN_GADGETS))
+        guest = m68k_read32(ctx, nw + M68K_NW_FIRSTGADGET);
+    if (!window_tags_gadgets(ctx, tags, size, guest, last, (seen & SEEN_GADGETS) != 0, &gadgets))
+        return ctx->exit_code;
+
+    memset(&enw, 0, sizeof(enw));
+    enw.LeftEdge = (WORD)m68k_read16(ctx, nw + M68K_NW_LEFTEDGE);
+    enw.TopEdge = (WORD)m68k_read16(ctx, nw + M68K_NW_TOPEDGE);
+    enw.Width = (WORD)m68k_read16(ctx, nw + M68K_NW_WIDTH);
+    enw.Height = (WORD)m68k_read16(ctx, nw + M68K_NW_HEIGHT);
+    enw.DetailPen = ctx->mem[nw + M68K_NW_DETAILPEN];
+    enw.BlockPen = ctx->mem[nw + M68K_NW_BLOCKPEN];
+    enw.IDCMPFlags = m68k_read32(ctx, nw + M68K_NW_IDCMPFLAGS);
+    enw.Flags = flags;
+    enw.FirstGadget = seen & SEEN_GADGETS ? NULL : gadgets;
+    enw.Title = title;
+    enw.Screen = scr;
+    enw.MinWidth = (WORD)m68k_read16(ctx, nw + M68K_NW_MINWIDTH);
+    enw.MinHeight = (WORD)m68k_read16(ctx, nw + M68K_NW_MINHEIGHT);
+    enw.MaxWidth = m68k_read16(ctx, nw + M68K_NW_MAXWIDTH);
+    enw.MaxHeight = m68k_read16(ctx, nw + M68K_NW_MAXHEIGHT);
+    enw.Type = type;
+    w = OpenWindowTagList((struct NewWindow *)&enw, tags);
+    if (tags)
+        FreeMem(tags, size);
+    return window_opened(ctx, w, screen, gadgets);
+}
+
 /* intuition -606: OpenWindowTagList(A0=newWindow, A1=tagList) -> D0: the
-   68k Window. The NewWindow is left out, as before. */
+   68k Window. Without a NewWindow Intuition gets NULL, and with it
+   WA_AutoAdjust, as before. */
 IPTR Kaffeine_OpenWindowTagList(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG size = 0, screen;
     struct Gadget *gadgets;
-    struct TagItem *tags = Kaffeine_WindowTags(ctx, THUNK_A(1), &size, &screen, &gadgets);
+    struct TagItem *tags;
     struct Window *w;
 
-    if (!tags)
+    if (THUNK_A(0))
+        return open_newwindow(ctx, THUNK_A(0), THUNK_A(1));
+    if (!(tags = Kaffeine_WindowTags(ctx, THUNK_A(1), &size, &screen, &gadgets)))
         return ctx->running ? 0 : (IPTR)ctx->exit_code;
     w = OpenWindowTagList(NULL, tags);
     FreeMem(tags, size);

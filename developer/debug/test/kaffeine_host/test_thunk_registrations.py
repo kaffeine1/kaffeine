@@ -514,10 +514,6 @@ ALLOWED_IGNORED_REGS = {
         frozenset({"D1", "D2"}),
         "AbortPkt() does nothing, as on AmigaOS V37 to V47",
     ),
-    "Kaffeine_OpenWindowTagList": (
-        frozenset({"A0"}),
-        "OpenWindowTagList() passes NULL for the optional NewWindow in A0 and uses A1 tags",
-    ),
     "Kaffeine_RefreshGList": (
         frozenset({"A2"}),
         "RefreshGList() refreshes GadTools gadgets on their window; requesters hold none",
