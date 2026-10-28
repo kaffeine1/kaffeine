@@ -86,6 +86,7 @@ LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114, 12
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
 CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
 GRAPHICS_BITMAP_REFUSED = frozenset((606, 636, 678, 918, 924, 942, 1020, 1206))
+GRAPHICS_PALETTE_REFUSED = frozenset((570, 834, 840, 948, 954, 1008))
 # Every graphics.conf vector that takes a Region but NewRegion, OrRectRegion
 # and DisposeRegion: the generated thunks would read a 68k Region as native.
 GRAPHICS_REGION_REFUSED = frozenset((504, 522, 528, 558, 612, 618, 624,
@@ -439,6 +440,10 @@ CASES = (
 # Explicit table of manual handlers that intentionally ignore one or more
 # fd arguments, with the exact ignored register set and the reason.
 ALLOWED_IGNORED_REGS = {
+    "Kaffeine_VideoControl": (
+        frozenset({"A0", "A1"}),
+        "returns the documented error without forwarding unconverted pointer-bearing video tags",
+    ),
     "thunk_gfx_OpenMonitor": (frozenset({"A1", "D0"}), "owned native monitors are unsupported"),
     "thunk_gfx_CloseMonitor": (frozenset({"A0"}), "borrowed snapshots cannot close native monitors"),
     "thunk_gfx_FindDisplayInfo": (
@@ -958,7 +963,14 @@ def main():
     seen_graphics_layer_refusals = set()
     seen_graphics_region_refusals = set()
     seen_graphics_bitmap_refusals = set()
+    seen_graphics_palette_refusals = set()
     seen_cybergraphics_bitmap_refusals = set()
+    palette_refused = re.findall(
+        r"IPTR Kaffeine_PaletteUnsupported\([^\n]*\n\{(.*?)\n\}",
+        (core / "kaffeine_palette.c").read_text(encoding="latin-1"), re.DOTALL)
+    if len(palette_refused) != 1 or not re.fullmatch(
+            r'\s*\(void\)cpu;\s*return refuse\(ctx\);\s*', palette_refused[0]):
+        raise ValueError("Palette refusal slots must only stop the guest")
     bitmap_refused = re.findall(
         r"IPTR kaffeine_bitmaps_Unsupported\([^\n]*\n\{(.*?)\n\}",
         sources["kaffeine_layers.c"], re.DOTALL)
@@ -1031,6 +1043,13 @@ def main():
                     print("FAIL", module_name(library), -vector, "unexpected Region refusal slot")
                 else:
                     seen_graphics_region_refusals.add(vector)
+                continue
+            if handler == "Kaffeine_PaletteUnsupported":
+                if library != "graphics" or vector not in GRAPHICS_PALETTE_REFUSED:
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, "unexpected palette refusal slot")
+                else:
+                    seen_graphics_palette_refusals.add(vector)
                 continue
             want_func = expected_function_name(handler)
             entry = ndk_spec.get(vector)
@@ -1114,6 +1133,9 @@ def main():
     if seen_graphics_bitmap_refusals != GRAPHICS_BITMAP_REFUSED:
         failures += 1
         print("FAIL graphics.library bitmap refusal slots changed")
+    if seen_graphics_palette_refusals != GRAPHICS_PALETTE_REFUSED:
+        failures += 1
+        print("FAIL graphics.library palette refusal slots changed")
     if seen_cybergraphics_bitmap_refusals != CYBERGRAPHICS_BITMAP_REFUSED:
         failures += 1
         print("FAIL cybergraphics.library bitmap refusal slots changed")

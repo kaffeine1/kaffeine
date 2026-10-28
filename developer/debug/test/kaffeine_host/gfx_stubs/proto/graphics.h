@@ -9,6 +9,16 @@ extern "C" {
 #endif
 
 ULONG GetDisplayInfoData(DisplayInfoHandle handle, UBYTE *buf, ULONG size, ULONG tag, ULONG id);
+struct ViewPort;
+struct ColorMap;
+void LoadRGB4(struct ViewPort *, UWORD *, WORD);
+void LoadRGB32(struct ViewPort *, const ULONG *);
+void GetRGB32(struct ColorMap *, ULONG, ULONG, ULONG *);
+ULONG GetRGB4(struct ColorMap *, LONG);
+void SetRGB4(struct ViewPort *, WORD, UBYTE, UBYTE, UBYTE);
+void SetRGB32(struct ViewPort *, ULONG, ULONG, ULONG, ULONG);
+void SetRGB4CM(struct ColorMap *, WORD, UBYTE, UBYTE, UBYTE);
+void SetRGB32CM(struct ColorMap *, ULONG, ULONG, ULONG, ULONG);
 struct TextFont *OpenFont(const struct TextAttr *textAttr);
 void CloseFont(struct TextFont *textFont);
 void SetFont(struct RastPort *rp, struct TextFont *textFont);
