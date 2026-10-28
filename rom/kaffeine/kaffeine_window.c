@@ -252,8 +252,9 @@ static UBYTE *guest_string(struct KaffeineContext *ctx, ULONG addr)
    are not read then; the Screen of WBENCHSCREEN is not read either.
    Otherwise the program stops before Intuition for a NewWindow outside
    guest memory, a Title without an end there, a Screen that is not a
-   screen of the program, gadgets that the bridge refuses, and a CheckMark
-   or BitMap, which the bridge cannot give Intuition yet. */
+   screen of the program, gadgets that the bridge refuses, and a BitMap,
+   which the bridge cannot give Intuition yet. The legacy CheckMark is
+   unused by native AROS OpenWindow(); the native copy keeps it NULL. */
 static IPTR open_newwindow(struct KaffeineContext *ctx, ULONG nw, ULONG list)
 {
     struct ExtNewWindow enw;
@@ -284,8 +285,8 @@ static IPTR open_newwindow(struct KaffeineContext *ctx, ULONG nw, ULONG list)
             }
         }
     }
-    if (m68k_read32(ctx, nw + M68K_NW_CHECKMARK) || m68k_read32(ctx, nw + M68K_NW_BITMAP))
-        return refuse(ctx, "OpenWindowTagList(): a NewWindow with a CheckMark or BitMap");
+    if (m68k_read32(ctx, nw + M68K_NW_BITMAP))
+        return refuse(ctx, "OpenWindowTagList(): a NewWindow with a BitMap");
     if (list && !(tags = window_tags(ctx, list, &size, &screen, &guest, &last, &seen)))
         return ctx->running ? 0 : (IPTR)ctx->exit_code;
 

@@ -543,7 +543,8 @@ within the emulator.
   last public screen, as AROS does
 - `OpenWindow()` leaves out the tags of an `ExtNewWindow`.
   `OpenWindowTagList()` supports classic NewWindow defaults and checked
-  extension tags; non-NULL NewWindow CheckMark and BitMap inputs are refused.
+  extension tags. The legacy CheckMark is ignored as in native AROS;
+  non-NULL NewWindow BitMap inputs are refused.
 - On a hi- or truecolor screen `ReadPixel()` gives the low byte of the pixel
   rather than its pen, as on native AROS
 

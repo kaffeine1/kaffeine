@@ -2670,7 +2670,8 @@ static void test_newwindow_gadget_failures()
 /* Checked pointers and bounds: a NewWindow that ends at the end of guest
    memory opens; one past it, an ExtNewWindow without room for its
    Extension, a Title outside guest memory or without its end there, a
-   CheckMark and a BitMap stop the program before Intuition. */
+   BitMap stop the program before Intuition. The legacy CheckMark is
+   ignored as in native AROS; no guest Image pointer reaches Intuition. */
 static void test_newwindow_bounds()
 {
     Fixture f;
@@ -2703,13 +2704,10 @@ static void test_newwindow_bounds()
     std::memset(f.memory.data() + 0xFFF0, 'x', 16);
     m68k_write32(&f.ctx, NW_AT + M68K_NW_TITLE, 0xFFF0);
     refused(NW_AT, NW_TAGS);
-    for (ULONG field : { ULONG(M68K_NW_CHECKMARK), ULONG(M68K_NW_BITMAP) })
-    {
-        classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
-        m68k_write32(&f.ctx, NW_AT + field, Fixture::raw);
-        refused(NW_AT, 0);
-        refused(NW_AT, NW_TAGS);
-    }
+    classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_BITMAP, Fixture::raw);
+    refused(NW_AT, 0);
+    refused(NW_AT, NW_TAGS);
 
     /* a Title that ends in the last byte of guest memory */
     classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
@@ -2717,6 +2715,14 @@ static void test_newwindow_bounds()
     m68k_write32(&f.ctx, NW_AT + M68K_NW_TITLE, 0xFFFF);
     m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
     assert(m && !f.stopped() && opened_nw.Title == f.memory.data() + 0xFFFF);
+    f.closewindow(m);
+
+    /* Even an unusable legacy Image is not followed or forwarded. */
+    classic_newwindow(f, NW_AT, WBENCHSCREEN, 0);
+    m68k_write32(&f.ctx, NW_AT + M68K_NW_CHECKMARK, 0xFFFFFFF0);
+    const auto before = guest_bytes(f);
+    m = f.call(Fixture::intuition, 606, { NW_AT, 0 });
+    assert(m && !f.stopped() && !opened_nw.CheckMark && guest_bytes(f) == before);
     f.closewindow(m);
     open_result = nullptr;
 }
@@ -2807,7 +2813,7 @@ int main()
         { "NewWindow at -606: typed public, custom and Workbench screens, and refused Screens", test_newwindow_screens },
         { "NewWindow at -606: FirstGadget through the gadget bridge, and WA_Gadgets in its place", test_newwindow_gadgets },
         { "NewWindow at -606: refusal, prepare, native and guest Window failures roll the gadgets back", test_newwindow_gadget_failures },
-        { "NewWindow at -606: checked bounds, Title, CheckMark and BitMap stop before Intuition", test_newwindow_bounds },
+        { "NewWindow at -606: checked bounds, Title and BitMap; unused legacy CheckMark is never followed", test_newwindow_bounds },
         { "NewWindow at -606: WFLG_NW_EXTENDED flattens or leaves out the Extension, never forwards it", test_newwindow_extended }
     };
     for (const Test &test : tests)

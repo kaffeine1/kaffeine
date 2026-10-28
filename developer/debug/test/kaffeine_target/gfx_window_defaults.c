@@ -33,6 +33,8 @@ static void inspect(struct Window *w, WORD left, WORD top, WORD width, WORD heig
 int main(void)
 {
     struct NewWindow nw, before;
+    struct Image legacy_check = {0};
+    UWORD check_data[1] = {0xA000};
     struct TagItem done[] = {{ TAG_DONE, 0 }};
     struct TagItem overrides[] = {
         { WA_Left, 72 }, { WA_Top, 48 }, { WA_Width, 260 }, { WA_Height, 120 },
@@ -70,6 +72,14 @@ int main(void)
     puts("STEP: tag-only input retains existing behavior");
     inspect(OpenWindowTagList(NULL, only), 80, 64, 200, 88, IDCMP_CLOSEWINDOW,
             "tag-only title", 0);
+    puts("STEP: the legacy NewWindow CheckMark does not change window creation");
+    legacy_check.Width = 16; legacy_check.Height = 1; legacy_check.Depth = 1;
+    legacy_check.ImageData = check_data; legacy_check.PlanePick = 1;
+    nw.CheckMark = &legacy_check;
+    before = nw;
+    inspect(OpenWindowTagList(&nw, done), 48, 32, 240, 96, nw.IDCMPFlags,
+            "NewWindow defaults", 1);
+    check(memcmp(&nw, &before, sizeof(nw)) == 0, "legacy CheckMark preserves caller input");
     CloseLibrary((struct Library *)IntuitionBase);
     return test_done("gfx_window_defaults");
 }
