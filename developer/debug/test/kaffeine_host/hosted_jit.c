@@ -29,12 +29,28 @@
 #include "kaffeine_dispatch.h"
 #include "hosted_jit.h"
 
-#if defined(__aarch64__) && (defined(__APPLE__) || defined(__linux__))
+#if defined(__AROS__)
+#include <aros/config.h>
+#define HJ_AROS_STANDALONE (AROS_FLAVOUR == AROS_FLAVOUR_STANDALONE)
+#else
+#define HJ_AROS_STANDALONE 0
+#endif
+
+/* Hosted AROS has a different executable-memory contract. The AROS path
+   below is only for the standalone flavour used by native AArch64. */
+#if defined(__aarch64__) && (HJ_AROS_STANDALONE || \
+    (!defined(__AROS__) && (defined(__APPLE__) || defined(__linux__))))
 #define HJ_RUNS 1
+#if defined(__AROS__)
+#include <exec/execbase.h>
+#include <exec/memory.h>
+#include <proto/exec.h>
+#else
 #include <sys/mman.h>
 #if defined(__APPLE__)
 #include <pthread.h>
 #include <libkern/OSCacheControl.h>
+#endif
 #endif
 #else
 #define HJ_RUNS 0
@@ -1691,6 +1707,10 @@ static void code_write_begin(struct HJBackend *b)
     b->stats.write_windows++;
 #if HJ_RUNS && defined(__APPLE__)
     pthread_jit_write_protect_np(0);
+#elif HJ_RUNS && defined(__AROS__)
+    /* Native AROS AArch64 ordinary RAM is writable and executable.
+       Publication still needs its explicit data/instruction cache API. */
+    (void)b;
 #elif HJ_RUNS
     mprotect(b->code, HJ_CODE_BYTES, PROT_READ | PROT_WRITE);
 #else
@@ -1704,6 +1724,8 @@ static void code_write_end(struct HJBackend *b, const uint32_t *start, size_t wo
 #if HJ_RUNS && defined(__APPLE__)
     pthread_jit_write_protect_np(1);
     sys_icache_invalidate((void *)(uintptr_t)start, words * 4);
+#elif HJ_RUNS && defined(__AROS__)
+    CacheClearE((APTR)start, words * sizeof(*start), CACRF_ClearD | CACRF_ClearI);
 #elif HJ_RUNS
     mprotect(b->code, HJ_CODE_BYTES, PROT_READ | PROT_EXEC);
     __builtin___clear_cache((char *)(uintptr_t)start, (char *)(uintptr_t)(start + words));
@@ -1716,9 +1738,37 @@ static uint64_t now_ns(void)
 {
     struct timespec ts;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
     return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
+
+#if HJ_RUNS
+static void *code_alloc(void)
+{
+#if defined(__AROS__)
+    return AllocMem(HJ_CODE_BYTES, MEMF_PUBLIC | MEMF_EXECUTABLE);
+#else
+    void *code;
+#if defined(__APPLE__)
+    code = mmap(NULL, HJ_CODE_BYTES, PROT_READ | PROT_WRITE | PROT_EXEC,
+                MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
+#else
+    code = mmap(NULL, HJ_CODE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
+    return code == MAP_FAILED ? NULL : code;
+#endif
+}
+
+static void code_free(void *code)
+{
+#if defined(__AROS__)
+    FreeMem(code, HJ_CODE_BYTES);
+#else
+    munmap(code, HJ_CODE_BYTES);
+#endif
+}
+#endif
 
 static void fast_clear(struct HJBackend *b)
 {
@@ -2352,6 +2402,8 @@ const char *HJ_ExecMemoryKind(void)
 {
 #if HJ_RUNS && defined(__APPLE__)
     return "MAP_JIT";
+#elif HJ_RUNS && defined(__AROS__)
+    return "AROS AllocMem/CacheClearE";
 #elif HJ_RUNS
     return "mprotect";
 #else
@@ -2371,21 +2423,16 @@ struct HJBackend *HJ_Create(struct KaffeineContext *ctx)
     b = calloc(1, sizeof(*b));
     if (!b)
         return NULL;
-#if defined(__APPLE__)
-    code = mmap(NULL, HJ_CODE_BYTES, PROT_READ | PROT_WRITE | PROT_EXEC,
-                MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
-#else
-    code = mmap(NULL, HJ_CODE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-#endif
+    code = code_alloc();
     b->fast = calloc(HJ_FAST_SIZE, sizeof(*b->fast));
     b->blocks = calloc(HJ_MAX_BLOCKS, sizeof(*b->blocks));
     b->guest_bytes = malloc(HJ_GUEST_BYTES);
     b->scratch = malloc(4u * HJ_SCRATCH_WORDS);
     b->trans = malloc(sizeof(*b->trans));
-    if (code == MAP_FAILED || !b->fast || !b->blocks || !b->guest_bytes || !b->scratch || !b->trans)
+    if (!code || !b->fast || !b->blocks || !b->guest_bytes || !b->scratch || !b->trans)
     {
-        if (code != MAP_FAILED)
-            munmap(code, HJ_CODE_BYTES);
+        if (code)
+            code_free(code);
         free(b->fast); free(b->blocks); free(b->guest_bytes); free(b->scratch); free(b->trans);
         free(b);
         return NULL;
@@ -2433,7 +2480,7 @@ void HJ_Destroy(struct HJBackend *b)
     if (!b)
         return;
 #if HJ_RUNS
-    munmap(b->code, HJ_CODE_BYTES);
+    code_free(b->code);
 #endif
     free(b->fast);
     free(b->blocks);
