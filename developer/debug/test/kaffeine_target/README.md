@@ -58,7 +58,7 @@ at the end.
 | `libgcc_ieee_ports.c` | `__floatsisf()` and `__fixsfsi()` on mathieeesingbas.library and `__floatunsidf()` on mathieeedoubbas.library, the conversions that bzip2 1.0.8 and the IJG JPEG library 9f call and the empty libgcc of the toolchain lacks. Linked into `bzip2`, `cjpeg`, `djpeg` and `jpegtran`. |
 | `jpeg_jconfig.h` | The `jconfig.h` of the IJG JPEG library 9f for m68k-amigaos-gcc with libnix, after the `jconfig.sas` of its distribution: Unix command line with standard input and output, everything in memory with `jmemnobs.c`. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, and `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, and `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -122,6 +122,30 @@ and `jpegtran`. The Makefile copies the sources to `build/jpeg-src` with
 `jpeg_jconfig.h` as their `jconfig.h`, because the `jconfig.h` of the tree
 belongs to the AROS host and a quoted `#include` finds it first. The test
 images and reference files are supplied by that source distribution.
+
+Set `ZLIB_SRC` to the zlib 1.3.1 tree that the AROS build fetches for its
+Ports, the zlib of Chromium, to include `minigzip` and `zpipe`. They are
+built without the SIMD paths of Chromium (`CPU_NO_SIMD`), with the
+`zconf.h.in` of the distribution as `zconf.h` and with `AMIGA` defined, so
+that a gzip header names the Amiga as the system that wrote it. They keep
+the hash of canonical zlib (`USE_ZLIB_RABIN_KARP_ROLLING_HASH`), so their
+output is the one of canonical zlib; the hash of Chromium reads four bytes
+as a word and is validated for little endian processors only.
+`make zlib-refs` writes the reference files to `build/zlib-refs`, with
+`HOST_CC` for the host build described below.
+
+The zlib programs are also built with `-fno-peephole2`. In
+m68k-amigaos-gcc 6.5.0b that pass merges the clearing of an
+`unsigned short` and of the `int` that follows it, two bytes further on,
+into a single `clr.l` of four bytes: the low half of the `int` keeps what
+was in memory. A structure as small as
+`struct s { char p[6]; unsigned short a; int b; }` shows it, since
+`p->a = 0; p->b = 0;` becomes `clr.l (6,a0)`. In zlib it hits `bi_buf`
+and `bi_valid`, the bit buffer of deflate. Where `malloc()` hands out
+memory that is not cleared, as on AmigaOS, every compressed stream then
+starts or ends with stray bits. Of the other programs here, only an error
+path of `exec_syslists.c` has the pattern; bzip2 and the IJG JPEG library
+do not.
 
 ## Running on AROS AArch64
 
@@ -192,6 +216,39 @@ For example, with `J` the jpeg-9f directory, the first step is
 --expect jpeg_d_ppm $J/testimg.ppm jpeg_d_ppm=build/djpeg`. The same seven
 filters give the reference files when they are built for the host from the
 same sources and `jpeg_jconfig.h`.
+
+## The zlib steps
+
+zlib 1.3.1 as Chromium has it ships no test data, so `zlib.h` of the tree
+is the input. `minigzip` compresses it at three levels and with the three
+other strategies, `zpipe` with the zlib format, and both decompress. Each
+step is one program, a filter from standard input to standard output, and
+passes only if the output is byte for byte the reference file:
+
+| Program | Executable and arguments | `--input` | `--expect` |
+| --- | --- | --- | --- |
+| `zlib_gz1` | `minigzip -1` | `zlib.h` | `zlib.h-1.gz` |
+| `zlib_gz6` | `minigzip -6` | `zlib.h` | `zlib.h-6.gz` |
+| `zlib_gz9` | `minigzip -9` | `zlib.h` | `zlib.h-9.gz` |
+| `zlib_gzf` | `minigzip -f` (filtered) | `zlib.h` | `zlib.h-f.gz` |
+| `zlib_gzh` | `minigzip -h` (Huffman only) | `zlib.h` | `zlib.h-h.gz` |
+| `zlib_gzr` | `minigzip -r` (run length) | `zlib.h` | `zlib.h-r.gz` |
+| `zlib_gunzip` | `minigzip -d` | `zlib.h-6.gz` | `zlib.h` |
+| `zlib_zpipe` | `zpipe` | `zlib.h` | `zlib.h.zz` |
+| `zlib_zpipe_d` | `zpipe -d` | `zlib.h.zz` | `zlib.h` |
+
+`zlib.h` is in `ZLIB_SRC`, the other files in `build/zlib-refs`. The
+references come from the same two programs built for the host from the same
+sources, without `AMIGA`. The tenth byte of a gzip header names the system
+that wrote it, 19 for a macOS build and 3 for other Unix systems, so
+`make zlib-refs` puts the 1 of the Amiga there, as the m68k build writes.
+For example, with `Z` the zlib directory, the first step is
+`--args zlib_gz1 -1 --input zlib_gz1 $Z/zlib.h --expect zlib_gz1
+build/zlib-refs/zlib.h-1.gz zlib_gz1=build/minigzip`.
+
+`minigzip` keeps a buffer of 16 KB on the stack and `zpipe` two. The Shell
+of AmigaOS 3.2.3 starts with a stack of 4096 bytes, so there they need a
+`Stack` command first; the runner gives every program 1048576 bytes.
 
 ## Expected containment and exit probes
 
