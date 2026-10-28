@@ -715,6 +715,67 @@ static void callback_faults()
     }
 }
 
+static void bitfield_boundaries()
+{
+    /* The reference backend accesses a longword even for a one-bit field.
+       Compare the observable boundary behavior, including partial word
+       stores outside a callback and the untouched host guard. */
+    for (unsigned op = 0; op < 8; ++op)
+        for (ULONG bytes : {1u, 2u, 3u, 4u})
+        {
+            Seen reference = {};
+            std::vector<UBYTE> memory;
+            for (Backend which : {MOIRA, JIT})
+            {
+                Machine m;
+                const ULONG at = m.size - bytes;
+                m.mem[at] = 0x80;
+                m.a(0, at); m.d(1, 0x89ABCDEF);
+                m.word(0x44FC); m.word(0x001B);
+                m.word((UWORD)(0xE8D0 + (op << 8)));
+                m.word((UWORD)(0x0001 + ((op & 1) ? 0x1000 : 0)));
+                m.jsr(Layout::probe, 36); m.rts();
+                snap = {}; snap_calls = 0;
+                CHECK(m.run(which) == 0 && snap_calls == 1);
+                CHECK(!m.ctx.callback_failed);
+                CHECK(std::all_of(m.mem.begin() + m.size, m.mem.end(),
+                                  [](UBYTE b) { return b == 0; }));
+                std::vector<UBYTE> tail(m.mem.begin() + m.size - 8, m.mem.end());
+                if (which == MOIRA) { reference = snap; memory = tail; }
+                else CHECK(snap == reference && tail == memory);
+            }
+        }
+
+    /* A five-byte field can finish its first longword write before the
+       fifth byte faults inside a callback. Failure does not roll back
+       those completed stores or resume the caller. */
+    const ULONG expected[] = {0x12345678, 0x12345678, 0x13CBA987, 0x12345678,
+                              0x12000000, 0x12345678, 0x13FFFFFF, 0x1313579B};
+    for (Backend which : {MOIRA, JIT})
+        for (unsigned op = 0; op < 8; ++op)
+        {
+            Machine m;
+            const ULONG at = m.size - 4;
+            m68k_write32(&m.ctx, at, 0x12345678);
+            m.code(Layout::hook_code, {
+                0x207C, (UWORD)(at >> 16), (UWORD)at,
+                0x223C, 0x89AB, 0xCDEF, (UWORD)(0xE8D0 + (op << 8)),
+                (UWORD)(0x01C0 + ((op & 1) ? 0x1000 : 0)), 0x4E75});
+            m.hook_at(Layout::hook, Layout::hook_code); m.hook_call();
+            m.word(0x13FC); m.word(0x003C); m.longword(Layout::buffer); m.rts();
+            CHECK(m.run(which) == 20);
+            CHECK(m.ctx.callback_failed && !m.ctx.callback_depth);
+            CHECK(m.mem[Layout::buffer] == 0xA5);
+            if (m.read(at) != expected[op])
+                std::printf("  bitfield %u %s: completed prefix %08lx, expected %08lx\n",
+                            op, which == MOIRA ? "Moira" : "JIT",
+                            (unsigned long)m.read(at), (unsigned long)expected[op]);
+            CHECK(m.read(at) == expected[op]);
+            CHECK(std::all_of(m.mem.begin() + m.size, m.mem.end(),
+                              [](UBYTE b) { return b == 0; }));
+        }
+}
+
 /* ------------------------------------------------------------------
    Guest code that changes, and the cache flushes that make it count
    ------------------------------------------------------------------ */
@@ -765,12 +826,14 @@ static void faults()
 {
     struct { std::vector<UWORD> code; const char *why; } cases[] = {
         { {0x7005, 0x4AFC}, "ILLEGAL" },
-        { {0x7005, 0x80C1}, "MUL/DIV" },                 /* DIVU.W D1,D0 */
-        { {0x7005, 0x0108, 0x0000}, "MOVEP" },           /* MOVEP.W (0,A0),D0 */
-        { {0x7005, 0x4C00, 0x8000}, "MUL.L extension" }, /* MULU.L with bit 15 set */
-        { {0x7005, 0xE9C0, 0x0000}, "bitfield" },        /* BFEXTU D0{0:32},D0 */
+        { {0x7005, 0x80C1}, "MUL/DIV" },                          /* DIVU.W D1,D0 */
+        { {0x7005, 0x4C00, 0x8000}, "MUL.L extension" },          /* MULU.L with bit 15 set */
+        { {0x7005, 0x4C40, 0x8000}, "DIV.L extension" },          /* DIVU.L with bit 15 set */
+        { {0x7005, 0x4C7C, 0x0000, 0x0000, 0x0000}, "divide by zero" },
+        { {0x7005, 0xE9C0, 0x8000}, "bitfield extension" },       /* BFEXTU with bit 15 set */
+        { {0x7005, 0x0AD0, 0x8000}, "CAS extension" },            /* CAS.B with bit 15 set */
         { {0x7005, 0xF200, 0xB000}, "Line-F" },
-        { {0x7005, 0x4E73}, "opcode outside the subset" } /* RTE */
+        { {0x7005, 0x4E73}, "opcode outside the subset" }         /* RTE */
     };
     for (auto &c : cases)
     {
@@ -914,7 +977,7 @@ struct Gen
     void simple()
     {
         int s = size();
-        switch (rng.below(31))
+        switch (rng.below(37))
         {
         case 0: w((UWORD)(0x7000 | dreg() << 9 | (rng.next() & 0xFF))); break;
         case 1: case 2:
@@ -1168,6 +1231,92 @@ struct Gen
             ea_ext(src);
             break;
         }
+        case 30:
+        {
+            /* DIVU.L / DIVS.L / DIVUL.L / DIVSL.L with non-zero divisor */
+            int dq = dreg(), dr = rng.chance(20) ? dq : dreg();
+            UWORD ext = (UWORD)((dq << 12) | (rng.below(2) << 11) | (rng.below(2) << 10) | dr);
+            if (rng.chance(50))
+            {
+                ULONG div = rng.chance(40) ? (rng.below(64) + 1) : (rng.next() | 1u);
+                if (rng.chance(20)) div = (ULONG)-(int32_t)(rng.below(16) + 1);
+                w(0x4C7C); w(ext); l(div);
+            }
+            else
+            {
+                int dv = dreg();
+                w((UWORD)(0x0000 | dv)); w(0x0001); /* ORI.B #1,Dv */
+                w((UWORD)(0x4C40 | dv)); w(ext);
+            }
+            break;
+        }
+        case 31: case 32:
+        {
+            /* BFTST BFEXTU BFCHG BFEXTS BFCLR BFFFO BFSET BFINS */
+            unsigned bf_op = rng.below(8);
+            int dn = (bf_op & 1) ? dreg() : 0;
+            bool do_reg = rng.chance(45), dw_reg = rng.chance(45);
+            int of = do_reg ? (int)rng.below(8) : (int)rng.below(32);
+            int wi = dw_reg ? (int)rng.below(8) : (int)rng.below(32);
+            UWORD ext = (UWORD)((dn << 12) | (do_reg << 11) | (of << 6) | (dw_reg << 5) | wi);
+            if (rng.chance(55))
+            {
+                w((UWORD)(0xE8C0 | (bf_op << 8) | dreg()));
+                w(ext);
+            }
+            else
+            {
+                if (do_reg)
+                {
+                    int r_of = dreg();
+                    of = r_of;
+                    ext = (UWORD)((dn << 12) | (1 << 11) | (of << 6) | (dw_reg << 5) | wi);
+                    w((UWORD)(0x49C0 | r_of)); /* EXTB.L D_of: keep memory bit offset in -128..127 */
+                }
+                int p = ptr();
+                if (rng.chance(50))
+                {
+                    w((UWORD)(0xE8D0 | (bf_op << 8) | p));
+                    w(ext);
+                }
+                else
+                {
+                    w((UWORD)(0xE8E8 | (bf_op << 8) | p));
+                    w(ext);
+                    w((UWORD)(int16_t)((int)rng.below(128) - 64));
+                }
+            }
+            break;
+        }
+        case 33:
+        {
+            /* TAS <ea> */
+            GenEa dst = dest(1);
+            w((UWORD)(0x4AC0 | dst.mode << 3 | dst.reg));
+            ea_ext(dst);
+            break;
+        }
+        case 34:
+        {
+            /* MOVEP.W / MOVEP.L Dx,(d16,Ay) or (d16,Ay),Dx */
+            bool to_mem = rng.chance(50), wide = rng.chance(50);
+            int dx = dreg(), ay = ptr();
+            UWORD op = (UWORD)(0x0108 | (dx << 9) | (to_mem ? 0x0080 : 0) | (wide ? 0x0040 : 0) | ay);
+            w(op);
+            w((UWORD)(int16_t)((int)rng.below(128) - 64));
+            break;
+        }
+        case 35:
+        {
+            /* CAS.B / CAS.W / CAS.L Dc,Du,<ea> */
+            GenEa dst = dest(s, true);
+            UWORD base = s == 1 ? 0x0AC0 : s == 2 ? 0x0CC0 : 0x0EC0;
+            int dc = dreg(), du = dreg();
+            w((UWORD)(base | dst.mode << 3 | dst.reg));
+            w((UWORD)((du << 6) | dc));
+            ea_ext(dst);
+            break;
+        }
         default:
             w(0x4E71);
             break;
@@ -1334,8 +1483,9 @@ struct Gen
         for (unsigned s = 0; s < subs; s++)
         {
             sub_at.push_back(out.size());
-            bool use_rtr = rng.chance(40);
-            if (use_rtr)
+            unsigned ret_kind = rng.below(3);
+            int rtd_bytes = 0;
+            if (ret_kind == 1)
             {
                 if (rng.chance(50))
                     w(0x40E7);                               /* MOVE SR,-(A7) */
@@ -1344,9 +1494,23 @@ struct Gen
                     w(0x3F3C); w((UWORD)rng.below(256));     /* MOVE.W #imm,-(A7) */
                 }
             }
+            else if (ret_kind == 2)
+            {
+                unsigned k = 1 + rng.below(3);
+                for (unsigned j = 0; j < k; j++)
+                    w(0x2F17);                               /* MOVE.L (A7),-(A7) */
+                rtd_bytes = (int)(4 * k);
+            }
             unsigned n = 2 + rng.below(7);
             for (unsigned i = 0; i < n; i++) rng.chance(15) ? skip() : simple();
-            w(use_rtr ? 0x4E77 : 0x4E75);
+            if (ret_kind == 1)
+                w(0x4E77);
+            else if (ret_kind == 2)
+            {
+                w(0x4E74); w((UWORD)(int16_t)rtd_bytes);
+            }
+            else
+                w(0x4E75);
         }
         patch_calls(sub_at, base);
         return out;
@@ -1627,6 +1791,105 @@ static void extended_insns()
                 code.push_back(0x4E75);
                 check_same_program(code, data);
             }
+
+    /* 7. DIVU.L, DIVS.L, DIVUL.L, DIVSL.L (32-bit, 64-bit Dr:Dq, Dr == Dq, 64-bit overflow V) */
+    check_same_program({
+        0x2C7C, (UWORD)(Layout::probe >> 16), (UWORD)Layout::probe,
+        /* 32-bit DIVUL.L #10,D1:D0 */
+        0x203C, 0x0001, 0x86A7,                 /* MOVE.L #100007,D0 */
+        0x4C7C, 0x0001, 0x0000, 0x000A,         /* DIVUL.L #10,D1:D0 */
+        /* 32-bit DIVSL.L #7,D3:D2 with negative dividend */
+        0x243C, 0xFFFF, 0xFF9C,                 /* MOVE.L #-100,D2 */
+        0x4C7C, 0x2803, 0x0000, 0x0007,         /* DIVSL.L #7,D3:D2 */
+        /* 32-bit DIVS.L #-1,D4 with D4 = $80000000 (Dr == Dq) */
+        0x283C, 0x8000, 0x0000,
+        0x4C7C, 0x4804, 0xFFFF, 0xFFFF,
+        0x42C5,                                 /* MOVE CCR,D5 */
+        /* 64-bit DIVU.L #10,D1:D0 */
+        0x7003, 0x7202,
+        0x4C7C, 0x0401, 0x0000, 0x000A,
+        /* 64-bit DIVU.L overflow: D1:D0 = $00000010:00000005 / #2 -> V=1, D1:D0 kept */
+        0x7210, 0x7005,
+        0x44FC, 0x0014,
+        0x4C7C, 0x0401, 0x0000, 0x0002,
+        0x42C6,                                 /* MOVE CCR,D6 */
+        /* 64-bit DIVS.L overflow: D3:D2 = $FFFFFFFF:80000000 / #-1 -> V=1, D3:D2 kept */
+        0x76FF, 0x243C, 0x8000, 0x0000,
+        0x44FC, 0x0000,
+        0x4C7C, 0x2C03, 0xFFFF, 0xFFFF,
+        0x42C7,                                 /* MOVE CCR,D7 */
+        0x4EAE, (UWORD)-36,
+        0x4E75
+    }, data);
+
+    /* 8. 68020 bitfield instructions (BFTST, BFEXTU, BFCHG, BFEXTS, BFCLR, BFFFO, BFSET, BFINS) */
+    check_same_program({
+        0x2C7C, (UWORD)(Layout::probe >> 16), (UWORD)Layout::probe,
+        0x207C, (UWORD)((Layout::scratch + 0x100) >> 16), (UWORD)(Layout::scratch + 0x100),
+        0x203C, 0xF0A5, 0x5A0F,                 /* MOVE.L #$F0A55A0F,D0 */
+        0xE8C0, 0x0108,                         /* BFTST D0{4:8} */
+        0xE9C0, 0x1108,                         /* BFEXTU D0{4:8},D1 */
+        0xEBC0, 0x2208,                         /* BFEXTS D0{8:8},D2 */
+        0xEDC0, 0x3108,                         /* BFFFO D0{4:8},D3 */
+        0xEDC0, 0x4604,                         /* BFFFO D0{24:4},D4 (all zero -> 28) */
+        0xEAC0, 0x0708,                         /* BFCHG D0{28:8} (wraps around bit 0) */
+        0xECC0, 0x0004,                         /* BFCLR D0{0:4} */
+        0xEEC0, 0x0604,                         /* BFSET D0{24:4} */
+        0x7A35,                                 /* MOVEQ #$35,D5 */
+        0xEFC0, 0x5306,                         /* BFINS D5,D0{12:6} */
+        0x7C1B, 0x7E0A,                         /* D6 = 27, D7 = 10 */
+        0xEDC0, 0x39A7,                         /* BFFFO D0{D6:D7},D3 */
+        /* Memory bitfields across 5 bytes and with negative dynamic bit offset */
+        0x20BC, 0x1234, 0x5678,                 /* MOVE.L #$12345678,(A0) */
+        0x217C, 0x9ABC, 0xDEF0, 0x0004,         /* MOVE.L #$9ABCDEF0,4(A0) */
+        0xE9D0, 0x11E0,                         /* BFEXTU (A0){7:32},D1 (5-byte span) */
+        0xEBD0, 0x2154,                         /* BFEXTS (A0){5:20},D2 */
+        0xEDD0, 0x3154,                         /* BFFFO (A0){5:20},D3 */
+        0xEFD0, 0x5767,                         /* BFINS D5,(A0){29:7} (into 5th byte) */
+        0x7CF3, 0x7E10,                         /* D6 = -13, D7 = 16 */
+        0xEAE8, 0x09A7, 0x0004,                 /* BFCHG 4(A0){D6:D7} */
+        0x42C4,                                 /* MOVE CCR,D4 */
+        0x4EAE, (UWORD)-36,
+        0x4E75
+    }, data);
+
+    /* 9. RTD #d16, TAS <ea>, MOVEP.W/.L, and CAS.B/.W/.L */
+    check_same_program({
+        0x2C7C, (UWORD)(Layout::probe >> 16), (UWORD)Layout::probe,
+        0x207C, (UWORD)((Layout::scratch + 0x100) >> 16), (UWORD)(Layout::scratch + 0x100),
+        0x2F3C, 0x1111, 0x2222,                 /* MOVE.L #$11112222,-(A7) */
+        0x2F3C, 0x3333, 0x4444,                 /* MOVE.L #$33334444,-(A7) */
+        0x6102,                                 /* BSR.S rtd_sub */
+        0x6008,                                 /* BRA.S after_rtd */
+        0x202F, 0x0004,                         /* rtd_sub: MOVE.L 4(A7),D0 */
+        0x4E74, 0x0008,                         /* RTD #8 */
+        /* after_rtd: TAS on Dn and memory */
+        0x7200,                                 /* MOVEQ #0,D1 */
+        0x4AC1,                                 /* TAS D1 (Z=1, N=0 -> D1=$80) */
+        0x42C2,                                 /* MOVE CCR,D2 */
+        0x4AC1,                                 /* TAS D1 (Z=0, N=1 -> D1=$80) */
+        0x42C3,                                 /* MOVE CCR,D3 */
+        0x10BC, 0x007F,                         /* MOVE.B #$7F,(A0) */
+        0x4AD8,                                 /* TAS (A0)+ */
+        /* MOVEP.L and MOVEP.W */
+        0x223C, 0xCAFE, 0xBABE,                 /* MOVE.L #$CAFEBABE,D1 */
+        0x03C8, 0x0000,                         /* MOVEP.L D1,0(A0) */
+        0x243C, 0xDEAD, 0xBEEF,                 /* MOVE.L #$DEADBEEF,D2 */
+        0x0588, 0x0001,                         /* MOVEP.W D2,1(A0) */
+        0x0948, 0x0000,                         /* MOVEP.L 0(A0),D4 */
+        0x2A3C, 0x7777, 0x0000,                 /* MOVE.L #$77770000,D5 */
+        0x0B08, 0x0001,                         /* MOVEP.W 1(A0),D5 (keeps upper word) */
+        /* CAS.B, CAS.W, CAS.L (both equal and not-equal) */
+        0x20BC, 0x1234, 0x5678,                 /* MOVE.L #$12345678,(A0) */
+        0x7C12, 0x7E9A,                         /* D6 = $12, D7 = $9A */
+        0x0AD0, 0x01C6,                         /* CAS.B D6,D7,(A0) (equal -> (A0)=$9A) */
+        0x0AD0, 0x01C6,                         /* CAS.B D6,D7,(A0) (not equal -> D6=$9A) */
+        0x283C, 0x9A34, 0x5678,                 /* D4 = $9A345678 */
+        0x2A3C, 0xABCD, 0xEF01,                 /* D5 = $ABCDEF01 */
+        0x0ED8, 0x0144,                         /* CAS.L D4,D5,(A0)+ (equal -> writes D5) */
+        0x4EAE, (UWORD)-36,
+        0x4E75
+    }, data);
 }
 
 static unsigned fuzz_programs = 3000;
@@ -1779,7 +2042,8 @@ int main(int argc, char **argv)
         {"block-limits", block_limits, true}, {"code-reset", code_reset, true},
         {"library-calls", library_calls, true}, {"callback-depth", callback_depth, true},
         {"callback-registers", callback_registers, true}, {"callback-format", callback_format, true},
-        {"callback-faults", callback_faults, true}, {"code-changes", code_changes, true},
+        {"callback-faults", callback_faults, true}, {"bitfield-boundaries", bitfield_boundaries, true},
+        {"code-changes", code_changes, true},
         {"faults", faults, true}, {"extended-insns", extended_insns, true},
         {"random-programs", random_programs, true}
     };
