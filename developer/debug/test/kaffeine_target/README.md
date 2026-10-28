@@ -314,3 +314,9 @@ The screen host suite passed37 groups; window lifecycle tests and the screen
 suite also passed with AddressSanitizer and UndefinedBehaviorSanitizer. All41
 host executables passed. AmigaOS comparison for these new owned-screen tests
 and physical hardware validation are not established by these QEMU results.
+
+`file_packet_reply` checks raw DOS read/write packets with NULL, matching and
+arbitrary unused `mn_ReplyPort` values. Replies follow `dp_Port`, preserve the
+unused message field and permit packet reuse. The same original source runs
+as native AROS AArch64 and classic 68k code; it checks the file contents and
+removes its temporary file.

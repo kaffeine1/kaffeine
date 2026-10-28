@@ -40,6 +40,30 @@ static void measured_reads()
     auto before=f.bytes();unsigned nr=reads;
     check(f.dos(42,token,f.buffer,1)==20 && !f.ctx.running && reads==nr && f.bytes()==before,"closed token cannot reach native Read");
 }
+static void unused_message_reply_port()
+{
+    for(bool write:{false,true})
+        for(ULONG unused:{0U,0x12345678U,0xFFFFFFFFU})
+        {
+            Fixture f;ULONG token=f.open(),handler=f.r(token*4+8);
+            f.packet(token,1);
+            f.w(f.msg+14,unused);
+            if(write)f.w(f.msg+28,87);
+            check(f.exec(366,handler,f.msg)==0xD0000000 && f.ctx.running,
+                  "DOS read/write packet ignores an unused NULL or poisoned message reply pointer");
+            check((write?writes:reads)==1 && f.r(f.msg+32)==1 && !f.r(f.msg+36) &&
+                  f.r(f.msg+14)==unused && f.r(f.msg+24)==handler,
+                  "only dp_Port selects the validated reply queue; unused header bytes survive");
+            check(f.exec(372,f.reply)==f.msg && !f.exec(372,f.reply),
+                  "packet reply reaches exactly its dp_Port queue");
+            /* Reuse the returned message, including its reply type and stale
+               mn_ReplyPort, while restoring the real DOS reply destination. */
+            f.w(f.msg+24,f.reply);
+            check(f.exec(366,handler,f.msg)==0xD0000000 && f.ctx.running &&
+                  (write?writes:reads)==2 && f.r(f.msg+14)==unused && f.exec(372,f.reply)==f.msg,
+                  "reused DOS packet keeps its unused message reply pointer opaque");
+        }
+}
 static void packet_failures()
 {
     for(unsigned which=0;which<31;++which)
@@ -70,7 +94,12 @@ static void packet_failures()
             case 14:f.w(f.msg+44,f.reply+20);break;
             case 15:f.w(f.msg+44,token*4);break;
             case 16:f.w(f.msg+44,handler+32);break;
-            case 17:f.w(f.msg+14,handler);break;
+            case 17:
+                f.w(f.msg+14,handler);
+                check(f.exec(366,handler,f.msg)==0xD0000000 && f.ctx.running && reads==1 &&
+                      f.r(f.msg+14)==handler && f.exec(372,f.reply)==f.msg,
+                      "DOS ignores and preserves unused mn_ReplyPort; dp_Port receives the reply");
+                continue;
             case 18:f.w(f.msg+10,f.msg+22);break;
             case 19:
                 /* DoPkt1() to DoPkt4() leave the other argument registers as
@@ -529,7 +558,7 @@ static void nil_filehandle()
 }
 int main()
 {
-    measured_reads();packet_failures();identities();buffering();ownership_failures();sequential_handles_and_selected_close();all_handle_entry_points();packet_reply_queue_preflight();bounded_packet_diagnostics();application_read_then_reserved_waitport();
+    measured_reads();unused_message_reply_port();packet_failures();identities();buffering();ownership_failures();sequential_handles_and_selected_close();all_handle_entry_points();packet_reply_queue_preflight();bounded_packet_diagnostics();application_read_then_reserved_waitport();
     packet_writes();packet_seeks();packet_scalar_actions();packet_disk_info();nil_filehandle();
     check(allocated_signals==0,"all owned native signals are released");
     check(native_blocks.empty(),"all native heap records, mirrors and packet temporaries are released");
