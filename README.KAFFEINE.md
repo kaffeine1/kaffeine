@@ -216,6 +216,7 @@ the agreed scope.
 
 ## Documentation
 
+- [Upstream PR #1905 comparison, reuse candidates and reproducing probes](docs/kaffeine/upstream-pr1905-comparison.md).
 - [Personal Paint demonstration, screenshots and saved output](docs/kaffeine/personal-paint-demo.md).
 - [Project manifesto](docs/kaffeine/MANIFESTO.md) and [Italian original](docs/kaffeine/MANIFESTO.it.md).
 - [Licenses and component provenance](docs/kaffeine/LICENSING.md).

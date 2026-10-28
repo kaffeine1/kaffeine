@@ -54,6 +54,7 @@ physical hardware benchmark.
 
 ## Documentation and tests
 
+- [Upstream m68kemu comparison and contribution candidates](docs/kaffeine/upstream-pr1905-comparison.md).
 - [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
 - [Current behavior, architecture and verified limits](README.KAFFEINE.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
