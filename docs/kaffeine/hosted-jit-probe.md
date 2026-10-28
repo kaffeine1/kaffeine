@@ -191,7 +191,7 @@ copy taken at translation; the others are translated again.
 
 ## Verification
 
-- 129 encodings compared with the words that Apple clang 21 assembles from
+- 146 encodings compared with the words that Apple clang 21 assembles from
   the same instructions, as `HJ_EncoderSelfTest()`, which also runs where
   translated code cannot (the x86_64 job of the CI).
 - The groups in the table, each on both backends where both apply, a group
@@ -208,9 +208,12 @@ copy taken at translation; the others are translated again.
   of `VPOSR`/`VHPOSR`, forward `Bcc.S`, `Bcc.W`, `Bcc.L`, `BRA` and `JMP` on
   every condition, `DBcc` loops, subroutine calls with `BSR.W`, `BSR.L`,
   `JSR (d16,PC)`, `JSR` absolute, `JSR (A4)` and `JSR 8(A5)` returning with
-  `RTS` or `RTR`, `LINK.W`, `LINK.L`, `UNLK`, `PEA`, `MOVEM.W` and
+  `RTS`, `RTR` or `RTD`, `LINK.W`, `LINK.L`, `UNLK`, `PEA`, `MOVEM.W` and
   `MOVEM.L`, `BTST`/`BCHG`/`BCLR`/`BSET`, `ADDX`/`SUBX`/`NEGX`, `CMPM`,
-  `EXG`, `EXTB.L`, `MULU`/`MULS` `.W` and `.L`, all eight shifts and
+  `EXG`, `EXTB.L`, `MULU`/`MULS` `.W` and `.L`, `DIVU.L`/`DIVS.L`/`DIVUL.L`/
+  `DIVSL.L`, all eight 68020 bitfield instructions (`BFTST`, `BFEXTU`,
+  `BFCHG`, `BFEXTS`, `BFCLR`, `BFFFO`, `BFSET`, `BFINS`), `TAS`, `MOVEP.W`
+  and `MOVEP.L`, `CAS.B`/`CAS.W`/`CAS.L`, all eight shifts and
   rotates across `.B`, `.W`, `.L` and `<ea>.W`, `Scc`, and the SR and CCR
   moves and immediate logic operations.
 - 32 mutants of the translator, each one caught: the borrow of `SUB` and
@@ -239,15 +242,18 @@ copy taken at translation; the others are translated again.
   `UNLK`, `ADD`, `SUB`, `AND`, `OR`, `EOR`, `CMP` and their address,
   immediate (including PC-relative `CMPI`) and quick forms, `CMPM`, `ADDX`,
   `SUBX`, `NEGX`, `MULU.W`, `MULS.W`, `MULU.L`, `MULS.L` (32-bit and 64-bit
-  `Dh:Dl`), `BTST`, `BCHG`, `BCLR`, `BSET`, `CLR`, `TST` (including 68020
-  address register, immediate and PC-relative modes), `NEG`, `NOT`, `SWAP`,
-  `EXT.W`, `EXT.L`, `EXTB.L`, `EXG`, `ASL`/`ASR`/`LSL`/`LSR`/`ROL`/`ROR`/
-  `ROXL`/`ROXR` (`.B`, `.W`, `.L` with immediate or register counts, and
-  1-bit `<ea>.W` in memory), `Scc`, `Bcc`, `BSR`, `DBcc`, `JSR`, `JMP`,
-  `RTS`, `RTR`, `MOVEM.W`, `MOVEM.L`, `MOVE` from and to `SR` and `CCR`,
-  `ORI`/`ANDI`/`EORI` to `CCR` and `SR`, `NOP` and A-line, with all
-  addressing modes but the full extension word. Everything else, `ILLEGAL`
-  and Line-F stop with 20 and a message.
+  `Dh:Dl`), `DIVU.L`, `DIVS.L`, `DIVUL.L`, `DIVSL.L` (32-bit `Dq` and 64-bit
+  `Dr:Dq`, stopping with 20 on divide by zero), `BFTST`, `BFEXTU`, `BFCHG`,
+  `BFEXTS`, `BFCLR`, `BFFFO`, `BFSET`, `BFINS`, `CAS.B`, `CAS.W`, `CAS.L`,
+  `MOVEP.W`, `MOVEP.L`, `TAS`, `BTST`, `BCHG`, `BCLR`, `BSET`, `CLR`, `TST`
+  (including 68020 address register, immediate and PC-relative modes),
+  `NEG`, `NOT`, `SWAP`, `EXT.W`, `EXT.L`, `EXTB.L`, `EXG`,
+  `ASL`/`ASR`/`LSL`/`LSR`/`ROL`/`ROR`/`ROXL`/`ROXR` (`.B`, `.W`, `.L` with
+  immediate or register counts, and 1-bit `<ea>.W` in memory), `Scc`, `Bcc`,
+  `BSR`, `DBcc`, `JSR`, `JMP`, `RTS`, `RTR`, `RTD`, `MOVEM.W`, `MOVEM.L`,
+  `MOVE` from and to `SR` and `CCR`, `ORI`/`ANDI`/`EORI` to `CCR` and `SR`,
+  `NOP` and A-line, with all addressing modes but the full extension word.
+  Everything else, `ILLEGAL` and Line-F stop with 20 and a message.
 - No exception frames at all: no `TRAP`, `CHK`, address error, privilege
   violation or trace, and no `Supervisor()`, which stops with 20.
 - One A7: changing the S or M bit does not switch stacks.
