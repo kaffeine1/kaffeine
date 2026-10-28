@@ -3441,3 +3441,10 @@ Origins outside either bitmap and zero masks return zero without a blit.
 Negative coordinates, negative sizes and caller TempA buffers remain outside
 the supported boundary. The original gfx_blit_clip target probe checks the
 resulting pixels and intact memory guards against native AROS.
+
+IntuiTextLength() (-330) measures one checked classic IntuiText through
+native Intuition. A NULL descriptor returns zero. Its guest text must be
+NUL-terminated in the arena; optional TextAttr/TaggedTextAttr inputs use the
+shared font converter. NextText stays NULL in the native copy, matching
+Intuition's single-text contract. Native Intuition chooses the system font
+and handles unavailable-font fallback; no guest byte is written.

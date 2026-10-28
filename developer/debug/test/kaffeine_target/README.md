@@ -325,3 +325,8 @@ removes its temporary file.
 zero-width and zero-mask cases against exact planar pixel values. Prefix and
 suffix guards and all source bytes must remain intact. The same original
 source runs as native ARM and classic 68k code.
+
+`gfx_intuitext_width` checks nonzero default-font metrics, empty strings,
+fixed-width font selection, unavailable-font fallback and ignored NextText
+links. Input objects stay unchanged. The same source runs natively and
+through the 68k bridge.
