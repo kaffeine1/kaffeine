@@ -354,6 +354,51 @@ static const struct { UWORD m68k_off; UWORD native_off; const char *name; } exec
     {   0,    0, NULL },
 };
 
+/* Classic programs also inspect MemList directly to determine installed
+   Chip RAM. The unified guest heap is chip-accessible; expose its actual
+   two possible intervals, excluding the custom-chip window and stack.
+   These are capacity-only descriptors: native headers and allocator free
+   links remain private, and AvailMem is the supported free-space query. */
+static void memory_capacity(struct KaffeineContext *ctx, ULONG list)
+{
+    ULONG bounds[4], start = CUSTOM_BASE, end = CUSTOM_BASE + CUSTOM_SIZE;
+    ULONG previous = list, node;
+    unsigned i, count = 0;
+
+    if (ctx->heap_start >= ctx->heap_end || ctx->heap_end > ctx->mem_size)
+        return;
+    if (!ctx->memory_info)
+    {
+        node = Kaffeine_HeapAlloc(ctx, KAFFEINE_MEMINFO_SIZE, MEMF_CLEAR);
+        if (!node) return;
+        ctx->memory_info = node;
+    }
+    if (!task_range(ctx, ctx->memory_info, KAFFEINE_MEMINFO_SIZE))
+        return;
+    if (start < ctx->heap_start) start = ctx->heap_start;
+    if (end > ctx->heap_end) end = ctx->heap_end;
+    if (start >= end) start = end = ctx->heap_end;
+    bounds[0] = ctx->heap_start; bounds[1] = start;
+    bounds[2] = end; bounds[3] = ctx->heap_end;
+    memset(ctx->mem + ctx->memory_info, 0, KAFFEINE_MEMINFO_SIZE);
+    memcpy(ctx->mem + ctx->memory_info + 64, "Kaffeine guest arena", 21);
+    for (i = 0; i < 4; i += 2)
+    {
+        if (bounds[i] == bounds[i + 1]) continue;
+        node = ctx->memory_info + 32 * count++;
+        m68k_write32(ctx, previous, node);
+        m68k_write32(ctx, node, list + 4);
+        m68k_write32(ctx, node + 4, previous);
+        ctx->mem[node + 8] = 10; /* classic NT_MEMORY */
+        m68k_write32(ctx, node + 10, ctx->memory_info + 64);
+        m68k_write16(ctx, node + 14, MEMF_PUBLIC | MEMF_CHIP);
+        m68k_write32(ctx, node + 20, bounds[i]);
+        m68k_write32(ctx, node + 24, bounds[i + 1]);
+        previous = node;
+    }
+    m68k_write32(ctx, list + 8, previous);
+}
+
 ULONG shadow_init_execbase(struct KaffeineContext *ctx, ULONG m68k_base, void *native_sysbase)
 {
     const struct M68KStructLayout *layout = shadow_find_layout("ExecBase");
@@ -414,6 +459,8 @@ ULONG shadow_init_execbase(struct KaffeineContext *ctx, ULONG m68k_base, void *n
         ctx->mem[list + 13] = 0;
         shadow_register(ctx, list, native_list, 17);
     }
+
+    memory_capacity(ctx, m68k_base + M68K_EXECBASE_MEMLIST);
 
     return m68k_base;
 }

@@ -381,6 +381,16 @@ static void test_corrupt_chains_are_atomic()
 
 static void test_shadow_and_overlap_rejection()
 {
+    Fixture capacity;
+    capacity.ctx.memory_info = capacity.header;
+    capacity.reject(186, 8);
+    capacity.reject(192, 8, capacity.pool + 192);
+    Fixture protected_chunk;
+    protected_chunk.ctx.memory_info = protected_chunk.pool;
+    protected_chunk.reject(186, 8);
+    protected_chunk.set_free({});
+    protected_chunk.reject(192, 8, protected_chunk.pool);
+
     unsigned native_object = 0x12345678;
     for (unsigned kind = 0; kind < 3; kind++)
     {

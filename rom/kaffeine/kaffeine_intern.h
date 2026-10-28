@@ -29,6 +29,9 @@ struct KaffeineLibBase
 #define KAFFEINE_LIBBASE_SIZE    0x010000
 #define KAFFEINE_HEAP_BASE       0x010400
 #define KAFFEINE_STACK_SIZE      (64 * 1024)
+/* Two classic capacity descriptors and their shared guest name. These
+   describe the containment heap, not native Exec memory or free lists. */
+#define KAFFEINE_MEMINFO_SIZE    96
 
 struct M68KHeapBlock
 {
@@ -203,6 +206,7 @@ struct KaffeineContext
     ULONG   m68k_argptr;
     ULONG   m68k_argsize;
     ULONG   m68k_sysbase;
+    ULONG   memory_info; /* owned, read-only MemList capacity snapshots */
 
     /* CLI snapshot shared by Cli(), ThisTask and FindTask(NULL). */
     ULONG   m68k_cli;

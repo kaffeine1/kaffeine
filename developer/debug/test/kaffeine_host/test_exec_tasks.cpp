@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include <exec/execbase.h>
 #include <exec/ports.h>
@@ -224,6 +225,57 @@ static void test_embedded_exec_lists()
     }
 }
 
+static void test_memory_capacity()
+{
+    Fixture f(false);
+    std::vector<UBYTE> arena(0x1100000, 0xA5);
+    f.ctx.mem = arena.data();
+    f.ctx.mem_size = arena.size();
+    f.ctx.heap_start = 0x10400;
+    f.ctx.heap_end = arena.size() - 0x1000;
+    const auto native_before = f.native;
+    check(f.init() == f.base, "capacity snapshot initializes");
+    const ULONG list = f.base + 322;
+    ULONG node = m68k_read32(&f.ctx, list), previous = list, total = 0;
+    const ULONG bounds[][2] = {{0x10400, 0xDFF000}, {0xE00000, 0x10FF000}};
+    for (unsigned i = 0; i < 2; ++i)
+    {
+        check(node == f.ctx.memory_info + i * 32, "capacity nodes stay in owned guest storage");
+        check(m68k_read32(&f.ctx, node + 4) == previous && arena[node + 8] == 10,
+              "capacity node has classic links and type");
+        check(m68k_read16(&f.ctx, node + 14) == 3 &&
+              m68k_read32(&f.ctx, node + 20) == bounds[i][0] &&
+              m68k_read32(&f.ctx, node + 24) == bounds[i][1],
+              "capacity describes chip-accessible heap intervals excluding custom registers and stack");
+        check(!m68k_read32(&f.ctx, node + 16) && !m68k_read32(&f.ctx, node + 28),
+              "capacity nodes do not expose an allocator free list");
+        const ULONG name = m68k_read32(&f.ctx, node + 10);
+        check(name == f.ctx.memory_info + 64 &&
+              !std::strcmp(reinterpret_cast<char *>(arena.data() + name), "Kaffeine guest arena"),
+              "capacity name is a terminated guest string");
+        total += bounds[i][1] - bounds[i][0];
+        previous = node;
+        node = m68k_read32(&f.ctx, node);
+    }
+    check(node == list + 4 && !m68k_read32(&f.ctx, node) &&
+          m68k_read32(&f.ctx, list + 8) == previous, "capacity list terminates at its classic sentinel");
+    check(total == 0x10FF000 - 0x10400 - 0x1000, "installed capacity counts each heap interval once");
+    const unsigned before = allocations;
+    const ULONG identity = f.ctx.memory_info;
+    f.init();
+    check(allocations == before && f.ctx.memory_info == identity, "snapshot refresh reuses its owned storage");
+    check(!std::memcmp(&f.native, &native_before, sizeof(f.native)), "capacity snapshot preserves all native list bytes");
+
+    Fixture unavailable(false);
+    unavailable.ctx.heap_start = 0x4000;
+    unavailable.ctx.heap_end = 0x7000;
+    allocation_fails = true;
+    unavailable.init();
+    check(!unavailable.ctx.memory_info &&
+          m68k_read32(&unavailable.ctx, unavailable.base + 322) == unavailable.base + 326,
+          "allocation failure leaves a canonical empty list");
+}
+
 static void test_embedded_list_callbacks()
 {
     for (const auto &list : embedded_lists)
@@ -422,6 +474,7 @@ static void test_fallback_control()
 int main(int argc, char **argv)
 {
     test_embedded_exec_lists();
+    test_memory_capacity();
     test_embedded_list_callbacks();
     test_current_identity();
     test_named_identity_and_foreign_fields();
