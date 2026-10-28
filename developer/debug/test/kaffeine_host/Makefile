@@ -49,7 +49,7 @@ IO_OBJS := $(addprefix $(BUILD_DIR)/io_,cpu.o dispatch.o exec_io.o thunks_timer.
 # Disposable bridge sources can be supplied for the mutation checks.
 WORKBENCH_SOURCE_DIR ?= $(KAFFEINE_DIR)
 WORKBENCH_CPPFLAGS := -I$(TEST_DIR)/workbench_stubs -I$(TEST_DIR)/gfx_stubs -I$(TEST_DIR)/io_stubs $(TEST_CPPFLAGS)
-WORKBENCH_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/workbench_,cpu.o dispatch.o memory.o rastport.o taglist.o window.o exec_io.o workbench.o)
+WORKBENCH_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/workbench_,cpu.o dispatch.o memory.o rastport.o taglist.o window.o exec_io.o workbench.o icon.o)
 TASK_OBJS := $(BUILD_DIR)/file_boundary_unit.o $(addprefix $(BUILD_DIR)/task_,cpu.o dispatch.o shadow.o)
 SCHED_CPPFLAGS := -I$(TEST_DIR)/sched_stubs $(TEST_CPPFLAGS)
 SCHED_OBJS := $(addprefix $(BUILD_DIR)/sched_,cpu.o dispatch.o sched.o messages.o)
