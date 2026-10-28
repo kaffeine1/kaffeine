@@ -301,11 +301,14 @@ int main(void)
 
     /* 8. FreeDosObject(DOS_STDPKT, dp); close and delete everything. */
 cleanup:
-    /* The result is not checked: the AROS con-handler answers the last
-       ACTION_END with DOSFALSE, so Close() of a console returns 0 there,
-       DOSTRUE on AmigaOS 3.2.3. */
+    /* The last ACTION_END of a console window is answered with DOSTRUE,
+       as on AmigaOS 3.2.3. */
     if (con_file)
-        Close(con_file);
+    {
+        res = Close(con_file);
+        if (setup_ok)
+            check_long("Close(CON:0/0/320/80/dos_packets)", res, DOSTRUE);
+    }
     if (wfile)
         Close(wfile);
     if (lock)
