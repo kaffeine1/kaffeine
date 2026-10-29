@@ -359,6 +359,111 @@ static void released_manual_port_storage()
     }
 }
 
+/* Records of kaffeine_exec_io.c as its asynchronous timer I/O leaves them;
+   the queue layer alone decides what they allow. */
+static KaffeineIORequest &io_record(Fixture &f,unsigned slot,ULONG guest,ULONG port,bool pending,bool replied,bool copy)
+{
+    KaffeineIORequest &e=f.ctx.io_requests[slot];
+    e={};e.guest=guest;e.port=port;e.pending=pending;e.replied=replied;e.copy=copy;
+    e.kind=KAFFEINE_IO_TIMER;
+    return e;
+}
+static void link_raw(Fixture &f,ULONG port,ULONG msg)
+{
+    f.w(port+20,msg);f.w(port+28,msg);f.w(msg,port+24);f.w(msg+4,port+20);f.ctx.mem[msg+8]=7;
+}
+static void async_requests()
+{
+    const ULONG req=0x9400;
+    {
+        Fixture f;f.message(req,f.port,40);
+        io_record(f,0,req,f.port,true,false,true);
+        f.rejected(f.port,req);
+        auto before=f.bytes();
+        check(f.exec(378,0,req)==20 && f.bytes()==before,"ReplyMsg of a tracked request in flight refuses");
+        link_raw(f,f.port,req);
+        before=f.bytes();
+        check(f.exec(372,f.port)==20 && f.bytes()==before,"a request in flight linked raw makes GetMsg refuse");
+        f.ctx.io_requests[0]={};
+    }
+    {
+        Fixture f;f.message(req,f.port,40);
+        io_record(f,0,req,f.port,false,true,true);
+        link_raw(f,f.port,req);
+        check(f.exec(372,f.port)==req && f.ctx.running,"a replied request is a node of its own captured port");
+        f.message(req,f.port,40);
+        f.rejected(f.port,req);
+        link_raw(f,f.reply,req);
+        auto before=f.bytes();
+        check(f.exec(372,f.reply)==20 && f.bytes()==before,"a replied request on another port refuses");
+        f.ctx.io_requests[0]={};
+    }
+    {
+        Fixture f;f.message(req,f.port,48);
+        io_record(f,0,req,f.port,false,true,true);
+        link_raw(f,f.port,req);
+        auto before=f.bytes();
+        check(f.exec(372,f.port)==20 && f.bytes()==before,"a copied node larger than its 40 bytes refuses");
+        f.ctx.io_requests[0]={};
+    }
+    {
+        /* 48 -> 40: copies reserve exactly their 40 bytes */
+        Fixture f;
+        io_record(f,0,req,f.port,false,false,true);io_record(f,1,req+40,f.port,false,false,true);
+        check(Kaffeine_MessageMemory(&f.ctx,req+80,16) && Kaffeine_MessageMemory(&f.ctx,req-16,16),
+              "buffers right before and after two copies 40 bytes apart are ordinary memory");
+        check(!Kaffeine_MessageMemory(&f.ctx,req+39,1) && !Kaffeine_MessageMemory(&f.ctx,req+79,1),
+              "each copy keeps its own 40 bytes");
+        f.message(req+80,0,20);
+        check(f.exec(366,f.port,req+80)==0xD0000000,"a message right after a copy is sent");
+        f.exec(372,f.port);
+        io_record(f,2,0x9800,f.port,false,false,false);
+        check(!Kaffeine_MessageMemory(&f.ctx,0x9800+40,8) && Kaffeine_MessageMemory(&f.ctx,0x9800+48,8),
+              "an open request in guest storage keeps its 48 bytes");
+        f.ctx.io_requests[2].capacity=64;
+        check(!Kaffeine_MessageMemory(&f.ctx,0x9800+60,4) && Kaffeine_MessageMemory(&f.ctx,0x9800+64,4),
+              "and CreateIORequest() storage its capacity");
+        check(Kaffeine_ReleasableMemory(&f.ctx,req,80) && !Kaffeine_ReleasableMemory(&f.ctx,0x9800,64),
+              "memory about to be freed leaves copies, and only copies, to the release hook");
+        f.ctx.io_requests[0].orphan=1;
+        check(Kaffeine_MessageMemory(&f.ctx,req,40),"an orphan reserves nothing");
+        for(auto &e:f.ctx.io_requests)e={};
+    }
+    {
+        /* The bridge's own preflight skips only its own record. */
+        Fixture f;f.message(req,f.port,40);
+        KaffeineIORequest &self=io_record(f,0,req,f.port,false,false,true);
+        KaffeineQueue q;
+        check(Kaffeine_QueueRead(&f.ctx,f.port,&q) && Kaffeine_IOMessagePreflight(&f.ctx,&q,req,40,&self) &&
+              !Kaffeine_MessagePreflight(&f.ctx,&q,req,40),"only the bridge's preflight passes for its own record");
+        io_record(f,1,req+8,f.port,false,false,true);
+        check(!Kaffeine_IOMessagePreflight(&f.ctx,&q,req,40,&self),"another record over it still refuses");
+        for(auto &e:f.ctx.io_requests)e={};
+    }
+    {
+        /* Remove(): head, middle, tail; nothing else changes. */
+        Fixture f;const ULONG m[4]={0x9400,0x9500,0x9600,0x9700};
+        for(ULONG x:m){f.message(x,0,20);f.exec(366,f.port,x);}
+        pending_signals=0x5000;const unsigned sent=signals;
+        check(Kaffeine_GuestRemoveMsg(&f.ctx,f.port,m[1]) && f.r(m[0])==m[2] && f.r(m[2]+4)==m[0],
+              "Remove() of a middle node links its neighbours");
+        check(Kaffeine_GuestRemoveMsg(&f.ctx,f.port,m[3]) && f.r(m[2])==f.port+24 && f.r(f.port+28)==m[2],
+              "Remove() of the tail");
+        check(Kaffeine_GuestRemoveMsg(&f.ctx,f.port,m[0]) && f.r(f.port+20)==m[2] && f.r(m[2]+4)==f.port+20,
+              "Remove() of the head");
+        auto before=f.bytes();
+        check(Kaffeine_GuestRemoveMsg(&f.ctx,f.port,m[1]) && f.bytes()==before,"a node not there changes nothing");
+        check(signals==sent && pending_signals==0x5000 &&
+              std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),f.port)==1,
+              "no signal changes, and the port with a node stays registered");
+        check(Kaffeine_GuestRemoveMsg(&f.ctx,f.port,m[2]) &&
+              std::count(std::begin(f.ctx.message_ports),std::end(f.ctx.message_ports),f.port)==0 &&
+              f.r(f.port+20)==f.port+24 && f.r(f.port+28)==f.port+20,"removing the last node empties the port and its registration");
+        f.exec(366,f.port,m[0]);f.w(m[0],m[0]);before=f.bytes();
+        check(!Kaffeine_GuestRemoveMsg(&f.ctx,f.port,m[0]) && f.bytes()==before,"a malformed queue fails unchanged");
+    }
+}
+
 static unsigned dos_gate_calls, adapter_calls;
 static BOOL deny_packet;
 static BOOL process_dos_gate(KaffeineContext *ctx, void *, ULONG lvo, IPTR *result)
@@ -402,6 +507,7 @@ int main()
     released_manual_port_storage();
     retired_port_signal();
     process_packet_gate();
+    async_requests();
     check(allocated_signals==0,"all owned native signals are released");
     check(native_blocks.empty(),"all native heap records and allocations are released");
     std::printf("Guest Exec message boundary: %u/%u checks passed\n",checks-failures,checks);

@@ -24,6 +24,14 @@ void DeleteIORequest(APTR iorequest);
 LONG OpenDevice(CONST_STRPTR devName, IPTR unitNumber, struct IORequest *iORequest, ULONG flags);
 void CloseDevice(struct IORequest *iORequest);
 LONG DoIO(struct IORequest *iORequest);
+/* Asynchronous I/O: the tests that do none link message_native_unused.c's
+   poisoned definitions. */
+void SendIO(struct IORequest *iORequest);
+LONG AbortIO(struct IORequest *iORequest);
+LONG WaitIO(struct IORequest *iORequest);
+struct Message *GetMsg(struct MsgPort *port);
+ULONG SetSignal(ULONG newSignals, ULONG signalSet);
+ULONG Wait(ULONG signalSet);
 
 #ifdef __cplusplus
 }

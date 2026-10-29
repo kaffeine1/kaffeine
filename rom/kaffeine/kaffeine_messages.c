@@ -52,7 +52,20 @@ IPTR Kaffeine_MessageFailure(struct KaffeineContext *ctx, const char *op)
     return 20;
 }
 
-static BOOL ordinary(struct KaffeineContext *ctx, ULONG port, ULONG size)
+/* The bytes that a request record of kaffeine_exec_io.c reserves: its
+   CreateIORequest() capacity, the 40 bytes of a copy, else an IOStdReq. */
+static ULONG request_span(const struct KaffeineIORequest *e)
+{
+    return e->capacity ? e->capacity : e->copy ? 40 : 48;
+}
+
+/* Guest bytes that no bridge structure holds. self is the bridge's own
+   request that it is about to queue. A request that the bridge replied to
+   on_port, the port whose queue is read, may be a node there and nowhere
+   else. releasing: memory that the heap frees, where the I/O release hook
+   decides about copies. Orphans' storage was freed and holds nothing. */
+static BOOL ordinary(struct KaffeineContext *ctx, ULONG port, ULONG size,
+                     const struct KaffeineIORequest *self, ULONG on_port, BOOL releasing)
 {
     unsigned i;
     const struct KaffeineFileSlab *slab;
@@ -68,8 +81,13 @@ static BOOL ordinary(struct KaffeineContext *ctx, ULONG port, ULONG size)
     for (i = 0; i < KAFFEINE_MAX_HANDLERS; ++i)
         if (ctx->handlers[i].guest && Kaffeine_Overlap(port, size, ctx->handlers[i].guest, 34)) return FALSE;
     for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; ++i)
-        if (ctx->io_requests[i].guest && Kaffeine_Overlap(port, size, ctx->io_requests[i].guest,
-            ctx->io_requests[i].capacity ? ctx->io_requests[i].capacity : 48)) return FALSE;
+    {
+        const struct KaffeineIORequest *e = &ctx->io_requests[i];
+        if (!e->guest || e->orphan || e == self || (releasing && e->copy)) continue;
+        if (on_port && !e->pending && e->replied && e->port == on_port && port == e->guest &&
+            size <= request_span(e)) continue;
+        if (Kaffeine_Overlap(port, size, e->guest, request_span(e))) return FALSE;
+    }
     return TRUE;
 }
 
@@ -160,7 +178,7 @@ BOOL Kaffeine_QueueRead(struct KaffeineContext *ctx, ULONG port, struct Kaffeine
     q->port = port;
     q->count = 0;
     if ((port & 1) || !(process_port(ctx, port) ? arena(ctx, port, 34) : Kaffeine_GuestBytes(ctx, port, 34)) ||
-        !ordinary(ctx, port, 34) || ctx->mem[port + 8] != 4)
+        !ordinary(ctx, port, 34, NULL, 0, FALSE) || ctx->mem[port + 8] != 4)
         return FALSE;
     if (m68k_read32(ctx, list + 4))
         return FALSE;
@@ -170,7 +188,7 @@ BOOL Kaffeine_QueueRead(struct KaffeineContext *ctx, ULONG port, struct Kaffeine
     {
         ULONG size;
         if (q->count == KAFFEINE_MESSAGE_LIMIT || !message_size(ctx, node, &size) ||
-            !ordinary(ctx, node, size) || !Kaffeine_QueueDisjoint(q, node, size) ||
+            !ordinary(ctx, node, size, NULL, port, FALSE) || !Kaffeine_QueueDisjoint(q, node, size) ||
             m68k_read32(ctx, node + 4) != pred ||
             (ctx->mem[node + 8] != 5 && ctx->mem[node + 8] != 7))
             return FALSE;
@@ -185,14 +203,14 @@ BOOL Kaffeine_QueueRead(struct KaffeineContext *ctx, ULONG port, struct Kaffeine
 /* Authorize the destination's arrival action before any write or native I/O.
    Other active ports need geometry checks only. Validate those queues too, to
    catch duplicate sends even though RemHead leaves old node links. */
-BOOL Kaffeine_MessagePreflight(struct KaffeineContext *ctx, struct KaffeineQueue *q,
-                               ULONG msg, ULONG size)
+static BOOL preflight(struct KaffeineContext *ctx, struct KaffeineQueue *q,
+                      ULONG msg, ULONG size, const struct KaffeineIORequest *self)
 {
     struct KaffeineQueue other;
     unsigned i, free_slot = KAFFEINE_MAX_MESSAGE_PORTS;
     BOOL known = FALSE;
     if (!queue_arrival(ctx, q->port) ||
-        !Kaffeine_GuestBytes(ctx, msg, size) || !ordinary(ctx, msg, size) ||
+        !Kaffeine_GuestBytes(ctx, msg, size) || !ordinary(ctx, msg, size, self, 0, FALSE) ||
         !Kaffeine_QueueDisjoint(q, msg, size) || q->count == KAFFEINE_MESSAGE_LIMIT)
         return FALSE;
     /* A node still linked by both neighbours is queued even if its manual
@@ -217,6 +235,18 @@ BOOL Kaffeine_MessagePreflight(struct KaffeineContext *ctx, struct KaffeineQueue
         }
     }
     return known || free_slot < KAFFEINE_MAX_MESSAGE_PORTS;
+}
+
+BOOL Kaffeine_MessagePreflight(struct KaffeineContext *ctx, struct KaffeineQueue *q,
+                               ULONG msg, ULONG size)
+{
+    return preflight(ctx, q, msg, size, NULL);
+}
+
+BOOL Kaffeine_IOMessagePreflight(struct KaffeineContext *ctx, struct KaffeineQueue *q,
+                                 ULONG msg, ULONG size, const struct KaffeineIORequest *self)
+{
+    return preflight(ctx, q, msg, size, self);
 }
 
 void Kaffeine_MessageAppend(struct KaffeineContext *ctx, const struct KaffeineQueue *q,
@@ -267,6 +297,17 @@ IPTR Kaffeine_GuestGetMsg(struct KaffeineContext *ctx, ULONG port, BOOL wait)
     ULONG first, next;
     unsigned i, j, slot = KAFFEINE_MAX_MESSAGE_PORTS;
     BOOL known = FALSE;
+    /* Completions of asynchronous I/O first. Without guest tasks, only the
+       bridge can fill an empty port that is waited for: the native task
+       waits while a request in flight replies to it. */
+    for (;;)
+    {
+        if (ctx->io_poll && !ctx->io_poll(ctx))
+            return 20;
+        if (!wait || ctx->sched || !ctx->io_wait || !Kaffeine_QueueRead(ctx, port, &q) || q.count ||
+            !ctx->io_wait(ctx, port))
+            break;
+    }
     if (!Kaffeine_QueueRead(ctx, port, &q))
     {
         if (arena(ctx, port, 34))
@@ -339,7 +380,7 @@ IPTR Kaffeine_GuestReplyMsg(struct KaffeineContext *ctx, ULONG msg)
 {
     struct KaffeineQueue q;
     ULONG size, reply;
-    if (!message_size(ctx, msg, &size) || !ordinary(ctx, msg, size))
+    if (!message_size(ctx, msg, &size) || !ordinary(ctx, msg, size, NULL, 0, FALSE))
         return Kaffeine_MessageFailure(ctx, "ReplyMsg");
     reply = m68k_read32(ctx, msg + 14);
     if (!reply)
@@ -363,13 +404,46 @@ IPTR Kaffeine_GuestReplyMsg(struct KaffeineContext *ctx, ULONG msg)
     return 0;
 }
 
-BOOL Kaffeine_MessageMemory(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+static BOOL memory(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL releasing)
 {
     struct KaffeineQueue q;
     unsigned i;
-    if (size && (!Kaffeine_GuestBytes(ctx, addr, size) || !ordinary(ctx, addr, size))) return FALSE;
+    if (size && (!Kaffeine_GuestBytes(ctx, addr, size) || !ordinary(ctx, addr, size, NULL, 0, releasing))) return FALSE;
     for (i = 0; i < KAFFEINE_MAX_MESSAGE_PORTS; ++i)
         if (ctx->message_ports[i] &&
             (!Kaffeine_QueueRead(ctx, ctx->message_ports[i], &q) || !Kaffeine_QueueDisjoint(&q, addr, size))) return FALSE;
+    return TRUE;
+}
+
+BOOL Kaffeine_MessageMemory(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    return memory(ctx, addr, size, FALSE);
+}
+
+BOOL Kaffeine_ReleasableMemory(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    return memory(ctx, addr, size, TRUE);
+}
+
+/* Exec's Remove() of msg from the queue of port, when it is there: the
+   order of the other nodes, their links and every signal stay. */
+BOOL Kaffeine_GuestRemoveMsg(struct KaffeineContext *ctx, ULONG port, ULONG msg)
+{
+    struct KaffeineQueue q;
+    ULONG pred, next;
+    unsigned i;
+    if (!Kaffeine_QueueRead(ctx, port, &q))
+        return FALSE;
+    for (i = 0; i < q.count && q.nodes[i] != msg; ++i)
+        ;
+    if (i == q.count)
+        return TRUE;
+    pred = i ? q.nodes[i - 1] : port + 20;
+    next = i + 1 < q.count ? q.nodes[i + 1] : port + 24;
+    m68k_write32(ctx, pred, next);
+    m68k_write32(ctx, next + 4, pred);
+    if (q.count == 1)
+        for (i = 0; i < KAFFEINE_MAX_MESSAGE_PORTS; ++i)
+            if (ctx->message_ports[i] == port) ctx->message_ports[i] = 0;
     return TRUE;
 }

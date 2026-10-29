@@ -272,12 +272,34 @@ static IPTR thunk_exec_SetTaskPri(struct KaffeineContext *ctx, void *cpu)
 }
 
 /* -318: Wait(D0=signalSet) -> D0. With AddTask() children the other guest
-   tasks run while one waits; otherwise the native task waits. */
+   tasks run while one waits; otherwise the native task waits. With
+   asynchronous I/O in flight it also wakes for the private bits behind it,
+   so that the completions reach their guest ports, whose signals it then
+   takes; the private bits never reach D0. */
 static IPTR thunk_exec_Wait(struct KaffeineContext *ctx, void *cpu)
 {
+    ULONG mask = THUNK_D(0) & ~ctx->io_signals, got;
+
     if (ctx->sched)
         return ctx->task_ops->wait(ctx, cpu);
-    return (IPTR)Wait(THUNK_D(0));
+    if (!ctx->io_poll)
+        return (IPTR)Wait(mask);
+    mask &= ~ctx->io_signals;
+    for (;;)
+    {
+        if (!ctx->io_poll(ctx))
+            return 20;
+        got = SetSignal(0, mask) & mask;
+        if (got)
+            return got;
+        if (!ctx->io_signals)
+            return (IPTR)Wait(mask);
+        /* Wait() takes what it got; give back the guest's part, which the
+           next round takes after the completions behind it are in. */
+        got = Wait(mask | ctx->io_signals) & mask;
+        if (got)
+            SetSignal(got, got);
+    }
 }
 
 /* -534: TypeOfMem(A1=address) -> D0=attributes */
@@ -375,12 +397,19 @@ APTR m68k_to_native_fmt_stream(struct KaffeineContext *ctx, const char *fmt, ULO
 
 
 /* exec -306: SetSignal(D0=newSignals, D1=signalSet) -> D0=oldSignals, of
-   the current guest task */
+   the current guest task. Completed asynchronous I/O reaches its guest
+   ports first, so that a guest that polls sees their signals; the private
+   bits behind it are neither shown nor changed. */
 static IPTR thunk_exec_SetSignal(struct KaffeineContext *ctx, void *cpu)
 {
+    ULONG hidden;
+
     if (ctx->sched)
         return ctx->task_ops->set_signal(ctx, cpu);
-    return (IPTR)SetSignal(THUNK_D(0), THUNK_D(1));
+    if (ctx->io_poll && !ctx->io_poll(ctx))
+        return 20;
+    hidden = ctx->io_signals;
+    return (IPTR)(SetSignal(THUNK_D(0) & ~hidden, THUNK_D(1) & ~hidden) & ~hidden);
 }
 
 /* FindName on an explicitly registered native list, never on guest bytes. */

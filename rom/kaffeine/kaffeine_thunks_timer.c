@@ -3,8 +3,9 @@
 
     timer.device behind the guest base that OpenDevice() gives out: the
     time arithmetic on 68k timevals as AROS does it, and GetSysTime() and
-    ReadEClock() of the native timer. BeginIO() of the device is
-    asynchronous I/O, which is not supported yet.
+    ReadEClock() of the native timer. BeginIO() of the device stops the
+    guest: asynchronous I/O goes through Exec's SendIO() alone
+    (kaffeine_exec_io.c), whose AbortIO() the device's is.
 */
 
 #include "kaffeine_intern.h"
@@ -28,20 +29,19 @@ static BOOL timevals(struct KaffeineContext *ctx, ULONG dest, ULONG src)
 }
 
 /* -30: BeginIO(A1=ioRequest). Called on the device directly, it is
-   asynchronous I/O. */
+   asynchronous I/O outside SendIO(), which is not supported. */
 IPTR kaffeine_timer_BeginIO(struct KaffeineContext *ctx, void *cpu)
 {
     bug("[kaffeine] timer.device BeginIO(%08lx)\n", (unsigned long)THUNK_A(1));
-    return Kaffeine_IORefuse(ctx, "BeginIO(): asynchronous device I/O is not supported yet");
+    return Kaffeine_IORefuse(ctx, "BeginIO(): asynchronous device I/O goes through SendIO() only");
 }
 
-/* -36: AbortIO(A1=ioRequest) -> D0. Nothing is in flight through the
-   bridge: -1, as timer.device answers for a request it no longer holds. */
+/* -36: AbortIO(A1=ioRequest) -> D0, as Exec's AbortIO(): the native one
+   for a request in flight, else -1, as timer.device answers for a request
+   it no longer holds. */
 IPTR kaffeine_timer_AbortIO(struct KaffeineContext *ctx, void *cpu)
 {
-    if (!guest_range(ctx, THUNK_A(1), 32))
-        return Kaffeine_IORefuse(ctx, "AbortIO(): the request is not in guest memory");
-    return (IPTR)(LONG)-1;
+    return Kaffeine_AbortIO(ctx, cpu);
 }
 
 /* -42: AddTime(A0=dest, A1=src). AROS's ADDTIME: add, then normalize. */

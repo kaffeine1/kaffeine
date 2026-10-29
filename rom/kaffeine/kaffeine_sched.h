@@ -91,6 +91,9 @@ struct KaffeineTaskOps
        Exit() ends that child alone and every other call stops the program;
        *result is D0 then. */
     BOOL  (*process_dos)(struct KaffeineContext *ctx, void *cpu, ULONG lvo, IPTR *result);
+    /* Whether cpu is the root's and the root is the current task, from the
+       scheduler's own state, never from the guest ThisTask */
+    BOOL  (*is_root)(struct KaffeineContext *ctx, void *cpu);
 };
 
 #ifdef __cplusplus

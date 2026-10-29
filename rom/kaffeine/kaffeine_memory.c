@@ -508,6 +508,31 @@ static BOOL heap_release_valid(struct KaffeineContext *ctx, struct M68KHeapAlloc
            heap_free_valid(ctx, heap_free_neighbor(node, TRUE));
 }
 
+/* The payload of a validated native interval: without its private header
+   and the alignment slack beyond the requested size. */
+static void heap_payload(const struct M68KHeapAllocation *allocation, ULONG *block, ULONG *size)
+{
+    ULONG header = allocation->kind == HEAP_ABSOLUTE ? 0 : KAFFEINE_HEAP_HDR;
+
+    *block = allocation->block + header;
+    *size = allocation->size - header;
+    if (allocation->requested < *size) *size = allocation->requested;
+}
+
+/* Asynchronous I/O may still need guest memory that is about to be freed:
+   a request in flight or a reply still queued there keeps it allocated.
+   Without commit the hook only answers, so that a multi-block release can
+   ask for every block before it frees any. */
+static BOOL heap_io_keeps(struct KaffeineContext *ctx,
+                          const struct M68KHeapAllocation *allocation, BOOL commit)
+{
+    ULONG block, size;
+
+    if (!ctx->io_release) return FALSE;
+    heap_payload(allocation, &block, &size);
+    return !ctx->io_release(ctx, block, size, commit);
+}
+
 /* A guest may drain a manual port with inline list operations, then release
    its containing allocation without calling GetMsg or DeleteMsgPort. Retire
    only a complete, canonically empty port while its bytes still exist.
@@ -515,13 +540,11 @@ static BOOL heap_release_valid(struct KaffeineContext *ctx, struct M68KHeapAlloc
 static void heap_forget_empty_ports(struct KaffeineContext *ctx,
                                     const struct M68KHeapAllocation *allocation)
 {
-    ULONG header = allocation->kind == HEAP_ABSOLUTE ? 0 : KAFFEINE_HEAP_HDR;
-    ULONG block = allocation->block + header, size = allocation->size - header;
+    ULONG block, size;
     unsigned i;
 
-    /* heap_release has already validated this native interval. Exclude its
-       private header and alignment slack beyond the requested payload. */
-    if (allocation->requested < size) size = allocation->requested;
+    /* heap_release has already validated this native interval. */
+    heap_payload(allocation, &block, &size);
     for (i = 0; i < KAFFEINE_MAX_MESSAGE_PORTS; ++i)
     {
         ULONG port = ctx->message_ports[i];
@@ -553,6 +576,10 @@ static BOOL heap_release(struct KaffeineContext *ctx, struct M68KHeapAllocation 
 
     if (!heap_span_valid(ctx, allocation) || !heap_free_valid(ctx, previous) ||
         !heap_free_valid(ctx, following))
+        return FALSE;
+    /* Only now, with the release certain to succeed: the hook closes what
+       it releases. */
+    if (heap_io_keeps(ctx, allocation, TRUE))
         return FALSE;
     heap_forget_empty_ports(ctx, allocation);
     if (pool)
@@ -703,7 +730,8 @@ void Kaffeine_HeapFreeEntry(struct KaffeineContext *ctx, ULONG entry)
     if (!header || header->kind != HEAP_MEMLIST || !heap_span_valid(ctx, header) ||
         !entry_range(ctx, entry, header->requested)) return;
     count = (header->requested - MEMLIST_HEADER) / MEMENTRY_SIZE;
-    if (m68k_read16(ctx, entry + 14) != count || !heap_release_valid(ctx, header)) return;
+    if (m68k_read16(ctx, entry + 14) != count || !heap_release_valid(ctx, header) ||
+        heap_io_keeps(ctx, header, FALSE)) return;
     allocation = header->next;
     /* Match every address and length to the native membership chain before
        releasing anything. Node links/name/priority may legitimately change. */
@@ -719,7 +747,7 @@ void Kaffeine_HeapFreeEntry(struct KaffeineContext *ctx, ULONG entry)
         }
         if (!allocation || allocation->kind != HEAP_ENTRY || allocation->pool != entry ||
             member != allocation->block + KAFFEINE_HEAP_HDR || length != allocation->requested ||
-            !heap_release_valid(ctx, allocation)) return;
+            !heap_release_valid(ctx, allocation) || heap_io_keeps(ctx, allocation, FALSE)) return;
         allocation = allocation->next;
     }
     if (allocation) return;
@@ -902,9 +930,9 @@ void Kaffeine_PoolDelete(struct KaffeineContext *ctx, ULONG pool)
     if (!pool || !heap_ready(ctx) || !(header = pool_find(ctx, pool))) return;
     /* Check all affected free-list neighbours before starting the deletion.
        Only this pool's member chain is visited, regardless of other pools. */
-    if (!heap_release_valid(ctx, header)) return;
+    if (!heap_release_valid(ctx, header) || heap_io_keeps(ctx, header, FALSE)) return;
     for (allocation = header->next; allocation; allocation = allocation->next)
-        if (!heap_release_valid(ctx, allocation)) return;
+        if (!heap_release_valid(ctx, allocation) || heap_io_keeps(ctx, allocation, FALSE)) return;
     while (header->next)
         if (!heap_release(ctx, header->next, header)) return;
     heap_release(ctx, header, NULL);

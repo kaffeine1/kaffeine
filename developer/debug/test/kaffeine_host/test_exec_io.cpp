@@ -1,20 +1,25 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    Exec ports, I/O requests and signals of 68k code, timer.device,
-    keyboard.device and input.device, through literal LVOs and the real
-    dispatcher and heap. The native Exec and devices below record every
-    call, native signal and native object.
+    Exec ports, I/O requests and signals of 68k code, timer.device with
+    its asynchronous I/O and copied requests, keyboard.device and
+    input.device, through literal LVOs and the real dispatcher, queues and
+    heap. The native Exec and devices below record every call, native
+    signal and native object; a request in flight completes only when a
+    test completes it.
 */
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -28,6 +33,8 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_exec_io.h"
 #include "kaffeine_dispatch.h"
+#include "kaffeine_messages.h"
+#include "kaffeine_sched.h"
 
 /* ── The native side ─────────────────────────────────────────────── */
 
@@ -55,6 +62,19 @@ static ULONG kbd_length;
 static const void *kbd_data;
 static long kbd_actual = -1;
 static const UBYTE *arena_lo, *arena_hi;    /* guest memory, never a native address */
+/* Asynchronous timer.device: a request that SendIO() gave stays at the
+   device until the test completes it, which replies it to its native port
+   and signals the native task; nothing completes by itself. */
+static std::vector<IORequest *> at_device;
+static std::map<MsgPort *, std::deque<Message *>> native_queues;
+static ULONG native_signals;                /* received signals of the native task */
+static std::vector<std::string> native_log; /* the order of native device calls */
+static unsigned sendio_calls, abortio_calls, waitio_calls, wait_calls, create_request_calls;
+static ULONG wait_mask, sent_secs, sent_micro;
+static UWORD sent_command;
+static UBYTE sent_flags;
+static std::function<void()> on_waitio;     /* the device completes while WaitIO() waits */
+static std::function<void()> on_wait;       /* a completion while Wait() waits */
 
 static bool in_arena(const void *p)
 {
@@ -120,6 +140,7 @@ extern "C" void Signal(Task *task, ULONG mask)
     ++signal_calls;
     signal_task = task;
     signal_mask = mask;
+    native_signals |= mask;
 }
 
 extern "C" Task *FindTask(CONST_STRPTR name)
@@ -140,39 +161,60 @@ extern "C" MsgPort *CreateMsgPort(void)
     }
     port->mp_SigBit = (UBYTE)sig;
     port->mp_SigTask = FindTask(nullptr);
+    native_queues[port].clear();
+    native_signals &= ~(1u << sig);
     ++live_ports;
+    native_log.push_back("port");
     return port;
 }
 
 extern "C" void DeleteMsgPort(MsgPort *port)
 {
     if (!port) return;
+    assert(native_queues[port].empty() && "a native port goes with a message on it");
+    native_queues.erase(port);
+    native_log.push_back("delete port");
     FreeSignal(port->mp_SigBit);
     FreeMem(port, sizeof(MsgPort));
     --live_ports;
 }
 
+static bool queued_natively(const IORequest *req)
+{
+    for (const auto &q : native_queues)
+        if (std::find(q.second.begin(), q.second.end(), &req->io_Message) != q.second.end())
+            return true;
+    return false;
+}
+
 extern "C" APTR CreateIORequest(MsgPort *port, ULONG size)
 {
+    ++create_request_calls;
     if (fail_request || !port) return nullptr;
     auto *req = static_cast<IORequest *>(AllocMem(size, 0));
     req->io_Message.mn_ReplyPort = port;
     req->io_Message.mn_Length = (UWORD)size;
     request_size = size;
     ++live_requests;
+    native_log.push_back("request");
     return req;
 }
 
 extern "C" void DeleteIORequest(APTR request)
 {
     if (!request) return;
-    FreeMem(request, static_cast<IORequest *>(request)->io_Message.mn_Length);
+    auto *req = static_cast<IORequest *>(request);
+    assert(std::find(at_device.begin(), at_device.end(), req) == at_device.end() &&
+           !queued_natively(req) && "a native request goes while the device or a port has it");
+    native_log.push_back("delete request");
+    FreeMem(request, req->io_Message.mn_Length);
     --live_requests;
 }
 
 extern "C" LONG OpenDevice(CONST_STRPTR name, IPTR unit, IORequest *req, ULONG flags)
 {
     ++open_calls;
+    native_log.push_back("open");
     open_name = name;
     open_unit = unit;
     open_flags = flags;
@@ -197,8 +239,116 @@ extern "C" void CloseDevice(IORequest *req)
     ++close_calls;
     assert(req->io_Device == &native_timer || req->io_Device == &native_keyboard ||
            req->io_Device == &native_input);
+    assert(std::find(at_device.begin(), at_device.end(), req) == at_device.end() &&
+           !queued_natively(req) && "a device closes while it still has the request");
+    native_log.push_back("close");
     req->io_Device = reinterpret_cast<Device *>(-1);
     --live_opens;
+}
+
+/* The device replies a request it has: its results, then the native port
+   and its signal, as AROS's ReplyMsg(). */
+static void complete(IORequest *req, BYTE error = 0, ULONG secs = 0, ULONG micro = 0)
+{
+    auto it = std::find(at_device.begin(), at_device.end(), req);
+    assert(it != at_device.end() && "only a request at the device completes");
+    at_device.erase(it);
+    auto *tr = reinterpret_cast<timerequest *>(req);
+    tr->tr_time = { secs, micro };
+    req->io_Error = error;
+    req->io_Message.mn_Node.ln_Type = NT_REPLYMSG;
+    MsgPort *port = req->io_Message.mn_ReplyPort;
+    native_queues[port].push_back(&req->io_Message);
+    native_signals |= 1u << port->mp_SigBit;
+}
+
+extern "C" void SendIO(IORequest *req)
+{
+    ++sendio_calls;
+    native_log.push_back("send");
+    assert(!in_arena(req) && req->io_Device == &native_timer);
+    assert(std::find(at_device.begin(), at_device.end(), req) == at_device.end() && !queued_natively(req));
+    sent_command = req->io_Command;
+    sent_flags = req->io_Flags;
+    sent_secs = reinterpret_cast<timerequest *>(req)->tr_time.tv_secs;
+    sent_micro = reinterpret_cast<timerequest *>(req)->tr_time.tv_micro;
+    req->io_Message.mn_Node.ln_Type = NT_MESSAGE;
+    at_device.push_back(req);
+}
+
+extern "C" LONG AbortIO(IORequest *req)
+{
+    ++abortio_calls;
+    native_log.push_back("abort");
+    assert(!in_arena(req));
+    if (std::find(at_device.begin(), at_device.end(), req) == at_device.end())
+        return -1;
+    complete(req, IOERR_ABORTED);
+    return 0;
+}
+
+/* AROS's WaitIO(): wait for the port's signal until the device has replied,
+   then Remove() the request from the port. */
+extern "C" LONG WaitIO(IORequest *req)
+{
+    ++waitio_calls;
+    native_log.push_back("waitio");
+    assert(!in_arena(req));
+    if (std::find(at_device.begin(), at_device.end(), req) != at_device.end())
+    {
+        if (!on_waitio)
+        {
+            std::printf("FAIL: WaitIO() would wait forever\n");
+            std::exit(1);
+        }
+        auto event = on_waitio;
+        on_waitio = nullptr;
+        event();
+    }
+    MsgPort *port = req->io_Message.mn_ReplyPort;
+    auto &q = native_queues[port];
+    auto it = std::find(q.begin(), q.end(), &req->io_Message);
+    assert(it != q.end() && req->io_Message.mn_Node.ln_Type == NT_REPLYMSG);
+    q.erase(it);
+    native_signals &= ~(1u << port->mp_SigBit);
+    return req->io_Error;
+}
+
+extern "C" Message *GetMsg(MsgPort *port)
+{
+    auto &q = native_queues[port];
+    if (q.empty()) return nullptr;
+    Message *m = q.front();
+    q.pop_front();
+    return m;
+}
+
+extern "C" ULONG SetSignal(ULONG signals, ULONG set)
+{
+    ULONG old = native_signals;
+    native_signals = (old & ~set) | (signals & set);
+    return old;
+}
+
+extern "C" ULONG Wait(ULONG mask)
+{
+    ++wait_calls;
+    wait_mask = mask;
+    native_log.push_back("wait");
+    if (!(native_signals & mask) && on_wait)
+    {
+        auto event = on_wait;
+        on_wait = nullptr;
+        event();
+    }
+    ULONG got = native_signals & mask;
+    if (!got)
+    {
+        std::printf("FAIL: the native task would wait forever for %08x\n", (unsigned)mask);
+        std::exit(1);
+    }
+    native_signals &= ~got;
+    return got;
 }
 
 /* AROS keyboard.device's KBD_READMATRIX: min(32, io_Length) bytes of the
@@ -299,7 +449,17 @@ static const KaffeineCPUOps ops =
     { get_d, get_a, set_d, set_a, get_sr, set_sr, get_pc, set_pc, nullptr, nullptr };
 
 static IPTR poison(KaffeineContext *, void *) { ++generated_calls; return 0xBAD0F00D; }
-static const M68KThunkEntry manual[] = { KAFFEINE_EXEC_IO_THUNKS };
+/* The guest queues of a 68k port, as kaffeine_window.c and kaffeine_exec_compat.c
+   reach them for a port without IDCMP or App objects */
+static IPTR guest_put(KaffeineContext *c, void *p)
+{ return Kaffeine_GuestPutMsg(c, Kaffeine_GetA(p, 0), Kaffeine_GetA(p, 1), Kaffeine_GetD(p, 0)); }
+static IPTR guest_get(KaffeineContext *c, void *p) { return Kaffeine_GuestGetMsg(c, Kaffeine_GetA(p, 0), FALSE); }
+static IPTR guest_reply(KaffeineContext *c, void *p) { return Kaffeine_GuestReplyMsg(c, Kaffeine_GetA(p, 1)); }
+static IPTR guest_waitport(KaffeineContext *c, void *p) { return Kaffeine_GuestGetMsg(c, Kaffeine_GetA(p, 0), TRUE); }
+static const M68KThunkEntry manual[] = {
+    KAFFEINE_EXEC_IO_THUNKS,
+    { 366, guest_put }, { 372, guest_get }, { 378, guest_reply }, { 384, guest_waitport }
+};
 static const M68KThunkEntry generated[] =
 {
     {324, poison}, {330, poison}, {336, poison}, {444, poison}, {450, poison},
@@ -347,6 +507,10 @@ struct Fixture
         native_input.dd_Library.lib_Revision = 4;
         kbd_doio_calls = input_doio_calls = 0;
         kbd_length = 0; kbd_data = nullptr; kbd_actual = -1;
+        at_device.clear(); native_queues.clear(); native_signals = 0; native_log.clear();
+        sendio_calls = abortio_calls = waitio_calls = wait_calls = create_request_calls = 0;
+        wait_mask = sent_secs = sent_micro = 0; sent_command = 0; sent_flags = 0xFF;
+        on_waitio = nullptr; on_wait = nullptr;
         memory.fill(0xA5);
         ctx.mem = memory.data();
         ctx.mem_size = memory.size();
@@ -378,9 +542,13 @@ struct Fixture
     {
         current_task = &owner_task;
         ctx.exec_task = nullptr;
+        ctx.sched = nullptr;
+        ctx.callback_depth = 0;
         Kaffeine_IOCleanup(&ctx);
         assert(!live_ports && !live_requests && !live_opens);
         assert(task_signals == 0xFFFF);
+        assert(at_device.empty() && native_queues.empty());
+        assert(!ctx.io_poll && !ctx.io_wait && !ctx.io_release && !ctx.io_signals && !ctx.io_copy_port);
         arena_lo = arena_hi = nullptr;
     }
 
@@ -458,6 +626,67 @@ struct Fixture
         for (ULONG i = 0; i < size; ++i)
             if (memory[addr + i] != (UBYTE)(0x40 + i)) return false;
         return true;
+    }
+
+    /* Asynchronous I/O and guest queues through their LVOs */
+    ULONG send(ULONG req) { return call(462, 0xA0A0A0A0, req); }
+    ULONG check_io(ULONG req) { return call(468, 0xA0A0A0A0, req); }
+    ULONG wait_io(ULONG req) { return call(474, 0xA0A0A0A0, req); }
+    ULONG abort_io(ULONG req) { return call(480, 0xA0A0A0A0, req); }
+    ULONG put(ULONG port, ULONG msg) { return call(366, port, msg); }
+    ULONG get(ULONG port) { return call(372, port); }
+    ULONG wait_port(ULONG port) { return call(384, port); }
+    ULONG reply(ULONG msg) { return call(378, 0xA0A0A0A0, msg); }
+    void delay(ULONG req, ULONG secs, ULONG micro, UWORD command = TR_ADDREQUEST)
+    {
+        m68k_write16(&ctx, req + IO_COMMAND, command);
+        m68k_write32(&ctx, req + TV_SECS, secs);
+        m68k_write32(&ctx, req + TV_MICRO, micro);
+    }
+    /* The program copies an open timerequest, as a window of an editor
+       copies its own from the one it opened. */
+    ULONG copy_of(ULONG source, ULONG at)
+    {
+        std::memmove(memory.data() + at, memory.data() + source, 40);
+        return at;
+    }
+    const KaffeineIORequest *record(ULONG req) const
+    {
+        for (const auto &e : ctx.io_requests)
+            if (e.guest == req && !e.orphan) return &e;
+        return nullptr;
+    }
+    IORequest *native_of(ULONG req) const { return record(req) ? record(req)->native : nullptr; }
+    unsigned records() const
+    {
+        unsigned n = 0;
+        for (const auto &e : ctx.io_requests) n += e.guest != 0;
+        return n;
+    }
+    std::vector<ULONG> queue(ULONG port)
+    {
+        std::vector<ULONG> nodes;
+        for (ULONG n = m68k_read32(&ctx, port + MP_MSGLIST); n != port + MP_MSGLIST + 4 && nodes.size() < 64;
+             n = m68k_read32(&ctx, n))
+            nodes.push_back(n);
+        return nodes;
+    }
+    void message(ULONG msg, ULONG reply_port = 0, UWORD length = 20)
+    {
+        std::memset(memory.data() + msg, 0, length);
+        m68k_write32(&ctx, msg + MN_REPLYPORT, reply_port);
+        m68k_write16(&ctx, msg + MN_LENGTH, length);
+    }
+    /* A 68k port that the program made itself */
+    void manual_port(ULONG port, UBYTE flags, UBYTE bit, ULONG task)
+    {
+        std::memset(memory.data() + port, 0, 34);
+        memory[port + LN_TYPE] = NT_MSGPORT;
+        memory[port + MP_FLAGS] = flags;
+        memory[port + MP_SIGBIT] = bit;
+        m68k_write32(&ctx, port + MP_SIGTASK, task);
+        m68k_write32(&ctx, port + MP_MSGLIST, port + MP_MSGLIST + 4);
+        m68k_write32(&ctx, port + MP_MSGLIST + 8, port + MP_MSGLIST);
     }
 };
 
@@ -722,23 +951,794 @@ static void test_async()
     const ULONG r = f.request(p, 40);
     f.open(r);
     f.doio(r, TR_ADDREQUEST, 1, 0);
-    check(f.call(462, 0xA0A0A0A0, r) == 20 && f.stopped() && doio_calls == 1,
-          "SendIO() stops the guest with 20");
+    check(f.call(462, 0xA0A0A0A0, r) == 20 && f.stopped() && doio_calls == 1 && !sendio_calls &&
+          !f.ctx.io_poll, "SendIO() off the native task that runs the guest stops it with 20");
     check(f.call(468, 0xA0A0A0A0, r) == r, "CheckIO() of a completed request returns it");
     check(f.call(474, 0xA0A0A0A0, r) == 0, "WaitIO() of a completed request returns io_Error");
     f.memory[r + IO_ERROR] = 0xFD;
     check(f.call(474, 0xA0A0A0A0, r) == 0xFFFFFFFD, "WaitIO() sign-extends io_Error");
     check(f.call(480, 0xA0A0A0A0, r) == 0xFFFFFFFF, "AbortIO() finds nothing in flight: -1");
+    /* CreateExtIO() leaves these markers before any I/O: the record, not
+       the guest bytes, says what is in flight. */
     f.memory[r + IO_FLAGS] = 0;
     f.memory[r + LN_TYPE] = NT_MESSAGE;
-    check(f.call(468, 0xA0A0A0A0, r) == 0, "CheckIO() of a request in flight returns NULL");
-    check(f.call(474, 0xA0A0A0A0, r) == 20 && f.stopped(),
-          "WaitIO() of a request in flight stops the guest with 20");
+    check(f.call(468, 0xA0A0A0A0, r) == r && f.ctx.running,
+          "CheckIO() of a known request with in-flight markers but no I/O returns it");
+    check(f.call(474, 0xA0A0A0A0, r) == 0xFFFFFFFD && f.ctx.running && !waitio_calls,
+          "WaitIO() of it returns io_Error at once");
+    /* A request that the bridge never saw keeps Exec's markers. */
+    const ULONG unknown = 0x2A00;
+    f.message(unknown, p, 40);
+    f.memory[unknown + LN_TYPE] = NT_MESSAGE;
+    check(f.call(468, 0xA0A0A0A0, unknown) == 0, "CheckIO() of an unknown request in flight returns NULL");
+    check(f.call(474, 0xA0A0A0A0, unknown) == 20 && f.stopped() && !waitio_calls,
+          "WaitIO() of an unknown request in flight stops the guest with 20");
     for (ULONG lvo : { 468, 474, 480 })
         check(f.call(lvo, 0xA0A0A0A0, 0xFFF0) == 20 && f.stopped(),
               "CheckIO(), WaitIO() and AbortIO() refuse a request outside guest memory");
     f.call(660, r);
     f.call(672, p);
+}
+
+/* ── Asynchronous timer.device I/O ───────────────────────────────── */
+
+struct Counts
+{
+    unsigned sends, opens, closes, creates, allocs, signals, aborts, waitios, waits;
+    int ports, requests, opened;
+    bool operator==(const Counts &) const = default;
+};
+static Counts counts()
+{
+    return { sendio_calls, open_calls, close_calls, create_request_calls, alloc_signal_calls,
+             signal_calls, abortio_calls, waitio_calls, wait_calls, live_ports, live_requests, live_opens };
+}
+
+/* A call that stops the guest with 20 before any guest write, native call
+   or record change */
+static void refused(Fixture &f, const std::function<ULONG()> &op, const char *what)
+{
+    const auto memory = f.memory;
+    const Counts before = counts();
+    const unsigned records = f.records();
+    const ULONG received = native_signals;
+    const bool stopped = op() == 20 && f.stopped();
+    check(stopped && f.memory == memory && counts() == before && f.records() == records &&
+          native_signals == received, what);
+}
+
+struct Async { ULONG port, source; };
+/* The root on the native task that runs the guest, with a reply port and
+   an open timer.device request */
+static Async async_setup(Fixture &f, ULONG unit = UNIT_MICROHZ, ULONG flags = 0)
+{
+    f.ctx.exec_task = &owner_task;
+    const ULONG p = f.port(), r = f.request(p, 40);
+    assert(f.open(r, unit, Fixture::name, flags) == 0);
+    return { p, r };
+}
+
+static void test_async_source()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f, UNIT_VBLANK);
+    const unsigned opens = open_calls;
+    const ULONG private_bit = 1u << f.record(r)->reply->mp_SigBit, port_bit = 1u << f.memory[p + MP_SIGBIT];
+    for (unsigned round = 0; round < 3; ++round)
+    {
+        f.delay(r, 0, 20000 + round);
+        f.memory[r + IO_FLAGS] = IOF_QUICK;
+        f.memory[r + IO_ERROR] = 0x55;
+        check(f.send(r) == 0 && f.ctx.running && open_calls == opens && sendio_calls == round + 1 &&
+              sent_command == TR_ADDREQUEST && sent_flags == 0 && !sent_secs && sent_micro == 20000 + round,
+              "SendIO() of an open request sends its native request, without QUICK, and no new open");
+        check(f.memory[r + IO_FLAGS] == 0 && f.memory[r + LN_TYPE] == NT_MESSAGE && f.error(r) == 0 &&
+              f.check_io(r) == 0 && f.queue(p).empty() && f.ctx.io_signals == private_bit &&
+              !(f.ctx.guest_signals & private_bit),
+              "in flight: NT_MESSAGE, CheckIO() NULL, an empty port and only a private bit");
+        refused(f, [&] { return f.send(r); }, "SendIO() of a request in flight stops before any call");
+        const unsigned signals = signal_calls;
+        complete(f.native_of(r), 0, 1, 2 + round);
+        check(f.wait_port(p) == r && signal_calls == signals + 1 && signal_mask == port_bit &&
+              !(native_signals & private_bit) && f.ctx.io_signals == private_bit,
+              "WaitPort() finds the reply on its port, which got its own signal and none private");
+        refused(f, [&] { return f.send(r); }, "SendIO() of a reply still on its port stops before any call");
+        check(f.get(p) == r && f.memory[r + LN_TYPE] == NT_REPLYMSG && f.error(r) == 0 &&
+              m68k_read32(&f.ctx, r + TV_SECS) == 1 && m68k_read32(&f.ctx, r + TV_MICRO) == 2 + round &&
+              f.queue(p).empty(), "GetMsg() takes the replied request with the native results");
+    }
+    m68k_write16(&f.ctx, r + IO_COMMAND, TR_GETSYSTIME);
+    check(f.send(r) == 0 && sent_command == TR_GETSYSTIME, "TR_GETSYSTIME goes asynchronously too");
+    complete(f.native_of(r), 0, 12345, 6);
+    const unsigned signals = signal_calls;
+    check(f.wait_io(r) == 0 && !waitio_calls && m68k_read32(&f.ctx, r + TV_SECS) == 12345 &&
+          f.queue(p).empty() && signal_calls == signals && f.memory[r + LN_TYPE] == NT_REPLYMSG,
+          "WaitIO() of a reply that only the native port has finishes it in place, unqueued and unsignalled");
+    f.delay(r, 9, 0);
+    check(f.send(r) == 0 && f.abort_io(r) == 0 && abortio_calls == 1 && f.wait_io(r) == 0xFFFFFFFE &&
+          f.error(r) == IOERR_ABORTED && f.queue(p).empty() && signal_calls == signals,
+          "AbortIO() then WaitIO() gives -2 and leaves the port as it was");
+    check(f.abort_io(r) == 0xFFFFFFFF && abortio_calls == 1 && f.timer(36, 0xA0A0A0A0, r) == 0xFFFFFFFF,
+          "AbortIO() of a complete request, also timer.device's, is -1 without a native call");
+    f.delay(r, 9, 0);
+    check(f.send(r) == 0 && f.timer(36, 0xA0A0A0A0, r) == 0 && abortio_calls == 2 &&
+          f.wait_io(r) == 0xFFFFFFFE, "timer.device's AbortIO() aborts a request in flight as Exec's does");
+    f.call(450, 0xA0A0A0A0, r);
+    f.call(660, r);
+    f.call(672, p);
+}
+
+static void test_async_copies()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f, UNIT_MICROHZ, 0x31);
+    const ULONG window = f.request(p, 40);          /* CreateIORequest() storage of a window */
+    const ULONG copies[3] = { f.copy_of(r, 0x2800), f.copy_of(r, 0x2828), f.copy_of(r, window) };
+    const int ports = live_ports, requests = live_requests;
+    for (unsigned i = 0; i < 3; ++i)
+    {
+        const unsigned opens = open_calls;
+        open_flags = 0;
+        f.delay(copies[i], 0, 100000 * (i + 1));
+        check(f.send(copies[i]) == 0 && f.ctx.running && open_calls == opens + 1 &&
+              open_name == "timer.device" && open_unit == UNIT_MICROHZ && open_flags == 0x31 &&
+              open_size == sizeof(timerequest) && sendio_calls == i + 1 && sent_command == TR_ADDREQUEST &&
+              sent_flags == 0 && !sent_secs && sent_micro == 100000 * (i + 1),
+              "the first SendIO() of each copy opens its unit natively with the source's flags, then sends");
+        check(f.memory[copies[i] + IO_FLAGS] == 0 && f.memory[copies[i] + LN_TYPE] == NT_MESSAGE &&
+              f.error(copies[i]) == 0 && f.check_io(copies[i]) == 0 && f.record(copies[i])->copy &&
+              !f.record(copies[i])->reply, "a copy in flight: NT_MESSAGE, CheckIO() NULL, no port of its own");
+    }
+    check(live_ports == ports + 1 && live_requests == requests + 3 && f.ctx.io_copy_port &&
+          f.queue(p).empty() && !signal_calls && f.native_of(copies[0]) != f.native_of(r),
+          "three copies share one native copy port, each with its own native request");
+    const ULONG copy_bit = 1u << f.ctx.io_copy_port->mp_SigBit, port_bit = 1u << f.memory[p + MP_SIGBIT];
+    check(f.ctx.io_signals == (copy_bit | (1u << f.record(r)->reply->mp_SigBit)) &&
+          !(f.ctx.guest_signals & f.ctx.io_signals),
+          "the copy port's bit is private, never the guest's");
+    check(f.doio(r, TR_GETSYSTIME) == 0 && doio_calls == 1 && m68k_read32(&f.ctx, r + TV_SECS) == 12345 &&
+          f.check_io(copies[1]) == 0, "the source keeps synchronous TR_GETSYSTIME while its copies are in flight");
+
+    complete(f.native_of(copies[2]), 0, 7, 3);
+    complete(f.native_of(copies[0]));
+    complete(f.native_of(copies[1]), 0, 0, 9);
+    check(f.check_io(copies[0]) == copies[0] && f.check_io(copies[1]) == copies[1] &&
+          f.check_io(copies[2]) == copies[2], "after the pump every copy is complete");
+    check(f.queue(p) == std::vector<ULONG>({ copies[2], copies[0], copies[1] }) && signal_calls == 3 &&
+          signal_mask == port_bit && (native_signals & port_bit) && !(native_signals & copy_bit),
+          "replies come in completion order 2, 0, 1 with the port's signal; the private bit is taken");
+    check(f.memory[copies[2] + LN_TYPE] == NT_REPLYMSG && m68k_read32(&f.ctx, copies[2] + TV_SECS) == 7 &&
+          m68k_read32(&f.ctx, copies[2] + TV_MICRO) == 3 && f.memory[copies[2] + IO_FLAGS] == 0 &&
+          m68k_read32(&f.ctx, copies[1] + TV_MICRO) == 9 && m68k_read32(&f.ctx, copies[1] + MN_REPLYPORT) == p,
+          "each reply carries its native results");
+    check(f.get(p) == copies[2] && f.get(p) == copies[0] && f.get(p) == copies[1] && f.get(p) == 0 &&
+          std::all_of(std::begin(f.ctx.message_ports), std::end(f.ctx.message_ports), [](ULONG v) { return !v; }),
+          "GetMsg() takes them in that order and the port leaves the registry");
+
+    for (unsigned round = 0; round < 3; ++round)
+        for (ULONG c : copies)
+        {
+            const unsigned opens = open_calls, sends = sendio_calls;
+            f.delay(c, 1, round);
+            check(f.send(c) == 0 && open_calls == opens && sendio_calls == sends + 1 && sent_secs == 1 &&
+                  sent_micro == round, "a rearmed copy reuses its record and native open");
+            complete(f.native_of(c), 0, 0, round);
+            check(f.wait_port(p) == c && f.get(p) == c && !wait_calls, "and its reply comes to the port again");
+        }
+    f.call(450, 0xA0A0A0A0, r);
+    check(!live_opens && live_requests == 0 && live_ports == 0 && !f.ctx.io_copy_port && !f.ctx.io_signals,
+          "closing the last open of the unit closes every copy and the copy port");
+    f.call(660, window);
+    f.call(660, r);
+    f.call(672, p);
+}
+
+static void test_async_waitio()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG a = f.copy_of(r, 0x2800), b = f.copy_of(r, 0x2828), c = f.copy_of(r, 0x2850);
+    const ULONG port_bit = 1u << f.memory[p + MP_SIGBIT];
+    f.delay(a, 3, 0); f.delay(b, 1, 0);
+    f.send(a); f.send(b);
+    const ULONG copy_bit = 1u << f.ctx.io_copy_port->mp_SigBit;
+    complete(f.native_of(b));
+    on_waitio = [&] { complete(f.native_of(a), 0, 4, 5); };
+    check(f.wait_io(a) == 0 && waitio_calls == 1 && f.ctx.running && !wait_calls,
+          "WaitIO() of a copy in flight waits natively once");
+    check(f.memory[a + LN_TYPE] == NT_REPLYMSG && m68k_read32(&f.ctx, a + TV_SECS) == 4 &&
+          m68k_read32(&f.ctx, a + TV_MICRO) == 5 && f.queue(p) == std::vector<ULONG>({ b }) &&
+          signal_calls == 1 && signal_mask == port_bit && (native_signals & port_bit) &&
+          !(native_signals & copy_bit),
+          "it finishes in place, neither queued nor signalled; b's earlier reply stays queued and signalled");
+    check(f.wait_io(a) == 0 && waitio_calls == 1 && f.check_io(a) == a, "a second WaitIO() returns at once");
+    check(f.get(p) == b, "b is still there");
+
+    /* Replies around an unrelated message: [a, m, b, c] */
+    const ULONG m = 0x2A00;
+    f.message(m);
+    for (ULONG x : { a, b, c }) { f.delay(x, 0, 1); f.send(x); }
+    complete(f.native_of(a));
+    f.check_io(a);
+    check(f.put(p, m) == Fixture::initial_d0, "an unrelated PutMsg()");
+    complete(f.native_of(b));
+    complete(f.native_of(c));
+    f.check_io(b);
+    check(f.queue(p) == std::vector<ULONG>({ a, m, b, c }), "the port holds the replies around the message");
+    const unsigned signals = signal_calls;
+    const ULONG received = native_signals;
+    check(f.wait_io(b) == 0 && f.queue(p) == std::vector<ULONG>({ a, m, c }) &&
+          m68k_read32(&f.ctx, a) == m && m68k_read32(&f.ctx, m + 4) == a && m68k_read32(&f.ctx, m) == c &&
+          m68k_read32(&f.ctx, c + 4) == m, "WaitIO() of a replied middle node removes it alone, as Remove()");
+    check(f.wait_io(c) == 0 && f.queue(p) == std::vector<ULONG>({ a, m }) &&
+          m68k_read32(&f.ctx, p + MP_MSGLIST + 8) == m, "and a tail node");
+    check(f.wait_io(a) == 0 && f.queue(p) == std::vector<ULONG>({ m }) &&
+          m68k_read32(&f.ctx, m + 4) == p + MP_MSGLIST, "and a head node");
+    check(signal_calls == signals && native_signals == received && waitio_calls == 1 &&
+          std::count(std::begin(f.ctx.message_ports), std::end(f.ctx.message_ports), p) == 1,
+          "removal changes no signal and keeps the non-empty port registered");
+    check(f.get(p) == m && f.get(p) == 0, "the unrelated message is still there, last");
+    f.call(450, 0xA0A0A0A0, r);
+    f.call(660, r);
+    f.call(672, p);
+}
+
+static void test_async_abort_cascade()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG copies[3] = { f.copy_of(r, 0x2800), f.copy_of(r, 0x2828), f.copy_of(r, 0x2850) };
+    for (ULONG c : copies) { f.delay(c, 60, 0); f.send(c); }
+    for (unsigned round = 0; round < 3; ++round)
+    {
+        const unsigned signals = signal_calls;
+        for (unsigned i = 0; i < 3; ++i)
+        {
+            check(f.abort_io(copies[i]) == 0 && abortio_calls == 3 * round + i + 1,
+                  "AbortIO() of a copy in flight is the native AbortIO()");
+            check(f.wait_io(copies[i]) == 0xFFFFFFFE && f.error(copies[i]) == IOERR_ABORTED &&
+                  f.memory[copies[i] + LN_TYPE] == NT_REPLYMSG, "WaitIO() then gives -2");
+        }
+        check(f.queue(p).empty() && signal_calls == signals && !waitio_calls,
+              "the exit sequence leaves the port and its signal as they were");
+        if (round < 2)
+            for (ULONG c : copies) { f.delay(c, 60, 0); f.send(c); }
+    }
+    check(f.abort_io(copies[0]) == 0xFFFFFFFF && abortio_calls == 9, "AbortIO() of a complete copy: -1");
+    /* A source in flight and copies in flight keep the last open. */
+    f.delay(copies[1], 1, 0);
+    f.send(copies[1]);
+    refused(f, [&] { return f.call(450, 0xA0A0A0A0, r); },
+            "CloseDevice() of the last open while a copy is in flight stops before any change");
+    refused(f, [&] { return f.call(660, r); }, "and DeleteIORequest() of it");
+    refused(f, [&] { return f.open(r); }, "and OpenDevice() of it again");
+    f.abort_io(copies[1]);
+    f.wait_io(copies[1]);
+    native_log.clear();
+    f.call(450, 0xA0A0A0A0, r);
+    check(native_log == std::vector<std::string>({ "close", "delete request", "close", "delete request",
+                                                    "close", "delete request", "delete port",
+                                                    "close", "delete request", "delete port" }) &&
+          !live_opens && !live_requests && !live_ports && f.records() == 1,
+          "the last close closes each copy, then the copy port, then the source");
+    refused(f, [&] { return f.send(copies[0]); }, "a copy whose unit has no open any more is refused");
+    f.call(660, r);
+    f.call(672, p);
+    check(task_signals == 0xFFFF && !f.ctx.guest_signals, "every native signal is back");
+}
+
+static void test_async_two_sources()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG s = f.request(p, 40);
+    f.open(s);
+    const ULONG a = f.copy_of(r, 0x2800);
+    f.delay(a, 1, 0);
+    f.send(a);
+    f.call(450, 0xA0A0A0A0, r);
+    check(f.ctx.running && f.record(a) && f.record(a)->pending && live_opens == 2,
+          "closing one of two opens of the unit keeps its copies");
+    refused(f, [&] { return f.call(450, 0xA0A0A0A0, s); }, "the last open stays while its copy is in flight");
+    complete(f.native_of(a));
+    check(f.get(p) == a, "the copy's reply comes");
+    f.delay(a, 1, 0);
+    check(f.send(a) == 0 && sendio_calls == 2, "the copy is rearmed with the other open alive");
+    complete(f.native_of(a));
+    check(f.wait_io(a) == 0 && f.get(p) == 0, "WaitIO() finishes it in place, never on its port");
+    f.call(450, 0xA0A0A0A0, s);
+    check(!live_opens && !f.record(a), "the last close takes the copy with it");
+    /* A pending open request: every guard stops before any change. */
+    f.open(s);
+    f.delay(s, 1, 0);
+    f.send(s);
+    refused(f, [&] { return f.call(450, 0xA0A0A0A0, s); }, "CloseDevice() of a request in flight");
+    refused(f, [&] { return f.call(660, s); }, "DeleteIORequest() of a request in flight");
+    refused(f, [&] { return f.open(s); }, "OpenDevice() of a request in flight");
+    refused(f, [&] { return f.call(456, 0xA0A0A0A0, s); }, "DoIO() of a request in flight");
+    refused(f, [&] { return f.call(672, p); }, "DeleteMsgPort() of the port a request in flight replies to");
+    refused(f, [&] { return f.put(p, s); }, "PutMsg() of a request in flight");
+    refused(f, [&] { return f.reply(s); }, "ReplyMsg() of a request in flight");
+    /* A raw link of a request in flight makes the queue invalid. */
+    m68k_write32(&f.ctx, p + MP_MSGLIST, s);
+    m68k_write32(&f.ctx, p + MP_MSGLIST + 8, s);
+    m68k_write32(&f.ctx, s, p + MP_MSGLIST + 4);
+    m68k_write32(&f.ctx, s + 4, p + MP_MSGLIST);
+    check(f.get(p) == 20 && f.stopped(), "a request in flight linked raw onto a port stops the next GetMsg()");
+    m68k_write32(&f.ctx, p + MP_MSGLIST, p + MP_MSGLIST + 4);
+    m68k_write32(&f.ctx, p + MP_MSGLIST + 8, p + MP_MSGLIST);
+    complete(f.native_of(s));
+    check(f.wait_io(s) == 0, "the request completes after all");
+    refused(f, [&] { return f.put(p, s); }, "PutMsg() of a complete tracked request");
+    f.call(660, s);
+    f.call(450, 0xA0A0A0A0, r);
+    f.call(660, r);
+    f.call(672, p);
+}
+
+static void test_async_refusals()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG a = f.copy_of(r, 0x2800);
+    f.delay(a, 1, 0);
+    check(f.send(a) == 0, "a recognized copy in flight for the alias checks");
+    /* The program copies the source to at, edits it and sends it; the bytes
+       at at come back afterwards, so that what it covered stays intact. */
+    auto attempt = [&](ULONG at, const std::function<void()> &edit, const char *what) {
+        std::array<UBYTE, 40> saved;
+        std::memcpy(saved.data(), f.memory.data() + at, saved.size());
+        f.copy_of(r, at);
+        f.delay(at, 1, 0);
+        edit();
+        refused(f, [&] { return f.send(at); }, what);
+        std::memcpy(f.memory.data() + at, saved.data(), saved.size());
+    };
+    auto none = [] {};
+    const ULONG c = 0x2900, g = 0x2B00;
+    std::memset(f.memory.data() + g, 0, 48);
+    check(f.open(g) == 0, "a second open, in guest storage, of the same unit");
+    attempt(c, [&] { m68k_write32(&f.ctx, c + IO_UNIT, UNIT_VBLANK); }, "a copy of a unit without an open");
+    for (ULONG unit : { (ULONG)UNIT_ECLOCK, (ULONG)UNIT_WAITUNTIL, (ULONG)UNIT_WAITECLOCK, 7u })
+        attempt(c, [&] { m68k_write32(&f.ctx, c + IO_UNIT, unit); }, "a copy on a unit but MICROHZ and VBLANK");
+    for (UWORD command : { (UWORD)TR_GETSYSTIME, (UWORD)TR_SETSYSTIME, (UWORD)CMD_READ, (UWORD)0 })
+        attempt(c, [&] { m68k_write16(&f.ctx, c + IO_COMMAND, command); }, "a copy command but TR_ADDREQUEST");
+    for (UWORD length : { 0, 20, 39, 41, 48 })
+        attempt(c, [&] { m68k_write16(&f.ctx, c + MN_LENGTH, length); }, "a copy of another mn_Length than 40");
+    attempt(c + 1, none, "a copy at an odd address");
+    for (ULONG at : { a + 8, a - 8, a + 38, a - 38 })
+        attempt(at, none, "a copy over another copy");
+    for (ULONG at : { g + 8, g - 24, g + 46 })
+        attempt(at, none, "a copy over an open request in guest storage, which keeps 48 bytes");
+    refused(f, [&] { return f.send(r + 8); }, "a request inside CreateIORequest() storage");
+    const ULONG p2 = f.port();
+    attempt(p2, none, "a copy over a CreateMsgPort() port");
+    attempt(f.ctx.timer_base - 16, none, "a copy over the timer.device base");
+    attempt(c, [&] { m68k_write32(&f.ctx, c + IO_DEVICE, 0); }, "a request with no device");
+    attempt(c, [&] { m68k_write32(&f.ctx, c + IO_DEVICE, f.ctx.timer_base + 2); }, "a request of an unknown device");
+    f.ctx.console_base = 0x1F00;
+    attempt(c, [&] { m68k_write32(&f.ctx, c + IO_DEVICE, 0x1F00); }, "a copied console.device request");
+    f.ctx.console_base = 0;
+    /* reply ports that cannot take it */
+    const ULONG manual = 0x2C00;
+    for (ULONG port : { 0u, p + 1, 0xFFF0u, c })
+        attempt(c, [&] { m68k_write32(&f.ctx, c + MN_REPLYPORT, port); }, "a copy with no usable reply port");
+    struct { UBYTE flags, bit; ULONG task; UBYTE type; const char *what; } ports[] = {
+        { 1, 0, Fixture::task, NT_MSGPORT, "a PA_SOFTINT reply port" },
+        { 3, 0, Fixture::task, NT_MSGPORT, "a reply port of an unknown action" },
+        { 0, 5, Fixture::task, NT_MSGPORT, "a reply port on a bit the guest did not allocate" },
+        { 0, f.memory[p + MP_SIGBIT], 0x3000, NT_MSGPORT, "a reply port of another task" },
+        { 2, 0, 0, 0, "a reply port that is no MsgPort" },
+    };
+    for (const auto &port : ports)
+        attempt(c, [&] {
+            f.manual_port(manual, port.flags, port.bit, port.task);
+            f.memory[manual + LN_TYPE] = port.type;
+            m68k_write32(&f.ctx, c + MN_REPLYPORT, manual);
+        }, port.what);
+    f.ctx.guest_exec_task = Fixture::task;
+    attempt(c, [&] {
+        f.manual_port(Fixture::task + 92, 0, 8, Fixture::task);
+        m68k_write32(&f.ctx, c + MN_REPLYPORT, Fixture::task + 92);
+    }, "a copy that replies to pr_MsgPort");
+    f.ctx.guest_exec_task = 0;
+    /* who sends */
+    current_task = &other_task;
+    attempt(c, none, "a copy sent from another native task");
+    current_task = &owner_task;
+    f.ctx.callback_depth = 1;
+    attempt(c, none, "a copy sent in a callback");
+    f.ctx.callback_depth = 0;
+    KaffeineTaskOps ops = {};
+    f.ctx.sched = reinterpret_cast<KaffeineScheduler *>(&ops);
+    f.ctx.task_ops = &ops;
+    attempt(c, none, "a copy sent by a child, whatever ThisTask says");
+    ops.is_root = [](KaffeineContext *, void *) -> BOOL { return FALSE; };
+    attempt(c, none, "a copy sent while the scheduler says the root is not running");
+    refused(f, [&] { return f.send(r); }, "an open request sent by a child");
+    refused(f, [&] { return f.wait_io(a); }, "WaitIO() of a copy in flight by a child");
+    refused(f, [&] { return f.abort_io(a); }, "AbortIO() of a copy in flight by a child");
+    check(f.check_io(a) == 0 && f.ctx.running, "CheckIO() stays a child's");
+    f.ctx.sched = nullptr;
+    f.ctx.task_ops = nullptr;
+    /* the state of a record */
+    refused(f, [&] { return f.send(a); }, "a copy in flight sent again");
+    refused(f, [&] { return f.call(456, 0xA0A0A0A0, a); }, "DoIO() of a copy in flight");
+    refused(f, [&] { return f.timer(30, 0xA0A0A0A0, a); }, "BeginIO() of a copy");
+    complete(f.native_of(a));
+    f.check_io(a);
+    refused(f, [&] { return f.send(a); }, "a copy still on its port sent again");
+    refused(f, [&] { return f.put(p, a); }, "PutMsg() of a replied copy");
+    refused(f, [&] { return f.reply(a); }, "ReplyMsg() of a replied copy");
+    check(f.get(p) == a, "GetMsg() of the copy");
+    refused(f, [&] { return f.call(456, 0xA0A0A0A0, a); }, "DoIO() of a complete copy");
+    m68k_write32(&f.ctx, a + IO_UNIT, UNIT_VBLANK);
+    refused(f, [&] { return f.send(a); }, "a copy whose unit changed");
+    m68k_write32(&f.ctx, a + IO_UNIT, UNIT_MICROHZ);
+    m68k_write32(&f.ctx, a + IO_DEVICE, 0x1F00);
+    refused(f, [&] { return f.send(a); }, "a copy whose device changed");
+    m68k_write32(&f.ctx, a + IO_DEVICE, f.ctx.timer_base);
+    /* open requests */
+    m68k_write16(&f.ctx, r + IO_COMMAND, TR_SETSYSTIME);
+    refused(f, [&] { return f.send(r); }, "TR_SETSYSTIME of an open request");
+    f.delay(r, 1, 0);
+    m68k_write16(&f.ctx, r + MN_LENGTH, 39);
+    refused(f, [&] { return f.send(r); }, "an open request with a short mn_Length");
+    m68k_write16(&f.ctx, r + MN_LENGTH, 40);
+    m68k_write32(&f.ctx, r + IO_UNIT, UNIT_VBLANK);
+    refused(f, [&] { return f.send(r); }, "an open request that names another unit");
+    m68k_write32(&f.ctx, r + IO_UNIT, UNIT_MICROHZ);
+    const ULONG e = f.request(p, 40), unopened = f.request(p, 40);
+    f.open(e, UNIT_ECLOCK);
+    f.delay(e, 0, 1);
+    refused(f, [&] { return f.send(e); }, "an EClock delay, which AROS never replies");
+    f.delay(unopened, 0, 1);
+    refused(f, [&] { return f.send(unopened); }, "a request that was never opened");
+    std::vector<ULONG> fill;
+    while (f.records() < KAFFEINE_MAX_IO_REQUESTS) fill.push_back(f.request(p, 40));
+    attempt(c, none, "a copy with the record table full");
+    for (ULONG x : fill) f.call(660, x);
+    check(f.send(f.copy_of(r, c)) == 0 && f.ctx.running, "with a free record the same copy goes");
+    f.abort_io(c);
+    f.wait_io(c);
+    f.call(450, 0xA0A0A0A0, e);
+    for (ULONG x : { e, unopened }) f.call(660, x);
+    f.call(450, 0xA0A0A0A0, g);
+    check(f.record(a) && f.record(c) && live_opens == 3, "closing one open of the unit keeps the copies");
+    f.call(450, 0xA0A0A0A0, r);
+    check(!f.record(a) && !f.record(c) && !live_opens, "the last one closes them");
+    f.call(660, r);
+    f.call(672, p2);
+    f.call(672, p);
+}
+
+/* A failed native step of a copy's setup undoes the ones before it, in
+   reverse, and stops the guest: no record, no guest byte, nothing native. */
+static void test_async_setup_failures()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG a = f.copy_of(r, 0x2800), b = f.copy_of(r, 0x2828);
+    f.delay(a, 1, 0);
+    f.delay(b, 1, 0);
+    struct { bool *flag; const char *what; std::vector<std::string> log; } steps[] = {
+        { &fail_port, "no native copy port", {} },
+        { &fail_request, "no native request for the copy", { "port", "delete port" } },
+        { nullptr, "the native open of the copy fails", { "port", "request", "open", "delete request", "delete port" } },
+    };
+    for (const auto &step : steps)
+    {
+        const auto memory = f.memory;
+        const int ports = live_ports, requests = live_requests, opened = live_opens;
+        const unsigned records = f.records(), sends = sendio_calls;
+        if (step.flag) *step.flag = true; else open_error = IOERR_OPENFAIL;
+        native_log.clear();
+        check(f.send(a) == 20 && f.stopped() && f.memory == memory && live_ports == ports &&
+              live_requests == requests && live_opens == opened && f.records() == records &&
+              sendio_calls == sends && !f.ctx.io_copy_port && native_log == step.log &&
+              task_signals == (0xFFFF | 0xC0000000u), step.what);
+        if (step.flag) *step.flag = false; else open_error = 0;
+    }
+    check(f.send(a) == 0 && f.ctx.io_copy_port, "the same copy goes once the native side can be made");
+    for (bool *flag : { &fail_request, (bool *)nullptr })
+    {
+        const auto memory = f.memory;
+        const int ports = live_ports, requests = live_requests;
+        if (flag) *flag = true; else open_error = IOERR_OPENFAIL;
+        check(f.send(b) == 20 && f.stopped() && f.memory == memory && live_ports == ports &&
+              live_requests == requests && f.ctx.io_copy_port && !f.record(b) && f.record(a)->pending,
+              "a failed setup with the copy port in use keeps the port and the other copy");
+        if (flag) *flag = false; else open_error = 0;
+    }
+    f.abort_io(a);
+    f.wait_io(a);
+    f.call(450, 0xA0A0A0A0, r);
+    f.call(660, r);
+    f.call(672, p);
+}
+
+/* Freed or reused copy storage, through the heap's I/O release hook */
+static void test_async_heap()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    auto block_copy = [&](ULONG size = 64) {
+        const ULONG block = Kaffeine_HeapAlloc(&f.ctx, size, MEMF_CLEAR);
+        f.copy_of(r, block);
+        f.delay(block, 1, 0);
+        return block;
+    };
+    /* An idle copy goes with its storage, which is then ordinary memory. */
+    ULONG blk = block_copy();
+    f.send(blk);
+    complete(f.native_of(blk));
+    check(f.get(p) == blk, "an idle copy in heap storage");
+    ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    unsigned closes = close_calls;
+    Kaffeine_HeapFree(&f.ctx, blk, 64);
+    check(!f.record(blk) && close_calls == closes + 1 && live_opens == 1 && !f.ctx.io_copy_port &&
+          Kaffeine_HeapAvail(&f.ctx, 0) > avail,
+          "freeing an idle copy closes its native open and drops the record and the copy port");
+    ULONG again = Kaffeine_HeapAlloc(&f.ctx, 64, MEMF_CLEAR);
+    f.message(again);
+    check(again == blk && f.put(p, again) == Fixture::initial_d0 && f.ctx.running && f.get(p) == again,
+          "the 40 bytes then work as a message of PutMsg()");
+    Kaffeine_HeapFree(&f.ctx, again, 64);
+
+    /* Freed by the root in flight: aborted, orphaned and reaped later, and
+       the reused storage is never written. */
+    blk = block_copy();
+    f.send(blk);
+    avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    closes = close_calls;
+    const unsigned aborts = abortio_calls, records = f.records();
+    Kaffeine_HeapFree(&f.ctx, blk, 64);
+    check(abortio_calls == aborts + 1 && !f.record(blk) && f.records() == records &&
+          Kaffeine_HeapAvail(&f.ctx, 0) > avail && close_calls == closes,
+          "a copy freed in flight by the root is aborted and its slot stays taken until it is back");
+    again = Kaffeine_HeapAlloc(&f.ctx, 64, 0);
+    std::memset(f.memory.data() + again, 0xD4, 64);
+    const unsigned signals = signal_calls;
+    check(again == blk && f.check_io(r) == r && close_calls == closes + 1 && f.records() == records - 1 &&
+          !f.ctx.io_copy_port && signal_calls == signals && f.queue(p).empty() &&
+          std::all_of(f.memory.begin() + again, f.memory.begin() + again + 64, [](UBYTE v) { return v == 0xD4; }),
+          "the orphan is reaped at the next pump without a guest write or a reply");
+    Kaffeine_HeapFree(&f.ctx, again, 64);
+
+    /* A reply still queued keeps its storage. */
+    blk = block_copy();
+    f.send(blk);
+    complete(f.native_of(blk));
+    f.check_io(blk);
+    avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    Kaffeine_HeapFree(&f.ctx, blk, 64);
+    check(Kaffeine_HeapAvail(&f.ctx, 0) == avail && f.record(blk) && f.get(p) == blk &&
+          f.memory[blk + LN_TYPE] == NT_REPLYMSG, "a queued copy is quarantined; GetMsg() still finds it");
+    Kaffeine_HeapFree(&f.ctx, blk, 64);
+    check(!f.record(blk) && Kaffeine_HeapAvail(&f.ctx, 0) > avail, "once taken it can be freed");
+
+    /* A child frees a copy in flight: kept, nothing aborted. */
+    blk = block_copy();
+    f.send(blk);
+    KaffeineTaskOps ops = {};
+    ops.is_root = [](KaffeineContext *, void *) -> BOOL { return FALSE; };
+    f.ctx.sched = reinterpret_cast<KaffeineScheduler *>(&ops);
+    f.ctx.task_ops = &ops;
+    avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    Kaffeine_HeapFree(&f.ctx, blk, 64);
+    check(Kaffeine_HeapAvail(&f.ctx, 0) == avail && f.record(blk) && f.record(blk)->pending &&
+          abortio_calls == aborts + 1, "a copy in flight freed by a child stays, unaborted");
+    /* A pool with it: nothing of the pool goes. */
+    const ULONG pool = Kaffeine_PoolCreate(&f.ctx, MEMF_CLEAR, 1024, 512);
+    const ULONG member = Kaffeine_PoolAlloc(&f.ctx, pool, 64), other = Kaffeine_PoolAlloc(&f.ctx, pool, 32);
+    f.ctx.sched = nullptr;
+    f.ctx.task_ops = nullptr;
+    f.copy_of(r, member);
+    f.delay(member, 1, 0);
+    check(other && f.send(member) == 0, "a copy in pool storage");
+    f.ctx.sched = reinterpret_cast<KaffeineScheduler *>(&ops);
+    f.ctx.task_ops = &ops;
+    avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    Kaffeine_PoolDelete(&f.ctx, pool);
+    check(Kaffeine_HeapAvail(&f.ctx, 0) == avail && f.record(member) && Kaffeine_PoolAlloc(&f.ctx, pool, 16),
+          "DeletePool() by a child frees no member while one holds a copy in flight");
+    f.ctx.sched = nullptr;
+    f.ctx.task_ops = nullptr;
+    Kaffeine_PoolDelete(&f.ctx, pool);
+    check(!f.record(member) && abortio_calls == aborts + 2 && Kaffeine_HeapAvail(&f.ctx, 0) > avail,
+          "DeletePool() by the root orphans the copy and frees every member");
+    f.check_io(r);
+
+    /* The reply port of a request in flight stays. */
+    avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    Kaffeine_HeapFree(&f.ctx, p, 34);
+    check(Kaffeine_HeapAvail(&f.ctx, 0) == avail, "the reply port of a request in flight is kept");
+
+    /* A failed heap validation changes nothing, the copy record included. */
+    f.abort_io(blk);
+    f.wait_io(blk);
+    const ULONG mirror = f.ctx.heap_free, size = m68k_read32(&f.ctx, mirror);
+    m68k_write32(&f.ctx, mirror, size + 8);
+    closes = close_calls;
+    Kaffeine_HeapFree(&f.ctx, blk, 64);
+    check(f.record(blk) && f.record(blk)->copy && close_calls == closes,
+          "a free that the heap refuses leaves the idle copy as it was");
+    m68k_write32(&f.ctx, mirror, size);
+    Kaffeine_HeapFree(&f.ctx, blk, 64);
+    check(!f.record(blk) && close_calls == closes + 1, "the valid free then releases it");
+    f.call(450, 0xA0A0A0A0, r);
+    f.call(660, r);
+    f.call(672, p);
+}
+
+/* With guest tasks, the scheduler's entry points as the root sees them */
+static unsigned blocks, sent_signals;
+static MsgPort *blocked_port;
+static KaffeineTaskRetry blocked_retry;
+static BOOL fake_root = TRUE;
+static BOOL fake_is_root(KaffeineContext *, void *) { return fake_root; }
+static BOOL fake_block_port(KaffeineContext *, void *, MsgPort *port, KaffeineTaskRetry retry, IPTR *result)
+{
+    if (!native_queues[port].empty()) return FALSE;
+    ++blocks;
+    blocked_port = port;
+    blocked_retry = retry;
+    *result = 0;
+    return TRUE;
+}
+static BOOL fake_known(KaffeineContext *, ULONG task) { return task == Fixture::task; }
+static BOOL fake_owns(KaffeineContext *c, ULONG task, ULONG bit) { return task == Fixture::task && (c->guest_signals & bit); }
+static void fake_send_signal(KaffeineContext *, ULONG task, ULONG bits)
+{
+    assert(task == Fixture::task);
+    ++sent_signals;
+    native_signals |= bits;
+}
+
+static void test_async_scheduler()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG a = f.copy_of(r, 0x2800), b = f.copy_of(r, 0x2828);
+    KaffeineTaskOps ops = {};
+    ops.is_root = fake_is_root;
+    ops.block_port = fake_block_port;
+    ops.known_task = fake_known;
+    ops.owns_signal = fake_owns;
+    ops.send_signal = fake_send_signal;
+    f.ctx.sched = reinterpret_cast<KaffeineScheduler *>(&ops);
+    f.ctx.task_ops = &ops;
+    blocks = sent_signals = 0;
+    fake_root = TRUE;
+    const ULONG source_bit = 1u << f.record(r)->reply->mp_SigBit;
+    f.delay(r, 1, 0);
+    check(f.send(r) == 0 && f.wait_io(r) == 0 && f.record(r)->waiting == 2,
+          "WaitIO of an original request suspends on its native port");
+    complete(f.native_of(r));
+    check(f.ctx.io_poll(&f.ctx) && !f.record(r)->pending &&
+          (f.ctx.io_signals & source_bit) && (native_signals & source_bit) && !sent_signals,
+          "a completed original request keeps its retry signal private until the port closes");
+    check(f.wait_io(r) == 0 && !f.record(r)->waiting && f.queue(p).empty(),
+          "the original WaitIO retry returns without a guest reply");
+    native_signals &= ~source_bit; /* the real scheduler takes this retry wakeup */
+    blocks = 0;
+    f.delay(a, 2, 0); f.delay(b, 1, 0);
+    check(f.send(a) == 0 && f.send(b) == 0, "the root sends copies with guest tasks");
+    const ULONG copy_bit = 1u << f.ctx.io_copy_port->mp_SigBit;
+    check(f.wait_io(a) == 0 && f.ctx.running && blocks == 1 && blocked_port == f.ctx.io_copy_port &&
+          blocked_retry == Kaffeine_WaitIO && !waitio_calls && f.record(a)->waiting == 2,
+          "WaitIO() in flight blocks the root on the copy port and runs again, never a native WaitIO()");
+    complete(f.native_of(b));
+    check(f.ctx.io_poll(&f.ctx) && sent_signals == 1 && f.queue(p) == std::vector<ULONG>({ b }) &&
+          f.record(a)->pending && !(native_signals & copy_bit),
+          "another copy's reply goes to its port at the scheduler's poll; the root stays blocked");
+    complete(f.native_of(a), 0, 0, 77);
+    const unsigned signals = signal_calls;
+    check(f.ctx.io_poll(&f.ctx) && signal_calls == signals + 1 && signal_mask == copy_bit &&
+          (native_signals & copy_bit) && sent_signals == 1 && f.memory[a + LN_TYPE] == NT_REPLYMSG &&
+          f.queue(p) == std::vector<ULONG>({ b }),
+          "the awaited reply is finished in place and wakes the blocked root on its private bit");
+    check(f.call(474, 0xA0A0A0A0, a) == 0 && m68k_read32(&f.ctx, a + TV_MICRO) == 77 && blocks == 1 &&
+          !f.record(a)->waiting, "the retried WaitIO() returns io_Error at once");
+    native_signals &= ~copy_bit;
+    check(f.wait_io(b) == 0 && f.queue(p).empty(), "WaitIO() of the queued copy removes it");
+    f.delay(a, 1, 0);
+    f.send(a);
+    fake_root = FALSE;
+    refused(f, [&] { return f.wait_io(a); }, "WaitIO() in flight from a child");
+    refused(f, [&] { return f.abort_io(a); }, "AbortIO() in flight from a child");
+    refused(f, [&] { return f.send(b); }, "SendIO() from a child");
+    fake_root = TRUE;
+    complete(f.native_of(a));
+    check(f.wait_io(a) == 0 && blocks == 1, "a reply already there needs no block");
+    f.ctx.sched = nullptr;
+    f.ctx.task_ops = nullptr;
+    f.call(450, 0xA0A0A0A0, r);
+    f.call(660, r);
+    f.call(672, p);
+}
+
+/* Without guest tasks an empty port that a request in flight replies to
+   is waited for natively, on the private bits alone. */
+static void test_async_waitport()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG a = f.copy_of(r, 0x2800);
+    f.delay(a, 1, 0);
+    f.send(a);
+    const ULONG copy_bit = 1u << f.ctx.io_copy_port->mp_SigBit;
+    on_wait = [&] { complete(f.native_of(a)); };
+    check(f.wait_port(p) == a && wait_calls == 1 &&
+          wait_mask == (copy_bit | (1u << f.record(r)->reply->mp_SigBit)) && f.ctx.running,
+          "WaitPort() waits natively for the private bits, and the reply is there");
+    check(f.get(p) == a, "GetMsg() takes it");
+    const ULONG q = f.port();
+    f.send(a);
+    refused(f, [&] { return f.wait_port(q); }, "an empty port that nothing replies to stays refused");
+    f.ctx.callback_depth = 1;
+    refused(f, [&] { return f.wait_port(p); }, "a callback never waits natively for a port");
+    f.ctx.callback_depth = 0;
+    f.abort_io(a);
+    f.wait_io(a);
+    f.call(450, 0xA0A0A0A0, r);
+    f.call(660, r);
+    f.call(672, q);
+    f.call(672, p);
+}
+
+/* A reply port or request that changed while in flight stops the guest at
+   the pump; nothing of the request is written. */
+static void test_async_changed()
+{
+    for (unsigned mode = 0; mode < 5; ++mode)
+    {
+        Fixture f;
+        const auto [p, r] = async_setup(f);
+        const ULONG a = f.copy_of(r, 0x2800), other = f.port();
+        f.delay(a, 1, 0);
+        f.send(a);
+        switch (mode)
+        {
+            case 0: m68k_write32(&f.ctx, a + MN_REPLYPORT, other); break;
+            case 1: m68k_write16(&f.ctx, a + MN_LENGTH, 48); break;
+            case 2: m68k_write32(&f.ctx, p + MP_MSGLIST + 8, 0x2A00); break;
+            case 3: f.memory[p + MP_SIGBIT] = f.memory[other + MP_SIGBIT]; break;
+            case 4: f.memory[p + LN_TYPE] = 0; break;
+        }
+        std::array<UBYTE, 40> before;
+        std::memcpy(before.data(), f.memory.data() + a, 40);
+        const unsigned signals = signal_calls;
+        complete(f.native_of(a), 0, 5, 5);
+        check(f.check_io(r) == 20 && f.stopped() && !std::memcmp(before.data(), f.memory.data() + a, 40) &&
+              signal_calls == signals && !f.record(a)->pending,
+              "a changed port or request stops the guest at the pump, and nothing is written");
+    }
+}
+
+static void test_async_cleanup()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG a = f.copy_of(r, 0x2800), b = f.copy_of(r, 0x2828);
+    f.delay(a, 5, 0); f.delay(b, 5, 0); f.delay(r, 5, 0);
+    f.send(a);
+    f.send(b);
+    complete(f.native_of(b));
+    f.check_io(b);
+    f.get(p);
+    f.send(r);
+    complete(f.native_of(a));          /* back natively, never pumped */
+    const auto memory = f.memory;
+    native_log.clear();
+    Kaffeine_IOCleanup(&f.ctx);
+    check(native_log == std::vector<std::string>({ "abort", "waitio", "close", "delete request",
+                                                    "close", "delete request", "delete port",
+                                                    "abort", "waitio", "close", "delete request", "delete port" }),
+          "cleanup: each copy in flight aborted and taken back before its close, the copy port, then the opens");
+    check(f.memory == memory && !live_opens && !live_requests && !live_ports && task_signals == 0xFFFF &&
+          !f.ctx.io_poll && !f.ctx.io_release && !f.ctx.io_wait && !f.ctx.io_signals && !f.records(),
+          "nothing reaches the guest in cleanup, and every native object and signal is back");
 }
 
 static void timeval_at(Fixture &f, ULONG addr, ULONG secs, ULONG micro)
@@ -1235,6 +2235,18 @@ int main()
     test_open_close();
     test_doio();
     test_async();
+    test_async_source();
+    test_async_copies();
+    test_async_waitio();
+    test_async_abort_cascade();
+    test_async_two_sources();
+    test_async_refusals();
+    test_async_setup_failures();
+    test_async_heap();
+    test_async_scheduler();
+    test_async_waitport();
+    test_async_changed();
+    test_async_cleanup();
     test_timer_base();
     test_input_open_close();
     test_input_base_rollback();

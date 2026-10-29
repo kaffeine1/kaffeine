@@ -21,6 +21,7 @@ IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_SendIO(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_CheckIO(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_WaitIO(struct KaffeineContext *ctx, void *cpu);
+/* Exec's -480 and timer.device's own -36, both with the request in A1 */
 IPTR Kaffeine_AbortIO(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_CreateIORequest(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_DeleteIORequest(struct KaffeineContext *ctx, void *cpu);
@@ -32,7 +33,8 @@ IPTR Kaffeine_IORefuse(struct KaffeineContext *ctx, const char *why);
 
 /* Close what the guest left open and free its signals. Call it from the
    native task that ran the guest, before that task ends: the signals and
-   the native reply ports belong to it. */
+   the native reply ports belong to it. Requests still in flight are
+   aborted and taken back first, and nothing more reaches the guest. */
 void Kaffeine_IOCleanup(struct KaffeineContext *ctx);
 
 /* timer.device */
