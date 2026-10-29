@@ -104,6 +104,18 @@ RastPorts, SetFont metrics and TextLength signed spacing. Guard bytes, malformed
 spans, overlapping font storage, closed fonts, native pointer rejection and
 repeated-call heap stability are checked before native graphics calls.
 
+### Caller-owned drawing and GELS initialization
+
+The graphics suite dispatches Text, Draw, RectFill, WritePixel, ReadPixel and
+BltTemplate through per-call native adapters for checked planar bitmaps and
+copied window RastPorts. It checks changed scalar copyback, unchanged caller
+pointers and original window state, source/target aliases, clipping and bridge
+ownership. Layer suites check target resolution against actual owned records,
+closed targets, lock ownership, altered descriptors and borrowed layers.
+InitGels tests compare the entire guest arena against the exact classic
+sentinel protocol, with atomic refusal of malformed or overlapping objects.
+All 14 other GELS vectors stop before native calls or callbacks.
+
 ### Classic requesters and clipping
 
 `test_window` checks the exact 112-byte classic Requester boundary, retained
@@ -190,7 +202,7 @@ each mutation. The original rom/kaffeine stays unchanged.
 `make test` also runs `test_thunk_registrations.py`. Its default inputs are
 the AROS configuration files in this tree. Optional NDK and AROS FD inputs
 can extend the audit; use the script's `--help` for the available options.
-The audit covers 337 explicit native-vector cases and 568 manual thunk
+The audit covers 339 explicit native-vector cases and 584 manual thunk
 registrations across 20 tables. External SDK files are not included in this
 repository.
 

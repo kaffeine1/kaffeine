@@ -2996,6 +2996,112 @@ static void test_layerinfo_backfill_mode()
     f.close_screen(borrowed, bg);
 }
 
+/* layer_ops->draw_target for a RastPort that the program built: without a
+   Layer, exactly the planar BitMaps that BltBitMap() takes, converted the
+   same way into the caller's adapter over the very guest planes, with no
+   blit, layer call or allocation; with the 68k Layer of a live private
+   layer, its native layer and the common BitMap, only for the 68k BitMap
+   that its RastPort shows. Common and screen BitMaps without a Layer,
+   malformed ones, a deleted layer and one that another guest task holds
+   stop the program. */
+static void test_draw_targets()
+{
+    Fixture f;
+    NativeScreenBitMap screen;
+    std::vector<ULONG> planes;
+    const ULONG bm = f.bitmap(4, 16, 2, &planes), sg = f.open_screen(screen, 4, 16, 2, 32);
+    const auto *ops = f.ctx.layer_ops;
+    BitMap adapter;
+    RastPort rp;
+    auto target = [&](ULONG layer, ULONG bitmap) {
+        std::memset(static_cast<void *>(&rp), 0, sizeof(rp));
+        std::memset(static_cast<void *>(&adapter), 0x5A, sizeof(adapter));
+        f.ctx.running = TRUE;
+        f.ctx.exit_code = 0;
+        call_inits.clear();
+        const BOOL ok = ops->draw_target(&f.ctx, layer, bitmap, &rp, &adapter);
+        assert(ok ? f.ctx.running && !f.ctx.exit_code : !f.ctx.running && f.ctx.exit_code == 20);
+        if (!ok)
+            assert(!rp.Layer && !rp.BitMap);
+        return ok;
+    };
+    assert(ops->draw_target);
+    const ULONG avail = f.avail();
+    const auto heap = f.heap();
+
+    /* an ordinary planar BitMap: graphics' own over the guest planes */
+    assert(target(0, bm) && !rp.Layer && rp.BitMap == &adapter);
+    /* graphics' InitBitMap() made it, never from guest bytes */
+    assert(call_inits.size() == 1 && reinterpret_cast<const UBYTE *>(call_inits[0]) != f.ctx.mem + bm);
+    assert(adapter.BytesPerRow == 4 && adapter.Rows == 16 && adapter.Depth == 2 &&
+           adapter.Flags == BMF_STANDARD && adapter.pad == 0);
+    assert(adapter.Planes[0] == f.ctx.mem + planes[0] && adapter.Planes[1] == f.ctx.mem + planes[1]);
+    for (int i = 2; i < 8; ++i)
+        assert(!adapter.Planes[i]);
+    assert(blits.empty() && wait_blits == 0 && creates.empty() && f.heap_is(heap) && f.avail() == avail);
+
+    /* what BltBitMap() refuses, and a screen's BitMap */
+    const std::function<void()> breaks[] = {
+        [&] { f.memory[bm + M68K_BM_DEPTH] = 0; },
+        [&] { f.memory[bm + M68K_BM_DEPTH] = 9; },
+        [&] { m68k_write16(&f.ctx, bm + M68K_BM_BYTESPERROW, 3); },
+        [&] { m68k_write16(&f.ctx, bm + M68K_BM_ROWS, 0); },
+        [&] { f.memory[bm + M68K_BM_FLAGS] = 0x80; },
+        [&] { m68k_write16(&f.ctx, bm + M68K_BM_PAD, 1); },
+        [&] { m68k_write32(&f.ctx, bm + M68K_BM_PLANES + 4, planes[1] + 1); },
+        [&] { m68k_write32(&f.ctx, bm + M68K_BM_PLANES + 4, 0); },
+        [&] { m68k_write32(&f.ctx, bm + M68K_BM_PLANES, Fixture::stack - 8); },
+    };
+    for (const auto &breakage : breaks)
+    {
+        const std::vector<UBYTE> saved(f.memory.begin() + bm, f.memory.begin() + bm + M68K_SIZEOF_BITMAP);
+        breakage();
+        assert(!target(0, bm));
+        std::copy(saved.begin(), saved.end(), f.memory.begin() + bm);
+    }
+    for (ULONG bad : { 0U, bm + 1, sg + M68K_SCR_BITMAP, (ULONG)f.memory.size() - 38 })
+        assert(!target(0, bad));
+    assert(blits.empty() && creates.empty() && f.heap_is(heap));
+
+    /* a private layer: its native layer and the common BitMap */
+    const ULONG li = f.new_info(), layer = f.create(li, bm, 2, 3, 20, 10, LAYERSIMPLE);
+    assert(layer && creates.size() == 1);
+    Layer *native = native_layer(f, layer);
+    assert(target(layer, bm) && rp.Layer == native && rp.BitMap == creates[0].bm);
+    assert(rp.BitMap == native->rp->BitMap && !call_inits.size());
+    /* A copied RastPort must not silently use the cached old planes or
+       geometry after its published descriptor changes. */
+    m68k_write16(&f.ctx, bm + M68K_BM_ROWS, 15);
+    assert(!target(layer, bm));
+    m68k_write16(&f.ctx, bm + M68K_BM_ROWS, 16);
+    m68k_write32(&f.ctx, bm + M68K_BM_PLANES, planes[1]);
+    assert(!target(layer, bm));
+    m68k_write32(&f.ctx, bm + M68K_BM_PLANES, planes[0]);
+    assert(target(layer, bm));
+    for (ULONG bad : { 0U, bm + 2, sg + M68K_SCR_BITMAP, f.L(layer + M68K_LAYER_RP) })
+        assert(!target(layer, bad));
+    /* the common BitMap without the Layer would draw past the layers */
+    assert(!target(0, bm));
+    /* the 68k Layer's RastPort, the LayerInfo or raw bytes are no Layer */
+    for (ULONG bad : { f.L(layer + M68K_LAYER_RP), li, layer + 2, 0x5000U })
+        assert(!target(bad, bm));
+    /* held by another guest task: refused; by this one: taken */
+    const ULONG task_addr = Fixture::exec_base + M68K_EXECBASE_THISTASK;
+    assert(f.call(Fixture::layers_base, 96, { 0, layer }) == 0 && held_locks == 1);
+    assert(target(layer, bm));
+    m68k_write32(&f.ctx, task_addr, Fixture::task + 0x100);
+    assert(!target(layer, bm));
+    m68k_write32(&f.ctx, task_addr, Fixture::task);
+    assert(f.call(Fixture::layers_base, 102, { layer }) == 0 && held_locks == 0);
+    const size_t layer_events = events.size();
+    assert(target(layer, bm) && events.size() == layer_events);
+    /* deleted: a copy of its RastPort draws nothing */
+    assert(f.destroy(layer) == TRUE);
+    assert(!target(layer, bm));
+    assert(blits.empty() && wait_blits == 0);
+    f.close_screen(screen, sg);
+}
+
 extern "C" BOOL Request(struct Requester *,struct Window *) { assert(false); return FALSE; }
 extern "C" void EndRequest(struct Requester *,struct Window *) { assert(false); }
 extern "C" BOOL SetDMRequest(struct Window *,struct Requester *) { assert(false); return FALSE; }
@@ -3034,7 +3140,8 @@ int main()
         { "InitBitMap() refuses bad addresses, no memory, owned and borrowed screen BitMaps before any write", test_init_bitmap_refusals },
         { "InitBitMap() refuses a common BitMap while its LayerInfo or root keeps it, and only then", test_init_bitmap_common_lifetime },
         { "InitBitMap() from a constructor's backfill hook cannot change the bound common BitMap", test_init_bitmap_from_constructor_hook },
-        { "Teardown deletes private layers before their LayerInfos, once, without 68k code", test_cleanup }
+        { "Teardown deletes private layers before their LayerInfos, once, without 68k code", test_cleanup },
+        { "Drawing targets: planar BitMaps as BltBitMap() takes them, live private layers by their BitMap", test_draw_targets }
     };
     for (const Test &test : tests)
     {

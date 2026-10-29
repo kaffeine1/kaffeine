@@ -33,3 +33,7 @@ __attribute__((weak)) unsigned int SetSignal(unsigned int signals, unsigned int 
 { (void)signals; (void)set; abort(); }
 __attribute__((weak)) unsigned int Wait(unsigned int set)
 { (void)set; abort(); }
+
+__attribute__((weak)) void BltTemplate(unsigned char *source, short xs, short mod,
+                                      struct RastPort *rp, short xd, short yd, short w, short h)
+{ (void)source; (void)xs; (void)mod; (void)rp; (void)xd; (void)yd; (void)w; (void)h; abort(); }

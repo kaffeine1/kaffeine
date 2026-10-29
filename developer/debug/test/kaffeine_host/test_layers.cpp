@@ -45,6 +45,7 @@
 #include "kaffeine_shadow.h"
 #include "kaffeine_shadow_layouts.h"
 #include "kaffeine_layers.h"
+#include "kaffeine_screens.h"
 #include "kaffeine_window.h"
 #include "kaffeine_gadgets.h"
 #include "kaffeine_dispatch.h"
@@ -1808,6 +1809,129 @@ static void test_requester_layer_rastport_binding()
     f.close(mw);
 }
 
+/* layer_ops->draw_target for a RastPort that the program copied from its
+   window: the real native layer and BitMap of an owned window or of a
+   requester on it, only with the BitMap that the bridges publish for it,
+   by their tables; borrowed layers, the bar, a closed window, a layer held
+   by another guest task, an unknown address and a screen's BitMap without
+   a Layer stop the program. No native layer call, lock or allocation. */
+static void test_draw_targets()
+{
+    static BitMap screen_bm, other_bm;
+    NativeWindow a;
+    Fixture f;
+    const auto *ops = f.ctx.layer_ops;
+    auto target = [&](ULONG layer, ULONG bitmap, RastPort &rp) {
+        BitMap adapter;
+        std::memset(static_cast<void *>(&rp), 0, sizeof(rp));
+        std::memset(static_cast<void *>(&adapter), 0x5A, sizeof(adapter));
+        f.ctx.running = TRUE;
+        f.ctx.exit_code = 0;
+        const BOOL ok = ops->draw_target(&f.ctx, layer, bitmap, &rp, &adapter);
+        assert(ok ? f.ctx.running && !f.ctx.exit_code : !f.ctx.running && f.ctx.exit_code == 20);
+        if (!ok)
+            assert(!rp.Layer && !rp.BitMap);
+        return ok;
+    };
+    RastPort rp;
+    assert(ops->draw_target);
+
+    /* on a public screen: the window's RastPort shows BitMap 0 */
+    make_window(a, scr, 10, 20, 200, 100);
+    a.rp.BitMap = &screen_bm;
+    order(scr, { &bar, &a.layer, &foreign });
+    const ULONG mw = f.open(a), la = f.L(mw + M68K_WIN_WLAYER), wrp = f.L(mw + M68K_WIN_RPORT);
+    const ULONG gbar = f.L(f.L(la + M68K_LAYER_LAYERINFO) + M68K_LI_TOP_LAYER), gfor = f.L(la + M68K_LAYER_BACK);
+    assert(la && gbar && gfor && f.L(wrp + M68K_RP_LAYER) == la && f.L(wrp + M68K_RP_BITMAP) == 0);
+    const Counters before = counters();
+    const ULONG avail = f.avail();
+    assert(target(la, 0, rp) && rp.Layer == &a.layer && rp.BitMap == &screen_bm);
+    assert(counters() == before && f.avail() == avail);
+    /* another BitMap, a borrowed layer, the bar, raw guest bytes, the
+       window and its RastPort instead of the Layer */
+    const ULONG bad[][2] = { { la, 0x5000 }, { la, wrp }, { gfor, 0 }, { gbar, 0 },
+                             { 0x5000, 0 }, { mw, 0 }, { wrp, 0 }, { la + 2, 0 } };
+    for (const auto &b : bad)
+        assert(!target(b[0], b[1], rp));
+    assert(counters() == before && f.avail() == avail);
+    /* the BitMap of the window, if it changed natively: still exactly that one */
+    a.rp.BitMap = &other_bm;
+    assert(target(la, 0, rp) && rp.BitMap == &other_bm);
+    a.rp.BitMap = nullptr;
+    assert(!target(la, 0, rp));
+    a.rp.BitMap = &screen_bm;
+
+    /* held by another guest task: refused; by this one: taken */
+    const ULONG task_addr = Fixture::exec_base + M68K_EXECBASE_THISTASK, owner = f.L(task_addr);
+    assert(f.call(Fixture::layers_base, 96, { 0, la }) == 0 && held_locks == 1);
+    assert(target(la, 0, rp));
+    m68k_write32(&f.ctx, task_addr, owner + 0x100);
+    assert(!target(la, 0, rp));
+    m68k_write32(&f.ctx, task_addr, owner);
+    assert(f.call(Fixture::layers_base, 102, { la }) == 0 && held_locks == 0);
+
+    /* a requester layer on the window, with its own native RastPort */
+    Layer req;
+    RastPort req_rp;
+    make_layer(req, 12, 24, 60, 30, LAYERSIMPLE);
+    req_rp = a.rp;
+    req_rp.Layer = &req;
+    req.rp = &req_rp;
+    req.Window = &a.window;
+    order(scr, { &bar, &req, &a.layer, &foreign });
+    const ULONG lr = ops->request_opened(&f.ctx, &a.window, &req);
+    assert(lr && lr != la);
+    assert(target(lr, 0, rp) && rp.Layer == &req && rp.BitMap == &screen_bm);
+    assert(!target(lr, 0x5000, rp));
+    ops->request_closing(&f.ctx, &req);
+    order(scr, { &bar, &a.layer, &foreign });
+    Kaffeine_LayersRefresh(&f.ctx);
+    /* the requester has ended: its 68k Layer names nothing */
+    assert(!target(lr, 0, rp));
+
+    /* without a Layer only an ordinary planar BitMap is a target */
+    assert(!target(0, 0, rp) && !target(0, 0x5000, rp));
+    f.close(mw);
+    /* the window is gone: its copied RastPort draws nothing */
+    assert(!target(la, 0, rp));
+    assert(f.avail() == f.heap_initial);
+
+    /* on a screen of the program: exactly its typed BitMap */
+    const ULONG sg = Kaffeine_MirrorAlloc(&f.ctx, M68K_SIZEOF_SCREEN);
+    assert(sg && Kaffeine_ShadowAdd(&f.ctx, sg, &scr, KAFFEINE_SHADOW_SCREEN));
+    Kaffeine_LayerSemaphoreInit(&f.ctx, sg + M68K_SCR_LAYERINFO + M68K_LI_LOCK);
+    f.ctx.pubscreens[0].native = &scr;
+    f.ctx.pubscreens[0].guest = sg;
+    f.ctx.pubscreens[0].owned = TRUE;
+    scr.RastPort.BitMap = &screen_bm;
+    ops->screen_mirrored(&f.ctx, &scr);
+    make_window(a, scr, 10, 20, 200, 100);
+    a.rp.BitMap = &screen_bm;
+    order(scr, { &bar, &a.layer, &foreign });
+    const ULONG mo = f.open(a), lo = f.L(mo + M68K_WIN_WLAYER), handle = sg + M68K_SCR_BITMAP;
+    assert(f.L(f.L(mo + M68K_WIN_RPORT) + M68K_RP_BITMAP) == handle);
+    assert(target(lo, handle, rp) && rp.Layer == &a.layer && rp.BitMap == &screen_bm);
+    assert(!target(lo, 0, rp) && !target(lo, handle + 2, rp));
+    /* a screen's BitMap without a Layer would draw unclipped over its windows */
+    assert(!target(0, handle, rp));
+    /* the window draws elsewhere than the screen: then BitMap 0 */
+    a.rp.BitMap = &other_bm;
+    assert(target(lo, 0, rp) && rp.BitMap == &other_bm && !target(lo, handle, rp));
+    a.rp.BitMap = &screen_bm;
+    /* the same screen only locked, as a public one: BitMap 0 */
+    Kaffeine_ShadowForget(&f.ctx, sg, KAFFEINE_SHADOW_SCREEN);
+    assert(Kaffeine_ShadowAdd(&f.ctx, sg, &scr, KAFFEINE_SHADOW_PUBSCREEN));
+    f.ctx.pubscreens[0].owned = FALSE;
+    assert(target(lo, 0, rp) && !target(lo, handle, rp));
+    f.close(mo);
+    ops->screen_closing(&f.ctx, &scr);
+    f.ctx.pubscreens[0] = {};
+    Kaffeine_ShadowForget(&f.ctx, sg, KAFFEINE_SHADOW_PUBSCREEN);
+    Kaffeine_MirrorRelease(&f.ctx, sg);
+    scr.RastPort.BitMap = nullptr;
+    assert(held_locks == 0 && native_installs == before.installs && f.avail() == f.heap_initial);
+}
+
 static void test_teardown_releases_all_window_locks()
 {
     Fixture f;NativeWindow a,b;
@@ -1840,6 +1964,7 @@ int main()
         { "Several windows, nested locks, no LayerInfo lock under a layer lock, close with a lock", test_windows_and_locks },
         { "Program teardown releases every window lock before closing the first window", test_teardown_releases_all_window_locks },
         { "Requester Layer exposes one stable typed RastPort and retires both before native deletion", test_requester_layer_rastport_binding },
+        { "Copied window RastPorts draw only into the real layer with its published BitMap", test_draw_targets },
         { "Layer locks distinguish guest task owners before native recursion", test_guest_lock_owner },
         { "Backdrop updates respect lock order; close unlocks before menu and gadget teardown", test_review_lifetimes },
         { "Messages and depth calls restore retired graphs without resetting a held semaphore", test_retired_screen_recovery },

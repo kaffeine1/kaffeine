@@ -14,6 +14,8 @@
 struct Window;
 struct Screen;
 struct Layer;
+struct RastPort;
+struct BitMap;
 
 /* Classic big-endian offsets of the NDK structures (graphics/clip.h,
    graphics/layers.h, utility/hooks.h, intuition/intuition.h and
@@ -161,6 +163,21 @@ struct KaffeineLayerOps
        still exist: its 68k Layer and RastPort go. Nothing for a layer
        without them, also once the bridge retired them at the end. */
     void  (*request_closing)(struct KaffeineContext *ctx, struct Layer *layer);
+    /* Optional, NULL in older tables: the native target of a temporary
+       native RastPort for a caller-owned classic one with Layer layer and
+       BitMap bitmap, for the length of one drawing thunk; sets rp->Layer
+       and rp->BitMap, and nothing is kept. Layer 0: an ordinary planar
+       BitMap of the program, checked as for BltBitMap(), for which adapter
+       becomes the native BitMap of this call over the same guest planes;
+       a screen's or a common BitMap is refused. Else the 68k Layer of a
+       window of the program, of an active requester on one, or a live
+       private layer, held by no other guest task, outside any layer change
+       or backfill hook, with exactly the BitMap that the bridges publish
+       for its RastPort: rp gets the real native layer, which clips it, and
+       that layer's BitMap. FALSE after stopping the program (20), before
+       any native call. */
+    BOOL  (*draw_target)(struct KaffeineContext *ctx, ULONG layer, ULONG bitmap,
+                         struct RastPort *rp, struct BitMap *adapter);
 };
 
 #ifdef __cplusplus

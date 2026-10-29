@@ -31,6 +31,9 @@ at the end.
 | `gfx_askfont.c` | InitRastPort preserves surrounding storage and sets system defaults; SetFont, AskFont and TextLength accept caller-owned and copied classic RastPorts, including signed text spacing. AskFont returns readable font-name identity, exact TextFont scalar values and stable repeated queries while preserving adjacent storage and RastPort identity. The same source builds for native ARM as an independent reference. |
 | `gfx_screen_pens.c` | An owned indexed screen with SA_SharePens, exact RGB acquisition, repeated shared obtains, release/query lifetime, guarded GetRGB32 storage, a public-screen obtain and final screen close. Built from the same source as an independent native ARM reference. |
 | `gfx_rastport_state.c` | Classic caller-owned RastPort state, signed Move coordinates, pointer/guard preservation, Get/Set pens and drawing mode, and independent AllocRaster planes. Same source builds as native ARM reference. |
+| `gfx_classic_rastport.c` | Caller-owned planar RastPort drawing, rectangle clipping, every pixel of a two-plane pattern and BltTemplate source alignment, compared with independently computed plane bytes. Same source builds as native ARM reference. |
+| `gfx_copied_rastport.c` | Copied window RastPort text, independent state, untouched unused GelsInfo and real native layer clipping beneath a covering window. Same source builds as native ARM reference. |
+| `gfx_gels_init.c` | InitGels sentinel links, signed extrema, collision-table entry zero, untouched surrounding/object storage, stable repeat and NULL collision table. Same source builds as native ARM reference. |
 | `intui_classic_draw.c` | Real Image chains with big-endian planar bytes and a depth-zero solid image, signed Border origins and WORD coordinate chains, pixel readback and RastPort state preservation. Same source builds as native ARM reference. |
 | `gfx_requester_init.c` | Checks the 112-byte classic Requester layout and sentinel bytes immediately after it; native pointer size must not enlarge the guest write. |
 | `gfx_window_clip.c` | Original clip Regions installed, replaced and cleared on owned window and classic requester layers; typed old-Region identities and inside/outside pixel comparison for indexed or truecolor screens. |
@@ -510,5 +513,22 @@ ReadPixel, and preserves its caller-owned image descriptors.
 
 Directory Opus 4.12 JR now passes shared palette allocation, caller-owned
 RastPort state, guest raster allocation and classic Intuition image drawing.
-Startup next stops with return code 20 at Text on a copied window RastPort.
-Directory Opus file operations remain unvalidated at this stage.
+The copied-window text and classic InitGels adapters now have separate
+protocol coverage. Startup next stops with return code 20 while opening a
+further classic window with an unrecognized screen identity. Application
+file operations remain unvalidated at this stage.
+
+### Caller-owned drawing and GELS initialization — 2026-10-29
+
+`gfx_classic_rastport` passes 16 checks, `gfx_copied_rastport` passes 12 and
+`gfx_gels_init` passes 8, with no failures on native AROS AArch64 and under
+68k Moira and Kaffeine JIT, each from Shell and Run. The copied-window test
+checks that text is visible through the original RastPort, that their state
+remains independent and that the real layer clips underneath another window.
+Its non-NULL unused GelsInfo stays untouched. The GELS protocol covers
+initialization only: sprite/Bob drawing, animation and collision callbacks
+remain explicitly unsupported and stop before native graphics.
+
+The host graphics suite passes 29 groups, including malformed pointers,
+protected/freed storage, overlapping objects and source/target buffers,
+plus ASan/UBSan. The full host suite and its 9,409-check JIT probe pass.

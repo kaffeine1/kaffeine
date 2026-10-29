@@ -193,6 +193,15 @@
     the program and every screen that it opened, so every native BitMap of
     the call outlives the blit.
 
+    The graphics thunks draw through a temporary native RastPort for a
+    classic RastPort that the program built or copied (kaffeine_thunks_gfx.c)
+    and ask the bridge, through layer_ops->draw_target, for its target:
+    without a Layer, an ordinary planar BitMap as BltBitMap() takes it, as
+    a native BitMap of that call alone; with one, the real native layer of
+    a window of the program, of an active requester on one or of a live
+    private layer, and its BitMap, when the 68k BitMap is the one that the
+    bridges publish for it. Nothing of either is kept after the call.
+
     InitBitMap() of graphics writes the scalars of a 68k BitMap of the
     program in guest memory, as graphics would, without a native call and
     without touching its Planes. The BitMap of a screen of the program and
@@ -1277,6 +1286,9 @@ static void layers_request_closing(struct KaffeineContext *ctx, struct Layer *l)
         }
 }
 
+static BOOL layers_draw_target(struct KaffeineContext *ctx, ULONG layer, ULONG bitmap,
+                               struct RastPort *rp, struct BitMap *adapter);
+
 static const struct KaffeineLayerOps layer_ops =
 {
     layers_window_opened,
@@ -1288,7 +1300,8 @@ static const struct KaffeineLayerOps layer_ops =
     layers_has_locks,
     layers_release_locks,
     layers_request_opened,
-    layers_request_closing
+    layers_request_closing,
+    layers_draw_target
 };
 
 /* ── Depth calls ─────────────────────────────────────────────────── */
@@ -2636,6 +2649,100 @@ IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu)
     WaitBlit();
     ctx->bitmap_blits--;
     return ctx->running ? (IPTR)(ULONG)planes : (IPTR)ctx->exit_code;
+}
+
+/* ── Temporary drawing targets ───────────────────────────────────── */
+
+/* The 68k BitMap that the bridges publish in the 68k RastPort of a window
+   of screen s, or of a requester on one, that draws into native: the typed
+   handle of a live screen that the program opened, whose RastPort draws
+   into native too, as Kaffeine_WindowCreate() publishes it; else 0, as on
+   a public screen. From the tables of the bridges alone, never from guest
+   bytes. */
+static ULONG layers_draw_published(struct KaffeineContext *ctx, struct Screen *s,
+                                   const struct BitMap *native)
+{
+    ULONG sg = s ? Kaffeine_ScreenGuest(ctx, s) : 0;
+    struct Screen *scr = NULL;
+
+    if (!sg || !native ||
+        Kaffeine_ScreenBitMapOf(ctx, sg + M68K_SCR_BITMAP, &scr) != KAFFEINE_SCREEN_BITMAP_OWNED ||
+        scr != s || s->RastPort.BitMap != native)
+        return 0;
+    return sg + M68K_SCR_BITMAP;
+}
+
+static BOOL layers_draw_refuse(struct KaffeineContext *ctx, const char *why)
+{
+    layers_refuse(ctx, why);
+    return FALSE;
+}
+
+/* layer_ops->draw_target: see kaffeine_layers.h. The planar BitMap is
+   checked and converted exactly as BltBitMap() does it. For a layer, only
+   the bridge's records name the native layer and BitMap; the 68k Layer and
+   BitMap are compared, never read as native ones. Everything runs on the
+   guest's native executor, where no window closes, no requester ends and
+   no layer is deleted until the thunk returns. */
+static BOOL layers_draw_target(struct KaffeineContext *ctx, ULONG layer, ULONG bitmap,
+                               struct RastPort *rp, struct BitMap *adapter)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    struct LayerRecord *r;
+    struct BitMap *native;
+    struct BlitSide side;
+    struct LayerCommon desc;
+    ULONG published;
+    int ri;
+
+    if (!layer)
+    {
+        if (layers_blit_side(ctx, bitmap, &side) != BLIT_PLANAR)
+            return layers_draw_refuse(ctx, "drawing without a layer: not an ordinary planar BitMap of the program");
+        if (!layers_blit_adapter(ctx, &side))
+            return layers_draw_refuse(ctx, "drawing without a layer: InitBitMap() disagrees with the 68k BitMap");
+        *adapter = side.desc.bitmap;
+        rp->Layer = NULL;
+        rp->BitMap = adapter;
+        return TRUE;
+    }
+    ri = st ? layers_record_guest(st, layer) : -1;
+    if (ri < 0)
+        return layers_draw_refuse(ctx, "drawing: not a 68k Layer of the bridge");
+    if (st->gate || st->callbacks)
+        return layers_draw_refuse(ctx, "drawing through a copied RastPort during a layer change or backfill");
+    r = &st->records[ri];
+    if (!layers_task_access(ctx, r))
+        return FALSE;
+    switch (r->kind)
+    {
+    case LR_OWNED:
+    case LR_REQUESTER:
+        if (!r->native || !r->native->rp || !r->window ||
+            Kaffeine_ShadowNative(ctx, r->window_guest, KAFFEINE_SHADOW_WINDOW) != r->window ||
+            (r->kind == LR_OWNED && r->window->WLayer != r->native))
+            return layers_draw_refuse(ctx, "drawing: the layer has no open window of the program");
+        native = r->native->rp->BitMap;
+        published = layers_draw_published(ctx, r->window->WScreen, native);
+        break;
+    case LR_PRIVATE:
+        if (!layers_private_live(st, ri) || !r->priv->rp || r->native->rp != r->priv->rp ||
+            !r->priv->common || r->priv->rp->BitMap != &r->priv->common->bitmap)
+            return layers_draw_refuse(ctx, "drawing: not a live bound private layer");
+        if (!layers_private_bitmap(ctx, bitmap, &desc) ||
+            !layers_private_common(r->priv->common, &desc))
+            return layers_draw_refuse(ctx, "drawing: the private layer BitMap changed");
+        native = &r->priv->common->bitmap;
+        published = r->priv->guest_bitmap;
+        break;
+    default:
+        return layers_draw_refuse(ctx, "drawing: a borrowed layer");
+    }
+    if (!native || bitmap != published)
+        return layers_draw_refuse(ctx, "drawing: not the BitMap that the layer's RastPort has");
+    rp->Layer = r->native;
+    rp->BitMap = native;
+    return TRUE;
 }
 
 /* Other graphics vectors that consume or initialize a BitMap cannot

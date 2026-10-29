@@ -93,6 +93,7 @@ ICON_REFUSED = frozenset((54, 72, 84, 108, 126, 138, 150, 156, 162, 168, 180, 18
 LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114, 120,
                             126, 132, 138, 156, 162, 168, 180, 192,
                             210, 216, 222, 228, 234, 240, 246, 258, 264, 270))
+GRAPHICS_GELS_REFUSED = frozenset((96, 102, 108, 114, 126, 132, 138, 144, 150, 156, 162, 168, 174, 600))
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
 CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
 GRAPHICS_BITMAP_REFUSED = frozenset((606, 636, 678, 918, 924, 942, 1020, 1206))
@@ -318,6 +319,7 @@ CASES = (
     ("graphics", "scrollraster.c", "ScrollRaster", "thunk_gfx_ScrollRaster"),
     ("graphics", "setabpendrmd.c", "SetABPenDrMd", "thunk_gfx_SetABPenDrMd"),
     ("graphics", "closefont.c", "CloseFont", "thunk_gfx_CloseFont"),
+    ("graphics", "initgels.c", "InitGels", "thunk_gfx_InitGels"),
     ("graphics", "initrastport.c", "InitRastPort", "thunk_gfx_InitRastPort"),
     # A1 RastPort and A0 TextAttr, both read: no ignored registers.
     ("graphics", "askfont.c", "AskFont", "thunk_gfx_AskFont"),
@@ -328,6 +330,9 @@ CASES = (
     # Guest heap planes: D0/D1 for AllocRaster, A0/D0/D1 for FreeRaster, all read.
     ("graphics", "allocraster.c", "AllocRaster", "thunk_gfx_AllocRaster"),
     ("graphics", "freeraster.c", "FreeRaster", "thunk_gfx_FreeRaster"),
+    # A0 template, D0 xSrc, D1 srcMod, A1 destRP, D2/D3 xDest/yDest and
+    # D4/D5 xSize/ySize, all read.
+    ("graphics", "blttemplate.c", "BltTemplate", "thunk_gfx_BltTemplate"),
     ("exec", "getmsg.c", "GetMsg", "Kaffeine_GetMsg"),
     ("exec", "waitport.c", "WaitPort", "Kaffeine_WaitPort"),
     ("intuition", "modifyidcmp.c", "ModifyIDCMP", "Kaffeine_ModifyIDCMP"),
@@ -1036,6 +1041,13 @@ def main():
             r'\s*\(void\)cpu;\s*return Kaffeine_IORefuse\(ctx,\s*"[^"\n]*"\);\s*',
             device_refused_body[0]):
         raise ValueError("keyboard/input unsupported slots must only call Kaffeine_IORefuse")
+    gels_refused = re.findall(r"IPTR thunk_gfx_GelsUnsupported\([^\n]*\n\{(.*?)\n\}",
+                              (core / "kaffeine_thunks_gfx.c").read_text(), re.DOTALL)
+    if len(gels_refused) != 1 or not re.fullmatch(
+            r'\s*\(void\)cpu;\s*return refuse\(ctx,\s*"unsupported GELS drawing or collision call"\);\s*',
+            gels_refused[0]):
+        raise ValueError("GELS refusal slots must only stop the guest")
+    seen_gels_refusals = set()
     seen_device_refusals = {library: set() for library in DEVICE_REFUSED}
     for library, native_vectors in DEVICE_REFUSED.items():
         conf = parse_conf_file(library_source_dir(root, library) / (library + ".conf"))
@@ -1048,6 +1060,13 @@ def main():
             root, library, args.ndk_fd_dir, args.aros_fd_dir)
         for vector, handler in registrations[library]:
             total_manual += 1
+            if handler == "thunk_gfx_GelsUnsupported":
+                if library != "graphics" or vector not in GRAPHICS_GELS_REFUSED:
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, "unexpected GELS refusal slot")
+                else:
+                    seen_gels_refusals.add(vector)
+                continue
             if handler == "device_unsupported":
                 if library not in DEVICE_REFUSED or vector not in DEVICE_REFUSED[library]:
                     failures += 1
@@ -1178,6 +1197,9 @@ def main():
     if seen_layers_refusals != LAYERS_REFUSED:
         failures += 1
         print("FAIL layers.library explicit refusal slots changed")
+    if seen_gels_refusals != GRAPHICS_GELS_REFUSED:
+        failures += 1
+        print("FAIL graphics.library GELS refusal slots changed")
     if seen_graphics_layer_refusals != GRAPHICS_LAYER_REFUSED:
         failures += 1
         print("FAIL graphics.library layer refusal slots changed")

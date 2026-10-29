@@ -2864,7 +2864,7 @@ static IPTR thunk_gadtools_GT_GetGadgetAttrsA(struct KaffeineContext *ctx, void 
     return _ret;
 }
 
-/* ── graphics.library (165 thunks) ── */
+/* ── graphics.library (164 thunks) ── */
 
 /* -30: BltBitMap(srcBitMap=a0, xSrc=d0, ySrc=d1, destBitMap=a1, xDest=d2, yDest=d3, xSize=d4, ySize=d5, minterm=d6, mask=d7, tempA=a2) */
 static IPTR thunk_graphics_BltBitMap(struct KaffeineContext *ctx, void *cpu)
@@ -2881,23 +2881,6 @@ static IPTR thunk_graphics_BltBitMap(struct KaffeineContext *ctx, void *cpu)
     ULONG arg_mask = THUNK_D(7);
     APTR arg_tempA = THUNK_PTR(2);
     BltBitMap(arg_srcBitMap, arg_xSrc, arg_ySrc, arg_destBitMap, arg_xDest, arg_yDest, arg_xSize, arg_ySize, arg_minterm, arg_mask, arg_tempA);
-    return 0;
-}
-
-/* -36: BltTemplate(source=a0, xSrc=d0, srcMod=d1, destRP=a1, xDest=d2, yDest=d3, xSize=d4, ySize=d5) */
-static IPTR thunk_graphics_BltTemplate(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_source = THUNK_PTR(0);
-    ULONG arg_xSrc = THUNK_D(0);
-    ULONG arg_srcMod = THUNK_D(1);
-    struct RastPort *arg_destRP = resolve_rp(ctx, THUNK_A(1));
-    if (!arg_destRP)
-        return ctx->exit_code;
-    ULONG arg_xDest = THUNK_D(2);
-    ULONG arg_yDest = THUNK_D(3);
-    ULONG arg_xSize = THUNK_D(4);
-    ULONG arg_ySize = THUNK_D(5);
-    BltTemplate(arg_source, arg_xSrc, arg_srcMod, arg_destRP, arg_xDest, arg_yDest, arg_xSize, arg_ySize);
     return 0;
 }
 
@@ -2949,127 +2932,7 @@ static IPTR thunk_graphics_SetSoftStyle(struct KaffeineContext *ctx, void *cpu)
     return (IPTR)SetSoftStyle(arg_rp, arg_style, arg_enable);
 }
 
-/* -96: AddBob(bob=a0, rp=a1) */
-static IPTR thunk_graphics_AddBob(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_bob = THUNK_PTR(0);
-    struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
-    if (!arg_rp)
-        return ctx->exit_code;
-    AddBob(arg_bob, arg_rp);
-    return 0;
-}
 
-/* -102: AddVSprite(vs=a0, rp=a1) */
-static IPTR thunk_graphics_AddVSprite(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_vs = THUNK_PTR(0);
-    struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
-    if (!arg_rp)
-        return ctx->exit_code;
-    AddVSprite(arg_vs, arg_rp);
-    return 0;
-}
-
-/* -108: DoCollision(rp=a1) */
-static IPTR thunk_graphics_DoCollision(struct KaffeineContext *ctx, void *cpu)
-{
-    struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
-    if (!arg_rp)
-        return ctx->exit_code;
-    DoCollision(arg_rp);
-    return 0;
-}
-
-/* -114: DrawGList(rp=a1, vp=a0) */
-static IPTR thunk_graphics_DrawGList(struct KaffeineContext *ctx, void *cpu)
-{
-    struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
-    if (!arg_rp)
-        return ctx->exit_code;
-    struct ViewPort *arg_vp = (struct ViewPort *)m68k_to_host_or_shadow(ctx, THUNK_A(0));
-    DrawGList(arg_rp, arg_vp);
-    return 0;
-}
-
-/* -120: InitGels(head=a0, tail=a1, GInfo=a2) */
-static IPTR thunk_graphics_InitGels(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_head = THUNK_PTR(0);
-    APTR arg_tail = THUNK_PTR(1);
-    APTR arg_GInfo = THUNK_PTR(2);
-    InitGels(arg_head, arg_tail, arg_GInfo);
-    return 0;
-}
-
-/* -126: InitMasks(vs=a0) */
-static IPTR thunk_graphics_InitMasks(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_vs = THUNK_PTR(0);
-    InitMasks(arg_vs);
-    return 0;
-}
-
-/* -132: RemIBob(bob=a0, rp=a1, vp=a2) */
-static IPTR thunk_graphics_RemIBob(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_bob = THUNK_PTR(0);
-    struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
-    if (!arg_rp)
-        return ctx->exit_code;
-    struct ViewPort *arg_vp = (struct ViewPort *)m68k_to_host_or_shadow(ctx, THUNK_A(2));
-    RemIBob(arg_bob, arg_rp, arg_vp);
-    return 0;
-}
-
-/* -138: RemVSprite(vs=a0) */
-static IPTR thunk_graphics_RemVSprite(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_vs = THUNK_PTR(0);
-    RemVSprite(arg_vs);
-    return 0;
-}
-
-/* -144: SetCollision(num=d0, routine=a0, GInfo=a1) */
-static IPTR thunk_graphics_SetCollision(struct KaffeineContext *ctx, void *cpu)
-{
-    ULONG arg_num = THUNK_D(0);
-    APTR arg_routine = THUNK_PTR(0);
-    APTR arg_GInfo = THUNK_PTR(1);
-    SetCollision(arg_num, arg_routine, arg_GInfo);
-    return 0;
-}
-
-/* -150: SortGList(rp=a1) */
-static IPTR thunk_graphics_SortGList(struct KaffeineContext *ctx, void *cpu)
-{
-    struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
-    if (!arg_rp)
-        return ctx->exit_code;
-    SortGList(arg_rp);
-    return 0;
-}
-
-
-
-/* -168: GetGBuffers(anOb=a0, rp=a1, db=d0) */
-static IPTR thunk_graphics_GetGBuffers(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_anOb = THUNK_PTR(0);
-    struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
-    if (!arg_rp)
-        return ctx->exit_code;
-    ULONG arg_db = THUNK_D(0);
-    return (IPTR)GetGBuffers(arg_anOb, arg_rp, arg_db);
-}
-
-/* -174: InitGMasks(anOb=a0) */
-static IPTR thunk_graphics_InitGMasks(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_anOb = THUNK_PTR(0);
-    InitGMasks(arg_anOb);
-    return 0;
-}
 
 /* -180: DrawEllipse(rp=a1, xCenter=d0, yCenter=d1, a=d2, b=d3) */
 static IPTR thunk_graphics_DrawEllipse(struct KaffeineContext *ctx, void *cpu)
@@ -3629,18 +3492,6 @@ static IPTR thunk_graphics_UCopperListInit(struct KaffeineContext *ctx, void *cp
     APTR arg_ucl = THUNK_PTR(0);
     ULONG arg_n = THUNK_D(0);
     return (IPTR)UCopperListInit(arg_ucl, arg_n);
-}
-
-/* -600: FreeGBuffers(anOb=a0, rp=a1, db=d0) */
-static IPTR thunk_graphics_FreeGBuffers(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_anOb = THUNK_PTR(0);
-    struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
-    if (!arg_rp)
-        return ctx->exit_code;
-    ULONG arg_db = THUNK_D(0);
-    FreeGBuffers(arg_anOb, arg_rp, arg_db);
-    return 0;
 }
 
 /* -606: BltBitMapRastPort(srcBitMap=a0, xSrc=d0, ySrc=d1, destRP=a1, xDest=d2, yDest=d3, xSize=d4, ySize=d5, minterm=d6) */
@@ -7604,24 +7455,11 @@ const ULONG kaffeine_thunks_gadtools_gen_count = 17;
 
 const struct M68KThunkEntry kaffeine_thunks_graphics_gen[] = {
     { 30, thunk_graphics_BltBitMap },
-    { 36, thunk_graphics_BltTemplate },
     { 42, thunk_graphics_ClearEOL },
     { 48, thunk_graphics_ClearScreen },
     { 78, thunk_graphics_CloseFont },
     { 84, thunk_graphics_AskSoftStyle },
     { 90, thunk_graphics_SetSoftStyle },
-    { 96, thunk_graphics_AddBob },
-    { 102, thunk_graphics_AddVSprite },
-    { 108, thunk_graphics_DoCollision },
-    { 114, thunk_graphics_DrawGList },
-    { 120, thunk_graphics_InitGels },
-    { 126, thunk_graphics_InitMasks },
-    { 132, thunk_graphics_RemIBob },
-    { 138, thunk_graphics_RemVSprite },
-    { 144, thunk_graphics_SetCollision },
-    { 150, thunk_graphics_SortGList },
-    { 168, thunk_graphics_GetGBuffers },
-    { 174, thunk_graphics_InitGMasks },
     { 180, thunk_graphics_DrawEllipse },
     { 186, thunk_graphics_AreaEllipse },
     { 192, thunk_graphics_LoadRGB4 },
@@ -7682,7 +7520,6 @@ const struct M68KThunkEntry kaffeine_thunks_graphics_gen[] = {
     { 582, thunk_graphics_GetRGB4 },
     { 588, thunk_graphics_ScrollVPort },
     { 594, thunk_graphics_UCopperListInit },
-    { 600, thunk_graphics_FreeGBuffers },
     { 606, thunk_graphics_BltBitMapRastPort },
     { 612, thunk_graphics_OrRegionRegion },
     { 618, thunk_graphics_XorRegionRegion },
@@ -7770,7 +7607,7 @@ const struct M68KThunkEntry kaffeine_thunks_graphics_gen[] = {
     { 1206, thunk_graphics_UpdateBitMap },
     { 0, NULL }
 };
-const ULONG kaffeine_thunks_graphics_gen_count = 165;
+const ULONG kaffeine_thunks_graphics_gen_count = 151;
 
 const struct M68KThunkEntry kaffeine_thunks_icon_gen[] = {
     { 54, thunk_icon_FreeFreeList },
@@ -8127,4 +7964,4 @@ const struct M68KLibThunkSet kaffeine_all_gen_libs[] = {
 };
 const ULONG kaffeine_all_gen_libs_count = 17;
 
-/* Total: 786 auto-generated thunks across 17 libraries */
+/* Total: 785 auto-generated thunks across 17 libraries */

@@ -26,6 +26,8 @@ IPTR thunk_gfx_ScrollRaster(struct KaffeineContext *ctx, void *cpu);
 
 IPTR thunk_gfx_CloseFont(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetFont(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_InitGels(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_GelsUnsupported(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_InitRastPort(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_AskFont(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_TextLength(struct KaffeineContext *ctx, void *cpu);
@@ -37,6 +39,7 @@ IPTR thunk_gfx_Draw(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_RectFill(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_ReadPixel(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_WritePixel(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_BltTemplate(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetAPen(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetBPen(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetDrMd(struct KaffeineContext *ctx, void *cpu);
@@ -61,13 +64,30 @@ IPTR thunk_gfx_FreeRaster(struct KaffeineContext *ctx, void *cpu);
     { 894, thunk_gfx_SetABPenDrMd }, \
     { 396, thunk_gfx_ScrollRaster }
 
-/* Calls on the 68k RastPort of a window or a screen, the state of a
-   caller-owned classic one, fonts, and guest heap rasters */
+/* Calls on the 68k RastPort of a window or a screen, the state of and
+   bounded drawing through a caller-owned classic one, fonts, and guest
+   heap rasters */
 #define KAFFEINE_GRAPHICS_RASTPORT_THUNKS \
+    { 36,  thunk_gfx_BltTemplate }, \
     { 54,  thunk_gfx_TextLength }, \
     { 60,  thunk_gfx_Text }, \
     { 66,  thunk_gfx_SetFont }, \
     { 78,  thunk_gfx_CloseFont }, \
+    { 96, thunk_gfx_GelsUnsupported }, \
+    { 102, thunk_gfx_GelsUnsupported }, \
+    { 108, thunk_gfx_GelsUnsupported }, \
+    { 114, thunk_gfx_GelsUnsupported }, \
+    { 120, thunk_gfx_InitGels }, \
+    { 126, thunk_gfx_GelsUnsupported }, \
+    { 132, thunk_gfx_GelsUnsupported }, \
+    { 138, thunk_gfx_GelsUnsupported }, \
+    { 144, thunk_gfx_GelsUnsupported }, \
+    { 150, thunk_gfx_GelsUnsupported }, \
+    { 156, thunk_gfx_GelsUnsupported }, \
+    { 162, thunk_gfx_GelsUnsupported }, \
+    { 168, thunk_gfx_GelsUnsupported }, \
+    { 174, thunk_gfx_GelsUnsupported }, \
+    { 600, thunk_gfx_GelsUnsupported }, \
     { 198, thunk_gfx_InitRastPort }, \
     { 240, thunk_gfx_Move }, \
     { 246, thunk_gfx_Draw }, \

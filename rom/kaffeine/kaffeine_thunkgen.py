@@ -44,7 +44,9 @@ SKIP_FUNCTIONS = {
     "SetIoErr", "SetSignal", "Text", "TextLength", "TypeOfMem", "UnLock",
     "VPrintf", "WaitPort", "Write",
     # manual: guest heap planes, never a native pointer in D0
-    "AllocRaster", "FreeRaster", "DrawImage", "DrawBorder",
+    "AllocRaster", "FreeRaster", "DrawImage", "DrawBorder", "BltTemplate",
+    # classic InitGels is manual; other GELS calls are explicitly refused
+    "AddBob", "AddVSprite", "DoCollision", "DrawGList", "InitGels", "InitMasks", "RemIBob", "RemVSprite", "SetCollision", "SortGList", "AddAnimOb", "Animate", "GetGBuffers", "InitGMasks", "FreeGBuffers",
     # AROS keeps these LVOs private - no public C prototype exists for them
     "AddDisplayData", "AddDisplayInfoData", "SetDisplayInfoData",
     "LocRawDoFmt", "LocStrnicmp", "LocStricmp", "LocToLower", "LocToUpper",
@@ -906,7 +908,7 @@ AUDIT_EXPECTED_LIBS = {
     "asl": 8, "commodities": 29, "cybergraphics": 24, "datatypes": 30,
     "diskfont": 3, "dos": 112, "exec": 79, "expansion": 22, "gadtools": 17,
     # AllocRaster/FreeRaster now live exclusively in the checked manual table.
-    "graphics": 165, "icon": 21, "iffparse": 40, "intuition": 126,
+    "graphics": 151, "icon": 21, "iffparse": 40, "intuition": 126,
     "keymap": 4, "layers": 40, "locale": 25, "utility": 41,
 }
 
