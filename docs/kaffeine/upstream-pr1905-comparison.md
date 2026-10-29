@@ -5,6 +5,18 @@ Schmieder's `m68kemu.library`; the upstream continuation by `terminills`
 addresses much of the same compatibility work. The useful next step is
 to converge contracts and share focused fixes and regression tests.
 
+## Upstream follow-up, 29 October 2026
+
+The checked guest-memory span fix was merged upstream in
+[AROS #1922](https://github.com/aros-development-team/AROS/pull/1922).
+The review follow-up was merged in
+[AROS #1943](https://github.com/aros-development-team/AROS/pull/1943): the
+remaining thunk/shadow validation TODO stays explicit, and the independent
+511-check bounds regression now runs through the host Makefile's normal
+`test` target, with a separate sanitizer target. The ordinary and ASan/UBSan
+bounds runs and the complete m68kemu host suite passed before submission.
+The comparison below remains a record of the revisions inspected on 28 October.
+
 ## Revisions and evidence scope
 
 | Input | Revision |
