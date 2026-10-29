@@ -4,10 +4,10 @@ The unmodified 68k programs run through `kaffeine.library` on AROS ARM64.
 Moira and the Kaffeine JIT are tested separately. Application binaries and
 private test disk images are not distributed here.
 
-| Program | Verified behavior | Remaining check |
+| Program | Verified behavior | Scope and next check |
 | --- | --- | --- |
-| Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Repeat the application cycle after the latest FileLock changes |
-| Directory Opus 4.12 JR | Opens on the native public Workbench screen using ordinary preferences; lists separate source/destination drawers; copied a 73-byte text file whose extracted bytes match the source with Moira | A zero-length StandardPacket sent directly with PutMsg is refused during the post-copy metadata step; full copy/rename, orderly exit and JIT application cycle remain open |
+| Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Repeated with the typed FileLock library on both backends; both launches return 0 and the extracted text matches each edit |
+| Directory Opus 4.12 JR | Opens on the native public Workbench screen using ordinary preferences; lists separate source/destination drawers; copied a 73-byte text file whose extracted bytes match the source with Moira | Cleared StandardPackets now pass native, Moira and JIT regressions; the application still passes an invalid -1 reply port after a port-creation failure. Full copy/rename, orderly exit and JIT application cycle remain open |
 
 The FileLock regression `dos_locks` passes 22 checks in each Shell and Run
 invocation on native ARM64, Moira and JIT. It covers readable FileLock fields,
