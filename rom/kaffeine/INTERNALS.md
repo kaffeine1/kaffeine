@@ -783,10 +783,10 @@ before `lib->gen_thunks[]` (generated).
 | -444 | OpenDevice | timer.device on a native timerequest, and console.device unit -1 on a native IOStdReq, each with a private reply port; keyboard.device and input.device unit zero use native IOStdReq adapters. Console accepts the 32-byte guest IORequest prefix, including zero mn_Length; its guest unit is -1. Adapter selection uses trusted native records |
 | -450 | CloseDevice | Closes and deletes native request and port. Console clears guest io_Device and io_Unit to zero; timer keeps its -1 closed-device marker |
 | -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter |
-| -462 | SendIO | Stops the guest with rc 20 until asynchronous I/O exists |
-| -468 | CheckIO | As Exec on the guest fields: NULL only for a request in flight |
-| -474 | WaitIO | io_Error of a complete request; a request in flight stops the guest with rc 20 |
-| -480 | AbortIO | -1: nothing is in flight |
+| -462 | SendIO | Root-only native async timer submit with checked reply queues; copied MICROHZ/VBLANK timerequests share one private FIFO completion port |
+| -468 | CheckIO | Pumps completions and returns NULL only while the trusted native record is pending; unknown requests retain Exec marker checks |
+| -474 | WaitIO | Root-only wait for pending native timer I/O, yielding through the guest scheduler when active; completes in place or removes only its own queued reply |
+| -480 | AbortIO | Root-only native AbortIO for a pending request; -1 when nothing remains pending |
 | -486 | AddResource | No-op; guest resource publication is unsupported |
 | -492 | RemResource | No-op, paired with AddResource |
 | -498 | OpenResource | Checks the guest name and returns NULL; native resource ABIs are not bridged |
@@ -2001,10 +2001,8 @@ Ports, I/O requests and signals of 68k code are 68k structures in the guest
 arena (`kaffeine_exec_io.c`). Behind each open request stand a native request
 of the native size and a private native reply port, which only that file
 passes to native Exec. Nothing native reaches the guest, and no guest
-structure reaches native Exec. This is the first step, synchronous
-`timer.device`. Asynchronous I/O with guest reply queues, waits on mixed
-signals, messages between guest ports, IDCMP on the same model and the
-other devices, each with its own adapter, follow it.
+structure reaches native Exec. Synchronous and bounded asynchronous timer requests use these native
+objects; console, keyboard and input retain their separate synchronous adapters.
 
 ### Call Chain
 
@@ -2057,9 +2055,24 @@ m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
   clock of the whole system and ends with `IOERR_NOCMD`, as every other
   command does. The time fields pass unchanged, so the native driver treats
   oversized microseconds as it does for native callers.
-- Asynchronous I/O: `SendIO()` and `BeginIO()` of the device stop the guest
-  with rc 20; guest reply queues and a completion pump are the next phase.
-  `CheckIO()`, `WaitIO()` and `AbortIO()` answer for complete requests.
+- Asynchronous I/O: the root task, outside callbacks, can `SendIO()` open
+  timer requests using TR_ADDREQUEST on non-EClock units or TR_GETSYSTIME.
+  Native completion queues are pumped from Exec queue/signal calls and guest
+  scheduler polls. The pump preserves the shared copy-port FIFO order and
+  publishes only checked classic replies. `WaitIO()` finishes a pending
+  request in place without a guest queue arrival or signal, or removes only
+  its own already queued reply without clearing the guest signal. Private
+  native port bits stay hidden for their full lifetime. Direct `BeginIO`
+  and other device kinds remain refused with rc 20.
+- Copied async timers: a 40-byte MICROHZ/VBLANK request can be submitted for
+  TR_ADDREQUEST while its unit has a live original open. Each copy gets an
+  independent native open with the source flags; all copies share one native
+  completion port. The final original close cascades to idle copies, and
+  refuses while a copy is still pending. The heap release hook closes idle
+  copies, retains queued replies, or aborts and orphans a root-owned pending
+  copy so completion cannot write into reused guest storage. Child releases
+  retain pending storage. Teardown aborts, waits and closes copies before
+  originals, and never publishes into the stopped guest.
 - Copies: `DoIO()` on a request that the bridge did not open, such as a copy
   of an open timerequest, stops the guest with rc 20; with no device at all
   it returns -1, as Exec does.

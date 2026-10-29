@@ -228,10 +228,11 @@ static ULONG child_bits(struct KaffeineScheduler *s)
     return bits;
 }
 
-/* Native bits that no guest task allocated, such as those of native ports */
+/* Native bits that no guest task allocated, such as those of native ports,
+   but not the private ones of asynchronous I/O */
 static ULONG unowned_bits(struct KaffeineContext *ctx)
 {
-    return ~ctx->guest_signals & ~SYSTEM_SIGNALS;
+    return ~ctx->guest_signals & ~SYSTEM_SIGNALS & ~ctx->io_signals;
 }
 
 /* The guest Task fields that Exec would keep, in BE */
@@ -356,12 +357,18 @@ static void deliver(struct KaffeineContext *ctx, struct KaffeineScheduler *s, UL
         SetSignal(0, taken);
 }
 
-static void poll(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
+/* Completed asynchronous I/O to its guest ports first, whose signals then
+   wake their tasks. FALSE when that stopped the program. */
+static BOOL poll(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
 {
-    ULONG want = wake_bits(ctx, s) | child_bits(s), got;
+    ULONG want, got;
 
+    if (ctx->io_poll && !ctx->io_poll(ctx))
+        return FALSE;
+    want = wake_bits(ctx, s) | child_bits(s);
     if (want && (got = SetSignal(0, 0) & want))
         deliver(ctx, s, got);
+    return TRUE;
 }
 
 /* Take what a task received of mask, as Wait() does on return */
@@ -522,12 +529,14 @@ static BOOL entry_unreferenced(struct KaffeineContext *ctx, ULONG entry)
     count = m68k_read16(ctx, entry + 14);
     if (count > 1024) return FALSE;
     size = MEMLIST_HEADER + count * 8;
-    if (!Kaffeine_MessageMemory(ctx, entry, size)) return FALSE;
+    /* A copied timer request there is the heap's I/O release hook's to
+       decide about: an idle one goes, one in flight keeps the memory. */
+    if (!Kaffeine_ReleasableMemory(ctx, entry, size)) return FALSE;
     for (i = 0; i < count; i++)
     {
         ULONG member = m68k_read32(ctx, entry + MEMLIST_HEADER + i * 8);
         ULONG bytes = m68k_read32(ctx, entry + MEMLIST_HEADER + i * 8 + 4);
-        if (bytes && !Kaffeine_MessageMemory(ctx, member, bytes)) return FALSE;
+        if (bytes && !Kaffeine_ReleasableMemory(ctx, member, bytes)) return FALSE;
     }
     return TRUE;
 }
@@ -633,25 +642,45 @@ static void schedule(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
 {
     struct GuestTask *next;
     unsigned i, tries = 0;
+    BOOL polled = TRUE;
 
     for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
         if (s->child[i].state == SLOT_REMOVED)
             reap(ctx, s, &s->child[i]);
-    poll(ctx, s);
+    if (!poll(ctx, s))
+    {
+        stop(ctx, "a completed I/O request cannot reach its guest port");
+        return;
+    }
     for (;;)
     {
         next = pick(s);
         if (!next)
         {
-            ULONG want = wake_bits(ctx, s), got;
+            ULONG want, got;
 
+            /* What completed since may wake a task without a native wait. */
+            if (!polled)
+            {
+                polled = TRUE;
+                if (!poll(ctx, s))
+                {
+                    stop(ctx, "a completed I/O request cannot reach its guest port");
+                    return;
+                }
+                continue;
+            }
+            polled = FALSE;
+            want = wake_bits(ctx, s);
             if (!want)
             {
                 stop(ctx, "every guest task waits for signals that nothing can send");
                 return;
             }
-            /* No guest task can run: the native task waits for them all. */
-            got = Wait(want);
+            /* No guest task can run: the native task waits for them all,
+               and for the private bits of I/O in flight, which the next
+               poll turns into guest port signals. */
+            got = Wait(want | ctx->io_signals) & want;
             SetSignal(got, got);
             deliver(ctx, s, got);
             tries = 0;
@@ -1170,12 +1199,19 @@ IPTR Kaffeine_TaskSetSignal(struct KaffeineContext *ctx, void *cpu)
     if (!s)
         return refuse(ctx, "SetSignal(): no guest task scheduler");
     t = s->current;
-    poll(ctx, s);
+    if (!poll(ctx, s))
+        return 20;
+    /* The root's private I/O bits are the bridge's, never shown or changed */
+    if (t == &s->root)
+    {
+        set &= ~ctx->io_signals;
+        signals &= set;
+    }
     old = t->recvd;
     t->recvd = (t->recvd & ~set) | signals;
     if (t == &s->root)
     {
-        ULONG native = ~child_bits(s);
+        ULONG native = ~child_bits(s) & ~ctx->io_signals;
 
         t->recvd &= ~native;
         old = (old & ~native) | (SetSignal(signals & native, set & native) & native);
@@ -1196,7 +1232,11 @@ IPTR Kaffeine_TaskWait(struct KaffeineContext *ctx, void *cpu)
     if (!s || (struct KaffeineCPU *)cpu != s->current->cpu)
         return refuse(ctx, "Wait(): not the CPU of the current guest task");
     t = s->current;
-    poll(ctx, s);
+    if (!poll(ctx, s))
+        return 20;
+    /* The root never waits for, nor takes, the private bits of I/O */
+    if (t == &s->root)
+        mask &= ~ctx->io_signals;
     got = take(ctx, s, t, mask);
     if (got)
     {
@@ -1221,6 +1261,7 @@ static void sched_send_signal(struct KaffeineContext *ctx, ULONG task, ULONG set
     {
         ULONG owned = child_bits(s);
 
+        set &= ~ctx->io_signals;
         if (set & ~owned)
             Signal(FindTask(NULL), set & ~owned);
         t->recvd |= set & owned;
@@ -1403,6 +1444,13 @@ static BOOL sched_block_guest_port(struct KaffeineContext *ctx, ULONG port,
     return TRUE;
 }
 
+static BOOL sched_is_root(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+
+    return s && s->current == &s->root && (struct KaffeineCPU *)cpu == s->root.cpu;
+}
+
 const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
 {
     Kaffeine_TaskAdd, Kaffeine_TaskRemove, sched_find_named, Kaffeine_TaskSetPri,
@@ -1410,5 +1458,6 @@ const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
     sched_signal_allocated, sched_signal_freeable, sched_block_port,
     sched_boundary, sched_end, sched_known_task, sched_owns_signal,
     sched_send_signal, sched_block_guest_port,
-    Kaffeine_ProcCreate, sched_process_port, sched_process_dos
+    Kaffeine_ProcCreate, sched_process_port, sched_process_dos,
+    sched_is_root
 };

@@ -90,7 +90,10 @@ struct KaffeineIOPort
 
 /* A 68k IORequest from CreateIORequest() or open on a device. While it is
    open, a native request of the native size and its own reply port stand
-   behind it, and only kaffeine_exec_io.c passes them to native Exec. */
+   behind it, and only kaffeine_exec_io.c passes them to native Exec. A
+   copy is a 40-byte timerequest that the guest copied from an open one
+   and sent with SendIO(): it has a native open of its own on the same
+   unit, whose request replies to ctx->io_copy_port, shared by all copies. */
 #define KAFFEINE_MAX_IO_REQUESTS 16
 enum KaffeineIODeviceKind
 {
@@ -105,6 +108,13 @@ struct KaffeineIORequest
     struct MsgPort   *reply;
     ULONG   unit;
     enum KaffeineIODeviceKind kind; /* native state, never taken from guest fields */
+    ULONG   open_flags;         /* OpenDevice() D1, which copies open with */
+    ULONG   port;               /* guest mn_ReplyPort captured by SendIO() */
+    UBYTE   pending;            /* the native request is at the device */
+    UBYTE   replied;            /* native idle, guest results final: the node may be on port */
+    UBYTE   waiting;            /* the root waits in WaitIO(): 1 in the call, 2 blocked */
+    UBYTE   copy;               /* a copy record; reply is unused */
+    UBYTE   orphan;             /* storage freed while pending: reaped, never written */
 };
 
 #define KAFFEINE_MAX_LIBS        32
@@ -239,6 +249,20 @@ struct KaffeineContext
        brings native GUI snapshots up to date (kaffeine_layers.c). */
     void (*gui_poll)(struct KaffeineContext *ctx);
     ULONG gui_poll_slices;
+    /* Asynchronous Exec I/O (kaffeine_exec_io.c), set by its first SendIO(),
+       hooks so that the queues, the heap, the scheduler and the Exec thunks
+       link without it. io_poll moves native completions to their guest
+       requests and ports, FALSE when that stopped the guest. io_wait, for
+       an empty guest port without guest tasks, waits natively and returns
+       TRUE when a request in flight replies to it, else FALSE. io_release
+       decides about guest memory that the heap frees: FALSE keeps it
+       allocated and changes nothing; commit FALSE only asks. io_signals are
+       the private native reply-port bits for their entire lifetime,
+       never the guest's. */
+    BOOL (*io_poll)(struct KaffeineContext *ctx);
+    BOOL (*io_wait)(struct KaffeineContext *ctx, ULONG port);
+    BOOL (*io_release)(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL commit);
+    ULONG io_signals;
     /* Shadow struct mapping: m68k addr <-> native ptr */
     #define KAFFEINE_MAX_SHADOWS 1024
     struct { ULONG m68k_addr; void *native_ptr; UWORD type; } shadow_map[KAFFEINE_MAX_SHADOWS];
@@ -425,6 +449,7 @@ struct KaffeineContext
     ULONG   guest_signals;
     struct KaffeineIOPort io_ports[KAFFEINE_MAX_IO_PORTS];
     struct KaffeineIORequest io_requests[KAFFEINE_MAX_IO_REQUESTS];
+    struct MsgPort *io_copy_port;      /* native reply port of every copy, while there are copies */
     ULONG   timer_base;
     struct Device *native_timer;
     ULONG   console_base;      /* shared guest Device, outside the library namespace */

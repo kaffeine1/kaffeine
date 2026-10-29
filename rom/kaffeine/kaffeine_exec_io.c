@@ -7,10 +7,17 @@
     unit 0. Ports and requests stay 68k structures in the guest
     arena. Behind each open request stand a native request of the native
     size and its own reply port, which only this file passes to native
-    Exec; DoIO() copies the fields of the command across. Asynchronous I/O
-    and the other devices need guest reply queues and adapters that do not
-    exist yet: until then the guest stops with return code 20, or the open
-    fails as it does for an unknown device.
+    Exec; DoIO() copies the fields of the command across.
+
+    Asynchronous I/O is timer.device's, of the root task alone: SendIO() of
+    an open request, and of a 40-byte copy of one, which gets a native open
+    of its own. The native request stays at the device until native Exec
+    gives it back; only then do its results reach the guest request, which
+    is replied to its guest port as Exec would, or finished in place for a
+    WaitIO() that waits for it. The pump that does it runs at the Exec
+    calls that can see a completion and at the scheduler's waits. Other
+    devices and other asynchronous uses stop the guest with return code 20,
+    or the open fails as it does for an unknown device.
 */
 
 #include "kaffeine_intern.h"
@@ -44,7 +51,7 @@ enum
     G_IO_ACTUAL = 32, G_IO_LENGTH = 36, G_IO_DATA = 40, G_IOSTDREQ_SIZE = 48,
     G_IOERR_BADADDRESS = -5,
     G_TV_SECS = 32, G_TV_MICRO = 36, G_TIMEREQUEST_SIZE = 40,
-    G_MP_FLAGS = 14, G_MP_SIGBIT = 15, G_MP_SIGTASK = 16, G_MP_MSGLIST = 20,
+    G_MP_FLAGS = 14, G_MP_SIGBIT = 15, G_MP_SIGTASK = 16, G_MP_MSGLIST = 20, G_PA_SIGNAL = 0,
     G_LH_TAIL = 4, G_LH_TAILPRED = 8,
     G_LIB_NEGSIZE = 16, G_LIB_POSSIZE = 18, G_LIB_VERSION = 20, G_LIB_REVISION = 22
 };
@@ -140,7 +147,8 @@ IPTR Kaffeine_Signal(struct KaffeineContext *ctx, void *cpu)
         bug("[kaffeine] Signal(%08lx): not the current task\n", (unsigned long)task);
         return Kaffeine_IORefuse(ctx, "Signal(): only the current task can be signalled so far");
     }
-    Signal(FindTask(NULL), THUNK_D(0));
+    /* The private bits of asynchronous I/O are not the guest's to send. */
+    Signal(FindTask(NULL), THUNK_D(0) & ~ctx->io_signals);
     return 0;
 }
 
@@ -194,10 +202,11 @@ IPTR Kaffeine_CreateMsgPort(struct KaffeineContext *ctx, void *cpu)
 
 /* -672: DeleteMsgPort(A0=port). Only a port from CreateMsgPort(): Exec
    would free the memory and the signal of any other one. The signal is the
-   one that CreateMsgPort() gave, whatever the guest wrote since. */
+   one that CreateMsgPort() gave, whatever the guest wrote since. A port
+   that a request in flight replies to stays. */
 IPTR Kaffeine_DeleteMsgPort(struct KaffeineContext *ctx, void *cpu)
 {
-    ULONG port = THUNK_A(0);
+    ULONG port = THUNK_A(0), i;
     struct KaffeineIOPort *entry;
 
     if (!port)
@@ -209,6 +218,12 @@ IPTR Kaffeine_DeleteMsgPort(struct KaffeineContext *ctx, void *cpu)
             (unsigned long)port);
         return 0;
     }
+    if (ctx->io_poll && !ctx->io_poll(ctx))
+        return 20;
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+        if (ctx->io_requests[i].guest && ctx->io_requests[i].pending &&
+            !ctx->io_requests[i].orphan && ctx->io_requests[i].port == port)
+            return Kaffeine_IORefuse(ctx, "DeleteMsgPort(): an I/O request in flight replies to it");
     if (ctx->sched && !ctx->task_ops->signal_freeable(ctx, entry->sigbit))
         return Kaffeine_IORefuse(ctx, "DeleteMsgPort(): signal belongs to another guest task");
     Kaffeine_AppPortGone(ctx, port);
@@ -218,11 +233,8 @@ IPTR Kaffeine_DeleteMsgPort(struct KaffeineContext *ctx, void *cpu)
         ctx->guest_signals &= ~(1UL << entry->sigbit);
         FreeSignal(entry->sigbit);
     }
-    {
-        ULONG i;
-        for (i = 0; i < KAFFEINE_MAX_MESSAGE_PORTS; ++i)
-            if (ctx->message_ports[i] == port) ctx->message_ports[i] = 0;
-    }
+    for (i = 0; i < KAFFEINE_MAX_MESSAGE_PORTS; ++i)
+        if (ctx->message_ports[i] == port) ctx->message_ports[i] = 0;
     entry->guest = 0;
     Kaffeine_HeapFree(ctx, port, M68K_SIZEOF_MSGPORT);
     return 0;
@@ -230,12 +242,14 @@ IPTR Kaffeine_DeleteMsgPort(struct KaffeineContext *ctx, void *cpu)
 
 /* ── I/O requests ────────────────────────────────────────────────── */
 
+/* The record of req, or a free one for 0. An orphan is neither: its
+   storage belongs to the guest heap again, but its slot is still taken. */
 static struct KaffeineIORequest *request_entry(struct KaffeineContext *ctx, ULONG req)
 {
     ULONG i;
 
     for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
-        if (ctx->io_requests[i].guest == req)
+        if (ctx->io_requests[i].guest == req && !ctx->io_requests[i].orphan)
             return &ctx->io_requests[i];
     return NULL;
 }
@@ -254,7 +268,8 @@ static BOOL request_range(struct KaffeineContext *ctx, ULONG req, ULONG size)
     {
         struct KaffeineIORequest *entry = &ctx->io_requests[i];
 
-        if (entry->capacity && req >= entry->guest && req - entry->guest < entry->capacity)
+        if (entry->capacity && !entry->orphan && req >= entry->guest &&
+            req - entry->guest < entry->capacity)
             return size <= entry->capacity - (req - entry->guest);
     }
     return TRUE;
@@ -268,15 +283,377 @@ static void request_forget(struct KaffeineIORequest *entry)
         memset(entry, 0, sizeof(*entry));
 }
 
+/* The native side of a record. A request still in flight, which only the
+   end of the program leaves, is aborted and taken back first; its results
+   go nowhere. replied and port stay with a record that CreateIORequest()
+   storage keeps, so that a reply still queued stays valid. */
 static void close_native(struct KaffeineIORequest *entry)
 {
+    if (entry->pending)
+    {
+        AbortIO(entry->native);
+        WaitIO(entry->native);
+        entry->pending = 0;
+    }
     CloseDevice(entry->native);
     DeleteIORequest(entry->native);
-    DeleteMsgPort(entry->reply);
+    if (entry->reply)
+        DeleteMsgPort(entry->reply);
     entry->native = NULL;
     entry->reply = NULL;
     entry->unit = 0;
     entry->kind = KAFFEINE_IO_NONE;
+    entry->waiting = entry->copy = entry->orphan = 0;
+}
+
+/* ── Asynchronous timer.device I/O ───────────────────────────────── */
+
+/* The bytes that a record keeps from other guest use, as
+   kaffeine_messages.c reserves them */
+static ULONG request_span(const struct KaffeineIORequest *entry)
+{
+    return entry->capacity ? entry->capacity : entry->copy ? G_TIMEREQUEST_SIZE : G_IOSTDREQ_SIZE;
+}
+
+/* The root task on the native task that runs the guest, from trusted state
+   alone: guest tasks share that native task, and the guest ThisTask can
+   name any of them. */
+static BOOL root_caller(struct KaffeineContext *ctx, void *cpu)
+{
+    if (!ctx->exec_task || FindTask(NULL) != ctx->exec_task)
+        return FALSE;
+    return !ctx->sched || (ctx->task_ops->is_root && ctx->task_ops->is_root(ctx, cpu));
+}
+
+/* A replied request that is still a node of the queue of its reply port.
+   A port that is no queue any more holds no node. */
+static BOOL linked(struct KaffeineContext *ctx, const struct KaffeineIORequest *entry)
+{
+    struct KaffeineQueue q;
+    unsigned i;
+
+    if (entry->pending || !entry->replied || !Kaffeine_QueueRead(ctx, entry->port, &q))
+        return FALSE;
+    for (i = 0; i < q.count; i++)
+        if (q.nodes[i] == entry->guest)
+            return TRUE;
+    return FALSE;
+}
+
+/* Native reply-port bits stay private for the ports' entire lifetime.
+   In particular a scheduler WaitIO retry must not expose its wakeup bit
+   to children once the request has completed. */
+static void io_signals_update(struct KaffeineContext *ctx)
+{
+    ULONG bits = ctx->io_copy_port ? 1UL << ctx->io_copy_port->mp_SigBit : 0;
+    unsigned i;
+
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+        if (ctx->io_requests[i].native && ctx->io_requests[i].reply)
+            bits |= 1UL << ctx->io_requests[i].reply->mp_SigBit;
+    ctx->io_signals = bits;
+}
+
+/* The copy port goes with the last copy. */
+static void copy_port_release(struct KaffeineContext *ctx)
+{
+    unsigned i;
+
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+        if (ctx->io_requests[i].copy)
+            return;
+    if (ctx->io_copy_port)
+    {
+        DeleteMsgPort(ctx->io_copy_port);
+        ctx->io_copy_port = NULL;
+    }
+    io_signals_update(ctx);
+}
+
+/* A copy that is not in flight goes: the native open that the bridge made
+   for it, and its record unless CreateIORequest() storage keeps that. */
+static void copy_drop(struct KaffeineContext *ctx, struct KaffeineIORequest *entry)
+{
+    close_native(entry);
+    if (!entry->capacity)
+        memset(entry, 0, sizeof(*entry));
+    copy_port_release(ctx);
+}
+
+/* Whether the open of source is the last one of its timer.device unit,
+   which its copies need */
+static BOOL last_open(struct KaffeineContext *ctx, const struct KaffeineIORequest *source)
+{
+    unsigned i;
+
+    if (source->copy || source->kind != KAFFEINE_IO_TIMER)
+        return FALSE;
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+    {
+        const struct KaffeineIORequest *e = &ctx->io_requests[i];
+
+        if (e != source && e->native && !e->copy && e->kind == KAFFEINE_IO_TIMER &&
+            e->unit == source->unit)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+/* Closing source would take the last open from a copy in flight. */
+static BOOL cascade_blocked(struct KaffeineContext *ctx, const struct KaffeineIORequest *source)
+{
+    unsigned i;
+
+    if (!last_open(ctx, source))
+        return FALSE;
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+        if (ctx->io_requests[i].copy && !ctx->io_requests[i].orphan &&
+            ctx->io_requests[i].pending && ctx->io_requests[i].unit == source->unit)
+            return TRUE;
+    return FALSE;
+}
+
+/* Before source closes: the copies of its unit go with its last open. */
+static void cascade_close(struct KaffeineContext *ctx, const struct KaffeineIORequest *source)
+{
+    unsigned i;
+
+    if (!last_open(ctx, source))
+        return;
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+    {
+        struct KaffeineIORequest *e = &ctx->io_requests[i];
+
+        if (e->copy && !e->orphan && e->unit == source->unit)
+        {
+            bug("[kaffeine] closing copied timer request %08lx with the last open of unit %lu\n",
+                (unsigned long)e->guest, (unsigned long)e->unit);
+            copy_drop(ctx, e);
+        }
+    }
+}
+
+/* The guest structures that a request the guest sends must not overlap,
+   besides those of kaffeine_messages.c: CreateMsgPort() ports, library and
+   device bases, and the program's Process. */
+static BOOL io_storage(struct KaffeineContext *ctx, ULONG req, ULONG size)
+{
+    unsigned i;
+
+    for (i = 0; i < KAFFEINE_MAX_IO_PORTS; i++)
+        if (ctx->io_ports[i].guest &&
+            Kaffeine_Overlap(req, size, ctx->io_ports[i].guest, M68K_SIZEOF_MSGPORT))
+            return FALSE;
+    for (i = 0; i < ctx->num_libs; i++)
+        if (Kaffeine_Overlap(req, size, ctx->libs[i].jt_start,
+                             ctx->libs[i].m68k_addr + ctx->libs[i].pos_size - ctx->libs[i].jt_start))
+            return FALSE;
+    return !ctx->guest_exec_task ||
+           !Kaffeine_Overlap(req, size, ctx->guest_exec_task, M68K_SIZEOF_PROCESS);
+}
+
+/* The results of a native timerequest that came back, in the guest one */
+static void results(struct KaffeineContext *ctx, ULONG req, const struct timerequest *native)
+{
+    m68k_write32(ctx, req + G_TV_SECS, native->tr_time.tv_secs);
+    m68k_write32(ctx, req + G_TV_MICRO, native->tr_time.tv_micro);
+    ctx->mem[req + G_IO_ERROR] = (UBYTE)native->tr_node.io_Error;
+    ctx->mem[req + G_IO_FLAGS] = native->tr_node.io_Flags & ~IOF_QUICK;
+}
+
+/* The completed request is replied to the port that SendIO() saw, which
+   must still take it as a node of mn_Length bytes: 40 for a copy, which
+   owns no more, else within what the record keeps. Nothing is written
+   otherwise, and the guest stops. */
+static BOOL io_deliver(struct KaffeineContext *ctx, struct KaffeineIORequest *entry)
+{
+    struct KaffeineQueue q;
+    ULONG req = entry->guest, length = m68k_read16(ctx, req + G_MN_LENGTH);
+
+    if (!request_range(ctx, req, G_TIMEREQUEST_SIZE) ||
+        !Kaffeine_GuestBytes(ctx, req, G_TIMEREQUEST_SIZE) ||
+        m68k_read32(ctx, req + G_MN_REPLYPORT) != entry->port ||
+        (entry->copy ? length != G_TIMEREQUEST_SIZE :
+                       length < G_TIMEREQUEST_SIZE || length > request_span(entry)) ||
+        !request_range(ctx, req, length) || !Kaffeine_QueueRead(ctx, entry->port, &q) ||
+        !Kaffeine_IOMessagePreflight(ctx, &q, req, length, entry))
+    {
+        bug("[kaffeine] I/O request %08lx completed, but its reply port %08lx cannot take it\n",
+            (unsigned long)req, (unsigned long)entry->port);
+        Kaffeine_MessageFailure(ctx, "I/O completion");
+        return FALSE;
+    }
+    results(ctx, req, (const struct timerequest *)entry->native);
+    Kaffeine_MessageAppend(ctx, &q, req, NT_REPLYMSG);
+    entry->replied = 1;
+    return TRUE;
+}
+
+/* The native request of entry is back. An orphan goes without any guest
+   access. One that the root waits for in WaitIO() gets its results in
+   place, neither queued nor signalled, as Exec's WaitIO() takes it from
+   its port; a root blocked for it wakes on the private bit again. Any
+   other one is replied. */
+static BOOL io_finish(struct KaffeineContext *ctx, struct KaffeineIORequest *entry)
+{
+    ULONG req = entry->guest;
+
+    entry->pending = 0;
+    if (entry->orphan)
+    {
+        bug("[kaffeine] freed I/O request %08lx is back, closing it\n", (unsigned long)req);
+        close_native(entry);
+        memset(entry, 0, sizeof(*entry));
+        return TRUE;
+    }
+    if (!entry->waiting)
+        return io_deliver(ctx, entry);
+    if (!request_range(ctx, req, G_TIMEREQUEST_SIZE) ||
+        !Kaffeine_GuestBytes(ctx, req, G_TIMEREQUEST_SIZE))
+    {
+        Kaffeine_MessageFailure(ctx, "WaitIO completion");
+        return FALSE;
+    }
+    results(ctx, req, (const struct timerequest *)entry->native);
+    ctx->mem[req + G_LN_TYPE] = NT_REPLYMSG;
+    entry->replied = 1;
+    if (entry->waiting == 2)
+        Signal(FindTask(NULL), 1UL << (entry->copy ? ctx->io_copy_port : entry->reply)->mp_SigBit);
+    return TRUE;
+}
+
+/* ctx->io_poll: every native request that came back, the copies in the
+   order of their shared port. Each private bit is cleared before its port
+   is read, so that a reply after the last GetMsg() sets it again. */
+static BOOL io_pump(struct KaffeineContext *ctx)
+{
+    struct Message *msg;
+    unsigned i;
+    BOOL ok = TRUE;
+
+    if (!ctx->running)
+        return TRUE;
+    if (ctx->io_copy_port)
+    {
+        SetSignal(0, 1UL << ctx->io_copy_port->mp_SigBit);
+        while (ok && (msg = GetMsg(ctx->io_copy_port)))
+        {
+            for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+                if (ctx->io_requests[i].copy && ctx->io_requests[i].pending &&
+                    (struct Message *)ctx->io_requests[i].native == msg)
+                    break;
+            if (i == KAFFEINE_MAX_IO_REQUESTS)
+            {
+                Kaffeine_IORefuse(ctx, "I/O completion: an unknown native message on the copy port");
+                ok = FALSE;
+            }
+            else
+                ok = io_finish(ctx, &ctx->io_requests[i]);
+        }
+    }
+    for (i = 0; ok && i < KAFFEINE_MAX_IO_REQUESTS; i++)
+    {
+        struct KaffeineIORequest *entry = &ctx->io_requests[i];
+
+        if (!entry->pending || entry->copy)
+            continue;
+        SetSignal(0, 1UL << entry->reply->mp_SigBit);
+        msg = GetMsg(entry->reply);
+        if (!msg)
+            continue;
+        if (msg != (struct Message *)entry->native)
+        {
+            Kaffeine_IORefuse(ctx, "I/O completion: an unknown native message on a reply port");
+            ok = FALSE;
+        }
+        else
+            ok = io_finish(ctx, entry);
+    }
+    copy_port_release(ctx);
+    io_signals_update(ctx);
+    return ok;
+}
+
+/* ctx->io_wait: without guest tasks, the root waits natively for an empty
+   guest port that a request in flight replies to, outside callbacks. */
+static BOOL io_wait_port(struct KaffeineContext *ctx, ULONG port)
+{
+    unsigned i;
+
+    if (ctx->callback_depth || !root_caller(ctx, ctx->cpu))
+        return FALSE;
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+        if (ctx->io_requests[i].pending && !ctx->io_requests[i].orphan &&
+            !ctx->io_requests[i].waiting && ctx->io_requests[i].port == port)
+        {
+            Wait(ctx->io_signals);
+            return TRUE;
+        }
+    return FALSE;
+}
+
+/* ctx->io_release: the heap is about to free size bytes at addr. A request
+   in flight there, or one replying to a port there, and a reply still
+   queued there keep them, and nothing changes. Only the root's own copies
+   in flight there are let go: aborted and orphaned, they are reaped when
+   they come back and never touch the guest again. Idle copies there go. */
+static BOOL io_release(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL commit)
+{
+    BOOL root = root_caller(ctx, ctx->cpu);
+    unsigned i;
+
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+    {
+        const struct KaffeineIORequest *e = &ctx->io_requests[i];
+        BOOL inside;
+
+        if (!e->guest || e->orphan)
+            continue;
+        inside = Kaffeine_Overlap(addr, size, e->guest, request_span(e));
+        if (e->pending ? (inside ? !(e->copy && root) :
+                                   Kaffeine_Overlap(addr, size, e->port, M68K_SIZEOF_MSGPORT)) :
+                         inside && linked(ctx, e))
+        {
+            bug("[kaffeine] freeing %lu bytes at %08lx: I/O request %08lx is %s, keeping them\n",
+                (unsigned long)size, (unsigned long)addr, (unsigned long)e->guest,
+                e->pending ? "in flight" : "still queued");
+            return FALSE;
+        }
+    }
+    if (!commit)
+        return TRUE;
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+    {
+        struct KaffeineIORequest *e = &ctx->io_requests[i];
+
+        if (!e->guest || e->orphan || !e->copy ||
+            !Kaffeine_Overlap(addr, size, e->guest, request_span(e)))
+            continue;
+        if (e->pending)
+        {
+            bug("[kaffeine] copied timer request %08lx freed in flight, aborting it\n",
+                (unsigned long)e->guest);
+            AbortIO(e->native);
+            e->orphan = 1;
+        }
+        else
+            copy_drop(ctx, e);
+    }
+    return TRUE;
+}
+
+static void io_hooks(struct KaffeineContext *ctx)
+{
+    ctx->io_poll = io_pump;
+    ctx->io_wait = io_wait_port;
+    ctx->io_release = io_release;
+}
+
+/* The pump before a guard, which then finds a request still in flight or
+   not. FALSE when it stopped the guest. */
+static BOOL io_pumped(struct KaffeineContext *ctx)
+{
+    return !ctx->io_poll || ctx->io_poll(ctx);
 }
 
 /* -654: CreateIORequest(A0=ioReplyPort, D0=size) -> D0. A cleared 68k
@@ -305,7 +682,9 @@ IPTR Kaffeine_CreateIORequest(struct KaffeineContext *ctx, void *cpu)
 
 /* -660: DeleteIORequest(A0=ioRequest). Only a request from
    CreateIORequest(). One that is still open is closed first, so that no
-   native device stays open behind freed memory. */
+   native device stays open behind freed memory, and one still queued on
+   its reply port leaves it. One in flight, or the last open of a unit
+   whose copies are in flight, stops the guest. */
 IPTR Kaffeine_DeleteIORequest(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG req = THUNK_A(0);
@@ -320,13 +699,24 @@ IPTR Kaffeine_DeleteIORequest(struct KaffeineContext *ctx, void *cpu)
             (unsigned long)req);
         return 0;
     }
+    if (!io_pumped(ctx))
+        return 20;
+    if (entry->pending)
+        return Kaffeine_IORefuse(ctx, "DeleteIORequest(): the request is still in flight");
+    if (cascade_blocked(ctx, entry))
+        return Kaffeine_IORefuse(ctx, "DeleteIORequest(): copies of its unit are still in flight");
+    if (linked(ctx, entry))
+        Kaffeine_GuestRemoveMsg(ctx, entry->port, req);
     if (entry->native)
     {
         bug("[kaffeine] DeleteIORequest(%08lx): still open, closing it\n", (unsigned long)req);
+        cascade_close(ctx, entry);
         close_native(entry);
     }
+    io_signals_update(ctx);
     Kaffeine_HeapFree(ctx, req, entry->capacity);
     memset(entry, 0, sizeof(*entry));
+    copy_port_release(ctx);
     return 0;
 }
 
@@ -472,7 +862,9 @@ static const struct
    no-window console unit, including a zero mn_Length and no reply port.
    It gets a guest Device base and unit number; the native request, of the
    native size, never leaves the bridge. Opening a request again closes the
-   native open behind it first, which Exec would leak. */
+   native open behind it first, which Exec would leak, and the copies of
+   its unit with its last open; a request in flight, or a last open whose
+   copies are, stops the guest instead. */
 IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG name_addr = THUNK_A(0), unit = THUNK_D(0), req = THUNK_A(1), flags = THUNK_D(1);
@@ -493,12 +885,28 @@ IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
     bug("[kaffeine] OpenDevice(%s): unit=%ld flags=%08lx request=%08lx length=%lu\n",
         name ? name : "(bad name)", (long)(LONG)unit, (unsigned long)flags,
         (unsigned long)req, (unsigned long)m68k_read16(ctx, req + G_MN_LENGTH));
-    m68k_write32(ctx, req + G_IO_UNIT, 0);
     entry = request_entry(ctx, req);
     if (entry && entry->native)
     {
+        if (!io_pumped(ctx))
+            return 20;
+        if (entry->pending)
+            return Kaffeine_IORefuse(ctx, "OpenDevice(): the request is still in flight");
+        if (cascade_blocked(ctx, entry))
+            return Kaffeine_IORefuse(ctx, "OpenDevice(): copies of its unit are still in flight");
+    }
+    m68k_write32(ctx, req + G_IO_UNIT, 0);
+    if (entry && entry->native)
+    {
         bug("[kaffeine] OpenDevice(%08lx): already open, closing it first\n", (unsigned long)req);
-        close_native(entry);
+        if (entry->copy)
+            copy_drop(ctx, entry);
+        else
+        {
+            cascade_close(ctx, entry);
+            close_native(entry);
+        }
+        io_signals_update(ctx);
     }
     kind = device_kind(name, unit);
     if (kind == KAFFEINE_IO_NONE)
@@ -551,6 +959,8 @@ IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
     entry->reply = reply;
     entry->unit = unit;
     entry->kind = kind;
+    entry->open_flags = flags;
+    io_signals_update(ctx);
     m68k_write32(ctx, req + G_IO_DEVICE, base);
     m68k_write32(ctx, req + G_IO_UNIT, unit);
     ctx->mem[req + G_IO_ERROR] = 0;
@@ -559,7 +969,10 @@ IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
 
 /* -450: CloseDevice(A1=iORequest) -> D0. Console's library unit clears
    both guest identities; timer, keyboard and input get Exec's closed
-   marker, an io_Device of -1. */
+   marker, an io_Device of -1. A copy closes the native open that the
+   bridge made for it and leaves its reply port's queue; the last open of
+   a unit closes its copies too. A request in flight, or a last open whose
+   copies are, stops the guest. */
 IPTR Kaffeine_CloseDevice(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG req = THUNK_A(1);
@@ -568,8 +981,25 @@ IPTR Kaffeine_CloseDevice(struct KaffeineContext *ctx, void *cpu)
 
     if (!entry || !entry->native)
         return 0;
+    if (!io_pumped(ctx))
+        return 20;
+    if (entry->pending)
+        return Kaffeine_IORefuse(ctx, "CloseDevice(): the request is still in flight");
+    if (cascade_blocked(ctx, entry))
+        return Kaffeine_IORefuse(ctx, "CloseDevice(): copies of its unit are still in flight");
+    if (entry->copy)
+    {
+        if (linked(ctx, entry))
+            Kaffeine_GuestRemoveMsg(ctx, entry->port, req);
+        copy_drop(ctx, entry);
+        if (request_range(ctx, req, G_IOREQUEST_SIZE))
+            m68k_write32(ctx, req + G_IO_DEVICE, 0xFFFFFFFF);
+        return 0;
+    }
     kind = entry->kind;
+    cascade_close(ctx, entry);
     close_native(entry);
+    io_signals_update(ctx);
     if (request_range(ctx, req, G_IOREQUEST_SIZE))
     {
         m68k_write32(ctx, req + G_IO_DEVICE, kind == KAFFEINE_IO_CONSOLE ? 0 : 0xFFFFFFFF);
@@ -581,8 +1011,8 @@ IPTR Kaffeine_CloseDevice(struct KaffeineContext *ctx, void *cpu)
 }
 
 /* As Exec: a request is in flight when it is not QUICK and is still an
-   unreplied message. Nothing goes in flight through the bridge yet, so only
-   a guest edit can make it so. */
+   unreplied message. Only for requests that the bridge has no record of,
+   whose markers no I/O here can have set. */
 static BOOL in_flight(struct KaffeineContext *ctx, ULONG req)
 {
     return !(ctx->mem[req + G_IO_FLAGS] & IOF_QUICK) &&
@@ -683,7 +1113,9 @@ static IPTR std_doio(struct KaffeineContext *ctx, ULONG req, struct KaffeineIORe
    delay; they and every other command end with IOERR_NOCMD without
    reaching the device. Console requests always return IOERR_NOCMD, using
    the native record's kind rather than guest-editable device/unit fields.
-   Keyboard and input requests go to std_doio(). */
+   Keyboard and input requests go to std_doio(). A request in flight or
+   still queued on its reply port, and a copy, stop the guest before any
+   write. */
 IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG req = THUNK_A(1);
@@ -697,6 +1129,18 @@ IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu)
     if (!request_range(ctx, req, G_IOREQUEST_SIZE))
         return Kaffeine_IORefuse(ctx, "DoIO(): the request is not in guest memory");
     entry = request_entry(ctx, req);
+    if (entry && (entry->pending || entry->replied || entry->copy))
+    {
+        if (!io_pumped(ctx))
+            return 20;
+        if (entry->pending)
+            return Kaffeine_IORefuse(ctx, "DoIO(): the request is still in flight");
+        if (entry->copy)
+            return Kaffeine_IORefuse(ctx, "DoIO(): a copied timer request is supported with SendIO() only");
+        if (linked(ctx, entry))
+            return Kaffeine_IORefuse(ctx, "DoIO(): the request is still queued on its reply port");
+        entry->replied = 0;
+    }
     if (entry && entry->native &&
         (entry->kind == KAFFEINE_IO_KEYBOARD || entry->kind == KAFFEINE_IO_INPUT))
         return std_doio(ctx, req, entry);
@@ -732,47 +1176,264 @@ IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu)
     return (IPTR)(LONG)error;
 }
 
-/* -462: SendIO(A1=iORequest). Asynchronous I/O needs guest reply queues
-   that the bridge does not have yet. */
+/* -462: SendIO(A1=iORequest). timer.device alone: of a request opened
+   here, TR_ADDREQUEST on any unit but the EClock ones, or TR_GETSYSTIME;
+   of a 40-byte copy of one, TR_ADDREQUEST on UNIT_MICROHZ or UNIT_VBLANK
+   while that unit has an open. A copy gets a native request and open of
+   its own, with the OpenDevice() flags of an open of its unit, at its
+   first SendIO(). Only the root sends, outside callbacks, to a reply port
+   of its own or one that ignores arrivals, which must take the request as
+   a node. Every check comes before any write and native call, and SendIO()
+   has no way to report a failure: what the bridge cannot do, a failed
+   native setup included, stops the guest with 20. */
 IPTR Kaffeine_SendIO(struct KaffeineContext *ctx, void *cpu)
 {
-    bug("[kaffeine] SendIO(%08lx)\n", (unsigned long)THUNK_A(1));
-    return Kaffeine_IORefuse(ctx, "SendIO(): asynchronous device I/O is not supported yet");
+    ULONG req = THUNK_A(1), device, unit, port, length;
+    struct KaffeineIORequest *entry, *source = NULL;
+    struct KaffeineQueue q;
+    struct timerequest *native;
+    UWORD command;
+    BOOL copy, fresh;
+    unsigned i;
+
+    bug("[kaffeine] SendIO(%08lx)\n", (unsigned long)req);
+    if (!request_range(ctx, req, G_IOREQUEST_SIZE))
+        return Kaffeine_IORefuse(ctx, "SendIO(): the request is not in guest memory");
+    entry = request_entry(ctx, req);
+    command = m68k_read16(ctx, req + G_IO_COMMAND);
+    if (entry && entry->native && !entry->copy && entry->kind != KAFFEINE_IO_TIMER)
+    {
+        bug("[kaffeine] SendIO(%08lx): %s command %u\n", (unsigned long)req,
+            adapters[entry->kind].name, (unsigned)command);
+        return Kaffeine_IORefuse(ctx, "SendIO(): asynchronous I/O of this device is not supported");
+    }
+    if ((req & 1) || !request_range(ctx, req, G_TIMEREQUEST_SIZE) ||
+        !Kaffeine_GuestBytes(ctx, req, G_TIMEREQUEST_SIZE))
+        return Kaffeine_IORefuse(ctx, "SendIO(): not a timerequest in guest memory at an even address");
+    if (!root_caller(ctx, cpu) || ctx->callback_depth)
+        return Kaffeine_IORefuse(ctx, "SendIO(): asynchronous I/O is the root task's, outside callbacks");
+    if (entry && entry->pending)
+        return Kaffeine_IORefuse(ctx, "SendIO(): the request is still in flight");
+    device = m68k_read32(ctx, req + G_IO_DEVICE);
+    unit = m68k_read32(ctx, req + G_IO_UNIT);
+    length = m68k_read16(ctx, req + G_MN_LENGTH);
+    copy = !(entry && entry->native && !entry->copy);
+    if (!copy)
+    {
+        if (device != ctx->timer_base || unit != entry->unit)
+            return Kaffeine_IORefuse(ctx, "SendIO(): the request names another device or unit "
+                                         "than the one it was opened on");
+        if (command != TR_GETSYSTIME &&
+            (command != TR_ADDREQUEST || unit == UNIT_ECLOCK || unit == UNIT_WAITECLOCK))
+        {
+            bug("[kaffeine] SendIO(%08lx): timer.device command %u on unit %lu\n",
+                (unsigned long)req, (unsigned)command, (unsigned long)unit);
+            return Kaffeine_IORefuse(ctx, "SendIO(): timer.device supports TR_ADDREQUEST on "
+                                         "non-EClock units and TR_GETSYSTIME");
+        }
+    }
+    else if (entry && entry->copy)
+    {
+        if (device != ctx->timer_base || unit != entry->unit)
+            return Kaffeine_IORefuse(ctx, "SendIO(): a copied timer request changed its device or unit");
+    }
+    else
+    {
+        if (!ctx->timer_base || device != ctx->timer_base)
+        {
+            if (device && device == ctx->console_base)
+                return Kaffeine_IORefuse(ctx, "SendIO(): a copied console.device request is not supported");
+            return Kaffeine_IORefuse(ctx, "SendIO(): the request was not opened here "
+                                         "and is no copy of an open timer.device request");
+        }
+        if (unit != UNIT_MICROHZ && unit != UNIT_VBLANK)
+            return Kaffeine_IORefuse(ctx, "SendIO(): a copied timer request must be on "
+                                         "UNIT_MICROHZ or UNIT_VBLANK");
+        for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS && !source; i++)
+            if (ctx->io_requests[i].native && !ctx->io_requests[i].copy &&
+                ctx->io_requests[i].kind == KAFFEINE_IO_TIMER && ctx->io_requests[i].unit == unit)
+                source = &ctx->io_requests[i];
+        if (!source)
+            return Kaffeine_IORefuse(ctx, "SendIO(): a copied timer request whose unit has no open");
+    }
+    if (copy && command != TR_ADDREQUEST)
+        return Kaffeine_IORefuse(ctx, "SendIO(): a copied timer request supports TR_ADDREQUEST only");
+    if (copy ? length != G_TIMEREQUEST_SIZE :
+               length < G_TIMEREQUEST_SIZE || length > request_span(entry) || !request_range(ctx, req, length))
+        return Kaffeine_IORefuse(ctx, "SendIO(): mn_Length must hold the timerequest, "
+                                     "and be exactly 40 for a copy");
+    if (!io_storage(ctx, req, length))
+        return Kaffeine_IORefuse(ctx, "SendIO(): the request overlaps a port, a base or the Process");
+    port = m68k_read32(ctx, req + G_MN_REPLYPORT);
+    if (!port || (ctx->guest_exec_task && port == ctx->guest_exec_task + M68K_PR_MSGPORT))
+        return Kaffeine_IORefuse(ctx, "SendIO(): the reply port must be a port of the program "
+                                     "other than its pr_MsgPort");
+    /* The port of the root, or one that ignores arrivals, that takes the
+       request as a node now: neither still queued there nor anywhere else,
+       and overlapping no other request, port or message. */
+    if (!Kaffeine_QueueRead(ctx, port, &q) ||
+        (ctx->mem[port + G_MP_FLAGS] == G_PA_SIGNAL && ctx->guest_exec_task &&
+         m68k_read32(ctx, port + G_MP_SIGTASK) != ctx->guest_exec_task) ||
+        !Kaffeine_IOMessagePreflight(ctx, &q, req, length, entry))
+        return Kaffeine_IORefuse(ctx, "SendIO(): the reply port cannot take the request, "
+                                     "or it is still queued");
+    fresh = copy && !(entry && entry->copy);
+    if (fresh && !entry && !(entry = request_entry(ctx, 0)))
+        return Kaffeine_IORefuse(ctx, "SendIO(): no free I/O request record for a copy");
+
+    if (fresh)
+    {
+        /* All or nothing: what was made goes again in reverse order. */
+        struct MsgPort *reply = ctx->io_copy_port;
+        struct IORequest *made;
+        LONG error;
+
+        if (!reply && !(reply = CreateMsgPort()))
+            return Kaffeine_IORefuse(ctx, "SendIO(): no native reply port for copies");
+        made = (struct IORequest *)CreateIORequest(reply, sizeof(struct timerequest));
+        if (!made)
+        {
+            if (reply != ctx->io_copy_port)
+                DeleteMsgPort(reply);
+            return Kaffeine_IORefuse(ctx, "SendIO(): no native request for a copy");
+        }
+        error = OpenDevice("timer.device", (IPTR)unit, made, source->open_flags);
+        if (error)
+        {
+            bug("[kaffeine] SendIO(%08lx): native timer.device unit %lu: error %ld\n",
+                (unsigned long)req, (unsigned long)unit, (long)error);
+            DeleteIORequest(made);
+            if (reply != ctx->io_copy_port)
+                DeleteMsgPort(reply);
+            return Kaffeine_IORefuse(ctx, "SendIO(): the native open of a copy failed");
+        }
+        ctx->io_copy_port = reply;
+        entry->guest = req;
+        entry->native = made;
+        entry->reply = NULL;
+        entry->unit = unit;
+        entry->kind = KAFFEINE_IO_TIMER;
+        entry->open_flags = source->open_flags;
+        entry->copy = 1;
+        bug("[kaffeine] SendIO(%08lx): a copy of %08lx on unit %lu\n", (unsigned long)req,
+            (unsigned long)source->guest, (unsigned long)unit);
+    }
+
+    native = (struct timerequest *)entry->native;
+    native->tr_node.io_Command = command;
+    native->tr_node.io_Flags = 0;
+    native->tr_time.tv_secs = m68k_read32(ctx, req + G_TV_SECS);
+    native->tr_time.tv_micro = m68k_read32(ctx, req + G_TV_MICRO);
+    entry->port = port;
+    entry->pending = 1;
+    entry->replied = entry->waiting = 0;
+    ctx->mem[req + G_IO_FLAGS] = 0;
+    ctx->mem[req + G_LN_TYPE] = NT_MESSAGE;
+    ctx->mem[req + G_IO_ERROR] = 0;
+    io_hooks(ctx);
+    io_signals_update(ctx);
+    SendIO(&native->tr_node);
+    return 0;
 }
 
-/* -468: CheckIO(A1=iORequest) -> D0: the request when it is complete. */
+/* -468: CheckIO(A1=iORequest) -> D0: the request when it is complete. For
+   a request that the bridge knows, whether its native request is at the
+   device, never the guest's markers, which CreateExtIO() sets before any
+   I/O; for another one, the markers, as Exec. */
 IPTR Kaffeine_CheckIO(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG req = THUNK_A(1);
+    struct KaffeineIORequest *entry;
 
     if (!request_range(ctx, req, G_IOREQUEST_SIZE))
         return Kaffeine_IORefuse(ctx, "CheckIO(): the request is not in guest memory");
+    if (!io_pumped(ctx))
+        return 20;
+    entry = request_entry(ctx, req);
+    if (entry)
+        return entry->pending ? 0 : req;
     return in_flight(ctx, req) ? 0 : req;
 }
 
-/* -474: WaitIO(A1=iORequest) -> D0=io_Error. A complete request returns at
-   once. Its node is in no guest list, so unlike Exec nothing is removed. */
+/* -474: WaitIO(A1=iORequest) -> D0=io_Error. A request in flight is waited
+   for by the root alone, outside callbacks: natively, or with guest tasks
+   blocked on its private port while the others run; it is finished in
+   place, neither queued nor signalled. One already replied leaves its
+   port, as Exec's Remove(), and the port's signal stays. Other complete
+   requests return at once. */
 IPTR Kaffeine_WaitIO(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG req = THUNK_A(1);
+    struct KaffeineIORequest *entry;
+    BOOL root;
+    IPTR result;
 
     if (!request_range(ctx, req, G_IOREQUEST_SIZE))
         return Kaffeine_IORefuse(ctx, "WaitIO(): the request is not in guest memory");
-    if (in_flight(ctx, req))
-        return Kaffeine_IORefuse(ctx, "WaitIO(): a request in flight needs asynchronous I/O, "
-                                     "which is not supported yet");
+    entry = request_entry(ctx, req);
+    if (!entry)
+    {
+        if (in_flight(ctx, req))
+            return Kaffeine_IORefuse(ctx, "WaitIO(): no I/O of this request is in flight here "
+                                         "for its markers to wait for");
+        return (IPTR)(LONG)(BYTE)ctx->mem[req + G_IO_ERROR];
+    }
+    root = root_caller(ctx, cpu) && !ctx->callback_depth;
+    for (;;)
+    {
+        /* A reply that the pump finds now is finished in place as well. */
+        if (entry->pending && root)
+            entry->waiting = 1;
+        if (!io_pumped(ctx))
+            return 20;
+        if (!entry->pending)
+            break;
+        if (!root)
+            return Kaffeine_IORefuse(ctx, "WaitIO(): only the root task waits for its I/O, "
+                                         "outside callbacks");
+        if (ctx->sched)
+        {
+            entry->waiting = 2;
+            if (ctx->task_ops->block_port(ctx, cpu, entry->copy ? ctx->io_copy_port : entry->reply,
+                                          Kaffeine_WaitIO, &result))
+                return result;
+            /* a message is there, perhaps another copy's: pump again */
+            continue;
+        }
+        /* AROS's WaitIO() waits while the device marks the request
+           NT_MESSAGE, and takes it from the port once it is replied. */
+        WaitIO(entry->native);
+        if (entry->native->io_Message.mn_Node.ln_Type != NT_REPLYMSG)
+            return Kaffeine_IORefuse(ctx, "WaitIO(): the native request came back unreplied");
+        if (!io_finish(ctx, entry))
+            return 20;
+        /* another copy's reply may have arrived on the shared port */
+    }
+    if (linked(ctx, entry))
+        Kaffeine_GuestRemoveMsg(ctx, entry->port, req);
+    entry->waiting = 0;
     return (IPTR)(LONG)(BYTE)ctx->mem[req + G_IO_ERROR];
 }
 
-/* -480: AbortIO(A1=iORequest) -> D0. Nothing is in flight through the
-   bridge: -1, as timer.device answers for a request it no longer holds. */
+/* -480: AbortIO(A1=iORequest) -> D0, also timer.device's -36. Of a request
+   in flight, the native AbortIO() of the root; its reply comes as any
+   other. Of any other request -1, as timer.device answers for a request
+   it no longer holds. */
 IPTR Kaffeine_AbortIO(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG req = THUNK_A(1);
+    struct KaffeineIORequest *entry;
 
     if (!request_range(ctx, req, G_IOREQUEST_SIZE))
         return Kaffeine_IORefuse(ctx, "AbortIO(): the request is not in guest memory");
-    return (IPTR)(LONG)-1;
+    if (!io_pumped(ctx))
+        return 20;
+    entry = request_entry(ctx, req);
+    if (!entry || !entry->pending)
+        return (IPTR)(LONG)-1;
+    if (!root_caller(ctx, cpu))
+        return Kaffeine_IORefuse(ctx, "AbortIO(): only the root task aborts its I/O");
+    return (IPTR)(LONG)AbortIO(entry->native);
 }
 
 /* ── keyboard.device and input.device bases ──────────────────────── */
@@ -817,6 +1478,23 @@ void Kaffeine_IOCleanup(struct KaffeineContext *ctx)
         bug("[kaffeine] I/O cleanup outside the task that ran the guest, leaving it\n");
         return;
     }
+    /* Nothing reaches the guest from here on. Copies and orphans first,
+       which share the copy port: one in flight is aborted and taken back
+       before its open closes, and the port goes empty. Then the opens. */
+    ctx->io_poll = NULL;
+    ctx->io_wait = NULL;
+    ctx->io_release = NULL;
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+        if (ctx->io_requests[i].copy)
+        {
+            bug("[kaffeine] closing a copied timer request that the 68k program left\n");
+            close_native(&ctx->io_requests[i]);
+        }
+    if (ctx->io_copy_port)
+    {
+        DeleteMsgPort(ctx->io_copy_port);
+        ctx->io_copy_port = NULL;
+    }
     for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
         if (ctx->io_requests[i].native)
         {
@@ -829,6 +1507,7 @@ void Kaffeine_IOCleanup(struct KaffeineContext *ctx)
         if (ctx->guest_signals & (1UL << i))
             FreeSignal((LONG)i);
     ctx->guest_signals = 0;
+    ctx->io_signals = 0;
     memset(ctx->io_requests, 0, sizeof(ctx->io_requests));
     memset(ctx->io_ports, 0, sizeof(ctx->io_ports));
 }

@@ -17,8 +17,18 @@ BOOL Kaffeine_Overlap(ULONG, ULONG, ULONG, ULONG);
 BOOL Kaffeine_QueueRead(struct KaffeineContext *, ULONG, struct KaffeineQueue *);
 BOOL Kaffeine_QueueDisjoint(const struct KaffeineQueue *, ULONG, ULONG);
 BOOL Kaffeine_MessageMemory(struct KaffeineContext *, ULONG, ULONG);
+/* Kaffeine_MessageMemory() of memory that the heap is about to free: a
+   copied timer request there is left to the I/O release hook. */
+BOOL Kaffeine_ReleasableMemory(struct KaffeineContext *, ULONG, ULONG);
 /* Enqueue preflight includes destination arrival permissions, also before DOS Read. */
 BOOL Kaffeine_MessagePreflight(struct KaffeineContext *, struct KaffeineQueue *, ULONG, ULONG);
+/* The same for the bridge's own request record self, which kaffeine_exec_io.c
+   sends or replies; public PutMsg() and ReplyMsg() never pass one. */
+BOOL Kaffeine_IOMessagePreflight(struct KaffeineContext *, struct KaffeineQueue *, ULONG, ULONG,
+                                 const struct KaffeineIORequest *);
+/* Exec's Remove() of a node from a port's queue; nothing when it is not
+   there, FALSE for a malformed queue. Signals stay as they are. */
+BOOL Kaffeine_GuestRemoveMsg(struct KaffeineContext *, ULONG, ULONG);
 void Kaffeine_MessageAppend(struct KaffeineContext *, const struct KaffeineQueue *, ULONG, UBYTE);
 IPTR Kaffeine_MessageFailure(struct KaffeineContext *, const char *);
 IPTR Kaffeine_GuestPutMsg(struct KaffeineContext *, ULONG, ULONG, ULONG);

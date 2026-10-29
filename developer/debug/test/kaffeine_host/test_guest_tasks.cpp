@@ -1194,6 +1194,191 @@ static void test_native_routing()
           "a native signal on a child's bit wakes that child alone");
 }
 
+/* ── Asynchronous I/O hooks ──────────────────────────────────────── */
+
+/* kaffeine_exec_io.c is not linked here: its hooks as it sets them. A
+   native request of the root is in flight behind the private bit IO_BIT;
+   io_back says that native Exec has it back, which the pump finds by
+   GetMsg(), never by the bit, and replies a guest message to the root's
+   port as the bridge replies the guest request. */
+static constexpr ULONG IO_BIT = 1u << 25, IO_PORT = 0x31000, IO_MSG = 0x31200;
+static unsigned io_polls;
+static bool io_back, io_fail;
+static BOOL fake_io_poll(KaffeineContext *ctx)
+{
+    KaffeineQueue q;
+    ++io_polls;
+    if (io_fail)
+        return (BOOL)!Kaffeine_MessageFailure(ctx, "I/O completion");
+    SetSignal(0, IO_BIT);
+    if (!io_back)
+        return TRUE;
+    io_back = false;
+    if (!Kaffeine_QueueRead(ctx, IO_PORT, &q) || !Kaffeine_MessagePreflight(ctx, &q, IO_MSG, 20))
+        return (BOOL)!Kaffeine_MessageFailure(ctx, "I/O completion");
+    Kaffeine_MessageAppend(ctx, &q, IO_MSG, 7);
+    ctx->io_signals = 0;
+    return TRUE;
+}
+/* The device gives the request back: native Exec replies and signals. */
+static void io_complete()
+{
+    io_back = true;
+    native_recvd |= IO_BIT;
+}
+static void io_world(World &w)
+{
+    io_polls = 0; io_back = io_fail = false;
+    native_alloc |= IO_BIT;
+    guest_port(w, IO_PORT, ROOT, 20);
+    std::memset(w.mem.data() + IO_MSG, 0, 20);
+    m68k_write16(&w.ctx, IO_MSG + 18, 20);
+}
+static void io_private(Mock &)
+{
+    world->ctx.io_signals = IO_BIT;
+}
+static void io_start(Mock &)
+{
+    world->ctx.io_poll = fake_io_poll;
+    world->ctx.io_signals = IO_BIT;
+}
+
+static void test_io_root_wait_busy_child()
+{
+    World w;
+    w.child(0, 0);
+    io_world(w);
+    Program(ROOT_CODE).d(0, 20).call(330).add_task(TCB(0), CODE).op(io_start)
+        .wait((1u << 20) | 0x1000).store(SHARED, 0).mark(1)
+        .a(0, IO_PORT).call(372).store(SHARED + 4, 0)
+        .d(0, 0).rts();
+    Program(CODE).a(6, SYSBASE).op([](Mock &) { io_complete(); })
+        .loop(2, 3 * KAFFEINE_TASK_QUANTUM).mark(2).rts();
+    LONG result = w.run();
+    check(result == 0 && w.at(SHARED) == (1u << 20) && w.at(SHARED + 4) == IO_MSG && io_polls,
+          "the root's Wait() returns its port's bit once the pump replied the completion, never the private bit");
+    check(w.seen[1] && !w.seen[2] && w.seen[1] < 2 * KAFFEINE_TASK_QUANTUM + 64 && !native_waits,
+          "the root wakes at the busy child's next turn, without a native wait");
+}
+
+static void test_io_idle_wait()
+{
+    World w;
+    w.child(0, 0);
+    io_world(w);
+    Program(ROOT_CODE).d(0, 20).call(330).add_task(TCB(0), CODE).op(io_start)
+        .wait(1u << 20).store(SHARED, 0)
+        .signal(TCB(0), 0x80000000u).wait(0x1000).store(SHARED + 8, 0)
+        .a(0, IO_PORT).call(372).store(SHARED + 12, 0)
+        .d(0, 0).rts();
+    Program(CODE).a(6, SYSBASE).d(0, 0xFFFFFFFF).call(330)
+        .wait(0x80000000u | IO_BIT).store(SHARED + 4, 0)
+        .signal(ROOT, 0x1000).rts();
+    native_event = io_complete;
+    LONG result = w.run();
+    check(native_waits == 1 && native_wait_mask == ((1u << 20) | 0x80000000u | IO_BIT),
+          "with every task waiting the native task also waits for the private bit of I/O in flight");
+    check(result == 0 && w.at(SHARED) == (1u << 20) && w.at(SHARED + 12) == IO_MSG,
+          "the completion wakes the root through its guest port");
+    check(w.at(SHARED + 4) == 0x80000000u && w.at(SHARED + 8) == 0x1000,
+          "a child waiting for the private bit never gets it");
+}
+
+static void test_io_private_bits()
+{
+    World w;
+    w.child(0, -1);
+    io_world(w);
+    Program(ROOT_CODE).add_task(TCB(0), CODE).op(io_private)
+        .op([](Mock &m) {
+            native_recvd |= IO_BIT;
+            world->seen[0] = world->ctx.task_ops->is_root(&world->ctx, &m.handle);
+        })
+        .d(0, 0).d(1, 0).call(306).store(SHARED, 0)
+        .d(0, 0).d(1, 0xFFFFFFFF).call(306)
+        .see(1, [] { return native_recvd & IO_BIT; })
+        .wait(IO_BIT | 0x1000).store(SHARED + 4, 0)
+        .see(2, [] { return native_recvd & IO_BIT; })
+        .d(0, 0).rts();
+    /* The child runs once the root waits. */
+    Program(CODE).a(6, SYSBASE)
+        .op([](Mock &m) {
+            world->put(SYSBASE + 276, ROOT);            /* a forged ThisTask */
+            world->seen[3] = world->ctx.task_ops->is_root(&world->ctx, &m.handle) ||
+                             world->ctx.task_ops->is_root(&world->ctx, &world->root.handle);
+            world->put(SYSBASE + 276, TCB(0));
+        })
+        .see(4, [] { return native_recvd & IO_BIT; })
+        .op([](Mock &) { native_recvd &= ~IO_BIT; })
+        .signal(ROOT, IO_BIT | 0x1000).rts();
+    LONG result = w.run();
+    check(result == 0 && w.seen[0] && !w.seen[3],
+          "is_root() holds for the root's CPU while it runs, never for a child, whatever ThisTask says");
+    check(!(w.at(SHARED) & IO_BIT) && w.seen[1],
+          "the root's SetSignal() neither shows nor clears a private bit");
+    check(w.at(SHARED + 4) == 0x1000 && w.seen[4],
+          "the root's Wait() neither returns nor takes a private bit that is set");
+    check(!w.seen[2], "a guest Signal() of the root never sends a private bit");
+}
+
+static void test_io_blocked_on_private_port()
+{
+    World w;
+    w.child(0, 0);
+    io_world(w);
+    w.port_sigbit = 25;
+    Program(ROOT_CODE).add_task(TCB(0), CODE).op(io_private)
+        .call(384).store(SHARED, 0).mark(1).d(0, 0).rts();
+    Program(CODE).a(6, SYSBASE)
+        .op([](Mock &) { world->port_messages = 1; native_recvd |= IO_BIT; })
+        .loop(2, 3 * KAFFEINE_TASK_QUANTUM).mark(2).rts();
+    LONG result = w.run();
+    check(result == 0 && w.at(SHARED) == PORT_MESSAGE && w.port_calls == 2 && w.seen[1] && !w.seen[2] &&
+          !native_waits && !(native_recvd & IO_BIT),
+          "the root blocks on a private native port while a child runs, as WaitIO() does, and wakes on its bit");
+}
+
+/* A child's tc_MemEntry over an I/O request record: an idle copy is the
+   heap's release hook's to close, so it does not keep the memory; the
+   reservation of any other record still does. */
+static void test_io_reaped_copy_storage()
+{
+    for (bool copy : { true, false })
+    {
+        constexpr ULONG entry = 0x30000, storage = 0x30100;
+        World w;
+        w.child(0, 5);
+        w.put(TCB(0) + 74, entry); w.put(TCB(0) + 82, entry);
+        w.put(entry, TCB(0) + 78); w.put(entry + 4, TCB(0) + 74);
+        m68k_write16(&w.ctx, entry + 14, 1);
+        w.put(entry + 16, storage); w.put(entry + 20, 64);
+        KaffeineIORequest &record = w.ctx.io_requests[0];
+        record = {};
+        record.guest = storage + 8;
+        record.kind = KAFFEINE_IO_TIMER;
+        record.copy = copy;
+        Program(ROOT_CODE).add_task(TCB(0), CODE).wait(0x1000).d(0, 0).rts();
+        Program(CODE).a(6, SYSBASE).signal(ROOT, 0x1000).rts();
+        check(w.run() == 0 && !w.ctx.sched &&
+              freed_entries == (copy ? std::vector<ULONG>({ entry }) : std::vector<ULONG>()),
+              copy ? "reaping frees a child's memory that holds an idle copied request"
+                   : "reaping keeps a child's memory that holds another I/O request");
+    }
+}
+
+static void test_io_poll_failure()
+{
+    World w;
+    w.child(0, 0);
+    io_world(w);
+    Program(ROOT_CODE).add_task(TCB(0), CODE).op(io_start)
+        .op([](Mock &) { io_fail = true; }).wait(0x1000).d(0, 5).rts();
+    Program(CODE).rts();
+    check(w.run() == 20 && !w.ctx.running && w.ctx.exit_code == 20,
+          "a completion that cannot reach its guest port stops the program with 20");
+}
+
 /* ── Guest processes of CreateProc() ─────────────────────────────── */
 
 static void message(World &w, ULONG msg, ULONG reply)
@@ -1744,6 +1929,12 @@ int main()
     test_unroutable_native_port();
     test_end_cleanup();
     test_native_routing();
+    test_io_root_wait_busy_child();
+    test_io_idle_wait();
+    test_io_private_bits();
+    test_io_blocked_on_private_port();
+    test_io_reaped_copy_storage();
+    test_io_poll_failure();
     test_process_handshake();
     test_process_priorities();
     test_process_forbid_wait();

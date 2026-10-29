@@ -7,8 +7,8 @@
     CloseDevice() and the deletes, twice over, then units VBLANK, WAITUNTIL
     and ECLOCK, signals, and the errors that the bridge returns for what it
     does not support. The delays are measured with the timer itself. With
-    the argument "sendio" the program only calls SendIO(), which asynchronous
-    I/O needs and which must end the program with rc 20.
+    the argument "sendio" the program calls SendIO(TR_SETSYSTIME), which
+    must stop with rc 20 before changing the native clock.
 */
 
 #include <exec/types.h>
@@ -253,10 +253,10 @@ static void sendio(void)
 
     if (!tr)
         return;
-    tr->tr_node.io_Command = TR_ADDREQUEST;
+    tr->tr_node.io_Command = TR_SETSYSTIME;
     tr->tr_time.tv_secs = 0;
     tr->tr_time.tv_micro = 10000;
-    PutStr((CONST_STRPTR)"SendIO() must stop the program with rc 20\n");
+    PutStr((CONST_STRPTR)"SendIO(TR_SETSYSTIME) must stop the program with rc 20\n");
     test_flush();
     SendIO(&tr->tr_node);
     check(FALSE, "SendIO() returned");
