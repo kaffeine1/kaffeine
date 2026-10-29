@@ -12,6 +12,7 @@
 struct GfxBase *GfxBase;
 struct IntuitionBase *IntuitionBase;
 struct CheckedAttr { struct TextAttr attr; UBYTE guard[16]; };
+struct CheckedExtent { struct TextExtent e; UBYTE guard[8]; };
 struct CheckedRP { UBYTE before[16]; struct RastPort rp; UBYTE after[16]; };
 static BOOL guarded(const struct CheckedAttr *b)
 {
@@ -23,7 +24,13 @@ int main(void)
     struct Window *w=NULL;
     struct CheckedAttr a;
     struct CheckedRP raw;
-    struct RastPort copy;
+    struct RastPort copy,kept;
+    struct CheckedExtent ea,eb;
+    struct TextExtent limit;
+    static const UBYTE text[]="abcde";
+    WORD spacing;
+    ULONG fa,fb;
+    unsigned j;
     struct TextFont *font;
     STRPTR name;
     unsigned i;
@@ -60,6 +67,26 @@ int main(void)
     copy.TxSpacing=-1;
     check(TextLength(&copy,(CONST_STRPTR)"abc",3)==TextLength(w->RPort,(CONST_STRPTR)"abc",3)-3,
           "TextLength measures a copied RastPort with signed spacing");
+    spacing=w->RPort->TxSpacing;
+    for(i=0;i<2;i++)
+    {
+        copy.TxSpacing=w->RPort->TxSpacing=i?2:-1;kept=copy;
+        memset(&ea,0xA5,sizeof(ea));memset(&eb,0xA5,sizeof(eb));
+        TextExtent(&copy,text,5,&ea.e);TextExtent(w->RPort,text,5,&eb.e);
+        for(j=0;j<8;j++)if(ea.guard[j]!=0xA5||eb.guard[j]!=0xA5)break;
+        check(!memcmp(&ea.e,&eb.e,sizeof(ea.e))&&j==8,
+              "caller-owned TextExtent matches the window with signed spacing and guards");
+        fa=TextFit(&copy,text+4,5,&ea.e,NULL,-1,font->tf_XSize*3,font->tf_YSize);
+        fb=TextFit(w->RPort,text+4,5,&eb.e,NULL,-1,font->tf_XSize*3,font->tf_YSize);
+        check(fa==fb&&!memcmp(&ea.e,&eb.e,sizeof(ea.e)),
+              "reverse TextFit of a caller-owned RastPort matches the window");
+        limit=ea.e;
+        fa=TextFit(&copy,text,5,&ea.e,&limit,1,32767,font->tf_YSize);
+        fb=TextFit(w->RPort,text,5,&eb.e,&limit,1,32767,font->tf_YSize);
+        check(fa==fb&&!memcmp(&ea.e,&eb.e,sizeof(ea.e))&&!memcmp(&copy,&kept,sizeof(copy)),
+              "constrained TextFit matches and preserves the complete caller RastPort");
+    }
+    w->RPort->TxSpacing=spacing;
 done:
     if(w)CloseWindow(w);
     if(IntuitionBase)CloseLibrary((struct Library*)IntuitionBase);

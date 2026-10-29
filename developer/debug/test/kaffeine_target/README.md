@@ -568,3 +568,17 @@ Directory Opus now starts and services its child clock timer. Its Shell
 launch next stops with rc 20 at TextFit on a copied window RastPort; the
 following Run launch still rejects an unrecognized screen identity. File
 operations remain unvalidated.
+
+### Caller-owned text measurements — 2026-10-29
+
+The extended `gfx_askfont` protocol passes 19 checks on native AROS AArch64
+and under 68k Moira and Kaffeine JIT, each through Shell and Run. TextExtent
+and forward/reverse/constrained TextFit on a caller-owned RastPort match the
+registered window's results for both positive and negative text spacing.
+Caller RastPort bytes and output guards remain unchanged. The copied-window
+rendering protocol still passes 12/0 on both 68k backends and launch paths.
+
+The graphics host suite passes 31 groups, including ASan/UBSan. It checks
+that unused caller pointers never reach native metric queries and that
+malformed, freed, protected or overlapping output/caller storage stops before
+native calls or writes. The full host suite and 9,409-check JIT probe pass.

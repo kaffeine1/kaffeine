@@ -537,28 +537,50 @@ IPTR thunk_gfx_AskFont(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
+/* Native metric queries read Font and signed TxSpacing only. A caller's
+   classic RastPort needs no layer or bitmap: resolve its live font into
+   a zeroed per-call temporary, never import its other pointer fields. */
+static struct RastPort *metric_rastport(struct KaffeineContext *ctx, ULONG guest,
+                                       struct RastPort *temporary)
+{
+    struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
+    struct TextFont *font;
+
+    if (rp)
+    {
+        if (rp->Font)
+            return rp;
+    }
+    else if (state_storage(ctx, guest) &&
+             (font = Kaffeine_FontNative(ctx, m68k_read32(ctx, guest + G_RP_FONT))))
+    {
+        memset(temporary, 0, sizeof(*temporary));
+        temporary->Font = font;
+        temporary->TxSpacing = (WORD)m68k_read16(ctx, guest + G_RP_TXSPACING);
+        return temporary;
+    }
+    refuse(ctx, "text metrics: no live font in supported RastPort storage");
+    return NULL;
+}
+
+static BOOL metric_output(struct KaffeineContext *ctx, ULONG extent, ULONG port)
+{
+    return !(extent & 1) && program_memory(ctx, extent, M68K_SIZEOF_TEXTEXTENT) &&
+           !overlaps(extent, M68K_SIZEOF_TEXTEXTENT, port, M68K_SIZEOF_RASTPORT);
+}
+
 /* graphics -54: TextLength(A1=rp, A0=string, D0=count) -> D0 */
 IPTR thunk_gfx_TextLength(struct KaffeineContext *ctx, void *cpu)
 {
     CONST_STRPTR text = guest_text(ctx, THUNK_A(0), THUNK_D(0));
     ULONG guest = THUNK_A(1);
     struct RastPort *rp, temporary;
-    struct TextFont *font;
 
     if (!text)
         return refuse(ctx, "TextLength(): the text is not in guest memory");
-    rp = Kaffeine_RastPortIn(ctx, guest);
+    rp = metric_rastport(ctx, guest, &temporary);
     if (!rp)
-    {
-        if (!plain_rastport(ctx, guest) ||
-            !(font = Kaffeine_FontNative(ctx, m68k_read32(ctx, guest + G_RP_FONT))))
-            return refuse(ctx, "TextLength(): no registered font in the classic RastPort");
-        /* Native TextLength reads only Font and signed TxSpacing. */
-        memset(&temporary, 0, sizeof(temporary));
-        temporary.Font = font;
-        temporary.TxSpacing = (WORD)m68k_read16(ctx, guest + G_RP_TXSPACING);
-        rp = &temporary;
-    }
+        return ctx->exit_code;
     return (IPTR)(LONG)TextLength(rp, text, THUNK_D(0));
 }
 
@@ -598,11 +620,11 @@ IPTR thunk_gfx_TextExtent(struct KaffeineContext *ctx, void *cpu)
     CONST_STRPTR text = guest_text(ctx, THUNK_A(0), THUNK_D(0));
     ULONG extent = THUNK_A(2);
     struct TextExtent te;
-    struct RastPort *rp;
+    struct RastPort *rp, temporary;
 
-    if (!text || !guest_range(ctx, extent, M68K_SIZEOF_TEXTEXTENT))
+    if (!text || !metric_output(ctx, extent, THUNK_A(1)))
         return refuse(ctx, "TextExtent(): the text or the TextExtent is not in guest memory");
-    rp = rastport(ctx, THUNK_A(1), "TextExtent");
+    rp = metric_rastport(ctx, THUNK_A(1), &temporary);
     if (!rp)
         return ctx->exit_code;
     TextExtent(rp, text, THUNK_D(0), &te);
@@ -620,7 +642,7 @@ IPTR thunk_gfx_TextFit(struct KaffeineContext *ctx, void *cpu)
     ULONG extent = THUNK_A(2), constraint = THUNK_A(3);
     LONG step = (WORD)THUNK_D(1);
     struct TextExtent te, limit;
-    struct RastPort *rp;
+    struct RastPort *rp, temporary;
     ULONG fitted;
 
     if (length)
@@ -632,8 +654,9 @@ IPTR thunk_gfx_TextFit(struct KaffeineContext *ctx, void *cpu)
             !guest_range(ctx, (ULONG)last, 1))
             return refuse(ctx, "TextFit(): the text is not in guest memory");
     }
-    if (!guest_range(ctx, extent, M68K_SIZEOF_TEXTEXTENT) ||
-        (constraint && !guest_range(ctx, constraint, M68K_SIZEOF_TEXTEXTENT)))
+    if (!metric_output(ctx, extent, THUNK_A(1)) ||
+        (constraint && ((constraint & 1) || !guest_range(ctx, constraint, M68K_SIZEOF_TEXTEXTENT) ||
+                        overlaps(extent, M68K_SIZEOF_TEXTEXTENT, constraint, M68K_SIZEOF_TEXTEXTENT))))
         return refuse(ctx, "TextFit(): a TextExtent is not in guest memory");
     if (constraint)
     {
@@ -644,7 +667,7 @@ IPTR thunk_gfx_TextFit(struct KaffeineContext *ctx, void *cpu)
         limit.te_Extent.MaxX = (WORD)m68k_read16(ctx, constraint + G_TE_MAXX);
         limit.te_Extent.MaxY = (WORD)m68k_read16(ctx, constraint + G_TE_MAXY);
     }
-    rp = rastport(ctx, THUNK_A(1), "TextFit");
+    rp = metric_rastport(ctx, THUNK_A(1), &temporary);
     if (!rp)
         return ctx->exit_code;
     fitted = TextFit(rp, length ? (CONST_STRPTR)ctx->mem + string : (CONST_STRPTR)"",
