@@ -38,7 +38,7 @@ all AmigaOS library calls to forward them to the native AROS implementations.
                   │  exec.library    dos.library      │
                   │  intuition.library  graphics.lib  │
                   │  ... 22 libs + 2 devs (789 auto,  │
-                  │      549 manual registrations)    │
+                  │      551 manual registrations)    │
                   └───────────────────────────────────┘
 ```
 
@@ -208,7 +208,7 @@ and native AROS C functions. There are two kinds:
     listview), `GT_GetGadgetAttrsA`/`GT_SetGadgetAttrsA`
     (the attributes that their autodocs give for each kind, as 68k LONGs,
     converted and checked for the classes)
-  - **graphics** (80): `OpenFont`/`CloseFont`/`SetFont` (68k TextFonts),
+  - **graphics** (81): `OpenFont`/`CloseFont`/`SetFont` (68k TextFonts),
     `LoadRGB4` (big-endian byte-swap), and the calls on a registered window, screen or offscreen planar layer RastPort:
     `Move`/`Draw`/`RectFill`/`ReadPixel`/`WritePixel`,
     the pens and the drawing mode, `ScrollRaster`, and
@@ -265,7 +265,12 @@ metrics and the name of the native one. `ReadPixel` also accepts a guest-built
 RastPort with no layer and a classic planar BitMap: depth 1..8, Flags 0 or
 BMF_STANDARD, and real planes entirely inside guest memory. Coordinates must
 lie within BytesPerRow * 8 by Rows. Unsupported inputs stop with rc 20.
-Other drawing calls require the registered window or screen RastPort. See
+`InitRastPort` initializes exactly the 100-byte classic structure. Font-only
+`SetFont`, `AskFont` and `TextLength` also accept caller-owned classic RastPorts
+with resolved guest fonts. Temporary native structures expose no native
+pointers; unknown or closed fonts stop with rc 20. The default font snapshot
+stays until context cleanup. Other drawing calls require a registered
+RastPort. See
 [INTERNALS.md](INTERNALS.md#rastports-and-fonts).
 
 ### IDCMP Messages
@@ -464,7 +469,7 @@ The bridge provides generated or manual thunks for the following libraries and d
 | exec.library | 79 | 84 | 112 | Memory, pools, cooperative guest tasks, signals, semaphores, messages, devices, libraries, AVL |
 | dos.library | 112 | 122 | 158 | File I/O, locks, CLI, pattern matching, ReadArgs, ExAll/ExAllEnd, DOS packets, handler ports |
 | intuition.library | 127 | 54 | 137 | Windows, owned and public screens, DrawInfo, gadgets, menus, IDCMP, requesters |
-| graphics.library | 167 | 80 | 179 | Rendering, text, planar/screen blitting, layer locks, clip regions, fonts, colors, display metadata |
+| graphics.library | 167 | 82 | 180 | Rendering, text, planar/screen blitting, layer locks, clip regions, fonts, colors, display metadata |
 | layers.library | 40 | 40 | 40 | Live Layer snapshots, owned screen-bar drawing, layer locks/hooks, owned LayerInfos, private offscreen layers and clip Regions; remaining slots stop with 20 |
 | utility.library | 41 | 23 | 42 | TagItem processing, hooks, date functions, 32/64-bit integer math, case-insensitive string comparisons, VSNPrintf |
 | locale.library | 25 | 24 | 25 | OpenLocale/CloseLocale, FormatDate/ParseDate, FormatString, character classes, string conversion |
@@ -505,7 +510,8 @@ within the emulator.
 | ROLEX | 13 KB | Clock (custom screen, GUI loop) | ✅ Opens screen, event loop works |
 | SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders full UI (title, menus, buttons, text) |
 | Personal Paint 7.2.1.0 | 777,824 bytes | 68k paint / image editor | 🟡 Moira on AROS AArch64/QEMU: native Shell launch, 24-bit Workbench, 1024×768/256-color canvas, rectangles/circles/text, pixel-verified IFF/ILBM save and exit code zero. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; full Workbench startup and other operations remain open. The opt-in JIT also passes startup/exit, drawing, saving and a 320×200/256-color save/modify/reload cycle; see [JIT validation](../../docs/kaffeine/jit-backend.md#validation) |
-| Directory Opus 4.12 | 328 KB | File manager (GUI, m68k libraries) | ✅ Loads dopus.library, shows AutoRequest dialog, responds to button click |
+| Directory Opus 4.12 JR | 240,292 bytes | File manager (GUI, m68k libraries) | 🟡 AROS AArch64/Moira: loads dopus.library and passes the initial stack check. Startup currently stops when CreateProc cannot create its service process; file operations are not yet validated |
+| Redit 2.0 | 96,828 bytes | 68k text editor | 🟡 Compatibility testing in progress; editing, saving and reopening are not yet validated |
 | AmigaTerm 1.0 | 82 KB | Terminal emulator (GUI) | ✅ Opens window, clean exit |
 | Textcraft Plus | 208 KB | Word processor (GUI, custom screen) | ✅ Opens screen/window, sets colors, clean exit |
 | reqtools.library | 56 KB | m68k shared library (29 functions) | ✅ |
@@ -821,7 +827,7 @@ grep -oP '(OFF|SIZ)\|[^"]*' m68k.s | sed 's/#//g' > m68k_offsets.txt
 
 | Path | Description |
 |------|-------------|
-| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (324 native-vector cases and 549 manual thunks across 18 tables) and `run_sanitizers.sh` |
+| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (326 native-vector cases and 551 manual thunks across 18 tables) and `run_sanitizers.sh` |
 | [`developer/debug/test/kaffeine_native/`](../../developer/debug/test/kaffeine_native/README.md) | Standalone native AROS AArch64 translation probe (`jit_probe`) using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE` |
 | [`developer/debug/test/kaffeine_target/`](../../developer/debug/test/kaffeine_target/README.md) | Classic 68k HUNK target probes, bzip2 1.0.8 and IJG JPEG 9f self-tests, and QEMU AROS AArch64 runner (`run_qemu.py`) |
 | `developer/debug/test/kaffeine/test_kaffeine.c` | AROS-side smoke test that opens `kaffeine.library` |

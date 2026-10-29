@@ -163,6 +163,9 @@ static TextFont *record_open(TextAttr *ta, bool disk)
 }
 extern "C" TextFont *OpenDiskFont(TextAttr *ta) { return record_open(ta, true); }
 extern "C" TextFont *OpenFont(const TextAttr *ta) { return record_open(const_cast<TextAttr *>(ta), false); }
+extern "C" void AskFont(RastPort *, TextAttr *) { assert(false); }
+extern "C" void InitRastPort(RastPort *) { assert(false); }
+
 extern "C" void CloseFont(TextFont *font)
 {
     assert(font && owned_opens[font] && font->tf_Accessors);

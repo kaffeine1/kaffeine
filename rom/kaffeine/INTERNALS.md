@@ -1103,24 +1103,27 @@ validation work.
 | -702 | ResetMenuStrip | As SetMenuStrip, through native ResetMenuStrip, but a strip that the program built takes the copy that windows show or that waits, with the flags that the program changed, without memory; a new copy, for a strip without one, goes through native SetMenuStrip, which works out its page sizes |
 | -816 | SetWindowPointerA | No-op (avoids X11 blocking) (`kaffeine_thunks_gfx.c`) |
 
-**graphics.library (80 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
+**graphics.library (82 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
 
 RastPort thunks use the registered 68k RastPort of a window, a screen or a
 private offscreen planar layer (see RastPorts and Fonts and Layer Snapshots
 below). ReadPixel also reads bounded guest planar
-bitmaps directly; unsupported RastPorts stop with rc 20. A thunk that stops the
+bitmaps directly. Caller-owned classic RastPorts support bounded initialization
+and font-only SetFont/AskFont/TextLength calls through temporary native structures; other
+unsupported RastPorts stop with rc 20. A thunk that stops the
 program returns 20, so that the code reaches D0, from which the CPU loop
 takes the exit code.
 
 | LVO | Function | Handling |
 |-----|----------|----------|
 | -30 | BltBitMap | Copies bitplanes between checked classic planar bitmaps and/or owned indexed screens with minterm `0xC0`; unsupported bitmaps, planes, masks or minterms stop with rc 20 (`kaffeine_bitmaps.c`) |
-| -54 | TextLength | Checks UWORD(count) characters of guest text |
+| -54 | TextLength | Checks UWORD(count) characters of guest text; caller-owned classic RastPorts use a resolved live TextFont and signed TxSpacing in a temporary native structure |
 | -60 | Text | Checks the text as TextLength; the pen position comes back |
 | -66 | SetFont | Takes a 68k TextFont of graphics.library, or NULL for the default font; any other font, also one closed and gone, stops the program with rc 20 |
 | -72 | OpenFont | Converts the checked TextAttr/TTextAttr at A0, calls native OpenFont and returns the shared 68k TextFont with monochrome glyph data, counting the open |
 | -78 | CloseFont | Balances the native open; the final native close and guest snapshot release wait while a RastPort or pin retains the font. Foreign and repeated closes acquire no native close |
 | -192 | LoadRGB4 | Decodes a bounded big-endian UWORD color array for a registered screen ViewPort (`kaffeine_palette.c`) |
+| -198 | InitRastPort | Initializes exactly 100 bytes of checked caller-owned classic storage, with a pinned default-font snapshot; no temporary native pointer escapes |
 | -240 | Move | WORD coordinates |
 | -246 | Draw | WORD coordinates, from the pen position the program may have written |
 | -306 | RectFill | WORD coordinates |
@@ -1134,6 +1137,7 @@ takes the exit code.
 | -432 | LockLayerRom | Validates a registered or owned guest `Layer`, locks its native layer if present and increments its guest lock count (`kaffeine_layers.c`) |
 | -438 | UnlockLayerRom | Releases a lock acquired by `LockLayerRom` or `AttemptLockLayerRom` (`kaffeine_layers.c`) |
 | -444, -450 | SyncSBitMap, CopySBitMap | Stop the guest with rc 20 (`kaffeine_layers_Unsupported`) |
+| -474 | AskFont | Writes an aligned 8-byte big-endian TextAttr with a readable cached guest font name, height, style and flags; accepts registered RastPorts or checked caller-owned RastPorts with a live guest TextFont. Overlapping outputs and unknown fonts stop with rc 20 |
 | -510 | OrRectRegion | Unions a checked 8-byte 68k `Rectangle` into an owned 68k `Region` and splits non-overlapping `RegionRectangle` nodes (`kaffeine_regions.c`) |
 | -516 | NewRegion | Allocates an owned 20-byte 68k `Region` (`kaffeine_regions.c`) |
 | -534 | DisposeRegion | Frees an owned 68k `Region` and its `RegionRectangle` list (`kaffeine_regions.c`) |
@@ -3240,8 +3244,8 @@ Two generators exist:
 ### Host-Side Tests (no AROS required)
 
 `developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
-plus `test_thunk_registrations.py` (which verifies 324 explicit native-vector
-cases and all 549 manual thunk registrations across the 18 production tables)
+plus `test_thunk_registrations.py` (which verifies 326 explicit native-vector
+cases and all 551 manual thunk registrations across the 18 production tables)
 and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
 [developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
 for coverage details; the host Makefile is the authoritative executable list.

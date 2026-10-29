@@ -153,7 +153,7 @@ The current test and target baseline includes:
 
 | Environment | Result |
 | --- | --- |
-| macOS arm64 and Linux CI | All 47 host executables pass; the macOS JIT run passes 9,409 checks. The registration audit checks 324 native-vector cases and 549 manual thunks across 18 tables |
+| macOS arm64 and Linux CI | All 47 host executables pass; the macOS JIT run passes 9,409 checks. The registration audit checks 326 native-vector cases and 551 manual thunks across 18 tables |
 | Focused ASan/UBSan JIT build | 5,612 word-division checks pass; the earlier bitfield, extended-instruction and randomized checks remain separate regression evidence |
 | Library JIT on AROS AArch64/QEMU | Relocated HUNK, 17 hook checks, 12 guest-task checks, 120 window checks, 7 child-window checks and the 12-check native API client pass in Shell and `Run`; the default remains Moira |
 | Standalone AROS AArch64 JIT probe in QEMU | `jit_probe` passes 38 checks and `word_division` passes 22 in Shell and `Run`; a separate instruction corpus passes 490 checks covering 432 programs and eight callback boundary cases in each mode |

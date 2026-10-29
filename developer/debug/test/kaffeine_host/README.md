@@ -78,6 +78,14 @@ checks those fields independently of the host stack, invalid geometry and
 non-Process current tasks. The guest reservation remains 64 KiB; the native
 Shell stack setting does not resize it.
 
+### Classic RastPort initialization and font queries
+
+`test_gfx_thunks` exercises literal InitRastPort/AskFont dispatch, exact classic
+structure boundaries, cached guest font-name identity, copied caller-owned
+RastPorts, SetFont metrics and TextLength signed spacing. Guard bytes, malformed
+spans, overlapping font storage, closed fonts, native pointer rejection and
+repeated-call heap stability are checked before native graphics calls.
+
 ### Classic requesters and clipping
 
 `test_window` checks the exact 112-byte classic Requester boundary, retained
@@ -164,7 +172,7 @@ each mutation. The original rom/kaffeine stays unchanged.
 `make test` also runs `test_thunk_registrations.py`. Its default inputs are
 the AROS configuration files in this tree. Optional NDK and AROS FD inputs
 can extend the audit; use the script's `--help` for the available options.
-The audit covers 324 explicit native-vector cases and 549 manual thunk
+The audit covers 326 explicit native-vector cases and 551 manual thunk
 registrations across 18 tables. External SDK files are not included in this
 repository.
 

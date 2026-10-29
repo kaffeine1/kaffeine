@@ -4,7 +4,8 @@
     Intuition and graphics manual thunks shared by kaffeine.library and the
     host dispatch tests. The graphics calls here take the 68k RastPort of a
     window or a screen (kaffeine_rastport.c). ReadPixel also reads bounded,
-    unlayered guest planar bitmaps directly. Other guest-built RastPorts
+    unlayered guest planar bitmaps directly. Caller-owned classic RastPorts support bounded initialization and font-only
+    operations through temporary native structures. Other guest-built RastPorts
     stop with return code 20 instead of reaching native graphics.library.
 */
 
@@ -22,12 +23,34 @@
 
 extern void *shadow_lookup(struct KaffeineContext *ctx, ULONG m68k_addr);
 
-/* The 68k TextExtent of the NDK */
+/* The 68k TextExtent, RastPort and TextFont of the NDK */
 enum { G_TE_WIDTH = 0, G_TE_HEIGHT = 2, G_TE_MINX = 4, G_TE_MINY = 6, G_TE_MAXX = 8, G_TE_MAXY = 10 };
+enum { G_RP_FONT = 52, G_RP_TXHEIGHT = 58, G_RP_TXWIDTH = 60,
+       G_RP_TXBASELINE = 62, G_RP_TXSPACING = 64, G_LN_NAME = 10 };
 
 static BOOL guest_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)
 {
     return ctx->mem && addr && addr < ctx->mem_size && ctx->mem_size - addr >= size;
+}
+
+/* Whether two guest ranges share a byte, without wrapping near 2^32 */
+static BOOL overlaps(ULONG a, ULONG a_size, ULONG b, ULONG b_size)
+{
+    return (unsigned long long)a < (unsigned long long)b + b_size &&
+           (unsigned long long)b < (unsigned long long)a + a_size;
+}
+
+/* Whether a guest range shares a byte with the block of a 68k TextFont,
+   whose name and tables the bridge owns */
+static BOOL in_font(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    int i;
+
+    for (i = 0; i < KAFFEINE_MAX_FONTS; i++)
+        if (ctx->fonts[i].guest &&
+            overlaps(addr, size, ctx->fonts[i].guest, ctx->fonts[i].allocation_size))
+            return TRUE;
+    return FALSE;
 }
 
 /* Stop the program with return code 20. The thunk returns it, so that it
@@ -67,6 +90,41 @@ static struct RastPort *rastport(struct KaffeineContext *ctx, ULONG guest, const
         refuse(ctx, "only the RastPort of a window or a screen reaches graphics.library");
     }
     return rp;
+}
+
+/* A caller-owned classic RastPort may be used for font operations without
+   registering a persistent native object. Never reinterpret its bytes as
+   native pointers, or accept the storage of a registered graphics object. */
+static BOOL plain_rastport(struct KaffeineContext *ctx, ULONG guest)
+{
+    UWORD i;
+    if ((guest & 1) || !guest_range(ctx, guest, M68K_SIZEOF_RASTPORT) ||
+        in_font(ctx, guest, M68K_SIZEOF_RASTPORT))
+        return FALSE;
+    for (i = 0; i < ctx->num_shadows; i++)
+        if (ctx->shadow_map[i].m68k_addr == guest ||
+            (ctx->shadow_map[i].type == KAFFEINE_SHADOW_RASTPORT &&
+             overlaps(guest, M68K_SIZEOF_RASTPORT, ctx->shadow_map[i].m68k_addr, M68K_SIZEOF_RASTPORT)))
+            return FALSE;
+    return TRUE;
+}
+
+/* graphics -198: initialize exactly the classic 100 bytes, using a
+   temporary native RastPort. The default font has a context-owned name
+   and snapshot; no native pointer or temporary native object escapes. */
+IPTR thunk_gfx_InitRastPort(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG guest = THUNK_A(1), font;
+    struct RastPort rp;
+    if (!plain_rastport(ctx, guest))
+        return refuse(ctx, "InitRastPort(): not caller-owned classic RastPort storage");
+    InitRastPort(&rp);
+    if (!rp.Font || !(font = Kaffeine_FontGuest(ctx, rp.Font)))
+        return refuse(ctx, "InitRastPort(): no guest copy of the default font");
+    Kaffeine_FontPin(ctx, font);
+    memset(ctx->mem + guest, 0, M68K_SIZEOF_RASTPORT);
+    Kaffeine_RastPortOut(ctx, guest, &rp);
+    return 0;
 }
 
 /* The count of Text(), TextLength() and TextExtent() is a WORD, and their
@@ -129,16 +187,86 @@ IPTR thunk_gfx_CloseFont(struct KaffeineContext *ctx, void *cpu)
    default font. */
 IPTR thunk_gfx_SetFont(struct KaffeineContext *ctx, void *cpu)
 {
-    ULONG guest = THUNK_A(0);
+    ULONG guest = THUNK_A(0), port = THUNK_A(1), shown;
     struct TextFont *font = NULL;
-    struct RastPort *rp;
+    struct RastPort *rp, temporary;
 
     if (guest && !(font = Kaffeine_FontNative(ctx, guest)))
         return refuse(ctx, "SetFont(): the font is not one of graphics.library");
-    rp = rastport(ctx, THUNK_A(1), "SetFont");
+    rp = Kaffeine_RastPortIn(ctx, port);
     if (!rp)
-        return ctx->exit_code;
+    {
+        if (!plain_rastport(ctx, port))
+            return refuse(ctx, "SetFont(): not supported RastPort storage");
+        memset(&temporary, 0, sizeof(temporary));
+        SetFont(&temporary, font);
+        shown = Kaffeine_FontGuest(ctx, temporary.Font);
+        if (!shown) return refuse(ctx, "SetFont(): no guest font snapshot");
+        if (!guest) Kaffeine_FontPin(ctx, shown);
+        m68k_write32(ctx, port + G_RP_FONT, shown);
+        m68k_write16(ctx, port + G_RP_TXWIDTH, temporary.TxWidth);
+        m68k_write16(ctx, port + G_RP_TXHEIGHT, temporary.TxHeight);
+        m68k_write16(ctx, port + G_RP_TXBASELINE, temporary.TxBaseline);
+        return 0;
+    }
     SetFont(rp, font);
+    return 0;
+}
+
+/* graphics -474: AskFont(A1=rp, A0=textAttr). The classic 8-byte TextAttr
+   gets the attributes of native AskFont() of the RastPort, which as AROS
+   are those of the font itself (tf_Style, not the RastPort's AlgoStyle),
+   big-endian: name, YSize, Style, Flags. FSF_TAGGED is not passed on, as
+   the 68k TextFont has no extension and an 8-byte TextAttr no tags. The
+   name is the copy in the 68k TextFont of that font (Kaffeine_FontGuest()),
+   never a native pointer; it stays while a 68k RastPort shows the font or
+   the program holds it open, as the name of a native TextFont does. The
+   TextAttr must lie whole and word-aligned in guest memory, outside the
+   RastPort and every 68k TextFont, and the RastPort must show the 68k
+   TextFont of its native font; anything else, a RastPort without a font
+   and a font without a 68k TextFont stop the program before native
+   AskFont(). */
+IPTR thunk_gfx_AskFont(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG attr = THUNK_A(0), guest = THUNK_A(1), font, name = 0;
+    struct TextAttr ta;
+    struct TextFont *tf;
+    struct RastPort *rp, temporary;
+
+    if ((attr & 1) || !guest_range(ctx, attr, M68K_SIZEOF_TEXTATTR) ||
+        overlaps(attr, M68K_SIZEOF_TEXTATTR, guest, M68K_SIZEOF_RASTPORT) ||
+        in_font(ctx, attr, M68K_SIZEOF_TEXTATTR))
+        return refuse(ctx, "AskFont(): the TextAttr is not free guest memory");
+    rp = Kaffeine_RastPortIn(ctx, guest);
+    if (!rp)
+    {
+        if (!plain_rastport(ctx, guest) ||
+            !(tf = Kaffeine_FontNative(ctx, m68k_read32(ctx, guest + G_RP_FONT))))
+            return refuse(ctx, "AskFont(): no registered font in the classic RastPort");
+        memset(&temporary, 0, sizeof(temporary));
+        temporary.Font = tf;
+        rp = &temporary;
+    }
+    /* A font that the program wrote to rp->Font itself is not the one that
+       native graphics.library has; native AskFont() of no font crashes. */
+    tf = rp->Font;
+    if (!tf || m68k_read32(ctx, guest + G_RP_FONT) != Kaffeine_FontFind(ctx, tf))
+        return refuse(ctx, "AskFont(): the RastPort does not show its native font");
+    font = Kaffeine_FontGuest(ctx, tf);
+    /* a new 68k TextFont may not take the TextAttr's place either */
+    if (!font || in_font(ctx, attr, M68K_SIZEOF_TEXTATTR))
+        return refuse(ctx, "AskFont(): no 68k TextFont for the font of the RastPort");
+    AskFont(rp, &ta);
+    /* Kaffeine_FontGuest() copies the name right after the TextFont. */
+    if ((const char *)ta.ta_Name != (const char *)tf->tf_Message.mn_Node.ln_Name ||
+        m68k_read32(ctx, font + G_LN_NAME) != (ta.ta_Name ? font + M68K_SIZEOF_TEXTFONT : 0))
+        return refuse(ctx, "AskFont(): the font name has no 68k copy");
+    if (ta.ta_Name)
+        name = font + M68K_SIZEOF_TEXTFONT;
+    m68k_write32(ctx, attr + M68K_TA_NAME, name);
+    m68k_write16(ctx, attr + M68K_TA_YSIZE, ta.ta_YSize);
+    ctx->mem[attr + M68K_TA_STYLE] = ta.ta_Style & (UBYTE)~FSF_TAGGED;
+    ctx->mem[attr + M68K_TA_FLAGS] = ta.ta_Flags;
     return 0;
 }
 
@@ -146,12 +274,25 @@ IPTR thunk_gfx_SetFont(struct KaffeineContext *ctx, void *cpu)
 IPTR thunk_gfx_TextLength(struct KaffeineContext *ctx, void *cpu)
 {
     CONST_STRPTR text = guest_text(ctx, THUNK_A(0), THUNK_D(0));
-    struct RastPort *rp;
+    ULONG guest = THUNK_A(1);
+    struct RastPort *rp, temporary;
+    struct TextFont *font;
 
     if (!text)
         return refuse(ctx, "TextLength(): the text is not in guest memory");
-    rp = rastport(ctx, THUNK_A(1), "TextLength");
-    return rp ? (IPTR)(LONG)TextLength(rp, text, THUNK_D(0)) : (IPTR)ctx->exit_code;
+    rp = Kaffeine_RastPortIn(ctx, guest);
+    if (!rp)
+    {
+        if (!plain_rastport(ctx, guest) ||
+            !(font = Kaffeine_FontNative(ctx, m68k_read32(ctx, guest + G_RP_FONT))))
+            return refuse(ctx, "TextLength(): no registered font in the classic RastPort");
+        /* Native TextLength reads only Font and signed TxSpacing. */
+        memset(&temporary, 0, sizeof(temporary));
+        temporary.Font = font;
+        temporary.TxSpacing = (WORD)m68k_read16(ctx, guest + G_RP_TXSPACING);
+        rp = &temporary;
+    }
+    return (IPTR)(LONG)TextLength(rp, text, THUNK_D(0));
 }
 
 /* graphics -60: Text(A1=rp, A0=string, D0=count) */

@@ -70,6 +70,8 @@ ULONG Kaffeine_ScreenGuest(struct KaffeineContext *ctx, const struct Screen *nat
    a font that the program opened goes once it is closed and no 68k RastPort
    shows it. 0 for NULL, without memory or with a full font table. */
 ULONG Kaffeine_FontGuest(struct KaffeineContext *ctx, struct TextFont *font);
+/* Keep a borrowed system font used by a caller-owned RastPort until cleanup. */
+void Kaffeine_FontPin(struct KaffeineContext *ctx, ULONG guest);
 /* The native font of a 68k TextFont, or NULL. */
 struct TextFont *Kaffeine_FontNative(struct KaffeineContext *ctx, ULONG guest);
 /* The 68k TextFont of a native font if there is one, or 0. */
