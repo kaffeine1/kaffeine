@@ -60,12 +60,12 @@ GFX_CPPFLAGS := -I$(TEST_DIR)/gfx_stubs $(TEST_CPPFLAGS)
 GFX_THUNK_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
 DISKFONT_CPPFLAGS := -I$(TEST_DIR)/memory_stubs $(GFX_CPPFLAGS)
 DISKFONT_OBJS := $(addprefix $(BUILD_DIR)/diskfont_,cpu.o dispatch.o thunks_diskfont.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
-WINDOW_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o format.o rastport.o memory.o taglist.o)
+WINDOW_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o copy.o format.o rastport.o memory.o taglist.o)
 SCREEN_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o palette.o rastport.o memory.o taglist.o fontattr.o)
 # The layer bridge with the production run loop, window bridge and heap,
 # the native hook entry of its private layers and the Region bridge of
 # their clip Regions.
-LAYER_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o format.o rastport.o memory.o taglist.o layers.o hook.o regions.o)
+LAYER_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o copy.o format.o rastport.o memory.o taglist.o layers.o hook.o regions.o)
 LAYER_OBJS += $(BUILD_DIR)/layers_private_unused.o
 MENU_CPPFLAGS := -I$(TEST_DIR)/menus_stubs $(GFX_CPPFLAGS)
 MENU_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o mirror.o copy.o rastport.o memory.o taglist.o)

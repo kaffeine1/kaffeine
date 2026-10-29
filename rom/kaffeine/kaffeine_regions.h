@@ -3,7 +3,7 @@
 
     Regions of 68k code: real native graphics Regions of the program, each
     with a stable classic 68k Region and bounded snapshots of its
-    RegionRectangles, and the clip Regions of private layers. See
+    RegionRectangles, and the clip Regions of owned window, requester and private layers. See
     kaffeine_regions.c.
 */
 #ifndef KAFFEINE_REGIONS_H
@@ -43,7 +43,7 @@ IPTR Kaffeine_DisposeRegion(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_regions_Unsupported(struct KaffeineContext *ctx, void *cpu);
 
 /* For the layer bridge (kaffeine_layers.c), which installs Regions of the
-   program as clip Regions of its private layers. Lease: the native Region
+   program as clip Regions of its owned window, requester and private layers. Lease: the native Region
    of a live 68k Region of NewRegion(), which from now on can neither be
    changed nor disposed of until it is unleased as often; NULL after
    stopping the program for anything else. Unlease: one lease goes, after

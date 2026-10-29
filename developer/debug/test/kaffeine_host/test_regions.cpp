@@ -1,9 +1,10 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    Regions of 68k code and the clip Regions of private layers through
-    literal LVOs, with the real dispatcher, callback primitive, native hook
-    entry, layer bridge, Region bridge and heap: NewRegion() (-516),
+    Regions of 68k code and the clip Regions of private, window and
+    requester layers through literal LVOs, with the real dispatcher,
+    callback primitive, native hook entry, layer bridge, Region bridge and
+    heap: NewRegion() (-516),
     OrRectRegion() (-510), DisposeRegion() (-534) of graphics.library and
     InstallClipRegion() (-174) of layers.library. Every other Region vector
     of graphics.conf stops the program before anything native, and every
@@ -16,7 +17,10 @@
     native layers make, delete and backfill private layers, and install
     clip Regions, as hyperlayers does, recording every call; a native
     Region is never disposed of while a native layer clips with it, and a
-    native layer is never deleted with a clip Region.
+    native layer is never deleted with a clip Region. Window and requester
+    layers are Intuition's, opened and closed through ctx->layer_ops as the
+    window and requester bridges do; once Intuition has deleted one, no
+    layer call may reach it.
 */
 
 #ifdef NDEBUG
@@ -203,7 +207,12 @@ struct NativeLayer
     RastPort rp;
 };
 static std::vector<NativeLayer *> native_layers;
+/* Layers of windows and requesters that Intuition made and has not yet
+   deleted, and those it has deleted: no layer call may reach those. */
+static std::set<const Layer *> window_layers, dead_layers;
 static unsigned deletes, clip_calls;
+/* the caller's own locks of the layer when InstallClipRegion() came */
+static int clip_held;
 static bool delete_fails;
 /* InstallClipRegion() backfills the layer, as a smart layer may */
 static bool clip_backfill;
@@ -212,6 +221,9 @@ static bool clipping(const Region *r)
 {
     for (NativeLayer *n : native_layers)
         if (n->layer.ClipRegion == r)
+            return true;
+    for (const Layer *l : window_layers)
+        if (l->ClipRegion == r)
             return true;
     return false;
 }
@@ -234,25 +246,26 @@ extern "C" struct Task *FindTask(const char *name)
 
 extern "C" void LockLayer(LONG dummy, struct Layer *l)
 {
-    assert(dummy == 0 && l);
+    assert(dummy == 0 && l && !dead_layers.count(l));
     ++layer_locks[l];
     ++held_locks;
 }
 extern "C" void UnlockLayer(struct Layer *l)
 {
-    assert(l && layer_locks[l] > 0);
+    assert(l && !dead_layers.count(l) && layer_locks[l] > 0);
     --layer_locks[l];
     --held_locks;
 }
 extern "C" BOOL AttemptLockLayerRom(struct Layer *l)
 {
+    assert(!dead_layers.count(l));
     ++layer_locks[l];
     ++held_locks;
     return TRUE;
 }
 extern "C" struct Hook *InstallLayerHook(struct Layer *l, struct Hook *h)
 {
-    assert(l && layer_locks[l] > 0);
+    assert(l && !dead_layers.count(l) && layer_locks[l] > 0);
     Hook *old = l->BackFill;
     l->BackFill = h;
     return old;
@@ -347,16 +360,40 @@ extern "C" LONG DeleteLayer(LONG dummy, struct Layer *l)
     return TRUE;
 }
 
+/* As layers.library does: under the layer's own lock, nested on any lock
+   that the caller holds */
 extern "C" struct Region *InstallClipRegion(struct Layer *l, struct Region *r)
 {
-    assert(native_of(l) && (!r || live_regions.count(r)));
+    assert((native_of(l) || window_layers.count(l)) && !dead_layers.count(l));
+    assert(!r || live_regions.count(r));
     ++clip_calls;
     events.push_back(r ? "InstallClipRegion+" : "InstallClipRegion0");
+    clip_held = layer_locks[l];
+    LockLayer(0, l);
     Region *old = l->ClipRegion;
     l->ClipRegion = r;
     if (clip_backfill)
         backfill(l);
+    UnlockLayer(l);
     return old;
+}
+
+/* Intuition deletes the layer of a window or requester: CloseWindow() or
+   EndRequest(). No clip Region and no lock of the bridge may be left. */
+static void intuition_deletes(Layer *l, const char *what)
+{
+    assert(window_layers.count(l) && !l->ClipRegion && layer_locks[l] == 0);
+    events.push_back(what);
+    window_layers.erase(l);
+    dead_layers.insert(l);
+}
+
+/* A hook that must never run: a backfill hook of a window layer that may
+   be a guest address */
+static IPTR trap_entry(Hook *, APTR, IPTR)
+{
+    assert(false);
+    return 0;
 }
 
 /* Intuition and the rest of the window bridge: the window test opens its
@@ -507,7 +544,9 @@ struct Fixture
     {
         events.clear();
         layer_locks.clear();
-        held_locks = 0;
+        window_layers.clear();
+        dead_layers.clear();
+        held_locks = clip_held = 0;
         deletes = clip_calls = or_rect_calls = or_region_calls = region_disposals = 0;
         assert(native_infos.empty() && native_layers.empty() && live_regions.empty());
         made_regions.clear();
@@ -545,9 +584,14 @@ struct Fixture
     ~Fixture()
     {
         Kaffeine_LayersCleanup(&ctx);
+        /* windows and requesters still open keep no clip Region of the
+           bridge, before Intuition ever deletes their layers */
+        for (const Layer *l : window_layers)
+            assert(!l->ClipRegion && layer_locks[l] == 0);
         Kaffeine_RegionsCleanup(&ctx);
         assert(!ctx.layers && !ctx.regions && held_locks == 0);
         assert(native_layers.empty() && native_infos.empty() && live_regions.empty());
+        window_layers.clear();
         live = nullptr;
     }
 
@@ -759,6 +803,126 @@ static Layer *native_layer(Fixture &f, ULONG guest_layer)
     RastPort *rp = static_cast<RastPort *>(
         Kaffeine_ShadowNative(&f.ctx, f.L(guest_layer + M68K_LAYER_RP), KAFFEINE_SHADOW_RASTPORT));
     return rp ? rp->Layer : nullptr;
+}
+
+/* A screen with its bar, a window of the program on it, the window of
+   another program, and a requester layer that Intuition makes on the
+   window, as the window and requester bridges hand them to the layer
+   bridge through ctx->layer_ops. Declared before the Fixture, so that it
+   outlives the end of the bridges. */
+struct Desk
+{
+    Screen scr;
+    Layer bar, foreign;
+    NativeLayer wl, req;
+    Window w;
+    ULONG mw = 0, wlayer = 0, rlayer = 0;
+    bool requested = false;
+
+    Desk()
+    {
+        std::memset(static_cast<void *>(&scr), 0, sizeof(scr));
+        std::memset(static_cast<void *>(&bar), 0, sizeof(bar));
+        std::memset(static_cast<void *>(&foreign), 0, sizeof(foreign));
+        std::memset(static_cast<void *>(&wl), 0, sizeof(wl));
+        std::memset(static_cast<void *>(&req), 0, sizeof(req));
+        std::memset(static_cast<void *>(&w), 0, sizeof(w));
+        bar.Flags = LAYERSIMPLE | LAYERBACKDROP;
+        bar.LayerInfo = &scr.LayerInfo;
+        scr.BarLayer = &bar;
+        foreign.Flags = LAYERSIMPLE;
+        foreign.LayerInfo = &scr.LayerInfo;
+        for (NativeLayer *n : { &wl, &req })
+        {
+            n->layer.rp = &n->rp;
+            n->layer.LayerInfo = &scr.LayerInfo;
+            n->layer.Window = &w;
+            n->rp.Layer = &n->layer;
+        }
+        wl.layer.Flags = LAYERSMART;
+        req.layer.Flags = LAYERSIMPLE;
+        w.WLayer = &wl.layer;
+        w.WScreen = &scr;
+        w.RPort = &wl.rp;
+        order({ &bar, &wl.layer, &foreign });
+    }
+
+    /* the native layer list of the screen, front to back */
+    void order(std::initializer_list<Layer *> list)
+    {
+        Layer *prev = nullptr;
+        scr.LayerInfo.top_layer = nullptr;
+        for (Layer *l : list)
+        {
+            l->front = prev;
+            l->back = nullptr;
+            if (prev)
+                prev->back = l;
+            else
+                scr.LayerInfo.top_layer = l;
+            prev = l;
+        }
+    }
+
+    /* OpenWindow(): the 68k Window and its 68k Layer */
+    ULONG open(Fixture &f)
+    {
+        mw = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_WINDOW, MEMF_CLEAR);
+        assert(mw);
+        window_layers.insert(&wl.layer);
+        assert(f.ctx.layer_ops->window_opened(&f.ctx, mw, &w));
+        wlayer = f.L(mw + M68K_WIN_WLAYER);
+        assert(wlayer);
+        return wlayer;
+    }
+
+    /* Request(): Intuition makes the requester layer in front of the window */
+    ULONG request(Fixture &f)
+    {
+        /* a new layer, maybe where an earlier one was */
+        std::memset(static_cast<void *>(&req.layer), 0, sizeof(req.layer));
+        req.layer.Flags = LAYERSIMPLE;
+        req.layer.rp = &req.rp;
+        req.layer.LayerInfo = &scr.LayerInfo;
+        req.layer.Window = &w;
+        order({ &bar, &req.layer, &wl.layer, &foreign });
+        dead_layers.erase(&req.layer);
+        window_layers.insert(&req.layer);
+        rlayer = f.ctx.layer_ops->request_opened(&f.ctx, &w, &req.layer);
+        assert(rlayer && rlayer != wlayer);
+        requested = true;
+        return rlayer;
+    }
+
+    /* EndRequest(): the bridge first, then Intuition deletes the layer */
+    void end_request(Fixture &f)
+    {
+        f.ctx.layer_ops->request_closing(&f.ctx, &req.layer);
+        intuition_deletes(&req.layer, "EndRequest");
+        order({ &bar, &wl.layer, &foreign });
+        requested = false;
+    }
+
+    /* CloseWindow(), in the order of the window bridge: the layer bridge
+       lets go of the window, its requesters end, the window closes */
+    void close(Fixture &f)
+    {
+        f.ctx.layer_ops->window_closing(&f.ctx, mw, &w);
+        if (requested)
+            end_request(f);
+        intuition_deletes(&wl.layer, "CloseWindow");
+        order({ &bar, &foreign });
+        Kaffeine_HeapFree(&f.ctx, mw, M68K_SIZEOF_WINDOW);
+        mw = 0;
+    }
+};
+
+/* The native Region that OrRectRegion() of a Rectangle has just made */
+static const Region *region_with(Fixture &f, ULONG region, WORD x0, WORD y0, WORD x1, WORD y1)
+{
+    const size_t made = made_regions.size();
+    assert(f.or_rect(region, f.rect(x0, y0, x1, y1)) == TRUE && f.ctx.running);
+    return kept_since(made).back();
 }
 
 /* ── Tests ───────────────────────────────────────────────────────── */
@@ -1064,10 +1228,7 @@ static void test_clip_install_clear_replace_share()
 
 static void test_clip_refusals()
 {
-    static Screen scr;
-    static Layer bar;
-    NativeLayer wl = {};
-    Window w = {};
+    Desk d;
     Fixture f;
     const ULONG li = f.new_info(), bm = f.bitmap(4, 8), l = f.create(li, bm, 0, 0, 7, 7);
     const ULONG region = f.new_region(), gone = f.new_region();
@@ -1076,39 +1237,23 @@ static void test_clip_refusals()
     const ULONG deleted = f.create(li, bm, 0, 0, 3, 3);
     assert(f.destroy(deleted) == TRUE);
 
-    /* a window of the program and the bar of its screen */
-    std::memset(static_cast<void *>(&scr), 0, sizeof(scr));
-    std::memset(static_cast<void *>(&bar), 0, sizeof(bar));
-    bar.Flags = LAYERSIMPLE | LAYERBACKDROP;
-    bar.LayerInfo = &scr.LayerInfo;
-    scr.BarLayer = &bar;
-    wl.layer.Flags = LAYERSMART;
-    wl.layer.rp = &wl.rp;
-    wl.layer.LayerInfo = &scr.LayerInfo;
-    wl.layer.Window = &w;
-    wl.rp.Layer = &wl.layer;
-    w.WLayer = &wl.layer;
-    w.WScreen = &scr;
-    w.RPort = &wl.rp;
-    scr.LayerInfo.top_layer = &bar;
-    bar.back = &wl.layer;
-    wl.layer.front = &bar;
-    const ULONG mw = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_WINDOW, MEMF_CLEAR);
-    assert(mw && f.ctx.layer_ops->window_opened(&f.ctx, mw, &w));
-    const ULONG wlayer = f.L(mw + M68K_WIN_WLAYER), screen_info = f.L(wlayer + M68K_LAYER_LAYERINFO);
-    const ULONG gbar = f.L(screen_info + M68K_LI_TOP_LAYER);
-    assert(wlayer && gbar && gbar != wlayer);
+    /* a window of the program, the bar of its screen and the window of
+       another program, both borrowed */
+    const ULONG wlayer = d.open(f), screen_info = f.L(wlayer + M68K_LAYER_LAYERINFO);
+    const ULONG gbar = f.L(screen_info + M68K_LI_TOP_LAYER), gforeign = f.L(wlayer + M68K_LAYER_BACK);
+    assert(gbar && gforeign && gbar != wlayer && gforeign != wlayer && gforeign != gbar);
 
     const unsigned clips = clip_calls;
     auto refused = [&](ULONG layer, ULONG r) {
         assert(f.clip(layer, r) == 20 && f.stopped() && clip_calls == clips);
     };
-    /* no private layer of the program: windows, borrowed, stale, others */
-    for (ULONG bad : { 0u, wlayer, gbar, deleted, li, screen_info, l + 2, region, 0x5555u })
+    /* no layer of the program: borrowed, stale, others */
+    for (ULONG bad : { 0u, gbar, gforeign, deleted, li, screen_info, l + 2, wlayer + 2, region, 0x5555u })
     {
         refused(bad, region);
         refused(bad, 0);
     }
+    assert(held_locks == 0);
     /* no Region of the program: foreign, inner, stale, other objects */
     for (ULONG bad : { foreign, region + 2, gone, l, li, bm, 0x5555u })
         refused(l, bad);
@@ -1123,10 +1268,10 @@ static void test_clip_refusals()
     assert(f.call(Fixture::layers_base, 96, { 0, l }) == 0 && f.ctx.running);
     refused(l, region);
     assert(f.call(Fixture::layers_base, 102, { l }) == 0);
-    assert(wl.layer.ClipRegion == nullptr && bar.ClipRegion == nullptr);
+    assert(!d.wl.layer.ClipRegion && !d.bar.ClipRegion && !d.foreign.ClipRegion);
     /* none of those leased the Region */
     assert(f.dispose(region) == 0 && f.ctx.running);
-    f.ctx.layer_ops->window_closing(&f.ctx, mw, &w);
+    d.close(f);
 }
 
 static void test_clip_callbacks()
@@ -1268,6 +1413,274 @@ static void test_delete_and_cleanup_order()
     }
 }
 
+static void test_window_clip_install_replace_remove()
+{
+    Desk d;
+    Fixture f;
+    const ULONG wlayer = d.open(f);
+    const ULONG a = f.new_region(), b = f.new_region(), empty = f.rect(5, 5, 4, 5);
+    const ULONG extra = f.rect(9, 9, 9, 9);
+    const Region *na = region_with(f, a, 0, 0, 3, 3), *nb = region_with(f, b, 4, 4, 7, 7);
+    Layer *n = &d.wl.layer;
+    /* An empty Rectangle changes nothing: TRUE for a Region of the
+       program, 20 for a leased one, either way without native calls or
+       guest memory. */
+    auto leased = [&](ULONG region) {
+        const size_t calls = events.size();
+        const ULONG result = f.or_rect(region, empty);
+        assert(events.size() == calls && (result == TRUE || (result == 20 && f.stopped())));
+        return result == 20;
+    };
+    Kaffeine_LayersRefresh(&f.ctx);
+    const ULONG base = f.avail();
+    const auto heap = f.heap();
+    const UWORD shadows = f.ctx.num_shadows;
+
+    /* install: the real native Region under the bridge's lock of the
+       layer, which the native call nests on; the 68k one in ClipRegion */
+    assert(f.clip(wlayer, a) == 0 && f.ctx.running && n->ClipRegion == na);
+    assert(f.L(wlayer + M68K_LAYER_CLIPREGION) == a && clip_held == 1 && held_locks == 0);
+    assert(f.no_native(wlayer, M68K_SIZEOF_LAYER) && f.avail() == base && f.ctx.num_shadows == shadows);
+    assert(f.L(d.mw + M68K_WIN_WLAYER) == wlayer);
+
+    /* leased: it neither changes nor goes, with nothing native */
+    const size_t calls = events.size();
+    assert(leased(a) && !leased(b));
+    assert(f.or_rect(a, extra) == 20 && f.stopped());
+    assert(f.dispose(a) == 20 && f.stopped());
+    assert(events.size() == calls && live_regions.count(na) && n->ClipRegion == na);
+    f.same(a, na);
+    Kaffeine_LayersRefresh(&f.ctx);
+    assert(f.L(wlayer + M68K_LAYER_CLIPREGION) == a);
+
+    /* replace: the old 68k Region comes back as the program gave it, and
+       is the program's again */
+    assert(f.clip(wlayer, b) == a && f.ctx.running && n->ClipRegion == nb);
+    assert(f.L(wlayer + M68K_LAYER_CLIPREGION) == b && clip_held == 1 && held_locks == 0);
+    assert(!leased(a) && leased(b));
+    /* the same Region again is still one lease */
+    assert(f.clip(wlayer, b) == b && n->ClipRegion == nb && leased(b));
+
+    /* remove */
+    assert(f.clip(wlayer, 0) == b && f.ctx.running && !n->ClipRegion);
+    assert(!f.L(wlayer + M68K_LAYER_CLIPREGION) && !leased(a) && !leased(b));
+    assert(f.clip(wlayer, 0) == 0 && f.ctx.running && !n->ClipRegion);
+    Kaffeine_LayersRefresh(&f.ctx);
+    assert(!f.L(wlayer + M68K_LAYER_CLIPREGION));
+    /* none of that took or left guest memory */
+    assert(f.avail() == base && f.ctx.num_shadows == shadows && f.heap_is(heap));
+
+    /* the same 68k Region after a change of the program stands for its
+       new native Region */
+    na = region_with(f, a, 9, 9, 9, 9);
+    f.same(a, na);
+    assert(f.clip(wlayer, a) == 0 && n->ClipRegion == na && f.L(wlayer + M68K_LAYER_CLIPREGION) == a);
+
+    /* the snapshot of the screen goes and comes back: the 68k Layer and
+       its ClipRegion stay */
+    f.ctx.layer_ops->screen_closing(&f.ctx, &d.scr);
+    assert(f.L(d.mw + M68K_WIN_WLAYER) == wlayer && f.L(wlayer + M68K_LAYER_CLIPREGION) == a);
+    assert(!f.L(wlayer + M68K_LAYER_LAYERINFO));
+    Kaffeine_LayersRefresh(&f.ctx);
+    assert(f.L(d.mw + M68K_WIN_WLAYER) == wlayer && f.L(wlayer + M68K_LAYER_CLIPREGION) == a);
+    assert(f.L(wlayer + M68K_LAYER_LAYERINFO) && f.no_native(wlayer, M68K_SIZEOF_LAYER));
+    assert(n->ClipRegion == na && leased(a));
+
+    /* the window closes: the clip Region leaves the layer first */
+    events.clear();
+    d.close(f);
+    assert(events == std::vector<std::string>({ "InstallClipRegion0", "CloseWindow" }));
+    assert(f.dispose(a) == 0 && f.dispose(b) == 0 && f.ctx.running && live_regions.empty());
+    /* the 68k Layer went with the window */
+    const unsigned clips = clip_calls;
+    assert(f.clip(wlayer, 0) == 20 && f.stopped() && clip_calls == clips);
+}
+
+static void test_requester_clip()
+{
+    Desk d;
+    Fixture f;
+    const ULONG wlayer = d.open(f), rlayer = d.request(f);
+    const ULONG a = f.new_region(), b = f.new_region();
+    const Region *na = region_with(f, a, 0, 0, 3, 3), *nb = region_with(f, b, 4, 4, 7, 7);
+    Layer *r = &d.req.layer, *n = &d.wl.layer;
+    const ULONG base = f.avail();
+
+    /* the requester layer takes its own clip Region, the window another */
+    assert(f.clip(rlayer, a) == 0 && f.ctx.running && r->ClipRegion == na && clip_held == 1);
+    assert(f.L(rlayer + M68K_LAYER_CLIPREGION) == a && !n->ClipRegion);
+    assert(f.clip(wlayer, a) == 0 && n->ClipRegion == na && f.L(wlayer + M68K_LAYER_CLIPREGION) == a);
+    assert(f.no_native(rlayer, M68K_SIZEOF_LAYER) && f.avail() == base && held_locks == 0);
+
+    /* both lease it */
+    assert(f.dispose(a) == 20 && f.stopped());
+    Kaffeine_LayersRefresh(&f.ctx);
+    assert(f.L(rlayer + M68K_LAYER_CLIPREGION) == a && f.L(wlayer + M68K_LAYER_CLIPREGION) == a);
+    assert(f.L(wlayer + M68K_LAYER_FRONT) == rlayer && f.L(rlayer + M68K_LAYER_BACK) == wlayer);
+
+    /* replace on the requester; the window keeps a */
+    assert(f.clip(rlayer, b) == a && r->ClipRegion == nb && f.L(rlayer + M68K_LAYER_CLIPREGION) == b);
+    assert(f.dispose(a) == 20 && f.stopped());
+
+    /* EndRequest(): the clip Region leaves the layer before Intuition
+       deletes it, and b is the program's again */
+    events.clear();
+    d.end_request(f);
+    assert(event_at("InstallClipRegion0") < event_at("EndRequest") && event_count("InstallClipRegion0") == 1);
+    assert(n->ClipRegion == na && f.L(wlayer + M68K_LAYER_CLIPREGION) == a);
+    assert(f.dispose(b) == 0 && f.ctx.running && !live_regions.count(nb));
+    /* the stale requester layer is no layer of the program */
+    const unsigned clips = clip_calls;
+    assert(f.clip(rlayer, a) == 20 && f.stopped() && clip_calls == clips);
+
+    /* CloseWindow(): the same for the window, with a requester on it */
+    d.request(f);
+    assert(f.clip(d.rlayer, a) == 0 && d.req.layer.ClipRegion == na);
+    events.clear();
+    d.close(f);
+    /* the window's clip Region, then the requester's, then Intuition */
+    assert(event_count("InstallClipRegion0") == 2 && event_count("DisposeRegion") == 0);
+    assert(event_at("InstallClipRegion0", event_at("InstallClipRegion0") + 1) < event_at("EndRequest"));
+    assert(events.back() == "CloseWindow" && !d.wl.layer.ClipRegion);
+    assert(f.dispose(a) == 0 && f.ctx.running && live_regions.empty());
+}
+
+static void test_window_clip_refusals()
+{
+    Desk d;
+    Fixture f;
+    Hook native_hook = {};
+    native_hook.h_Entry = reinterpret_cast<decltype(native_hook.h_Entry)>(&trap_entry);
+    const ULONG wlayer = d.open(f);
+    const ULONG a = f.new_region(), b = f.new_region(), empty = f.rect(5, 5, 4, 5);
+    const Region *na = region_with(f, a, 0, 0, 3, 3);
+    region_with(f, b, 4, 4, 7, 7);
+    Layer *n = &d.wl.layer;
+    unsigned clips = clip_calls;
+    auto refused = [&](ULONG layer, ULONG r) {
+        const auto heap = f.heap();
+        assert(f.clip(layer, r) == 20 && f.stopped() && clip_calls == clips);
+        assert(held_locks == 0 && f.heap_is(heap));
+    };
+
+    /* a native clip Region that the bridge did not install */
+    Region stray = {};
+    n->ClipRegion = &stray;
+    refused(wlayer, a);
+    refused(wlayer, 0);
+    assert(n->ClipRegion == &stray);
+    n->ClipRegion = nullptr;
+
+    /* a BackFill that may be a guest address, from WA_BackFill, and any
+       other hook that is no sentinel */
+    n->BackFill = reinterpret_cast<Hook *>(static_cast<uintptr_t>(Fixture::heap_start + 0x100));
+    refused(wlayer, a);
+    n->BackFill = &native_hook;
+    refused(wlayer, a);
+    /* none of those leased a: an empty Rectangle is still taken */
+    assert(f.or_rect(a, empty) == TRUE && f.ctx.running);
+
+    /* with a lock of the program: of the window layer, or of a private
+       layer, and a private layer with a window lock */
+    const ULONG li = f.new_info(), bm = f.bitmap(4, 8), l = f.create(li, bm, 0, 0, 7, 7);
+    n->BackFill = LAYERS_BACKFILL;
+    assert(f.call(Fixture::layers_base, 96, { 0, wlayer }) == 0 && f.ctx.running);
+    const auto heap = f.heap();
+    assert(f.clip(wlayer, a) == 20 && f.stopped() && clip_calls == clips && f.heap_is(heap));
+    assert(f.clip(l, a) == 20 && f.stopped() && clip_calls == clips);
+    assert(f.call(Fixture::layers_base, 102, { wlayer }) == 0 && f.ctx.running);
+    assert(f.call(Fixture::layers_base, 96, { 0, l }) == 0 && f.ctx.running);
+    assert(f.clip(wlayer, a) == 20 && f.stopped() && clip_calls == clips);
+    assert(f.call(Fixture::layers_base, 102, { l }) == 0 && held_locks == 0);
+
+    /* both sentinels are taken */
+    n->BackFill = LAYERS_NOBACKFILL;
+    assert(f.clip(wlayer, a) == 0 && f.ctx.running && n->ClipRegion == na && clip_calls == ++clips);
+
+    /* installed, Intuition or anyone else replaced it natively: refused,
+       and the bridge's lease stays until the layer goes */
+    n->ClipRegion = &stray;
+    refused(wlayer, b);
+    refused(wlayer, 0);
+    n->ClipRegion = const_cast<Region *>(na);
+
+    /* while it is installed, the layer keeps a sentinel BackFill: a hook
+       handle of the bridge is refused, sentinels are taken */
+    assert(f.call(Fixture::layers_base, 198, { wlayer, 0 }) == 1 && n->BackFill == LAYERS_BACKFILL);
+    assert(f.clip(wlayer, 0) == a && !n->ClipRegion && clip_calls == ++clips);
+    n->BackFill = &native_hook;
+    Kaffeine_LayersRefresh(&f.ctx);
+    const ULONG handle = f.L(wlayer + M68K_LAYER_BACKFILL);
+    assert(handle > 1 && f.call(Fixture::layers_base, 198, { wlayer, 0 }) == handle);
+    assert(n->BackFill == LAYERS_BACKFILL);
+    assert(f.clip(wlayer, a) == 0 && n->ClipRegion == na && clip_calls == ++clips);
+    assert(f.call(Fixture::layers_base, 198, { wlayer, handle }) == 20 && f.stopped());
+    assert(n->BackFill == LAYERS_BACKFILL && held_locks == 0);
+    assert(f.call(Fixture::layers_base, 198, { wlayer, 1 }) == 0 && n->BackFill == LAYERS_NOBACKFILL);
+
+    /* not from a 68k backfill hook of a private layer */
+    {
+        const ULONG h = f.hook();
+        action = GUEST_LVO;
+        guest_base = Fixture::layers_base;
+        guest_lvo = 174;
+        guest_lvo_a = { wlayer, b };
+        const size_t hooks = hook_calls.size();
+        f.call_on(f.cpu, Fixture::layers_base, 186, { li, bm, 0, h }, { 0, 0, 3, 3, LAYERSIMPLE }, false);
+        action = GUEST_NONE;
+        assert(hook_calls.size() == hooks + 1 && hook_calls.back().nested == 20);
+        assert(n->ClipRegion == na && f.L(wlayer + M68K_LAYER_CLIPREGION) == a && clip_calls == clips);
+    }
+    /* b was never leased; a is until the window goes */
+    assert(f.dispose(b) == 0 && f.ctx.running);
+    assert(f.dispose(a) == 20 && f.stopped());
+    d.close(f);
+    assert(f.dispose(a) == 0 && f.ctx.running && live_regions.empty());
+}
+
+static void test_window_clip_cleanup()
+{
+    /* the end, with a window and a requester still open, each with a clip
+       Region and the window with a lock of the program: every clip Region
+       leaves its native layer, under the layer lock, before Intuition ever
+       deletes the layer, and no backfill runs a hook that is no sentinel */
+    Desk d;
+    Fixture f;
+    Hook trap = {};
+    trap.h_Entry = reinterpret_cast<decltype(trap.h_Entry)>(&trap_entry);
+    const ULONG wlayer = d.open(f), rlayer = d.request(f);
+    const ULONG a = f.new_region(), b = f.new_region(), unused = f.new_region();
+    region_with(f, a, 0, 0, 3, 3);
+    region_with(f, b, 4, 4, 7, 7);
+    assert(unused && f.clip(wlayer, a) == 0 && f.clip(rlayer, b) == 0);
+    assert(f.call(Fixture::layers_base, 96, { 0, wlayer }) == 0 && f.ctx.running);
+    /* a hook that the bridge could not refuse, set natively */
+    d.wl.layer.BackFill = &trap;
+    clip_backfill = true;
+    events.clear();
+    Kaffeine_LayersCleanup(&f.ctx);
+    clip_backfill = false;
+    assert(!f.ctx.layers && held_locks == 0);
+    assert(!d.wl.layer.ClipRegion && !d.req.layer.ClipRegion);
+    assert(d.wl.layer.BackFill == LAYERS_NOBACKFILL);
+    assert(event_count("InstallClipRegion0") == 2 && event_count("DisposeRegion") == 0);
+    assert(live_regions.size() == 3);
+    /* the Regions are free: they all go, after the layers */
+    Kaffeine_RegionsCleanup(&f.ctx);
+    assert(live_regions.empty() && event_count("DisposeRegion") == 3);
+    /* Intuition deletes the layers only now, with nothing of the bridge */
+    const size_t calls = events.size();
+    intuition_deletes(&d.req.layer, "EndRequest");
+    intuition_deletes(&d.wl.layer, "CloseWindow");
+    assert(events.size() == calls + 2);
+    /* and the calls stop before anything native */
+    assert(f.clip(wlayer, 0) == 20 && f.stopped());
+}
+
+extern "C" BOOL Request(struct Requester *,struct Window *) { assert(false); return FALSE; }
+extern "C" void EndRequest(struct Requester *,struct Window *) { assert(false); }
+extern "C" BOOL SetDMRequest(struct Window *,struct Requester *) { assert(false); return FALSE; }
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
@@ -1279,9 +1692,13 @@ int main()
         { "OrRectRegion() publishes a complete native copy or leaves everything whole", test_atomic_or_rect },
         { "Foreign, stale and malformed Regions and Rectangles stop before anything native", test_malformed },
         { "Clip Regions: install, share, replace, clear, with 68k identities", test_clip_install_clear_replace_share },
-        { "Clip Regions only of private layers and Regions of the program", test_clip_refusals },
+        { "Clip Regions only of layers and Regions of the program, never borrowed ones", test_clip_refusals },
         { "Backfills during InstallClipRegion() cannot touch Regions or clips", test_clip_callbacks },
         { "Deletion and the end detach clip Regions before layers, free Regions after", test_delete_and_cleanup_order },
+        { "Window clip Regions: install, lease, replace, remove, stable identities and heap", test_window_clip_install_replace_remove },
+        { "Requester clip Regions leave before EndRequest() and CloseWindow()", test_requester_clip },
+        { "Window clips refuse foreign clips, backfill hooks, locks and callbacks", test_window_clip_refusals },
+        { "The end takes window and requester clips out before Intuition deletes layers", test_window_clip_cleanup },
     };
     for (const Test &t : tests)
     {

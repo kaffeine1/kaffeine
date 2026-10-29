@@ -79,11 +79,32 @@ The original 68k Personal Paint 7.2.1.0 also reached its editor with the JIT
 on AROS AArch64 in QEMU, from both Shell and `Run`, using the CPU blitting
 preferences of the existing Moira demonstration. A line was drawn in the
 first run, and both runs exited normally with return code 0. UART identified
-the JIT and reported translated blocks for each run. This is a startup,
-basic drawing and exit smoke test. Save/reload on the JIT, broader editor
-use, full instruction coverage, native performance and physical Raspberry
-Pi cache behavior remain unverified. The published Personal Paint video
-continues to show Moira.
+the JIT and reported translated blocks for each run.
+
+The JIT save/reload follow-up on 2026-10-29 saved an original rectangle and
+line as a 320×200 IFF/ILBM image with eight planes and 256 palette entries.
+After adding a visible extra rectangle, loading the saved file restored the
+original drawing. An independent FFmpeg decode matched the captured drawing
+and the reloaded canvas pixel for pixel in the comparison area, excluding
+the toolbar, title and mouse pointer. The saved file is 9,386 bytes, SHA-256
+`3a9c33f0e559b84907044e0beb318acb7d8e8307565960f7982f61ed19fba876`.
+The run used the original application executable and the same CPU blitting
+preferences; AROS screen switching was needed to return to the editor after
+the load dialog.
+
+This path required generic classic Requester conversion and owned-layer
+clip Regions. On AROS AArch64, the JIT passed 4 `gfx_requester_init`, 23
+`gfx_classic_request`, 22 `gfx_window_clip`, 13 `gfx_request` and 46
+`gfx_private_regions` checks in each of Shell and `Run`. The 22 clipping
+checks also passed as a native ARM program in both modes, independently of
+the 68k bridge.
+
+A separate JIT run saved a 1024×768 image with eight palette entries; its
+independent decode matched the entire visible canvas. Reopening that larger
+file still reports “The image is too large”. Broader editor use, full
+instruction coverage, native performance and physical Raspberry Pi cache
+behavior remain unverified. The published Personal Paint video continues
+to show Moira.
 
 For repeatable target runs, pass `--cpu jit` or `--cpu moira` to
 `developer/debug/test/kaffeine_target/run-raspi-qemu.py`; it selects the

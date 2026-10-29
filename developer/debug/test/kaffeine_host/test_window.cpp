@@ -33,6 +33,7 @@
 
 #include <exec/memory.h>
 #include <graphics/rastport.h>
+#include <graphics/clip.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <proto/exec.h>
@@ -166,6 +167,85 @@ static ULONG gadget_guest(KaffeineContext *ctx, const void *native)
 static const KaffeineWindowGadgets recording_gadgets =
     { gadget_prepare, gadget_opened, gadget_dropped, gadget_closing, gadget_sync, gadget_filtering,
       gadget_guest };
+
+/* Native classic requester collaborator. Native structs must live outside
+   the guest arena, and Intuition keeps them until EndRequest returns. */
+static std::vector<Requester *> classic_requests;
+static unsigned requests_started, requests_ended, dm_cleared;
+static bool fail_request;
+static struct { WORD left, top, width, height; UWORD flags; UBYTE fill; } request_input;
+struct RequestSurface { Layer layer; RastPort rp; };
+static std::map<Requester *, RequestSurface> request_surfaces;
+static std::map<Layer *, std::pair<ULONG,ULONG>> request_mirrors;
+static bool fail_request_mirror;
+static ULONG recording_request_opened(KaffeineContext *ctx,Window *w,Layer *layer)
+{
+    assert(ctx==live && layer && layer->Window==w && layer->rp && layer->rp->Layer==layer);
+    if(fail_request_mirror)return 0;
+    ULONG g=Kaffeine_HeapAlloc(ctx,M68K_SIZEOF_LAYER,0);
+    if(!g)return 0;
+    ULONG rp=Kaffeine_RastPortCreate(ctx,layer->rp);
+    if(!rp){Kaffeine_HeapFree(ctx,g,M68K_SIZEOF_LAYER);return 0;}
+    std::memset(ctx->mem+g,0,M68K_SIZEOF_LAYER);
+    m68k_write32(ctx,g+M68K_LAYER_RP,rp);m68k_write32(ctx,rp+M68K_RP_LAYER,g);
+    request_mirrors[layer]={g,rp};return g;
+}
+static void recording_request_closing(KaffeineContext *ctx,Layer *layer)
+{
+    auto it=request_mirrors.find(layer);
+    if(it==request_mirrors.end())return;
+    Kaffeine_RastPortDelete(ctx,it->second.second);
+    Kaffeine_HeapFree(ctx,it->second.first,M68K_SIZEOF_LAYER);
+    request_mirrors.erase(it);
+}
+static const KaffeineLayerOps &request_layer_ops()
+{
+    static const KaffeineLayerOps ops=[] { KaffeineLayerOps x={};
+        x.window_opened=[](KaffeineContext*,ULONG,Window*)->BOOL{return TRUE;};
+        x.window_closing=[](KaffeineContext*,ULONG,Window*){};
+        x.window_flags=[](KaffeineContext*,ULONG,ULONG flags)->ULONG{return flags;};
+        x.window_synced=[](KaffeineContext*,ULONG,Window*){};
+        x.screen_mirrored=[](KaffeineContext*,Screen*){};
+        x.screen_closing=[](KaffeineContext*,Screen*){};
+        x.request_opened=recording_request_opened;x.request_closing=recording_request_closing;return x;}();
+    return ops;
+}
+extern "C" BOOL Request(Requester *r, Window *w)
+{
+    ++native_calls; ++requests_started;
+    const auto ptr = reinterpret_cast<std::uintptr_t>(r);
+    const auto mem = reinterpret_cast<std::uintptr_t>(live->mem);
+    assert(ptr < mem || ptr >= mem + live->mem_size);
+    assert(!r->ReqGadget && !r->OlderRequest && !r->ReqLayer);
+    request_input = {r->LeftEdge,r->TopEdge,r->Width,r->Height,r->Flags,r->BackFill};
+    if (fail_request || r->Width <= 0 || r->Height <= 0) return FALSE;
+    classic_requests.push_back(r);
+    r->LeftEdge += 3; r->TopEdge += 5;
+    r->OlderRequest = w->FirstRequest; w->FirstRequest = r; ++w->ReqCount;
+    auto &surface=request_surfaces[r];
+    surface.layer.Window=w;surface.layer.rp=&surface.rp;
+    surface.rp.Layer=&surface.layer;surface.rp.Font=w->RPort->Font;surface.rp.BitMap=w->RPort->BitMap;
+    r->RWindow = w; r->ReqLayer = &surface.layer; r->Flags |= REQACTIVE;
+    return TRUE;
+}
+extern "C" void EndRequest(Requester *r, Window *w)
+{
+    ++native_calls; ++requests_ended;
+    assert(std::find(classic_requests.begin(),classic_requests.end(),r) != classic_requests.end());
+    Requester **link = &w->FirstRequest;
+    while (*link && *link != r) link = &(*link)->OlderRequest;
+    assert(*link == r); *link = r->OlderRequest; --w->ReqCount;
+    assert(request_mirrors.count(r->ReqLayer)==0);
+    request_surfaces.erase(r);
+    r->OlderRequest = nullptr; r->ReqLayer = nullptr; r->Flags &= ~REQACTIVE;
+    classic_requests.erase(std::find(classic_requests.begin(),classic_requests.end(),r));
+    window_events.push_back("EndRequest");
+}
+extern "C" BOOL SetDMRequest(Window *w, Requester *r)
+{
+    ++native_calls; ++dm_cleared;
+    assert(w && !r); return FALSE;
+}
 
 /* GadTools hands out a copy of each message, as AROS's GT_IntuiMessage. */
 struct GTMessage
@@ -326,6 +406,7 @@ extern "C" void CloseWindow(struct Window *window)
 {
     ++native_calls;
     window_events.push_back("CloseWindow");
+    assert(!window->FirstRequest && !window->ReqCount);
     closed.push_back(window);
     shadows_at_close = live->num_shadows;
     if (window->UserPort)
@@ -479,7 +560,7 @@ static const M68KThunkEntry exec_generated[] = { { 372, poison }, { 378, poison 
 static const M68KThunkEntry intuition_manual[] =
     { KAFFEINE_INTUITION_WINDOW_THUNKS, KAFFEINE_INTUITION_REQUEST_THUNKS };
 static const M68KThunkEntry intuition_generated[] =
-    { { 72, poison }, { 150, poison }, { 204, poison }, { 372, poison }, { 588, poison }, { 594, poison },
+    { { 48, poison }, { 72, poison }, { 120, poison }, { 138, poison }, { 240, poison }, { 258, poison }, { 150, poison }, { 204, poison }, { 372, poison }, { 588, poison }, { 594, poison },
       { 600, poison }, { 606, poison } };
 static const M68KThunkEntry gadtools_manual[] = { KAFFEINE_GADTOOLS_IDCMP_THUNKS };
 static const M68KThunkEntry gadtools_generated[] =
@@ -519,6 +600,10 @@ struct Fixture
         released_screens.clear();
         releasing_window = nullptr;
         native_calls = gt_live = 0;
+        assert(request_surfaces.empty() && request_mirrors.empty());
+        classic_requests.clear();
+        requests_started = requests_ended = dm_cleared = 0;
+        fail_request = fail_request_mirror = false; request_input = {};
         window_gadget_calls.clear();
         window_events.clear();
         prepared_head = sync_native = filter_changes = filtered_address = nullptr;
@@ -660,20 +745,209 @@ struct Fixture
     }
 };
 
+static void test_init_requester()
+{
+    Fixture f;
+    const ULONG guest = Fixture::raw;
+    std::fill(f.memory.begin() + guest - 16, f.memory.begin() + guest + 128, 0xA5);
+    const unsigned before = native_calls;
+    assert(f.call(Fixture::intuition, 138, {guest}) == 0 && f.ctx.running);
+    assert(std::all_of(f.memory.begin() + guest, f.memory.begin() + guest + 112,
+                       [](UBYTE x) { return x == 0; }));
+    assert(std::all_of(f.memory.begin() + guest - 16, f.memory.begin() + guest,
+                       [](UBYTE x) { return x == 0xA5; }));
+    assert(std::all_of(f.memory.begin() + guest + 112, f.memory.begin() + guest + 128,
+                       [](UBYTE x) { return x == 0xA5; }));
+    const ULONG edge = (ULONG)f.memory.size() - 112;
+    std::fill(f.memory.begin() + edge, f.memory.end(), 0xA5);
+    assert(f.call(Fixture::intuition, 138, {edge}) == 0 && f.ctx.running);
+    assert(std::all_of(f.memory.begin() + edge, f.memory.end(), [](UBYTE x) { return x == 0; }));
+    for (ULONG bad : {edge + 1, (ULONG)f.memory.size(), 0xFFFFFFF0U})
+    {
+        const auto saved = f.memory;
+        assert(f.call(Fixture::intuition, 138, {bad}) == 20 && f.stopped());
+        assert(f.memory == saved);
+    }
+    const auto saved = f.memory;
+    assert(f.call(Fixture::intuition,138,{0})==0 && f.ctx.running && f.memory==saved);
+    assert(native_calls == before);
+}
+
+static bool active_requests(const KaffeineContext &ctx)
+{
+    for (const auto &r : ctx.requests) if (r.guest) return true;
+    return false;
+}
+static void request_fields(Fixture &f, ULONG guest, WORD left=2, WORD top=4,
+                           WORD width=17, WORD height=19, UWORD flags=SIMPLEREQ|NOREQBACKFILL)
+{
+    if(!f.ctx.layer_ops)f.ctx.layer_ops=&request_layer_ops();
+    assert(f.call(Fixture::intuition,138,{guest})==0);
+    m68k_write16(&f.ctx,guest+4,(UWORD)left); m68k_write16(&f.ctx,guest+6,(UWORD)top);
+    m68k_write16(&f.ctx,guest+8,(UWORD)width);m68k_write16(&f.ctx,guest+10,(UWORD)height);
+    m68k_write16(&f.ctx,guest+28,flags);f.memory[guest+30]=7;
+}
+static void test_classic_request_lifetime()
+{
+    Fixture f;const ULONG a=Fixture::raw,b=a+0x100;
+    request_fields(f,a,-3,-5);request_fields(f,b);
+    std::fill(f.memory.begin()+a+36,f.memory.begin()+a+68,0xC6);
+    std::fill(f.memory.begin()+a+80,f.memory.begin()+a+128,0xD7);
+    assert(f.call(Fixture::intuition,240,{a,f.window}));
+    assert(requests_started==1 && classic_requests.size()==1);
+    assert(request_input.left==-3 && request_input.top==-5 && request_input.width==17 &&
+           request_input.height==19 && request_input.flags==(SIMPLEREQ|NOREQBACKFILL) && request_input.fill==7);
+    assert(f.word(a+4)==0 && f.word(a+6)==0 && (f.word(a+28)&REQACTIVE));
+    assert(f.lng(a+72)==f.window && f.lng(a+32));
+    ULONG layer=f.lng(a+32),rp=f.lng(layer+M68K_LAYER_RP);
+    assert(rp && Kaffeine_RastPortIn(&f.ctx,rp)==classic_requests.back()->ReqLayer->rp);
+    assert(f.lng(rp+M68K_RP_LAYER)==layer);
+    assert(f.lng(f.window+36)==a && f.word(f.window+44)==1);
+    assert(std::all_of(f.memory.begin()+a+36,f.memory.begin()+a+68,[](UBYTE x){return x==0xC6;}));
+    assert(std::all_of(f.memory.begin()+a+80,f.memory.begin()+a+128,[](UBYTE x){return x==0xD7;}));
+    assert(f.call(Fixture::intuition,240,{b,f.window}));
+    assert(f.lng(b)==a && f.lng(f.window+36)==b && f.word(f.window+44)==2);
+    f.call(Fixture::intuition,120,{a,f.window});
+    assert(!(f.word(a+28)&REQACTIVE) && !f.lng(a) && !f.lng(b));
+    assert(f.lng(f.window+36)==b && f.word(f.window+44)==1 && requests_ended==1);
+    f.call(Fixture::intuition,120,{a,f.window}); // unmatched: no native call
+    assert(requests_ended==1);
+    f.call(Fixture::intuition,120,{b,f.window});
+    assert(!f.native_window.FirstRequest && !f.native_window.ReqCount && classic_requests.empty());
+    assert(!f.lng(f.window+36) && !f.word(f.window+44) && !active_requests(f.ctx));
+    assert(f.call(Fixture::intuition,258,{f.window,0}) && dm_cleared==0);
+    assert(f.call(Fixture::intuition,48,{f.window}) && dm_cleared==0);
+}
+static void test_classic_request_decorations()
+{
+    Fixture f;const ULONG a=Fixture::raw,it=0x3500,bd=0x3600,im=0x3700,text=0x3550,xy=0x3650,data=0x3750;
+    request_fields(f,a,2,4,64,40,SIMPLEREQ|USEREQIMAGE|NOISYREQ);
+    std::fill(f.memory.begin()+it,f.memory.begin()+it+20,0);
+    f.memory[it]=3;m68k_write16(&f.ctx,it+4,0xFFF9);m68k_write16(&f.ctx,it+6,11);
+    m68k_write32(&f.ctx,it+12,text);std::memcpy(f.memory.data()+text,"hello",6);
+    std::fill(f.memory.begin()+bd,f.memory.begin()+bd+16,0);
+    f.memory[bd+4]=2;f.memory[bd+7]=2;m68k_write32(&f.ctx,bd+8,xy);
+    for (unsigned i=0;i<4;++i)m68k_write16(&f.ctx,xy+2*i,(UWORD)(i?100+i:-4));
+    std::fill(f.memory.begin()+im,f.memory.begin()+im+20,0);
+    m68k_write16(&f.ctx,im+4,16);m68k_write16(&f.ctx,im+6,1);m68k_write16(&f.ctx,im+8,1);
+    m68k_write32(&f.ctx,im+10,data);f.memory[im+14]=1;m68k_write16(&f.ctx,data,0xA55A);
+    m68k_write32(&f.ctx,a+20,bd);m68k_write32(&f.ctx,a+24,it);m68k_write32(&f.ctx,a+76,im);
+    assert(f.call(Fixture::intuition,240,{a,f.window}));
+    Requester *n=classic_requests.back();
+    assert(n->ReqText && n->ReqText->LeftEdge==-7 && n->ReqText->TopEdge==11);
+    assert(!std::strcmp((char*)n->ReqText->IText,"hello"));
+    assert(n->ReqBorder && n->ReqBorder->Count==2 && n->ReqBorder->XY[0]==-4 && n->ReqBorder->XY[3]==103);
+    assert(n->ReqImage && n->ReqImage->Width==16 && n->ReqImage->Depth==1);
+    f.memory[text]='X';m68k_write16(&f.ctx,xy,0x7777);m68k_write16(&f.ctx,im+4,32);
+    assert(n->ReqText->IText[0]=='h' && n->ReqBorder->XY[0]==-4 && n->ReqImage->Width==16);
+    f.call(Fixture::intuition,120,{a,f.window});assert(!active_requests(f.ctx));
+}
+static void test_classic_request_refusals()
+{
+    Fixture f;const ULONG a=Fixture::raw;
+    for (unsigned mode=0;mode<7;++mode)
+    {
+        request_fields(f,a);
+        ULONG window=f.window;
+        if(mode==0)m68k_write32(&f.ctx,a+16,0x1234); // requester gadget
+        if(mode==1)m68k_write16(&f.ctx,a+28,PREDRAWN);
+        if(mode==2)m68k_write16(&f.ctx,a+28,0x8); // unknown input flag
+        if(mode==3)m68k_write32(&f.ctx,a+24,f.ctx.mem_size-5);
+        if(mode==4)m68k_write32(&f.ctx,a+20,f.ctx.mem_size-5);
+        if(mode==5){m68k_write16(&f.ctx,a+28,USEREQIMAGE);m68k_write32(&f.ctx,a+76,f.ctx.mem_size-5);}
+        if(mode==6)window=0xFFFF;
+        assert(f.call(Fixture::intuition,240,{a,window})==20 && f.stopped());
+        assert(!requests_started && !active_requests(f.ctx) && !f.native_window.FirstRequest);
+    }
+    const auto saved=f.memory;
+    assert(f.call(Fixture::intuition,240,{f.ctx.mem_size-111,f.window})==20 && f.stopped());
+    assert(saved==f.memory);
+    request_fields(f,a);fail_request=true;
+    assert(!f.call(Fixture::intuition,240,{a,f.window}) && f.ctx.running && !active_requests(f.ctx));
+    assert(!(f.word(a+28)&REQACTIVE) && classic_requests.empty());
+    fail_request=false;fail_request_mirror=true;
+    assert(!f.call(Fixture::intuition,240,{a,f.window}) && f.ctx.running && !active_requests(f.ctx));
+    assert(classic_requests.empty() && request_surfaces.empty());
+    fail_request_mirror=false;
+    assert(f.call(Fixture::intuition,240,{a,f.window}));
+    assert(f.call(Fixture::intuition,240,{a,f.window})==20 && f.stopped());
+    assert(f.call(Fixture::intuition,138,{a})==20 && f.stopped());
+    f.call(Fixture::intuition,120,{a,f.window});assert(!active_requests(f.ctx));
+    assert(f.call(Fixture::intuition,258,{f.window,a})==20 && f.stopped() && !dm_cleared);
+}
+static void test_classic_request_capacity()
+{
+    Fixture f;
+    ULONG storage=Kaffeine_HeapAlloc(&f.ctx,(KAFFEINE_MAX_REQUESTS+1)*112,0);
+    assert(storage);
+    for(unsigned i=0;i<KAFFEINE_MAX_REQUESTS;++i)
+    {
+        ULONG a=storage+112*i;request_fields(f,a);
+        assert(f.call(Fixture::intuition,240,{a,f.window}));
+    }
+    ULONG extra=storage+112*KAFFEINE_MAX_REQUESTS;request_fields(f,extra);
+    assert(!f.call(Fixture::intuition,240,{extra,f.window}) && f.ctx.running);
+    assert(requests_started==KAFFEINE_MAX_REQUESTS && f.word(f.window+44)==KAFFEINE_MAX_REQUESTS);
+    for(unsigned i=0;i<KAFFEINE_MAX_REQUESTS;++i)f.call(Fixture::intuition,120,{storage+112*i,f.window});
+    assert(!active_requests(f.ctx) && classic_requests.empty());
+    Kaffeine_HeapFree(&f.ctx,storage,(KAFFEINE_MAX_REQUESTS+1)*112);
+}
+
+static void test_classic_reuse_after_window_close()
+{
+    Fixture f;const ULONG a=Fixture::raw;
+    request_fields(f,a);
+    assert(f.call(Fixture::intuition,240,{a,f.window}));
+    f.closewindow(f.window);
+    assert(f.word(a+28)&REQACTIVE); // no writes into possibly released caller storage
+    Window w={};RastPort rp={};MsgPort port={};
+    w.Width=300;w.Height=200;w.RPort=&rp;w.UserPort=&port;
+    ULONG mw=Kaffeine_WindowCreate(&f.ctx,&w);assert(mw);
+    assert(f.call(Fixture::intuition,240,{a,mw})); // status bits are not input flags
+    f.call(Fixture::intuition,120,{a,mw});f.closewindow(mw);
+}
+
+static bool classic_lock_held;
+static BOOL classic_has_locks(KaffeineContext *) { return classic_lock_held; }
+static void test_classic_request_locks_and_cleanup()
+{
+    Fixture f;const ULONG a=Fixture::raw;
+    KaffeineLayerOps layers=request_layer_ops();layers.has_locks=classic_has_locks;f.ctx.layer_ops=&layers;
+    request_fields(f,a);classic_lock_held=true;
+    assert(f.call(Fixture::intuition,240,{a,f.window})==20 && f.stopped() && !requests_started);
+    classic_lock_held=false;assert(f.call(Fixture::intuition,240,{a,f.window}));
+    classic_lock_held=true;
+    assert(f.call(Fixture::intuition,120,{a,f.window})==20 && f.stopped() && !requests_ended);
+    /* A lock belonging to another window blocks CloseWindow, too. Only
+       program teardown releases all outstanding guest locks first. */
+    assert(f.call(Fixture::intuition,72,{f.window})==20 && f.stopped());
+    assert(active_requests(f.ctx) && !requests_ended && closed.empty());
+    layers.release_locks=[](KaffeineContext *) { classic_lock_held=false; };
+    std::fill(f.memory.begin()+a,f.memory.begin()+a+128,0xC3);
+    const auto before=f.memory;
+    Kaffeine_WindowsCleanup(&f.ctx);
+    assert(!classic_lock_held);
+    assert(!active_requests(f.ctx) && classic_requests.empty() && requests_ended==1);
+    assert(std::equal(before.begin()+a,before.begin()+a+128,f.memory.begin()+a));
+    assert(std::find(window_events.begin(),window_events.end(),"EndRequest")<
+           std::find(window_events.begin(),window_events.end(),"CloseWindow"));
+}
+
 static void test_registration()
 {
     assert(std::size(exec_manual) == 3 && exec_manual[0].lvo == 372 && exec_manual[0].thunk == Kaffeine_GetMsg &&
            exec_manual[1].lvo == 378 && exec_manual[1].thunk == Kaffeine_ReplyMsg &&
            exec_manual[2].lvo == 384 && exec_manual[2].thunk == Kaffeine_WaitPort);
-    assert(std::size(intuition_manual) == 8 &&
-           intuition_manual[0].lvo == 72 && intuition_manual[0].thunk == Kaffeine_CloseWindow &&
-           intuition_manual[1].lvo == 150 && intuition_manual[1].thunk == Kaffeine_ModifyIDCMP &&
-           intuition_manual[2].lvo == 204 && intuition_manual[2].thunk == Kaffeine_OpenWindow &&
-           intuition_manual[3].lvo == 606 && intuition_manual[3].thunk == Kaffeine_OpenWindowTagList &&
-           intuition_manual[4].lvo == 372 && intuition_manual[4].thunk == Kaffeine_FreeSysRequest &&
-           intuition_manual[5].lvo == 588 && intuition_manual[5].thunk == Kaffeine_EasyRequestArgs &&
-           intuition_manual[6].lvo == 594 && intuition_manual[6].thunk == Kaffeine_BuildEasyRequestArgs &&
-           intuition_manual[7].lvo == 600 && intuition_manual[7].thunk == Kaffeine_SysReqHandler);
+    assert(std::size(intuition_manual) == 13);
+    const M68KThunkEntry required[] = {
+        {72,Kaffeine_CloseWindow},{150,Kaffeine_ModifyIDCMP},{204,Kaffeine_OpenWindow},
+        {606,Kaffeine_OpenWindowTagList},{48,Kaffeine_ClearDMRequest},{120,Kaffeine_EndRequest},{138,Kaffeine_InitRequester},
+        {240,Kaffeine_Request},{258,Kaffeine_SetDMRequest},{372,Kaffeine_FreeSysRequest},
+        {588,Kaffeine_EasyRequestArgs},{594,Kaffeine_BuildEasyRequestArgs},{600,Kaffeine_SysReqHandler}
+    };
+    for (const auto &e : required)
+        assert(std::any_of(std::begin(intuition_manual),std::end(intuition_manual),
+            [&](const auto &a){return a.lvo==e.lvo && a.thunk==e.thunk;}));
     assert(std::size(gadtools_manual) == 4);
     const struct { ULONG lvo; IPTR (*thunk)(KaffeineContext *, void *); } gt[] =
         { { 72, Kaffeine_GT_GetIMsg }, { 78, Kaffeine_GT_ReplyIMsg },
@@ -1295,6 +1569,31 @@ static void test_build_easy_request()
     menu_closed = nullptr;
     f.call(Fixture::intuition, 372, { 1 });
     assert(easy.freed_window == (Window *)1 && !f.stopped() && !menu_closed);
+}
+
+static void test_easy_request_layer_locks()
+{
+    Fixture f;
+    const ULONG es=0x3C80,args=0x3CC0;
+    easy_struct(f,es,args);
+    KaffeineLayerOps layers=request_layer_ops();
+    layers.has_locks=classic_has_locks;f.ctx.layer_ops=&layers;
+    classic_lock_held=true;
+    assert(f.call(Fixture::intuition,594,{f.window,es,0,args},{0})==20 && f.stopped());
+    assert(f.call(Fixture::intuition,588,{f.window,es,0,args})==20 && f.stopped());
+    assert(!easy.built && !easy.handled && !easy.freed);
+    classic_lock_held=false;
+    const ULONG req=f.call(Fixture::intuition,594,{f.window,es,0,args},{0});
+    assert(req && easy.built==1);
+    const auto heap=Kaffeine_HeapAvail(&f.ctx,0);
+    classic_lock_held=true;
+    assert(f.call(Fixture::intuition,372,{req})==20 && f.stopped());
+    assert(!easy.freed && f.is(req,KAFFEINE_SHADOW_REQUESTER_WINDOW,&requester));
+    assert(Kaffeine_HeapAvail(&f.ctx,0)==heap);
+    classic_lock_held=false;
+    f.call(Fixture::intuition,372,{req});
+    assert(easy.freed==1 && !f.stopped());
+    f.ctx.layer_ops=&request_layer_ops();
 }
 
 static void test_requester_window_type()
@@ -2256,7 +2555,7 @@ static void layer_synced(KaffeineContext *ctx, ULONG mw, Window *w)
 }
 static void layer_screen(KaffeineContext *, Screen *) { assert(false); }
 static const KaffeineLayerOps recording_layers =
-    { layer_opened, layer_closing, layer_flags, layer_synced, layer_screen, layer_screen };
+    { layer_opened, layer_closing, layer_flags, layer_synced, layer_screen, layer_screen, nullptr, nullptr, nullptr, nullptr };
 
 static void test_window_layer_hooks()
 {
@@ -2783,6 +3082,13 @@ int main()
     {
         { "Layer bridge notifications: whole-or-nothing open, pending backdrop flags, close order", test_window_layer_hooks },
         { "Exec, Intuition and GadTools tables use their ABI slots", test_registration },
+        { "InitRequester clears exactly 112 guest bytes and checks boundaries", test_init_requester },
+        { "Classic Request and EndRequest own native copies and preserve guest storage", test_classic_request_lifetime },
+        { "Classic requesters copy text, border and image descriptors", test_classic_request_decorations },
+        { "Classic requesters refuse unsupported input and roll back native failure", test_classic_request_refusals },
+        { "Classic requesters reject held layer locks and close without touching freed caller storage", test_classic_request_locks_and_cleanup },
+        { "Classic requester table capacity rolls back without native calls", test_classic_request_capacity },
+        { "Classic requester storage with stale status can be reused after window close", test_classic_reuse_after_window_close },
         { "A 68k Window comes whole or not at all", test_window_create },
         { "Window RastPorts share only live owned screen BitMaps and preserve their handles", test_window_bitmap_handle },
         { "WindowDelete() and CloseWindow() release WScreen once after the Window shadow", test_screen_release_order },
@@ -2795,6 +3101,7 @@ int main()
         { "CloseWindow() gives back every message of the window", test_close_window },
         { "BuildEasyRequestArgs(), SysReqHandler() and FreeSysRequest()", test_build_easy_request },
         { "Requester-only calls cannot consume an ordinary window", test_requester_window_type },
+        { "Easy requesters refuse held layer locks before native build or free", test_easy_request_layer_locks },
         { "Teardown closes regular windows and requesters through their own native APIs", test_owned_window_cleanup },
         { "EasyRequestArgs() and 68k input the bridge cannot take", test_easy_request_args },
         { "Gadget labels cut as AROS cuts them", test_easy_request_labels },

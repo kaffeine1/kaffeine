@@ -71,6 +71,16 @@ register preservation and resource lifetimes are checked. The message and
 packet tests use the actual queue and FileHandle adapters; guest addresses
 are never treated as native pointers.
 
+### Classic requesters and clipping
+
+`test_window` checks the exact 112-byte classic Requester boundary, retained
+native copies, converted decorations, stack links, failed-call rollback,
+unsupported flags, table limits and cleanup after caller storage is gone.
+`test_layers` checks requester Layer/RastPort identity, snapshot rebuilding,
+busy-snapshot rollback and retirement. `test_regions` checks leased clips on
+owned window, requester and offscreen layers, including replacement,
+borrowed/native-hook refusals and removal before native layer deletion.
+
 ### ExAll bridge
 
 `test_dos_thunks --exall-only` runs nine ExAll groups: every NDK entry type
@@ -147,7 +157,7 @@ each mutation. The original rom/kaffeine stays unchanged.
 `make test` also runs `test_thunk_registrations.py`. Its default inputs are
 the AROS configuration files in this tree. Optional NDK and AROS FD inputs
 can extend the audit; use the script's `--help` for the available options.
-The audit covers 319 explicit native-vector cases and 544 manual thunk
+The audit covers 324 explicit native-vector cases and 549 manual thunk
 registrations across 18 tables. External SDK files are not included in this
 repository.
 

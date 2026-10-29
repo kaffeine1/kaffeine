@@ -31,6 +31,9 @@ struct Window *BuildEasyRequestArgs(struct Window *window, struct EasyStruct *ea
                                     ULONG idcmp, RAWARG args);
 LONG SysReqHandler(struct Window *window, ULONG *idcmpPtr, BOOL waitInput);
 void FreeSysRequest(struct Window *window);
+BOOL Request(struct Requester *requester, struct Window *window);
+void EndRequest(struct Requester *requester, struct Window *window);
+BOOL SetDMRequest(struct Window *window, struct Requester *requester);
 void DisposeObject(APTR object);
 /* BOOPSI, as AROS declares it in intuition/classusr.h */
 #ifndef INTUITION_CLASSUSR_H

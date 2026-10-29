@@ -1768,6 +1768,62 @@ static void test_cleanup_and_without_bridge()
     }
 }
 
+extern "C" BOOL Request(struct Requester *,struct Window *) { assert(false); return FALSE; }
+extern "C" void EndRequest(struct Requester *,struct Window *) { assert(false); }
+extern "C" BOOL SetDMRequest(struct Window *,struct Requester *) { assert(false); return FALSE; }
+
+static void test_requester_layer_rastport_binding()
+{
+    Fixture f;NativeWindow a;Layer req;RastPort rp;
+    make_window(a,scr,10,20,200,100);order(scr,{&bar,&a.layer,&foreign});
+    ULONG mw=f.open(a),base=f.L(mw+M68K_WIN_WLAYER);
+    make_layer(req,12,24,60,30,LAYERSIMPLE);
+    rp=a.rp;rp.Layer=&req;req.rp=&rp;req.Window=&a.window;
+    order(scr,{&bar,&req,&a.layer,&foreign});
+    const auto *ops=f.ctx.layer_ops;
+    assert(ops->request_opened && ops->request_closing);
+    const ULONG avail=f.avail();const auto shadows=f.ctx.num_shadows;
+    info_busy=true;
+    assert(!ops->request_opened(&f.ctx,&a.window,&req));
+    assert(f.avail()==avail && f.ctx.num_shadows==shadows);
+    info_busy=false;
+    Kaffeine_LayersRefresh(&f.ctx);
+    ULONG borrowed=f.L(base+M68K_LAYER_FRONT);assert(borrowed && borrowed!=base);
+    ULONG layer=ops->request_opened(&f.ctx,&a.window,&req);
+    assert(layer && layer==borrowed && layer!=base);
+    ULONG guest_rp=f.L(layer+M68K_LAYER_RP);
+    assert(guest_rp && Kaffeine_ShadowNative(&f.ctx,guest_rp,KAFFEINE_SHADOW_RASTPORT)==&rp);
+    assert(f.L(guest_rp+M68K_RP_LAYER)==layer && f.L(layer+M68K_LAYER_WINDOW)==mw);
+    assert(f.L(mw+M68K_WIN_WLAYER)==base);
+    Kaffeine_LayersRefresh(&f.ctx);
+    assert(f.L(base+M68K_LAYER_FRONT)==layer && f.L(layer+M68K_LAYER_BACK)==base);
+    assert(f.L(layer+M68K_LAYER_RP)==guest_rp);
+    const auto before=f.heap();Kaffeine_LayersRefresh(&f.ctx);assert(f.heap_is(before));
+    assert(f.call(Fixture::layers_base,96,{0,layer})==20 && f.stopped()); // metadata-only layer
+    ops->request_closing(&f.ctx,&req);
+    assert(!Kaffeine_ShadowNative(&f.ctx,guest_rp,KAFFEINE_SHADOW_RASTPORT));
+    order(scr,{&bar,&a.layer,&foreign});Kaffeine_LayersRefresh(&f.ctx);
+    assert(f.L(base+M68K_LAYER_FRONT)!=layer);
+    ops->request_closing(&f.ctx,&req); // idempotent
+    f.close(mw);
+}
+
+static void test_teardown_releases_all_window_locks()
+{
+    Fixture f;NativeWindow a,b;
+    make_window(a,scr,10,20,200,100);make_window(b,scr,30,40,220,120);
+    order(scr,{&bar,&a.layer,&b.layer,&foreign});
+    ULONG ma=f.open(a),mb=f.open(b);
+    ULONG la=f.L(ma+M68K_WIN_WLAYER),lb=f.L(mb+M68K_WIN_WLAYER);
+    f.call(Fixture::layers_base,96,{0,la});f.call(Fixture::layers_base,96,{0,la});
+    f.call(Fixture::layers_base,96,{0,lb});
+    assert(held_locks==3 && f.ctx.layer_ops->has_locks(&f.ctx));
+    events.clear();
+    Kaffeine_WindowsCleanup(&f.ctx);
+    assert(held_locks==0 && !f.ctx.layer_ops->has_locks(&f.ctx));
+    assert(closed.size()==2 && event_at("UnlockLayer")<event_at("CloseWindow"));
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
@@ -1782,6 +1838,8 @@ int main()
         { "Backfill sentinels and handles; 68k Hooks and foreign layers refused before native calls", test_hooks },
         { "Unsupported layer calls and foreign pointers stop before anything native", test_refusals },
         { "Several windows, nested locks, no LayerInfo lock under a layer lock, close with a lock", test_windows_and_locks },
+        { "Program teardown releases every window lock before closing the first window", test_teardown_releases_all_window_locks },
+        { "Requester Layer exposes one stable typed RastPort and retires both before native deletion", test_requester_layer_rastport_binding },
         { "Layer locks distinguish guest task owners before native recursion", test_guest_lock_owner },
         { "Backdrop updates respect lock order; close unlocks before menu and gadget teardown", test_review_lifetimes },
         { "Messages and depth calls restore retired graphs without resetting a held semaphore", test_retired_screen_recovery },
