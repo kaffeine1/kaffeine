@@ -305,6 +305,9 @@ CASES = (
     ("graphics", "scrollraster.c", "ScrollRaster", "thunk_gfx_ScrollRaster"),
     ("graphics", "setabpendrmd.c", "SetABPenDrMd", "thunk_gfx_SetABPenDrMd"),
     ("graphics", "closefont.c", "CloseFont", "thunk_gfx_CloseFont"),
+    ("graphics", "initrastport.c", "InitRastPort", "thunk_gfx_InitRastPort"),
+    # A1 RastPort and A0 TextAttr, both read: no ignored registers.
+    ("graphics", "askfont.c", "AskFont", "thunk_gfx_AskFont"),
     ("graphics", "readpixel.c", "ReadPixel", "thunk_gfx_ReadPixel"),
     ("graphics", "getbpen.c", "GetBPen", "thunk_gfx_GetBPen"),
     ("graphics", "textextent.c", "TextExtent", "thunk_gfx_TextExtent"),

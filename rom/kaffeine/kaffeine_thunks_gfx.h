@@ -24,6 +24,8 @@ IPTR thunk_gfx_ScrollRaster(struct KaffeineContext *ctx, void *cpu);
 
 IPTR thunk_gfx_CloseFont(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetFont(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_InitRastPort(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_AskFont(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_TextLength(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_Text(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_TextExtent(struct KaffeineContext *ctx, void *cpu);
@@ -59,6 +61,7 @@ IPTR thunk_gfx_GetOutlinePen(struct KaffeineContext *ctx, void *cpu);
     { 60,  thunk_gfx_Text }, \
     { 66,  thunk_gfx_SetFont }, \
     { 78,  thunk_gfx_CloseFont }, \
+    { 198, thunk_gfx_InitRastPort }, \
     { 240, thunk_gfx_Move }, \
     { 246, thunk_gfx_Draw }, \
     { 306, thunk_gfx_RectFill }, \
@@ -67,6 +70,7 @@ IPTR thunk_gfx_GetOutlinePen(struct KaffeineContext *ctx, void *cpu);
     { 342, thunk_gfx_SetAPen }, \
     { 348, thunk_gfx_SetBPen }, \
     { 354, thunk_gfx_SetDrMd }, \
+    { 474, thunk_gfx_AskFont }, \
     { 690, thunk_gfx_TextExtent }, \
     { 696, thunk_gfx_TextFit }, \
     { 858, thunk_gfx_GetAPen }, \

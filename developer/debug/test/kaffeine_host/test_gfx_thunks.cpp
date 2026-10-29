@@ -6,8 +6,9 @@
     CloseFont() with 68k TextFonts, the 68k RastPort of a window, which gets
     the native fields back after every call, also after a generated thunk,
     and gives the native one the fields that the program wrote, the text
-    calls with their 68k TextExtents, bounded guest planar ReadPixel and
-    the refusal of unsupported RastPorts. The native graphics.library acts as AROS does and
+    calls with their 68k TextExtents, AskFont() into a classic 68k
+    TextAttr, bounded guest planar ReadPixel and the refusal of unsupported
+    RastPorts. The native graphics.library acts as AROS does and
     records every call.
 */
 
@@ -39,7 +40,7 @@ static RastPort native_rp;
 
 struct GfxCalls
 {
-    unsigned any = 0;
+    unsigned any = 0, init_rp = 0;
     unsigned open_font = 0, close_font = 0, set_font = 0;
     std::string font_name;
     UWORD font_ysize = 0;
@@ -51,6 +52,9 @@ struct GfxCalls
     WORD draw_from_x = 0, draw_from_y = 0;
     WORD dx = 0, dy = 0, xmin = 0, ymin = 0, xmax = 0, ymax = 0;
     ULONG apen = 0, bpen = 0, drmd = 0;
+    unsigned ask_font = 0;
+    RastPort *ask_rp = nullptr;
+    bool ask_wrong_name = false; /* a native AskFont() with another name */
 };
 static GfxCalls gfx;
 
@@ -118,6 +122,27 @@ extern "C" void SetFont(struct RastPort *rp, struct TextFont *font)
     rp->TxBaseline = font->tf_Baseline;
 }
 
+extern "C" void InitRastPort(struct RastPort *rp)
+{
+    ++gfx.any; ++gfx.init_rp;
+    std::memset(rp, 0, sizeof(*rp));
+    rp->Mask = 0xFF; rp->FgPen = -1; rp->AOlPen = -1;
+    rp->DrawMode = JAM2; rp->LinePtrn = 0xFFFF;
+    for (auto &m : rp->minterms) m = 0xCA;
+    SetFont(rp, &topaz);
+}
+
+/* As AROS: the font's own attributes, whatever the RastPort's soft style */
+extern "C" void AskFont(struct RastPort *rp, struct TextAttr *ta)
+{
+    ++gfx.any; ++gfx.ask_font;
+    gfx.ask_rp = rp;
+    ta->ta_Name = gfx.ask_wrong_name ? other_name : rp->Font->tf_Message.mn_Node.ln_Name;
+    ta->ta_YSize = rp->Font->tf_YSize;
+    ta->ta_Style = rp->Font->tf_Style;
+    ta->ta_Flags = rp->Font->tf_Flags;
+}
+
 /* As AROS, the loops read UWORD(count) characters of a WORD count. */
 static UWORD read_text(CONST_STRPTR string, ULONG count)
 {
@@ -132,7 +157,7 @@ static UWORD read_text(CONST_STRPTR string, ULONG count)
 extern "C" WORD TextLength(struct RastPort *rp, CONST_STRPTR string, ULONG count)
 {
     ++gfx.any;
-    return (WORD)(read_text(string, count) * rp->TxWidth);
+    return (WORD)(read_text(string, count) * (rp->Font->tf_XSize + rp->TxSpacing));
 }
 
 extern "C" void Text(struct RastPort *rp, CONST_STRPTR string, ULONG count)
@@ -313,9 +338,9 @@ static const M68KThunkEntry graphics_manual[] =
 static const M68KThunkEntry graphics_generated[] =
 {
     { 54, poison }, { 60, poison }, { 66, poison }, { 72, poison }, { 78, poison },
-    { 240, poison }, { 246, poison }, { 306, poison }, { 318, poison }, { 324, poison },
+    { 198, poison }, { 240, poison }, { 246, poison }, { 306, poison }, { 318, poison }, { 324, poison },
     { 336, generated_draw }, { 342, poison }, { 348, poison }, { 354, poison },
-    { 396, poison }, { 690, poison }, { 696, poison }, { 858, poison }, { 864, poison },
+    { 396, poison }, { 474, poison }, { 690, poison }, { 696, poison }, { 858, poison }, { 864, poison },
     { 870, poison }, { 876, poison }, { 894, poison }
 };
 
@@ -328,7 +353,7 @@ enum
     TF_CHARDATA = 34, TF_MODULO = 38,
     RP_LAYER = 0, RP_BITMAP = 4, RP_MASK = 24, RP_FGPEN = 25, RP_BGPEN = 26,
     RP_AOLPEN = 27, RP_DRAWMODE = 28, RP_LINPATCNT = 30, RP_LINEPTRN = 34,
-    RP_CP_X = 36, RP_CP_Y = 38, RP_MINTERMS = 40, RP_FONT = 52, RP_TXHEIGHT = 58,
+    RP_CP_X = 36, RP_CP_Y = 38, RP_MINTERMS = 40, RP_FONT = 52, RP_ALGOSTYLE = 56, RP_TXHEIGHT = 58,
     RP_TXWIDTH = 60, RP_TXBASELINE = 62, RP_TXSPACING = 64,
     TE_WIDTH = 0, TE_HEIGHT = 2, TE_MINX = 4, TE_MINY = 6, TE_MAXX = 8, TE_MAXY = 10
 };
@@ -437,10 +462,10 @@ static void test_registration()
     const struct { ULONG lvo; IPTR (*thunk)(KaffeineContext *, void *); } rastport[] =
     {
         { 54, thunk_gfx_TextLength }, { 60, thunk_gfx_Text }, { 66, thunk_gfx_SetFont },
-        { 78, thunk_gfx_CloseFont }, { 240, thunk_gfx_Move }, { 246, thunk_gfx_Draw },
+        { 78, thunk_gfx_CloseFont }, { 198, thunk_gfx_InitRastPort }, { 240, thunk_gfx_Move }, { 246, thunk_gfx_Draw },
         { 306, thunk_gfx_RectFill }, { 318, thunk_gfx_ReadPixel }, { 324, thunk_gfx_WritePixel },
         { 342, thunk_gfx_SetAPen }, { 348, thunk_gfx_SetBPen }, { 354, thunk_gfx_SetDrMd },
-        { 690, thunk_gfx_TextExtent }, { 696, thunk_gfx_TextFit }, { 858, thunk_gfx_GetAPen },
+        { 474, thunk_gfx_AskFont }, { 690, thunk_gfx_TextExtent }, { 696, thunk_gfx_TextFit }, { 858, thunk_gfx_GetAPen },
         { 864, thunk_gfx_GetBPen }, { 870, thunk_gfx_GetDrMd }, { 876, thunk_gfx_GetOutlinePen }
     };
     assert(std::size(graphics_rastport) == std::size(rastport));
@@ -794,12 +819,13 @@ static void test_refusals()
     {
         /* every other argument valid, so that the RastPort is what stops it */
         for (ULONG lvo : { 54U, 60U, 240U, 246U, 306U, 318U, 324U, 342U, 348U, 354U,
-                           396U, 690U, 696U, 894U })
+                           396U, 474U, 690U, 696U, 894U })
         {
             assert(f.call(lvo, { Fixture::text, bad, Fixture::extent, 0 }, { 1, 1, 400, 8 }) == 20);
             assert(f.stopped());
         }
-        assert(f.call(66, { 0, bad }) == 20 && f.stopped());
+        if (bad != Fixture::raw)
+            assert(f.call(66, { 0, bad }) == 20 && f.stopped());
         for (ULONG lvo : { 858U, 864U, 870U, 876U })
         {
             assert(f.call(lvo, { bad }) == 20);
@@ -807,6 +833,370 @@ static void test_refusals()
         }
     }
     assert(!gfx.any);
+}
+
+/* ── AskFont() ───────────────────────────────────────────────────── */
+
+using Memory = std::array<UBYTE, 0x10000>;
+
+/* Generated poison, different for every call, so that no stale byte can
+   pass for a written one */
+static ULONG poison_seed = 0x9E3779B9;
+static void poison_bytes(Fixture &f, ULONG addr, ULONG size)
+{
+    for (ULONG i = 0; i < size; ++i)
+    {
+        poison_seed ^= poison_seed << 13;
+        poison_seed ^= poison_seed >> 17;
+        poison_seed ^= poison_seed << 5;
+        f.memory[addr + i] = UBYTE(poison_seed >> 11);
+    }
+}
+
+/* the classic TextAttr, big-endian: name32, size16, style8, flags8 */
+static void expect_attr(const Fixture &f, ULONG out, ULONG name, UWORD ysize, UBYTE style, UBYTE flags)
+{
+    const UBYTE want[M68K_SIZEOF_TEXTATTR] =
+        { UBYTE(name >> 24), UBYTE(name >> 16), UBYTE(name >> 8), UBYTE(name),
+          UBYTE(ysize >> 8), UBYTE(ysize), style, flags };
+    assert(std::memcmp(f.memory.data() + out, want, sizeof(want)) == 0);
+}
+
+/* Only the TextAttr changed, and the 68k RastPort that is settled after
+   the call (rp 0 for none). */
+static void expect_changes_within(const Memory &before, const Fixture &f, ULONG out, ULONG rp)
+{
+    for (ULONG i = 0; i < before.size(); ++i)
+        if (before[i] != f.memory[i])
+            assert((out && i >= out && i < out + M68K_SIZEOF_TEXTATTR) ||
+                   (rp && i >= rp && i < rp + M68K_SIZEOF_RASTPORT));
+}
+
+/* No half of a native pointer reaches the name. */
+static void expect_no_native_pointer(const Fixture &f, ULONG out)
+{
+    for (const void *p : { static_cast<const void *>(topaz_name), static_cast<const void *>(other_name),
+                           static_cast<const void *>(&topaz), static_cast<const void *>(&other),
+                           static_cast<const void *>(&native_rp) })
+    {
+        const uint64_t v = reinterpret_cast<uintptr_t>(p);
+        for (ULONG half : { ULONG(v), ULONG(v >> 32) })
+            assert(!half || f.lng(out) != half);
+    }
+}
+
+static ULONG font_size(const Fixture &f, ULONG font)
+{
+    for (const auto &entry : f.ctx.fonts)
+        if (entry.guest == font)
+            return entry.allocation_size;
+    assert(false);
+    return 0;
+}
+
+static void test_classic_rastport_init()
+{
+    Fixture f;
+    const ULONG rp = Fixture::raw;
+    assert(!f.call(198, {0, rp}) && !f.stopped());
+    assert(gfx.init_rp == 1 && !f.ctx.num_shadows);
+    const ULONG font = f.lng(rp + RP_FONT);
+    assert(font && Kaffeine_FontNative(&f.ctx, font) == &topaz);
+    UBYTE want[M68K_SIZEOF_RASTPORT] = {};
+    want[RP_MASK] = want[RP_FGPEN] = want[RP_AOLPEN] = 0xFF;
+    want[RP_DRAWMODE] = JAM2;
+    want[RP_LINEPTRN] = want[RP_LINEPTRN + 1] = 0xFF;
+    for (unsigned i = 0; i < 8; ++i) want[RP_MINTERMS + i] = 0xCA;
+    want[RP_FONT] = UBYTE(font >> 24); want[RP_FONT + 1] = UBYTE(font >> 16);
+    want[RP_FONT + 2] = UBYTE(font >> 8); want[RP_FONT + 3] = UBYTE(font);
+    want[RP_TXHEIGHT + 1] = 8; want[RP_TXWIDTH + 1] = 8; want[RP_TXBASELINE + 1] = 6;
+    assert(!std::memcmp(f.memory.data() + rp, want, sizeof(want)));
+    for (unsigned i = 0; i < 16; ++i)
+        assert(f.memory[rp - 1 - i] == 0xA5 && f.memory[rp + sizeof(want) + i] == 0xA5);
+    const ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    const ULONG edge = f.memory.size() - M68K_SIZEOF_RASTPORT;
+    assert(!f.call(198, {0, edge}));
+    assert(f.lng(edge + RP_FONT) == font && Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+    const ULONG owned = f.rastport();
+    for (ULONG bad : {0U, rp + 1, edge + 2, 0xFFFFFFF0U, owned, owned + 2, font})
+    {
+        const auto before = f.memory; const auto calls = gfx.any;
+        assert(f.call(198, {0, bad}) == 20 && f.stopped());
+        assert(before == f.memory && gfx.any == calls);
+    }
+    Kaffeine_RastPortDelete(&f.ctx, owned);
+    assert(Kaffeine_FontNative(&f.ctx, font) == &topaz);
+    Kaffeine_FontsCleanup(&f.ctx);
+    assert(!Kaffeine_FontNative(&f.ctx, font) && !gfx.close_font);
+}
+
+static void test_classic_rastport_fonts()
+{
+    Fixture f;
+    const ULONG rp = Fixture::raw, copy = rp + 0x100, attr = Fixture::attr;
+    assert(!f.call(198, {0, rp}));
+    const ULONG default_font = f.lng(rp + RP_FONT);
+    f.put(Fixture::name, "other.font");
+    m68k_write32(&f.ctx, attr, Fixture::name);
+    const ULONG font = f.call(72, {attr});
+    assert(font && font != default_font);
+    const auto before = f.memory;
+    assert(!f.call(66, {font, rp}) && !f.stopped());
+    assert(f.lng(rp + RP_FONT) == font && f.word(rp + RP_TXHEIGHT) == 11 &&
+           f.word(rp + RP_TXWIDTH) == 7 && f.word(rp + RP_TXBASELINE) == 8);
+    for (ULONG i = 0; i < before.size(); ++i)
+        if (before[i] != f.memory[i])
+            assert((i >= rp + RP_FONT && i < rp + RP_FONT + 4) ||
+                   (i >= rp + RP_TXHEIGHT && i < rp + RP_TXBASELINE + 2));
+    std::memcpy(f.memory.data() + copy, f.memory.data() + rp, M68K_SIZEOF_RASTPORT);
+    f.put(Fixture::text, "abc");
+    m68k_write16(&f.ctx, copy + RP_TXSPACING, UWORD(-2));
+    const auto measured_before = f.memory;
+    assert(f.call(54, {Fixture::text, copy}, {3}) == 15 && !f.stopped());
+    assert(f.memory == measured_before);
+    assert(!f.call(54, {0, copy}, {0}) && !f.stopped());
+    const ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    for (unsigned i = 0; i < 64; ++i)
+    {
+        const ULONG source = i & 1 ? rp : copy;
+        poison_bytes(f, attr, M68K_SIZEOF_TEXTATTR);
+        const auto query_before = f.memory;
+        assert(!f.call(474, {attr, source}) && !f.stopped());
+        expect_attr(f, attr, font + M68K_SIZEOF_TEXTFONT, 11, other.tf_Style, other.tf_Flags);
+        expect_changes_within(query_before, f, attr, 0);
+        assert(gfx.ask_rp != &native_rp && Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+        expect_no_native_pointer(f, attr);
+    }
+    assert(!f.call(66, {0, rp}) && f.lng(rp + RP_FONT) == default_font);
+    const auto calls = gfx.any;
+    for (ULONG bad : {0U, rp + 1, f.ctx.mem_size - 2, 0xFFFFFFF0U})
+        assert(f.call(66, {font, bad}) == 20 && f.stopped());
+    assert(gfx.any == calls);
+    f.call(78, {0, font});
+    assert(!Kaffeine_FontNative(&f.ctx, font));
+    const auto closed_before = f.memory;
+    assert(f.call(474, {attr, copy}) == 20 && f.stopped());
+    assert(closed_before == f.memory && gfx.any == calls + 1);
+    assert(f.call(54, {Fixture::text, copy}, {3}) == 20 && f.stopped());
+    assert(closed_before == f.memory && gfx.any == calls + 1);
+    Kaffeine_FontsCleanup(&f.ctx);
+}
+
+static void test_askfont()
+{
+    Fixture f;
+    constexpr ULONG out = 0x2A00;
+
+    /* An extended bold underlined font; the RastPort has another soft style
+       and text height, which AskFont() does not report. */
+    topaz.tf_Style = FSF_UNDERLINED | 0x02 | FSF_TAGGED;
+    topaz.tf_Flags = FPF_ROMFONT | FPF_DESIGNED;
+    native_rp.AlgoStyle = 0x04;
+    native_rp.TxHeight = 13;
+    const ULONG rp = f.rastport();
+    const ULONG font = guest_font(f, &topaz);
+    const ULONG name = font + M68K_SIZEOF_TEXTFONT;
+    assert(font && f.lng(font + LN_NAME) == name);
+    f.memory[rp + RP_ALGOSTYLE] = 0x05;
+
+    /* Repeated calls: the same name, no allocation, no new shadow or font,
+       no generated thunk (Fixture::call()), A0 the TextAttr and A1 the
+       RastPort, every other register preserved. */
+    const ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    const UWORD shadows = f.ctx.num_shadows;
+    for (unsigned n = 0; n < 64; ++n)
+    {
+        poison_bytes(f, out - 16, 40);
+        const Memory before = f.memory;
+        assert(f.call(474, { out, rp }) == 0 && !f.stopped());
+        assert(gfx.ask_font == n + 1 && gfx.any == n + 1 && gfx.ask_rp == &native_rp);
+        expect_attr(f, out, name, 8, FSF_UNDERLINED | 0x02, FPF_ROMFONT | FPF_DESIGNED);
+        expect_changes_within(before, f, out, rp);
+        expect_no_native_pointer(f, out);
+        assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail && f.ctx.num_shadows == shadows &&
+               guest_font(f, &topaz) == font);
+    }
+    /* the name is the one of the 68k TextFont that rp->Font shows */
+    assert(f.lng(out) == f.lng(f.lng(rp + RP_FONT) + LN_NAME));
+    assert(std::strcmp(reinterpret_cast<char *>(f.memory.data() + name), "topaz.font") == 0);
+    /* the RastPort's own style reached it, and both stay as they were */
+    assert(native_rp.AlgoStyle == 0x05 && f.memory[rp + RP_ALGOSTYLE] == 0x05 &&
+           f.word(rp + RP_TXHEIGHT) == 13);
+
+    /* the name stays across other calls on the RastPort */
+    f.put(Fixture::text, "Hello");
+    f.call(60, { Fixture::text, rp }, { 5 });
+    f.call(342, { 0, rp }, { 3 });
+    assert(std::strcmp(reinterpret_cast<char *>(f.memory.data() + f.lng(out)), "topaz.font") == 0);
+
+    /* the last eight bytes of the arena */
+    const ULONG edge = f.ctx.mem_size - M68K_SIZEOF_TEXTATTR;
+    poison_bytes(f, edge - 8, 16);
+    const Memory before = f.memory;
+    assert(f.call(474, { edge, rp }) == 0 && !f.stopped());
+    expect_attr(f, edge, name, 8, FSF_UNDERLINED | 0x02, FPF_ROMFONT | FPF_DESIGNED);
+    expect_changes_within(before, f, edge, rp);
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+}
+
+static void test_askfont_fonts()
+{
+    Fixture f;
+    constexpr ULONG out = 0x2A00, kept = 0x2A20;
+    const ULONG rp = f.rastport();
+    const ULONG window_font = guest_font(f, &topaz);
+    const ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+
+    /* an italic proportional font of the program on the RastPort */
+    other.tf_Style = 0x04;
+    f.put(Fixture::name, "other.font");
+    m68k_write32(&f.ctx, Fixture::attr + M68K_TA_NAME, Fixture::name);
+    const ULONG font = f.call(72, { Fixture::attr });
+    assert(font && font != window_font);
+    f.call(66, { font, rp });
+    poison_bytes(f, out, M68K_SIZEOF_TEXTATTR);
+    assert(f.call(474, { out, rp }) == 0 && !f.stopped());
+    const ULONG other_copy = font + M68K_SIZEOF_TEXTFONT;
+    expect_attr(f, out, other_copy, 11, 0x04, FPF_PROPORTIONAL);
+    expect_no_native_pointer(f, out);
+
+    /* closed but still shown: the same copy */
+    f.call(78, { 0, font });
+    poison_bytes(f, kept, M68K_SIZEOF_TEXTATTR);
+    assert(f.call(474, { kept, rp }) == 0 && !f.stopped());
+    expect_attr(f, kept, other_copy, 11, 0x04, FPF_PROPORTIONAL);
+    assert(std::strcmp(reinterpret_cast<char *>(f.memory.data() + other_copy), "other.font") == 0);
+
+    /* back to the window's font: its own copy; the closed font goes */
+    f.call(66, { window_font, rp });
+    poison_bytes(f, out, M68K_SIZEOF_TEXTATTR);
+    assert(f.call(474, { out, rp }) == 0 && !f.stopped());
+    expect_attr(f, out, window_font + M68K_SIZEOF_TEXTFONT, 8, 0, FPF_ROMFONT);
+    assert(!guest_font(f, &other) && Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+
+    /* a font without a name gives a NULL name, as native AskFont() */
+    TextFont anon;
+    std::memset(&anon, 0, sizeof(anon));
+    anon.tf_YSize = 6;
+    anon.tf_Style = FSF_UNDERLINED;
+    anon.tf_Flags = FPF_DESIGNED;
+    gfx.open_result = &anon;
+    f.put(Fixture::name, "anon.font");
+    const ULONG anon_font = f.call(72, { Fixture::attr });
+    assert(anon_font && f.lng(anon_font + LN_NAME) == 0);
+    f.call(66, { anon_font, rp });
+    poison_bytes(f, out, M68K_SIZEOF_TEXTATTR);
+    assert(f.call(474, { out, rp }) == 0 && !f.stopped());
+    expect_attr(f, out, 0, 6, FSF_UNDERLINED, FPF_DESIGNED);
+    f.call(78, { 0, anon_font });
+    f.call(66, { window_font, rp });
+    assert(!guest_font(f, &anon) && Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+}
+
+static void test_askfont_refusals()
+{
+    constexpr ULONG out = 0x2A00;
+
+    /* Stopped before native AskFont(), and with no byte of guest memory
+       changed; after the RastPort was taken, only it is settled. */
+    auto refused = [](Fixture &f, ULONG a0, ULONG a1, ULONG settled) {
+        poison_bytes(f, out, M68K_SIZEOF_TEXTATTR);
+        const Memory before = f.memory;
+        const unsigned asks = gfx.ask_font, calls = gfx.any;
+        assert(f.call(474, { a0, a1 }) == 20 && f.stopped());
+        assert(gfx.ask_font == asks && gfx.any == calls);
+        if (settled)
+            expect_changes_within(before, f, 0, settled);
+        else
+            assert(f.memory == before);
+    };
+
+    /* the TextAttr: NULL, odd, partly or wholly outside the arena, on the
+       RastPort, or on a 68k TextFont, shown or not, with its name */
+    {
+        Fixture f;
+        const ULONG rp = f.rastport();
+        const ULONG font = guest_font(f, &topaz);
+        f.put(Fixture::name, "other.font");
+        m68k_write32(&f.ctx, Fixture::attr + M68K_TA_NAME, Fixture::name);
+        const ULONG unshown = f.call(72, { Fixture::attr });
+        assert(unshown);
+        const ULONG size = f.ctx.mem_size;
+        for (ULONG bad : { 0U, out + 1, size - 7, size - 6, size - 1, size, 0xFFFFFFF8U, 0xFFFFFFFEU,
+                           rp, rp + 92, rp - 6, rp + 98, font, font + M68K_SIZEOF_TEXTFONT,
+                           (font + font_size(f, font) - 1) & ~1U, unshown + 4 })
+            refused(f, bad, rp, 0);
+        assert(!gfx.ask_font);
+    }
+
+    /* the RastPort: NULL, raw guest bytes, inside a 68k RastPort, the shadow
+       of a window, and A0 and A1 swapped */
+    {
+        Fixture f;
+        int native_window;
+        const ULONG rp = f.rastport();
+        f.ctx.shadow_map[f.ctx.num_shadows++] = { Fixture::raw + 0x40, &native_window, KAFFEINE_SHADOW_WINDOW };
+        for (ULONG bad : { 0U, Fixture::raw, rp + 2, Fixture::raw + 0x40 })
+            refused(f, out, bad, 0);
+        refused(f, rp, out, 0);
+    }
+
+    /* the font: none natively, a guest rp->Font that is not the 68k TextFont
+       of the native font, a color font that has no 68k TextFont, a full
+       font table */
+    {
+        Fixture f;
+        const ULONG rp = f.rastport();
+        native_rp.Font = nullptr;
+        refused(f, out, rp, rp);
+    }
+    for (int field = 0; field < 3; ++field)
+    {
+        Fixture f;
+        const ULONG rp = f.rastport();
+        f.put(Fixture::name, "other.font");
+        m68k_write32(&f.ctx, Fixture::attr + M68K_TA_NAME, Fixture::name);
+        const ULONG unshown = f.call(72, { Fixture::attr });
+        m68k_write32(&f.ctx, rp + RP_FONT, field == 0 ? 0U : field == 1 ? Fixture::raw : unshown);
+        refused(f, out, rp, rp);
+    }
+    {
+        Fixture f;
+        const ULONG rp = f.rastport();
+        static UBYTE planes[8];
+        topaz.tf_Style = FSF_COLORFONT;
+        topaz.tf_CharData = planes;
+        refused(f, out, rp, rp);
+    }
+    {
+        Fixture f;
+        const ULONG rp = f.rastport();
+        for (unsigned i = 0; i < KAFFEINE_MAX_FONTS; ++i)
+            if (!f.ctx.fonts[i].guest)
+            {
+                f.ctx.fonts[i].guest = 0xE000 + 8 * i;
+                f.ctx.fonts[i].allocation_size = 4;
+            }
+        native_rp.Font = &other;
+        m68k_write32(&f.ctx, rp + RP_FONT, 0);
+        refused(f, out, rp, rp);
+    }
+
+    /* After native AskFont(): a name that is not the font's, or a 68k
+       TextFont whose name is no more its copy, write nothing. */
+    for (int wrong = 0; wrong < 2; ++wrong)
+    {
+        Fixture f;
+        const ULONG rp = f.rastport();
+        if (wrong)
+            m68k_write32(&f.ctx, guest_font(f, &topaz) + LN_NAME, Fixture::raw);
+        else
+            gfx.ask_wrong_name = true;
+        poison_bytes(f, out, M68K_SIZEOF_TEXTATTR);
+        const Memory before = f.memory;
+        assert(f.call(474, { out, rp }) == 20 && f.stopped() && gfx.ask_font == 1);
+        expect_changes_within(before, f, 0, rp);
+    }
 }
 
 static void test_guest_planar_read()
@@ -900,6 +1290,11 @@ int main()
         { "TextFit() both ways and with a 68k constraint", test_textfit },
         { "SetFont() takes a 68k TextFont", test_setfont },
         { "Unsupported RastPorts stop before native graphics.library", test_refusals },
+        { "InitRastPort initializes exactly classic caller storage and bounds", test_classic_rastport_init },
+        { "Caller-owned RastPorts support bounded font operations and copied queries", test_classic_rastport_fonts },
+        { "AskFont() fills a classic TextAttr with the font's own attributes", test_askfont },
+        { "AskFont() follows the font of the RastPort with stable 68k names", test_askfont_fonts },
+        { "AskFont() stops on bad TextAttrs, RastPorts and fonts before writing", test_askfont_refusals },
         { "ReadPixel reads bounded guest planar bytes without native calls or mutation", test_guest_planar_read }
     };
     for (const Test &test : tests)

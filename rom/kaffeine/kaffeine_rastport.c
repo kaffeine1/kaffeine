@@ -138,6 +138,12 @@ ULONG Kaffeine_FontFind(struct KaffeineContext *ctx, const struct TextFont *font
     return i < 0 ? 0 : ctx->fonts[i].guest;
 }
 
+void Kaffeine_FontPin(struct KaffeineContext *ctx, ULONG guest)
+{
+    int i = font_index(ctx, guest, NULL);
+    if (i >= 0) ctx->fonts[i].pinned = TRUE;
+}
+
 /* Reserve a four-byte-aligned part without overflowing a guest address or
    exceeding the arena. There is one owned block for the entire snapshot. */
 static BOOL font_part(struct KaffeineContext *ctx, ULONG *total, ULONG size, ULONG *offset)

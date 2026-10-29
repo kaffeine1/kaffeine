@@ -22,6 +22,8 @@ void SetRGB32CM(struct ColorMap *, ULONG, ULONG, ULONG, ULONG);
 struct TextFont *OpenFont(const struct TextAttr *textAttr);
 void CloseFont(struct TextFont *textFont);
 void SetFont(struct RastPort *rp, struct TextFont *textFont);
+void AskFont(struct RastPort *rp, struct TextAttr *textAttr);
+void InitRastPort(struct RastPort *rp);
 WORD TextLength(struct RastPort *rp, CONST_STRPTR string, ULONG count);
 void Text(struct RastPort *rp, CONST_STRPTR string, ULONG count);
 void TextExtent(struct RastPort *rp, CONST_STRPTR string, ULONG count,
