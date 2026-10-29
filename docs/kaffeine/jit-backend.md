@@ -67,6 +67,14 @@ shared-code invalidation in both directions, scheduler cleanup and
 explicit rejection of unsupported SR operations. Moira remains the
 reference for the existing instruction regression suite.
 
+`DIVU.W` and `DIVS.W` additionally use an independent widened-integer oracle
+for arithmetic and defined flags. Their native standalone probe passed
+22 checks in both Shell and `Run` on AROS AArch64. Quotient overflow keeps
+the destination unchanged and sets V; division by zero stops with 20
+because exception delivery remains unsupported. See the
+[word-division test notes](hosted-jit-probe.md#verification) for the known
+flag differences in the pinned reference interpreter.
+
 Personal Paint on the JIT, full instruction coverage, native performance
 and physical Raspberry Pi cache behavior remain unverified. The published
 Personal Paint demonstration uses Moira.

@@ -59,3 +59,17 @@ JIT selection and return values, explicit full-SR refusal, a separate Moira
 run of the same valid SR instruction, and rejection of an unknown backend
 name. Refused guest runs are expected to return 20; the native client
 returns zero only when all its assertions pass.
+
+## Word division
+
+`make word-division` builds the optional native `word_division` executable.
+It runs 22 original `DIVU.W`/`DIVS.W` programs through the production JIT in
+library mode, without linking Moira. A widened-integer oracle checks the
+packed quotient/remainder, signed limits including `INT32_MIN / -1`,
+unchanged destinations on overflow, defined condition codes and refusal
+before a following store on division by zero. The guest saves SR before
+storing its result, since a `MOVE.L` store changes condition codes.
+
+The probe passed all 22 checks from both Shell and `Run` on AROS AArch64
+in `raspi3b` QEMU. It tests the linked translator; the separate library
+client above checks the installed `kaffeine.library` APIs.

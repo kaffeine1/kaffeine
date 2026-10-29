@@ -534,6 +534,7 @@ enum
     K_ADDX,     /* ADDX SUBX NEGX */
     K_MULW,     /* MULU.W MULS.W */
     K_MULL,     /* MULU.L MULS.L */
+    K_DIVW,     /* DIVU.W DIVS.W */
     K_DIVL,     /* DIVU.L DIVS.L DIVUL.L DIVSL.L */
     K_BIT,      /* BTST BCHG BCLR BSET */
     K_BF,       /* BFTST BFEXTU BFCHG BFEXTS BFCLR BFFFO BFSET BFINS */
@@ -993,7 +994,12 @@ static int decode_insn(struct KaffeineContext *ctx, uint32_t pc, struct HJInsn *
             }
             if (group == 0x8)
             {
-                ok = fault_insn(in, "MUL/DIV");
+                in->kind = K_DIVW; in->op = (uint8_t)(opmode == 7); in->size = 2;
+                in->dst.mode = EA_DN; in->dst.reg = (uint8_t)dn;
+                in->def = HJF_NZVC;
+                in->use = HJF_ALL;
+                in->why = "divide by zero";
+                ok = decode_ea(&d, mode, reg, 2, M_DATA, &in->src) || fault_insn(in, "DIV.W mode");
                 break;
             }
             in->kind = K_ALUA; in->op = (uint8_t)alu; in->size = opmode == 3 ? 2 : 4;
@@ -1770,6 +1776,53 @@ static void emit_mull(struct HJTrans *t, const struct HJInsn *in)
     }
 }
 
+/* Dn / <ea>.W into remainder:quotient. Widen signed division so that
+   INT32_MIN / -1 is checked as a guest quotient overflow. The manual
+   specifies C clear even on overflow; the pinned Musashi-mimic reference
+   retains it. N/Z are undefined on overflow and kept here. */
+static void emit_divw(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+    int dn = REG_D(in->dst.reg), is_signed = in->op;
+    int v = emit_read(t, &in->src, 2);
+    unsigned br_nz, br_ovf, br_done;
+
+    put(e, is_signed ? a64_bitfield(1, 0, R_SRC, v, 0, 15) : a64_uxth(R_SRC, v));
+    br_nz = e->n;
+    put(e, a64_cbz(0, 1, R_SRC, 0));
+    emit_exit_reason(t, in->pc, HJ_EXIT_FAULT);
+    patch(e, br_nz, e->n);
+    if (is_signed)
+    {
+        put(e, a64_bitfield(1, 0, R_RES, dn, 0, 31));
+        put(e, a64_div(1, 1, R_SCR, R_RES, R_SRC));
+        put(e, a64_msub(1, R_F1, R_SCR, R_SRC, R_RES));
+        put(e, a64_bitfield(1, 0, R_F2, R_SCR, 0, 15));
+        put(e, a64_addsub_reg(1, 1, 1, ZR, R_SCR, R_F2, 0, 0));
+    }
+    else
+    {
+        put(e, a64_div(0, 0, R_SCR, dn, R_SRC));
+        put(e, a64_msub(0, R_F1, R_SCR, R_SRC, dn));
+        put(e, a64_uxth(R_F2, R_SCR));
+        put(e, a64_cmp(R_SCR, R_F2));
+    }
+    br_ovf = e->n;
+    put(e, a64_bcond(A64_NE, 0));
+    put(e, a64_uxth(dn, R_SCR));
+    put(e, a64_bfi(dn, R_F1, 16, 16));
+    if (in->need & HJF_NZVC)
+        emit_flags_logic(e, dn, 2);
+    br_done = e->n;
+    put(e, a64_b(0));
+    patch(e, br_ovf, e->n);
+    if (in->need & HJF_C)
+        put(e, a64_logic_const(0, R_FLAGS, R_FLAGS, ~HJF_C));
+    if (in->need & HJF_V)
+        put(e, a64_logic_const(1, R_FLAGS, R_FLAGS, HJF_V));
+    patch(e, br_done, e->n);
+}
+
 static void emit_divl(struct HJTrans *t, const struct HJInsn *in)
 {
     struct HJEmit *e = &t->e;
@@ -2443,6 +2496,9 @@ static void emit_insn(struct HJTrans *t, const struct HJInsn *in)
         break;
     case K_MULL:
         emit_mull(t, in);
+        break;
+    case K_DIVW:
+        emit_divw(t, in);
         break;
     case K_DIVL:
         emit_divl(t, in);
