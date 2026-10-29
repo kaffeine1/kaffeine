@@ -8,7 +8,7 @@ private test disk images are not distributed here.
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
-| TurboText 2.0 | Original Aminet launcher and support libraries tested with both Moira and JIT; Shell and Run return 20 with `Could not start TurboText - function not implemented` after `CreateNewProc()` | Startup is blocked; no editor window, editing or save/reopen acceptance. Needs child-process DOS state and lifetime support |
+| TurboText 2.0 | Original Aminet launcher and support libraries tested with both Moira and JIT; Shell and Run return 20 with `Could not start TurboText - function not implemented` after `CreateNewProc()`. A bounded trace identifies the requested CLI process and its loaded-program handle | Startup is blocked; no editor window, editing or save/reopen acceptance. Needs typed process startup, module ownership and Process identity support |
 | AmiPixelShop 0.6.1-beta | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; P96 and screen-mode requester requirements are additional source-level gaps |
 
 ## Additional startup checks (2026-10-29)
@@ -42,8 +42,37 @@ their own CPU and Process, but DOS calls other than `Exit()` are refused:
 streams, directories, locks, CLI and packet state currently belong to the
 root DOS owner. Root termination also destroys the children and their shared
 arena. A DOS-using helper needs ownership, rollback and group-lifetime
-rules before it can safely run. The actual tag list and seglist provenance
-remain the next evidence to collect for TurboText.
+rules before it can safely run.
+
+The bounded startup trace now identifies ten active tags in the original
+launcher's Shell and Run calls:
+
+| Tag | Observed value or relationship |
+| --- | --- |
+| `NP_StackSize` | 5000 bytes |
+| `NP_Seglist` | The exact D0 returned by the preceding native `LoadSeg()` |
+| `NP_FreeSeglist` | `TRUE` |
+| `NP_Name`, `NP_CommandName` | The same nonzero pointer; strings are not printed or followed by the trace |
+| `NP_ConsoleTask`, `NP_WindowPtr` | `NULL` |
+| `NP_CopyVars` | `FALSE` |
+| `NP_Cli` | `TRUE` |
+| `NP_HomeDir` | A nonzero BPTR; the trace does not dereference it |
+
+No `NP_Entry` or `NP_Arguments` tag is present. Each list terminates after
+ten items, within the diagnostic's 64-step and 16-output-item limits.
+The loader trace records its native BPTR at full width and the delivered
+32-bit D0 without reading segment contents or printing filenames. Logging
+and converted-tag cleanup preserve the loader's IoErr.
+
+This establishes a request to start the program loaded by native DOS.
+It does not make the native
+BPTR a safe guest process handle. The next implementation needs a trusted
+loaded-module registry, explicit transfer/unload ownership, typed directory
+and CLI setup, and a guest representation of the resulting Process. A
+native 68k-module route must also guarantee emulator entry without a native
+code fallback. These are separate from the existing shared-arena service
+processes. The startup trace does not enable either process route, and
+TurboText still returns 20 without opening an editor window.
 
 [AmiPixelShop 0.6.1-beta](https://github.com/radi7777/AmiPixelShop/releases/tag/v0.6.1-beta)
 is the untouched 68040/FPU release, using source tag

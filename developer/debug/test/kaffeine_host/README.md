@@ -96,6 +96,22 @@ calls from child Processes stop before their native thunks. `test_exec_messages`
 checks the same gate before file and handler packet adapters, while root
 packet dispatch remains available. CreateNewProc remains unsupported.
 
+`test_dos_thunks --process-trace-only` also checks the refused
+CreateNewProc call's numeric startup trace. The production tag walker is
+limited to 64 item/control steps and the trace to 16 active tags. Tests
+cover control-only cycles, invalid and truncated lists, wrapping skips,
+independent traversal/output limits and unchanged guest memory. Names,
+entry points and seglists are reported as raw values without following
+their pointers; no process is created.
+
+`test_dos_thunks --loadseg-trace-only` checks numeric LoadSeg/NewLoadSeg
+provenance traces. The native BPTR is recorded at full width alongside
+the delivered 32-bit D0, without reading segment contents or printing
+the filename. Success, failure, rejected strings and converted-tag
+cleanup preserve the loader's IoErr even when logging or freeing tags
+changes it. These traces establish returned-handle identity only, not a
+trusted module registry or process-start capability.
+
 ### Classic RastPort initialization and font queries
 
 `test_gfx_thunks` exercises literal InitRastPort/AskFont dispatch, exact classic

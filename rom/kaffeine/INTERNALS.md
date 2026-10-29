@@ -875,7 +875,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -132 | IoErr | Pass-through |
 | -138 | CreateProc | Root-only bounded guest Process on the cooperative scheduler: own stack/TCB/name/SegArray in a guest MemList, caller-owned seglist and virtual SIGB_DOS for its embedded MsgPort. Child native DOS calls and file/handler packets stop with rc 20; resource failure returns NULL/IoErr, and no native process runs guest code |
 | -144 | Exit | Root stops via running = FALSE and returns signed D1 through D0; a CreateProc child ends only that child at a slice boundary. Never calls native Exit |
-| -150 | LoadSeg | Bounded guest name; native seglist |
+| -150 | LoadSeg | Bounded guest name; native seglist. Numeric trace records the input address, full native BPTR and delivered D0; the post-loader IoErr is preserved |
 | -156 | UnLoadSeg | BPTR pass-through, except the guest seglist of a 68k library from disk, which stays until its expunge |
 | -174 | DeviceProc | Bounded or NULL name; the guest port of the native handler, one for each native port; IoErr() contains a typed borrowed assign lock backed by a private duplicate (`kaffeine_handlers.c`, see "DOS handler ports") |
 | -180 | SetComment | Two bounded, NUL-terminated guest strings; native result and `IoErr()` |
@@ -925,7 +925,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -468 | Fault | Nullable bounded header, nonoverlapping output, positive capacity and native write footprint (including unconditional header punctuation); returns the native spare-capacity value |
 | -474 | PrintFault | Nullable bounded header; native result and error code in `IoErr()` |
 | -492 | Cli | The context's guest CLI snapshot, also in `pr_CLI` of the guest Process (`kaffeine_cli.c`) |
-| -498 | CreateNewProc | Fails with `ERROR_NOT_IMPLEMENTED`: the new process would run 68k code natively |
+| -498 | CreateNewProc | Returns zero with `ERROR_NOT_IMPLEMENTED`; numeric startup diagnosis visits at most 64 tag/control steps and reports at most 16 active tags, without following code, name or seglist pointers. No native process is started |
 | -504 | RunCommand | A non-NULL argument string needs its NUL and all D4 bytes in guest memory; NULL with size 0 passes NULL; the guest seglist of a 68k library from disk gives -1 with `ERROR_OBJECT_WRONG_TYPE` |
 | -510 | GetConsoleTask | The guest port of the native console task, or the port that the program set while it stands for that one; kept in the guest `pr_ConsoleTask` |
 | -516 | SetConsoleTask | 0, a handler port or a FileHandle's `fh_Type` of the program, as the native port it stands for; returns the previous guest port; any other port stops with rc 20 |
@@ -952,7 +952,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -738 | CompareDates | Two converted DateStamps; preserves native reverse ordering without overflowing signed subtraction |
 | -744 | DateToStr | Converts the 26-byte guest DateTime and its three nullable LEN_DATSTRING outputs |
 | -750 | StrToDate | Bounded guest date/time strings, safe month/calendar arithmetic, native DateStamp copied back even on partial failure |
-| -768 | NewLoadSeg | Bounded guest name; the tags still go through the generic TagList conversion |
+| -768 | NewLoadSeg | Bounded guest name; the tags still go through the generic TagList conversion. Same numeric provenance trace as LoadSeg, preserving post-loader IoErr across tag cleanup and logging |
 | -798 | ReadArgs | Native `ReadArgs()` on a host array and a native RDArgs filled from the program's one; strings, numbers and arrays copied into one guest block (`kaffeine_readargs.c`) |
 | -804 | FindArg | D1 is the template, D2 is the keyword; bounded strings and native parsing, despite misleading NDK argument names |
 | -810 | ReadItem | Native CSource with checked counted source, native cursor copied back as BE32; NULL source means Input |

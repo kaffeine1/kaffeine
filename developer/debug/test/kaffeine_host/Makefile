@@ -17,7 +17,7 @@ DOS_LOADSEG_OBJ := $(BUILD_DIR)/dos_loadseg_aos.o
 EXEC_LISTS_OBJ := $(BUILD_DIR)/kaffeine_lists.o
 DOS_THUNK_CPPFLAGS := -I$(TEST_DIR)/dos_thunk_stubs $(TEST_CPPFLAGS)
 DOS_THUNK_CFLAGS := -std=c99 -Wall -Wextra -Wno-unused-parameter
-DOS_THUNK_OBJS := $(addprefix $(BUILD_DIR)/dos_thunk_,cpu.o dispatch.o thunks_dos.o cli.o format.o)
+DOS_THUNK_OBJS := $(addprefix $(BUILD_DIR)/dos_thunk_,cpu.o dispatch.o thunks_dos.o cli.o format.o taglist.o)
 DOS_THUNK_OBJS += $(BUILD_DIR)/dos_buffers_native.o $(BUILD_DIR)/file_boundary_unit.o
 DOS_THUNK_OBJS += $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o
 MEMHEADER_OBJS := $(addprefix $(BUILD_DIR)/memheader_,cpu.o dispatch.o memheader.o)
@@ -147,8 +147,9 @@ $(BUILD_DIR)/test_exec_lists: $(EXEC_LISTS_OBJ)
 $(BUILD_DIR)/test_exec_lists: EXTRA_OBJS = $(EXEC_LISTS_OBJ)
 
 # Compile the production DOS thunks and dispatcher as C, then link the C++ test.
+$(BUILD_DIR)/dos_thunk_thunks_dos.o: DOS_THUNK_TRACE_CPPFLAGS := -I$(TEST_DIR)/dos_trace_stubs
 $(BUILD_DIR)/dos_thunk_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(DOS_THUNK_CPPFLAGS) $(CFLAGS) $(DOS_THUNK_CFLAGS) -MMD -MP -c -o $@ $<
+	$(CC) $(DOS_THUNK_TRACE_CPPFLAGS) $(CPPFLAGS) $(DOS_THUNK_CPPFLAGS) $(CFLAGS) $(DOS_THUNK_CFLAGS) -MMD -MP -c -o $@ $<
 
 $(BUILD_DIR)/dos_buffers_native.o: $(TEST_DIR)/dos_buffers_native.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(DOS_THUNK_CPPFLAGS) $(CFLAGS) $(DOS_THUNK_CFLAGS) -funsigned-char -MMD -MP -c -o $@ $<

@@ -558,10 +558,6 @@ ALLOWED_IGNORED_REGS = {
         frozenset({"A0"}),
         "CliInitRun() refuses a 68k DosPacket with ERROR_NOT_IMPLEMENTED",
     ),
-    "kaffeine_dos_CreateNewProc": (
-        frozenset({"D1"}),
-        "CreateNewProc() refuses with ERROR_NOT_IMPLEMENTED",
-    ),
     "kaffeine_dos_ExAllEnd": (
         frozenset({"D2", "D3", "D4"}),
         "ExAllEnd validates the lock and resets the bridge-owned control state",
