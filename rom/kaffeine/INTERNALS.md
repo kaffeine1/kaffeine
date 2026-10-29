@@ -1111,7 +1111,7 @@ RastPort thunks use the registered 68k RastPort of a window, a screen or a
 private offscreen planar layer (see RastPorts and Fonts and Layer Snapshots
 below). ReadPixel also reads bounded guest planar
 bitmaps directly. Caller-owned classic RastPorts support bounded initialization
-and SetFont/AskFont/TextLength calls through temporary native structures.
+and SetFont/AskFont/TextLength/TextExtent/TextFit calls through temporary native structures.
 Their pointer-free state calls and bounded Draw/RectFill/WritePixel/Text/
 BltTemplate drawing also use per-call native temporaries. The layer bridge
 resolves an owned window/requester/private layer or converts a checked
@@ -1153,8 +1153,8 @@ takes the exit code.
 | -504, -522, -528, -558, -612, -618, -624, -1086..-1158 | Other region vectors (20 slots) | Stop the guest with rc 20 (`kaffeine_regions_Unsupported`) |
 | -606, -636, -678, -918, -924, -942, -1020, -1206 | Other bitmap vectors (8 slots) | Stop the guest with rc 20 (`kaffeine_bitmaps_Unsupported`) |
 | -654 | AttemptLockLayerRom | Non-blocking `LockLayerRom` returning TRUE or FALSE (`kaffeine_layers.c`) |
-| -690 | TextExtent | Checks the text and the 12-byte 68k TextExtent, writes the native result big-endian |
-| -696 | TextFit | Checks every character from string on, a WORD strDirection apart, and both 68k TextExtents; converts the constraint and the result |
+| -690 | TextExtent | Checks text and a disjoint aligned 12-byte output in ordinary caller storage; resolves a live font and signed TxSpacing for caller-owned RastPorts, then writes the result big-endian |
+| -696 | TextFit | Checks the bounded forward/backward text span and disjoint aligned TextExtents; caller-owned RastPorts use only a live native font and signed TxSpacing, with no other pointer imported |
 | -714 | OpenMonitor | Refuses owned monitor opens by stopping with rc 20 (`kaffeine_display.c`) |
 | -720 | CloseMonitor | Refuses monitor closes by stopping with rc 20 (`kaffeine_display.c`) |
 | -726 | FindDisplayInfo | Refuses display handle lookups by stopping with rc 20 (`kaffeine_display.c`) |

@@ -62,6 +62,8 @@ struct GfxCalls
     WORD draw_from_x = 0, draw_from_y = 0;
     WORD dx = 0, dy = 0, xmin = 0, ymin = 0, xmax = 0, ymax = 0;
     ULONG apen = 0, bpen = 0, drmd = 0;
+    RastPort *metric_rp = nullptr;
+    RastPort metric_seen = {};
     unsigned ask_font = 0;
     RastPort *ask_rp = nullptr;
     bool ask_wrong_name = false; /* a native AskFont() with another name */
@@ -236,11 +238,13 @@ extern "C" void TextExtent(struct RastPort *rp, CONST_STRPTR string, ULONG count
                            struct TextExtent *te)
 {
     ++gfx.any;
-    te->te_Width = read_text(string, count) * rp->TxWidth;
+    gfx.metric_rp=rp;gfx.metric_seen=*rp;
+    UWORD n=read_text(string,count);
+    te->te_Width=n*(rp->Font->tf_XSize+rp->TxSpacing);
     te->te_Height = rp->Font->tf_YSize;
     te->te_Extent.MinX = 0;
     te->te_Extent.MinY = -(WORD)rp->Font->tf_Baseline;
-    te->te_Extent.MaxX = te->te_Width - 1;
+    te->te_Extent.MaxX = n ? (n-1)*(rp->Font->tf_XSize+rp->TxSpacing)+rp->Font->tf_XSize-1 : 0;
     te->te_Extent.MaxY = te->te_Height - 1 - rp->Font->tf_Baseline;
 }
 
@@ -250,6 +254,7 @@ extern "C" ULONG TextFit(struct RastPort *rp, CONST_STRPTR string, ULONG strLen,
                          struct TextExtent *te, struct TextExtent *limit,
                          LONG direction, ULONG bitWidth, ULONG bitHeight)
 {
+    gfx.metric_rp=rp;gfx.metric_seen=*rp;
     TextFont *tf = rp->Font;
     UWORD length = (UWORD)strLen;
     ULONG fitted = 0;
@@ -266,7 +271,8 @@ extern "C" ULONG TextFit(struct RastPort *rp, CONST_STRPTR string, ULONG strLen,
                        limit->te_Height >= te->te_Height))
             while (length--)
             {
-                WORD width = te->te_Width + rp->TxWidth, maxx = width - 1;
+                WORD width = te->te_Width + tf->tf_XSize + rp->TxSpacing;
+                WORD maxx = te->te_Width + tf->tf_XSize - 1;
 
                 gfx.text.push_back(*string);
                 string += (WORD)direction;
@@ -2292,6 +2298,54 @@ static void test_initgels()
     }
 }
 
+static void test_caller_metrics()
+{
+    for(bool copied:{false,true})
+    {
+        Fixture f;const ULONG rp=Fixture::raw;
+        if(copied){ULONG original=f.rastport();std::memcpy(f.memory.data()+rp,f.memory.data()+original,100);}
+        else assert(f.call(198,{0,rp})==0);
+        for(ULONG off:{0U,4U,8U,12U,16U,20U,66U})m68k_write32(&f.ctx,rp+off,0xFFFFFFF1U);
+        m68k_write16(&f.ctx,rp+RP_TXSPACING,0xFFFF);
+        f.put(Fixture::text,"Hello");
+        std::memset(f.memory.data()+Fixture::extent,0x73,16);
+        const std::vector<UBYTE> kept(f.memory.begin()+rp,f.memory.begin()+rp+100);
+        RastPort original=native_rp;
+        assert(f.call(690,{Fixture::text,rp,Fixture::extent},{4})==0&&!f.stopped());
+        assert(f.word(Fixture::extent)==28&&f.word(Fixture::extent+8)==28&&f.memory[Fixture::extent+12]==0x73);
+        assert(gfx.metric_rp!=&native_rp&&gfx.metric_seen.Font==&topaz&&gfx.metric_seen.TxSpacing==-1&&
+               !gfx.metric_seen.Layer&&!gfx.metric_seen.BitMap&&!gfx.metric_seen.GelsInfo&&!gfx.metric_seen.RP_User);
+        gfx.text.clear();
+        assert(f.call(696,{Fixture::text+3,rp,Fixture::extent,0},{4,0xFFFF,20,8})==2&&!f.stopped());
+        assert(gfx.text=="lle"&&f.word(Fixture::extent)==14&&f.word(Fixture::extent+8)==14);
+        assert(std::equal(kept.begin(),kept.end(),f.memory.begin()+rp)&&!std::memcmp(&original,&native_rp,sizeof(original)));
+    }
+}
+static void test_metric_guards()
+{
+    for(unsigned c=0;c<9;c++)
+    {
+        Fixture f;ULONG rp=Fixture::raw,out=Fixture::extent,limit=0;f.ctx.libs[0].pos_size=4;
+        assert(f.call(198,{0,rp})==0);f.put(Fixture::text,"Hello");
+        switch(c)
+        {
+            case 0:out++;break;
+            case 1:out=rp+98;break;
+            case 2:out=m68k_read32(&f.ctx,rp+RP_FONT);break;
+            case 3:out=Fixture::base;break;
+            case 4:out=Kaffeine_HeapAlloc(&f.ctx,12,0);Kaffeine_HeapFreeExact(&f.ctx,out,12);break;
+            case 5:out=f.ctx.mem_size-10;break;
+            case 6:limit=out;break;
+            case 7:m68k_write32(&f.ctx,rp+RP_FONT,0xFFFFFFF0U);break;
+            case 8:{ULONG bad=Kaffeine_MirrorAlloc(&f.ctx,100);std::memcpy(f.memory.data()+bad,f.memory.data()+rp,100);rp=bad;break;}
+        }
+        auto before=f.memory;unsigned calls=gfx.any;
+        if(c!=6)assert(f.call(690,{Fixture::text,rp,out},{5})==20&&f.stopped());
+        assert(f.call(696,{Fixture::text,rp,out,limit},{5,1,80,8})==20&&f.stopped());
+        assert(f.memory==before&&gfx.any==calls);
+    }
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
@@ -2324,6 +2378,8 @@ int main()
         { "Drawing on a program's planar BitMap goes through the very guest planes, pre-clipped", test_draw_planar },
         { "Drawing stops before native graphics on pointers, aliases, bridge memory and bad templates", test_draw_refusals },
         { "A copied window RastPort draws through the real layer and leaves the window's alone", test_draw_copied_window },
+        { "Caller-owned metric queries resolve only a live font and signed spacing", test_caller_metrics },
+        { "Metric outputs and caller storage reject aliases and protected bytes atomically", test_metric_guards },
         { "Classic InitGels is bounded and other GELS calls stop before native graphics", test_initgels },
         { "BltTemplate() is manual with every register; window RastPorts as before", test_blttemplate_registers }
     };
