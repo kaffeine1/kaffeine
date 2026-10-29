@@ -4,10 +4,88 @@ The unmodified 68k programs run through `kaffeine.library` on AROS ARM64.
 Moira and the Kaffeine JIT are tested separately. Application binaries and
 private test disk images are not distributed here.
 
-| Program | Verified behavior | Scope and next check |
+| Program | Observed behavior | Scope and next check |
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
+| TurboText 2.0 | Original Aminet launcher and support libraries tested with both Moira and JIT; Shell and Run return 20 with `Could not start TurboText - function not implemented` after `CreateNewProc()` | Startup is blocked; no editor window, editing or save/reopen acceptance. Needs child-process DOS state and lifetime support |
+| AmiPixelShop 0.6.1-beta | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; P96 and screen-mode requester requirements are additional source-level gaps |
+
+## Additional startup checks (2026-10-29)
+
+[TurboText 2.0](https://aminet.net/package/text/edit/TurboText20) is the
+original freeware distribution by Martin Taillefer, written using M2Sprint
+Modula-2. Its readme permits redistribution only as an unchanged archive;
+the program and libraries are not included here. The readme recommends
+manual installation because its old Installer script has compatibility
+problems. Copy `Disk/Data` to an application drawer, then on the test system:
+
+```text
+Assign TurboText: Work:TurboText
+Copy TurboText:Libs/turbotext.library LIBS:
+Copy TurboText:Libs/ttxreqs.library LIBS:
+Copy TurboText:Libs/ttxsupport.library LIBS:
+CD TurboText:
+TTX RAM:document.txt
+```
+
+The bundled `asl.library` and `amigaguide.library` were left in the original
+drawer; the test system's native system libraries were retained. The
+bridge successfully opens `TurboText:Libs/ttxsupport.library` as 68k code.
+Its startup then calls DOS `LoadSeg()` and `CreateNewProc()` (LVO -498),
+which currently returns `ERROR_NOT_IMPLEMENTED`. Both backends produce
+the same result in each invocation mode.
+
+`CreateNewProc()` requires more than translating its tags. Guest entry
+points cannot execute as ARM code. Existing `CreateProc()` children have
+their own CPU and Process, but DOS calls other than `Exit()` are refused:
+streams, directories, locks, CLI and packet state currently belong to the
+root DOS owner. Root termination also destroys the children and their shared
+arena. A DOS-using helper needs ownership, rollback and group-lifetime
+rules before it can safely run. The actual tag list and seglist provenance
+remain the next evidence to collect for TurboText.
+
+[AmiPixelShop 0.6.1-beta](https://github.com/radi7777/AmiPixelShop/releases/tag/v0.6.1-beta)
+is the untouched 68040/FPU release, using source tag
+`84f224e4ce1ad83e5d3c74addd12268ddc8511df`. The `64 64` arguments choose a
+small canvas, not the screen resolution. Tests used a 1024x768 AROS desktop,
+the current 32-MB guest arena and a VM with networking disabled.
+
+The first observed blocker is an Exec `Alert()` call (LVO -108), before
+any P96 call or inline-FPU instruction fault. Its input D7 is `$00068881`
+with both backends, consistent with the release's FPU requirement and the
+bridge's FPU-free `AttnFlags`. The application returns 20 and writes no
+application output; the improved unsupported-call diagnostic exposes this
+input without changing the existing zero return or calling native Alert.
+
+The [official sources](https://github.com/radi7777/AmiPixelShop/tree/84f224e4ce1ad83e5d3c74addd12268ddc8511df)
+also establish later requirements that these failed launches did not test:
+
+- `Picasso96API.library` v2, mode selection and `p96WritePixelArray()` with
+  a classic `RenderInfo`. A CyberGraphics library-name alias cannot translate
+  that interface.
+- Inline FPU math, including transcendental operations, while initializing
+  pixels and doing normal editing. Native math-library thunks do not provide
+  an instruction-level FPU.
+- A screen-mode requester with a guest filter hook on first start. A later
+  minimal probe can use a valid saved RTG mode in `ENV:AmiPixelShop.prefs`.
+- A requested 256-KB stack. The documented memory recommendation is 128 MB;
+  there is no source-level 128-MB startup gate, so the current failure does
+  not establish a memory-shortage diagnosis.
+
+For a later offline GUI probe, preferences `mode=0x<valid RTG mode ID>` and
+`updcheck=0`, on separate lines, avoid the mode requester and updater child.
+They do not resolve the observed FPU/startup blocker. The small-canvas test
+does not validate a complete document workflow or the documented memory floor.
+
+The downloaded executable SHA-256 values identify the tested originals:
+
+| File | SHA-256 |
+| --- | --- |
+| TurboText `TTX` | `262399d51c98c3c8498c12e2face18f31c79eb99e68a7a7d302b6b746b6d76c3` |
+| AmiPixelShop | `71db861244ad496aa7cfa4f0c99cabe42f4cf3579ab77ab2a167affa64573a71` |
+
+## Existing bridge regressions
 
 The FileLock regression `dos_locks` passes 22 checks in each Shell and Run
 invocation on native ARM64, Moira and JIT. It covers readable FileLock fields,

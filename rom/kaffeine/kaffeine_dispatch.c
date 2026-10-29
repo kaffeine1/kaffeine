@@ -95,9 +95,18 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
         }
         else
         {
+            /* Snapshot arguments before the existing zero return replaces
+               D0. In particular, Exec Alert() carries its code in D7. */
+            bug("[kaffeine] UNIMPL %s LVO -%lu PC=%08lx return=%08lx "
+                "D0=%08lx D1=%08lx D7=%08lx A0=%08lx A1=%08lx\n",
+                lib->name, (unsigned long)lvo, (unsigned long)pc,
+                (unsigned long)result->return_pc,
+                (unsigned long)Kaffeine_GetD(cpu, 0),
+                (unsigned long)Kaffeine_GetD(cpu, 1),
+                (unsigned long)Kaffeine_GetD(cpu, 7),
+                (unsigned long)Kaffeine_GetA(cpu, 0),
+                (unsigned long)Kaffeine_GetA(cpu, 1));
             Kaffeine_SetD(cpu, 0, 0);
-            bug("[kaffeine] UNIMPL %s LVO -%lu\n", lib->name,
-                (unsigned long)lvo);
         }
 
         return TRUE;
