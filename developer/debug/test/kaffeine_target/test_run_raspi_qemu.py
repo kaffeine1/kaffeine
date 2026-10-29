@@ -342,6 +342,57 @@ class BootVerdictTests(unittest.TestCase):
             self.assertEqual(boot.call_args.args[0].expected, {'sample': b'BZh1'})
 
 
+class QemuSchedulingTests(unittest.TestCase):
+    """Check the real CLI-to-Popen path without running QEMU or mtools."""
+
+    def test_default_and_explicit_tcg_threads_reach_qemu(self):
+        for options, selected in (([], 'single'), (['--tcg-thread', 'single'], 'single'),
+                                  (['--tcg-thread', 'multi'], 'multi')):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as directory:
+                run = Path(directory)
+                report = {'directory': directory, 'passed': True, 'results': [],
+                          'vm': {'completed': True, 'stop_reason': 'completed'}}
+                argv = ['run-raspi-qemu.py', '--image', 'unused.img',
+                        '--kernel', 'unused.kernel', '--bsp', 'unused.bsp',
+                        '--dtb', 'unused.dtb', '--mtools', 'unused-tools',
+                        '--run-dir', directory] + options + ['sample']
+                with mock.patch.object(runner, 'boot', return_value=report) as boot, \
+                        mock.patch.object(runner.sys, 'argv', argv), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(runner.main(), 0)
+                args = boot.call_args.args[0]
+                args.disk = run / 'unused-copy.img'
+                proc = mock.Mock(returncode=0)
+                proc.poll.return_value = 0
+                with mock.patch.object(runner, 'mtool',
+                                       return_value=mock.Mock(stdout=b'', returncode=0)), \
+                        mock.patch.object(runner.subprocess, 'Popen', return_value=proc) as popen, \
+                        mock.patch.object(runner, 'SOCK', run / 'unused.sock'), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    vm = runner.run_guest(args, run, [], [])
+                popen.assert_called_once()
+                cmd = popen.call_args.args[0]
+                self.assertEqual(cmd[cmd.index('-accel') + 1], 'tcg,thread=' + selected)
+                self.assertEqual(cmd[cmd.index('-smp') + 1], '4')
+                self.assertEqual(cmd[cmd.index('-M') + 1], 'raspi3b')
+                self.assertEqual(cmd[cmd.index('-display') + 1], 'none')
+                self.assertIn('-accel tcg,thread=' + selected,
+                              (run / 'qemu-cmd.txt').read_text())
+                self.assertEqual(vm['stop_reason'], 'qemu_exited')
+                self.assertFalse(vm['completed'])
+
+    def test_invalid_tcg_thread_is_rejected_before_boot(self):
+        argv = ['run-raspi-qemu.py', '--image', 'unused.img', '--kernel', 'unused.kernel',
+                '--bsp', 'unused.bsp', '--dtb', 'unused.dtb', '--mtools', 'unused-tools',
+                '--run-dir', 'unused-results', '--tcg-thread', 'auto', 'sample']
+        with mock.patch.object(runner, 'boot') as boot, \
+                mock.patch.object(runner.sys, 'argv', argv), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            runner.main()
+        self.assertEqual(error.exception.code, 2)
+        boot.assert_not_called()
+
+
 class KeyTests(unittest.TestCase):
     """--keys: QMP replies past events, errors of send-key, and markers
     served once, only while their execution runs."""

@@ -180,6 +180,20 @@ SD image, kernel, BSP package and device tree, mtools and qemu-system-aarch64.
 The base image is copied for a run. The runner installs the selected library,
 programs and launch scripts in that copy.
 
+The runner defaults to `-accel tcg,thread=single`, retaining the four virtual
+CPUs required by the `raspi3b` machine. The current test image uses only the
+primary CPU; secondary CPUs wait in a `WFE` loop. In QEMU 11.0, parallel TCG treats
+that instruction as a no-op, so parked CPUs can still consume host CPU time.
+Single-thread TCG schedules the virtual CPUs on one emulation thread. Device
+and I/O threads remain separate. See the
+[QEMU WFE implementation](https://github.com/qemu/qemu/blob/v11.0.0/target/arm/tcg/translate-a64.c#L1892-L1903)
+and [TCG scheduling documentation](https://www.qemu.org/docs/master/devel/multi-thread-tcg.html).
+
+Use `--tcg-thread multi` explicitly when testing parallel CPU behavior. This
+setting controls QEMU, independently of `--cpu moira` or `--cpu jit` inside
+AROS. No host CPU percentage, temperature reduction or application timing
+is established by the offline command-construction tests.
+
 Example from the repository root:
 
 ```sh
@@ -384,8 +398,9 @@ physical hardware remain separate validation work.
 python3 developer/debug/test/kaffeine_target/test_run_raspi_qemu.py
 ```
 
-These checks exercise parsing, completion markers, input scripts and output
-comparison without booting QEMU or using a 68k cross compiler.
+These checks exercise parsing, completion markers, input scripts, output
+comparison and the QEMU CPU-thread options without booting QEMU or using a
+68k cross compiler.
 
 
 ## Raspberry framebuffer palette validation — 27 October 2026

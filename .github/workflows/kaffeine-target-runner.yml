@@ -1,0 +1,39 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+name: Kaffeine target runner checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/kaffeine-target-runner.yml'
+      - 'developer/debug/test/kaffeine_target/run-raspi-qemu.py'
+      - 'developer/debug/test/kaffeine_target/test_run_raspi_qemu.py'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/kaffeine-target-runner.yml'
+      - 'developer/debug/test/kaffeine_target/run-raspi-qemu.py'
+      - 'developer/debug/test/kaffeine_target/test_run_raspi_qemu.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  offline-runner:
+    name: Offline runner (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Test CLI, result reports and input scripts without a VM
+        run: python -I -B developer/debug/test/kaffeine_target/test_run_raspi_qemu.py
