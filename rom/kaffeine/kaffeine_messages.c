@@ -96,6 +96,24 @@ static BOOL message_size(struct KaffeineContext *ctx, ULONG msg, ULONG *size)
     if ((msg & 1) || !Kaffeine_GuestBytes(ctx, msg, 20))
         return FALSE;
     *size = m68k_read16(ctx, msg + 18);
+    if (!*size)
+    {
+        unsigned i;
+        /* Only a completed original timer that SendIO captured with zero
+           length has a typed extent here. Arbitrary zero-length messages,
+           copies, pending requests and orphaned storage remain invalid. */
+        for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+        {
+            const struct KaffeineIORequest *e = &ctx->io_requests[i];
+            if (e->guest == msg && e->native && !e->capacity && !e->copy &&
+                e->kind == KAFFEINE_IO_TIMER && e->stack_message && e->replied &&
+                !e->pending && !e->orphan)
+            {
+                *size = 40;
+                break;
+            }
+        }
+    }
     return *size >= 20 && Kaffeine_GuestBytes(ctx, msg, *size);
 }
 

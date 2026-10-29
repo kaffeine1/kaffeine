@@ -33,6 +33,7 @@ at the end.
 | `gfx_rastport_state.c` | Classic caller-owned RastPort state, signed Move coordinates, pointer/guard preservation, Get/Set pens and drawing mode, and independent AllocRaster planes. Same source builds as native ARM reference. |
 | `gfx_classic_rastport.c` | Caller-owned planar RastPort drawing, rectangle clipping, every pixel of a two-plane pattern and BltTemplate source alignment, compared with independently computed plane bytes. Same source builds as native ARM reference. |
 | `gfx_copied_rastport.c` | Copied window RastPort text, independent state, untouched unused GelsInfo and real native layer clipping beneath a covering window. Same source builds as native ARM reference. |
+| `exec_timer_stack.c` | Original timer.device request in cleared stack storage, without CreateIORequest or mn_Length initialization: WaitPort/GetMsg/WaitIO, unchanged zero length and exactly one delivery. Same source builds as native ARM reference. |
 | `gfx_gels_init.c` | InitGels sentinel links, signed extrema, collision-table entry zero, untouched surrounding/object storage, stable repeat and NULL collision table. Same source builds as native ARM reference. |
 | `intui_classic_draw.c` | Real Image chains with big-endian planar bytes and a depth-zero solid image, signed Border origins and WORD coordinate chains, pixel readback and RastPort state preservation. Same source builds as native ARM reference. |
 | `gfx_requester_init.c` | Checks the 112-byte classic Requester layout and sentinel bytes immediately after it; native pointer size must not enlarge the guest write. |
@@ -532,3 +533,14 @@ remain explicitly unsupported and stop before native graphics.
 The host graphics suite passes 29 groups, including malformed pointers,
 protected/freed storage, overlapping objects and source/target buffers,
 plus ASan/UBSan. The full host suite and its 9,409-check JIT probe pass.
+
+### Stack timer messages — 2026-10-29
+
+The original `exec_timer_stack` protocol passes 7 checks on native AROS
+AArch64, preserving zero `mn_Length` after OpenDevice and completion. The
+previous bridge stops at SendIO with rc 20; the corrected adapter passes
+7/0 under Moira and Kaffeine JIT, each from Shell and Run. The existing
+`exec_timer_async` protocol still passes 25/0 on both backends and launch
+paths. Only an original timer opened on caller storage can capture this
+zero-length case; copied requests and CreateIORequest storage keep their
+length requirements, and arbitrary zero-length messages remain invalid.
