@@ -284,6 +284,22 @@ ULONG shadow_task(struct KaffeineContext *ctx, void *native_task, BOOL current)
        never this context's CLI, arguments or native streams. */
     memset(ctx->mem + guest, 0, M68K_SIZEOF_PROCESS);
     shadow_sync(ctx, layout, guest, task);
+    if (current && ctx->stack_bottom && ctx->stack_bottom < ctx->stack_top &&
+        ctx->stack_top <= ctx->mem_size && ctx->stack_top - ctx->stack_bottom >= 4 &&
+        !((ctx->stack_bottom | ctx->stack_top) & 3))
+    {
+        /* The classic Process describes the stack used by guest code,
+           independently of the native Shell/emulator process stack. Its
+           BPTR StackBase names the high end, as dos/dosextens.h specifies. */
+        m68k_write32(ctx, guest + M68K_TASK_SPREG, ctx->stack_top - 4);
+        m68k_write32(ctx, guest + M68K_TASK_SPLOWER, ctx->stack_bottom);
+        m68k_write32(ctx, guest + M68K_TASK_SPUPPER, ctx->stack_top);
+        if (task->tc_Node.ln_Type == NT_PROCESS)
+        {
+            m68k_write32(ctx, guest + M68K_PR_STACKSIZE, ctx->stack_top - ctx->stack_bottom);
+            m68k_write32(ctx, guest + M68K_PR_STACKBASE, ctx->stack_top >> 2);
+        }
+    }
     if (current && task->tc_Node.ln_Type == NT_PROCESS)
     {
         m68k_write32(ctx, guest + M68K_PR_CLI, Kaffeine_GetCLI(ctx) >> 2);

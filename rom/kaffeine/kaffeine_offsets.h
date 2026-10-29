@@ -35,6 +35,8 @@
 
 #define M68K_PR_MSGPORT             92
 #define M68K_PR_SEGLIST             128
+#define M68K_PR_STACKSIZE           132
+#define M68K_PR_STACKBASE           144
 #define M68K_PR_CURRENTDIR          152
 #define M68K_PR_CIS                 156
 #define M68K_PR_COS                 160
@@ -46,6 +48,11 @@
 #define M68K_PR_ARGUMENTS           204
 #define M68K_PR_CES                 224
 #define M68K_PR_PAD                 126
+
+/* Task stack fields (the Process starts with a Task). */
+#define M68K_TASK_SPREG             54
+#define M68K_TASK_SPLOWER           58
+#define M68K_TASK_SPUPPER           62
 
 /* ── CLI struct offsets (m68k) ───────────────────────────────────── */
 
