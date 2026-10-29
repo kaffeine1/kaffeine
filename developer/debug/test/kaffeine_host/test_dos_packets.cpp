@@ -559,8 +559,140 @@ static void nil_filehandle()
     action_packet(f,token,ACTION_SEEK,key,0,OFFSET_BEGINNING);action_reply(f,handler,5,0);
     check(reads==1 && writes==1 && seeks==1,"a FileHandle without a native port still routes Read, Write and Seek through native DOS");
 }
+/* Original cleared StandardPacket protocol: a 20-byte Message immediately
+   followed by its 48-byte DosPacket, sent to an already typed DOS handler. */
+static void zero_standard_packet(Fixture &f,ULONG msg,ULONG reply,LONG action,
+                                 ULONG a1=0,ULONG a2=0,ULONG a3=0,ULONG a4=0)
+{
+    std::memset(f.ctx.mem+msg,0,68);
+    f.w(msg+10,msg+20);f.w(msg+20,msg);f.w(msg+24,reply);
+    f.w(msg+28,static_cast<ULONG>(action));
+    f.w(msg+40,a1);f.w(msg+44,a2);f.w(msg+48,a3);f.w(msg+52,a4);
+}
+static ULONG zero_packet_handler(Fixture &f,bool filesystem,ULONG &token)
+{
+    token=0;
+    if(!filesystem) { token=f.open();return f.r(token*4+8); }
+    std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0xC800),"RAM:");
+    return f.dos(174,0xC800);
+}
+static void cleared_file_packets()
+{
+    for(bool write:{false,true})for(bool at_end:{false,true})
+    {
+        Fixture f;ULONG token=0,h=zero_packet_handler(f,false,token);
+        ULONG msg=at_end?f.ctx.mem_size-68:Kaffeine_HeapAlloc(&f.ctx,68,MEMF_CLEAR);
+        check(msg!=0,"original cleared StandardPacket has complete 68-byte storage");
+        std::memcpy(f.ctx.mem+f.buffer,"WXYZ",4);
+        zero_standard_packet(f,msg,f.reply,write?ACTION_WRITE:ACTION_READ,f.r(token*4+36),f.buffer,4);
+        f.w(msg+14,0xFFFFFFFF); // DOS uses dp_Port, not mn_ReplyPort.
+        auto expected=f.bytes();
+        if(!write)std::memcpy(expected.data()+f.buffer,"ABCD",4);
+        expected[msg+8]=5;expected[msg+18]=0;expected[msg+19]=68;
+        be32(expected,msg,f.reply+24);be32(expected,msg+4,f.reply+20);
+        be32(expected,msg+24,h);be32(expected,msg+32,4);
+        be32(expected,f.reply+20,msg);be32(expected,f.reply+28,msg);
+        check(f.exec(366,h,msg)==0xD0000000&&f.ctx.running,
+              "PutMsg accepts a cleared StandardPacket at an owned FileHandle handler");
+        check(f.bytes()==expected,"zero-length file packet changes only data, result, queue and committed length bytes");
+        check((write?writes:reads)==1&&seen_handle==open_result&&ioerr==137,
+              "cleared file packet reaches its private native handle once and preserves IoErr");
+        check(m68k_read16(&f.ctx,msg+18)==68&&f.r(msg+20)==msg&&f.r(msg+10)==msg+20&&
+              f.r(msg+14)==0xFFFFFFFF,"the queued reply has a known extent and preserves unused message fields");
+        check(f.exec(384,f.reply)==msg&&f.exec(372,f.reply)==msg&&!f.exec(372,f.reply),
+              "WaitPort/GetMsg can inspect and remove the committed zero-length packet reply");
+        if(!at_end)Kaffeine_HeapFree(&f.ctx,msg,68);
+    }
+}
+static void cleared_handler_packets()
+{
+    Fixture f;ULONG token=0,h=zero_packet_handler(f,true,token);
+    const ULONG msg=Kaffeine_HeapAlloc(&f.ctx,68,MEMF_CLEAR),name=0xC900,stamp=0xCA00;
+    f.ctx.mem[name]=4;std::memcpy(f.ctx.mem+name+1,"file",4);
+    f.w(stamp,7000);f.w(stamp+4,600);f.w(stamp+8,1000);
+    zero_standard_packet(f,msg,f.reply,ACTION_SET_DATE,0,0,name>>2,stamp);
+    ioerr=137;packet_result=-1;packet_error=0;
+    auto expected=f.bytes();expected[msg+8]=5;expected[msg+19]=68;
+    be32(expected,msg,f.reply+24);be32(expected,msg+4,f.reply+20);
+    be32(expected,msg+24,h);be32(expected,msg+32,0xFFFFFFFF);
+    be32(expected,f.reply+20,msg);be32(expected,f.reply+28,msg);
+    check(f.exec(366,h,msg)==0xD0000000&&f.ctx.running&&native_packets==1&&
+          packet_handler==ram_port()&&packet_action==ACTION_SET_DATE,
+          "a cleared SET_DATE StandardPacket reaches an existing typed filesystem handler");
+    check(packet_name1=="file"&&packet_stamp.ds_Days==7000&&packet_stamp.ds_Minute==600&&
+          packet_stamp.ds_Tick==1000&&ioerr==137,"metadata packet copies its BSTR/date arguments and preserves caller IoErr");
+    check(f.bytes()==expected,"metadata packet commits only its reply fields, links and 68-byte length");
+    check(f.exec(384,f.reply)==msg&&f.exec(372,f.reply)==msg&&!f.exec(372,f.reply),
+          "the general handler's normalized reply is visible through the ordinary guest queue");
+    Kaffeine_HeapFree(&f.ctx,msg,68);
+}
+static void cleared_packet_failures()
+{
+    for(bool filesystem:{false,true})for(unsigned which=0;which<23;++which)
+    {
+        Fixture f;ULONG token=0,h=zero_packet_handler(f,filesystem,token),msg=f.msg;
+        zero_standard_packet(f,msg,f.reply,filesystem?ACTION_IS_FILESYSTEM:ACTION_READ,
+                             filesystem?0:f.r(token*4+36),f.buffer,5);
+        switch(which)
+        {
+            case 0:++msg;break;
+            case 1:f.w(msg+20,msg+4);break;
+            case 2:f.w(msg+10,msg+22);break;
+            case 3:m68k_write16(&f.ctx,msg+18,1);break;
+            case 4:m68k_write16(&f.ctx,msg+18,20);break;
+            case 5:m68k_write16(&f.ctx,msg+18,67);break;
+            case 6:m68k_write16(&f.ctx,msg+18,69);break;
+            case 7:m68k_write16(&f.ctx,msg+18,0xFFFF);break;
+            case 8:f.w(msg+24,0);break;
+            case 9:f.w(msg+24,h);break;
+            case 10:
+                msg=f.ctx.mem_size-66;
+                std::memcpy(f.ctx.mem+msg,f.ctx.mem+f.msg,66);
+                f.w(msg+10,msg+20);f.w(msg+20,msg);
+                break;
+            case 11:f.manual_port(msg+48);f.w(msg+24,msg+48);break;
+            case 12:f.ctx.io_requests[0].guest=msg;f.ctx.io_requests[0].capacity=68;break;
+            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={msg+2,reinterpret_cast<void *>(1),8};break;
+            case 14:f.ctx.mem[f.reply+14]=1;break;
+            case 15:f.ctx.mem[f.reply+14]=0;f.ctx.mem[f.reply+15]=4;f.w(f.reply+16,f.task);break;
+            case 16:f.w(f.reply+20,f.reply+20);break;
+            case 17:f.w(f.reply+28,msg);break;
+            case 18:f.w(f.reply+16,f.task+0x400);break;
+            case 19:
+                if(filesystem) { f.w(msg+28,ACTION_DISK_INFO);f.w(msg+40,(msg+48)>>2); }
+                else f.w(msg+44,msg+48);
+                break;
+            case 20:f.ctx.mem[h+14]=0;break;
+            case 21:f.w(f.exec_base+276,f.task+0x400);break;
+            case 22:
+                f.message(msg+0x100);f.exec(366,f.port,msg+0x100);f.w(msg+0x100,msg+0x100);
+                break;
+        }
+        const auto before=f.bytes();
+        const auto native_before=std::array<unsigned,8>{reads,writes,native_packets,signals,scalar_calls,buffer_calls,alloc_calls,free_calls};
+        check(f.exec(366,h,msg)==20&&!f.ctx.running&&f.ctx.exit_code==20,
+              "malformed or unqueueable cleared packet stops before native work");
+        check(f.bytes()==before,"rejected cleared packet preserves every guest/guard byte, including its original length");
+        check(native_before==std::array<unsigned,8>{reads,writes,native_packets,signals,scalar_calls,buffer_calls,alloc_calls,free_calls},
+              "rejected cleared packet has no native I/O, allocation, release or signal side effect");
+    }
+    {
+        Fixture f;zero_standard_packet(f,f.msg,f.reply,ACTION_IS_FILESYSTEM);
+        auto before=f.bytes();
+        check(f.exec(366,f.port,f.msg)==20&&!f.ctx.running&&f.bytes()==before&&!native_packets,
+              "an identical zero-length packet shape remains invalid at an ordinary guest port");
+    }
+    {
+        Fixture f;f.message(f.msg,f.reply,68);m68k_write16(&f.ctx,f.msg+18,0);
+        auto before=f.bytes();
+        check(f.exec(366,f.port,f.msg)==20&&!f.ctx.running&&f.bytes()==before,
+              "generic zero-length PutMsg is still rejected without normalization");
+    }
+}
+
 int main()
 {
+    cleared_file_packets();cleared_handler_packets();cleared_packet_failures();
     measured_reads();unused_message_reply_port();packet_failures();identities();buffering();ownership_failures();sequential_handles_and_selected_close();all_handle_entry_points();packet_reply_queue_preflight();bounded_packet_diagnostics();application_read_then_reserved_waitport();
     packet_writes();packet_seeks();packet_scalar_actions();packet_disk_info();nil_filehandle();
     check(allocated_signals==0,"all owned native signals are released");

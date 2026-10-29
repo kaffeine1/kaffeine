@@ -3735,3 +3735,21 @@ oracles, covering modified/stale views, wrong handlers, access refresh,
 scopes, transfers, installation, cleanup, resource limits and allocation
 rollback. The original `dos_locks` target probe also reads FileLock fields
 and exercises DOS operations; run it on native AROS and both CPU backends.
+
+
+### Cleared StandardPackets sent with PutMsg
+
+An original contiguous 68-byte StandardPacket sent to an already typed DOS
+handler may leave `mn_Length` zero. The packet adapter checks the entire
+68-byte span, `dp_Link`, node name, reply queue and disjoint ownership before
+any native operation. The reply commits `mn_Length = 68` immediately before
+queueing, after action-specific validation and conversion, so ordinary queue
+inspection has a known extent. Native handlers may leave that field zero;
+the target probe accepts either representation while checking the actual
+operation, original message identity, reply and surrounding guards.
+
+Generic zero-length messages remain refused. Malformed or partial packets,
+wrong lengths, protected storage, overlap, invalid reply permissions and
+wrong handler arguments cannot be authorized by a zero length. The original
+`dos_packet_zero` probe queries the filesystem and disk information and sends
+`ACTION_SET_DATE`, then examines the file to verify the resulting timestamp.
