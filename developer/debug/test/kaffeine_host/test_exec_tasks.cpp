@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include <exec/execbase.h>
@@ -382,6 +383,37 @@ static void test_current_identity()
     check(ports_are_guest, "the guest public port list is not a native list shadow");
 }
 
+static void test_current_stack()
+{
+    Fixture f;
+    const ULONG task=f.this_task();
+    check(m68k_read32(&f.ctx,task+58)==f.ctx.stack_bottom &&
+          m68k_read32(&f.ctx,task+62)==f.ctx.stack_top,
+          "the current Task exposes the guest stack bounds");
+    check(m68k_read32(&f.ctx,task+54)==f.ctx.stack_top-4,
+          "the initial saved stack pointer names the guest return slot");
+    check(m68k_read32(&f.ctx,task+132)==f.ctx.stack_top-f.ctx.stack_bottom,
+          "Process stack size is the guest reservation, not zero or the host stack");
+    check(m68k_read32(&f.ctx,task+144)==f.ctx.stack_top/4,
+          "Process stack base is a classic BPTR to the high end of the guest stack");
+    for (auto bounds : {std::pair{0x7000U,0x7000U},std::pair{0x7FFDU,0x8000U},
+                       std::pair{0x8000U,0x7000U},std::pair{0x7000U,0x9000U}})
+    {
+        Fixture bad(false);bad.ctx.stack_bottom=bounds.first;bad.ctx.stack_top=bounds.second;
+        bad.init();const ULONG t=bad.this_task();
+        check(t&&m68k_read32(&bad.ctx,t+54)==0&&m68k_read32(&bad.ctx,t+58)==0&&
+              m68k_read32(&bad.ctx,t+62)==0&&m68k_read32(&bad.ctx,t+132)==0&&
+              m68k_read32(&bad.ctx,t+144)==0,
+              "invalid guest stack geometry publishes no stack addresses or size");
+    }
+    Fixture task_only(false);current_process.pr_Task.tc_Node.ln_Type=NT_TASK;task_only.init();
+    const ULONG t=task_only.this_task();
+    check(m68k_read32(&task_only.ctx,t+58)==task_only.ctx.stack_bottom&&
+          m68k_read32(&task_only.ctx,t+62)==task_only.ctx.stack_top&&
+          m68k_read32(&task_only.ctx,t+132)==0&&m68k_read32(&task_only.ctx,t+144)==0,
+          "a current non-Process Task gets guest bounds without Process-only fields");
+}
+
 static void test_named_identity_and_foreign_fields()
 {
     Fixture f;
@@ -477,6 +509,7 @@ int main(int argc, char **argv)
     test_memory_capacity();
     test_embedded_list_callbacks();
     test_current_identity();
+    test_current_stack();
     test_named_identity_and_foreign_fields();
     /* Also permits a focused comparison with the old production handler,
        whose unchecked guest names and bases must not be used for bad inputs. */

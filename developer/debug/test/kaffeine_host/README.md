@@ -71,6 +71,13 @@ register preservation and resource lifetimes are checked. The message and
 packet tests use the actual queue and FileHandle adapters; guest addresses
 are never treated as native pointers.
 
+The current Task snapshot publishes the guest stack bounds and initial saved
+stack pointer. For a Process, `pr_StackSize` reports the actual guest
+reservation and `pr_StackBase` is a BPTR to its high end. `test_exec_tasks`
+checks those fields independently of the host stack, invalid geometry and
+non-Process current tasks. The guest reservation remains 64 KiB; the native
+Shell stack setting does not resize it.
+
 ### Classic requesters and clipping
 
 `test_window` checks the exact 112-byte classic Requester boundary, retained
