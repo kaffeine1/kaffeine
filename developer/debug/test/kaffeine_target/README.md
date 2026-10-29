@@ -115,6 +115,19 @@ and output locations. The default output directory is this test directory's
 `build/`. `hello_short` uses short HUNK relocations; `hello_long` uses
 `HUNK_RELOC32` through vasm's `-kick1hunks` option.
 
+The default `M68K_CFLAGS` builds every program with `-O2 -fno-peephole2`. In
+m68k-amigaos-gcc 6.5.0b the peephole2 pass merges the clearing of an
+`unsigned short` and of the `int` that follows it, two bytes further on,
+into a single `clr.l` of four bytes: the low half of the `int` keeps what
+was in memory. A structure as small as
+`struct s { char p[6]; unsigned short a; int b; }` shows it, since
+`p->a = 0; p->b = 0;` becomes `clr.l (6,a0)`. In zlib it hits `bi_buf`
+and `bi_valid`, the bit buffer of deflate: where `malloc()` hands out
+memory that is not cleared, as on AmigaOS, every compressed stream then
+starts or ends with stray bits. The zlib programs keep `-fno-peephole2`
+also with an `M68K_CFLAGS` of your own. None of the other programs here,
+bzip2 and the IJG JPEG library included, has the pattern today.
+
 Set `BZIP2_SRC` to an unpacked bzip2 1.0.8 source tree to include its test
 executable. Its sample input and reference output files are supplied by
 that source distribution.
@@ -136,19 +149,6 @@ output is the one of canonical zlib; the hash of Chromium reads four bytes
 as a word and is validated for little endian processors only.
 `make zlib-refs` writes the reference files to `build/zlib-refs`, with
 `HOST_CC` for the host build described below.
-
-The zlib programs are also built with `-fno-peephole2`. In
-m68k-amigaos-gcc 6.5.0b that pass merges the clearing of an
-`unsigned short` and of the `int` that follows it, two bytes further on,
-into a single `clr.l` of four bytes: the low half of the `int` keeps what
-was in memory. A structure as small as
-`struct s { char p[6]; unsigned short a; int b; }` shows it, since
-`p->a = 0; p->b = 0;` becomes `clr.l (6,a0)`. In zlib it hits `bi_buf`
-and `bi_valid`, the bit buffer of deflate. Where `malloc()` hands out
-memory that is not cleared, as on AmigaOS, every compressed stream then
-starts or ends with stray bits. Of the other programs here, only an error
-path of `exec_syslists.c` has the pattern; bzip2 and the IJG JPEG library
-do not.
 
 ## Running on AROS AArch64
 
