@@ -31,6 +31,7 @@
 #include "kaffeine_readargs.h"
 #include "kaffeine_shadow.h"
 #include "kaffeine_sched.h"
+#include "kaffeine_taglist.h"
 #include "kaffeine_thunks_dos.h"
 
 #define GUEST_FIB_SIZE 260
@@ -934,27 +935,42 @@ IPTR kaffeine_dos_RunCommand(struct KaffeineContext *ctx, void *cpu)
 /* -150: LoadSeg(D1=name) -> D0=segList */
 IPTR kaffeine_dos_LoadSeg(struct KaffeineContext *ctx, void *cpu)
 {
-    const char *name = guest_string(ctx, THUNK_D(1));
+    ULONG file = THUNK_D(1);
+    const char *name = guest_string(ctx, file);
+    BPTR seg;
+    SIPTR ioerr;
 
     if (!name)
         return bad_dos_buffer(0);
-    return (IPTR)LoadSeg((CONST_STRPTR)name);
+    seg = LoadSeg((CONST_STRPTR)name);
+    ioerr = IoErr();
+    /* Record the opaque native BPTR, not BADDR(seg) or any segment bytes. */
+    bug("[kaffeine] LoadSeg input=%08lx native=%p d0=%08lx\n",
+        (unsigned long)file, (APTR)(IPTR)seg, (unsigned long)(ULONG)(IPTR)seg);
+    SetIoErr(ioerr);
+    return (IPTR)seg;
 }
 
 /* -768: NewLoadSeg(D1=file, D2=tags) -> D0=segList */
 IPTR kaffeine_dos_NewLoadSeg(struct KaffeineContext *ctx, void *cpu)
 {
-    const char *name = guest_string(ctx, THUNK_D(1));
+    ULONG file = THUNK_D(1);
+    const char *name = guest_string(ctx, file);
     struct TagItem *tags;
     BPTR seg;
+    SIPTR ioerr;
 
     if (!name)
         return bad_dos_buffer(0);
     /* The tags still go through the generic converter; see INTERNALS.md. */
     tags = m68k_to_native_taglist(ctx, THUNK_D(2));
     seg = NewLoadSeg((CONST_STRPTR)name, tags);
+    ioerr = IoErr();
     if (tags)
         FreeVec(tags);
+    bug("[kaffeine] NewLoadSeg input=%08lx native=%p d0=%08lx\n",
+        (unsigned long)file, (APTR)(IPTR)seg, (unsigned long)(ULONG)(IPTR)seg);
+    SetIoErr(ioerr);
     return (IPTR)seg;
 }
 
@@ -1806,8 +1822,34 @@ void Kaffeine_MatchCleanup(struct KaffeineContext *ctx)
 /* -498: CreateNewProc(D1=tags) -> D0=process */
 IPTR kaffeine_dos_CreateNewProc(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)ctx;
-    (void)cpu;
+    enum { TRACE_TAGS = 16, TRACE_STEPS = 64 };
+    struct KaffeineTagWalk walk;
+    ULONG list = THUNK_D(1), item = 0, tags = 0, logged = 0;
+    int result;
+
+    /* Diagnostic only: report raw tag values, never strings, code or
+       translated pointers. The caller still gets the same DOS refusal. */
+    bug("[kaffeine] CreateNewProc refused tags=%08lx\n", (unsigned long)list);
+    Kaffeine_TagWalkInit(&walk, list);
+    /* A preset limit bounds control tags too and disables the walker's
+       extra cycle-length scan. Cycles and long lists stop at this budget. */
+    walk.limit = TRACE_STEPS;
+    while ((result = Kaffeine_TagWalkNext(ctx, &walk, &item)) == KAFFEINE_TAG_ITEM)
+    {
+        tags++;
+        if (logged < TRACE_TAGS)
+        {
+            bug("[kaffeine] CreateNewProc tag[%lu] at=%08lx id=%08lx data=%08lx\n",
+                (unsigned long)logged, (unsigned long)item,
+                (unsigned long)m68k_read32(ctx, item),
+                (unsigned long)m68k_read32(ctx, item + 4));
+            logged++;
+        }
+    }
+    bug("[kaffeine] CreateNewProc trace stop=%s tags=%lu logged=%lu steps=%lu\n",
+        result == KAFFEINE_TAG_END ? "end" :
+            (walk.steps >= TRACE_STEPS ? "limit" : "invalid"),
+        (unsigned long)tags, (unsigned long)logged, (unsigned long)walk.steps);
     SetIoErr(ERROR_NOT_IMPLEMENTED);
     return 0;
 }

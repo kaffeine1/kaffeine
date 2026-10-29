@@ -14,6 +14,7 @@
 #include <vector>
 #include <cstddef>
 #include <cstdint>
+#include <cstdarg>
 #include <initializer_list>
 
 #include <dos/dostags.h>
@@ -73,6 +74,25 @@ extern "C" {
 
 static unsigned checks;
 static unsigned failures;
+static std::vector<std::string> debug_lines;
+static bool debug_changes_ioerr;
+static SIPTR debug_ioerr;
+static unsigned debug_ioerr_changes;
+
+extern "C" void kaffeine_dos_trace_bug(const char *format, ...)
+{
+    char line[512];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    debug_lines.emplace_back(line);
+    if (debug_changes_ioerr)
+    {
+        SetIoErr(debug_ioerr);
+        ++debug_ioerr_changes;
+    }
+}
 
 static void check(bool passed, const char *message)
 {
@@ -247,6 +267,8 @@ struct BaseCalls
     const struct TagItem *tags = nullptr;
     LONG result = 0x1234;
     SIPTR error = 0x1357;
+    bool loader_result_override = false;
+    IPTR loader_result = 0;
     std::string printed;
     BPTR printed_to = nullptr;
     size_t fputc_fails_at = static_cast<size_t>(-1);
@@ -416,6 +438,8 @@ struct Calls
     bool vec_double_free = false;
     unsigned free_vec_calls = 0;
     bool freed_converted_tags = false;
+    bool free_vec_changes_ioerr = false;
+    SIPTR free_vec_ioerr = 0;
     unsigned buffer_calls[buffer_call_count] = {};
     BPTR buffer_handle = nullptr;
     const void *buffer_input = nullptr;
@@ -685,6 +709,8 @@ extern "C" void FreeVec(APTR memory)
     }
     std::free(memory);
     calls.allocated_tags = nullptr;
+    if (calls.free_vec_changes_ioerr)
+        SetIoErr(calls.free_vec_ioerr);
 }
 
 extern "C" LONG SystemTagList(CONST_STRPTR command, const struct TagItem *tags)
@@ -1057,13 +1083,17 @@ extern "C" LONG Write(BPTR file, const void *buffer, LONG length)
 
 extern "C" BPTR LoadSeg(CONST_STRPTR name)
 {
-    return base_handle(static_cast<ULONG>(base_record(loadseg_call, name)));
+    LONG result = base_record(loadseg_call, name);
+    return calls.base.loader_result_override ? reinterpret_cast<BPTR>(calls.base.loader_result)
+        : base_handle(static_cast<ULONG>(result));
 }
 
 extern "C" BPTR NewLoadSeg(CONST_STRPTR name, const struct TagItem *tags)
 {
     calls.base.tags = tags;
-    return base_handle(static_cast<ULONG>(base_record(newloadseg_call, name)));
+    LONG result = base_record(newloadseg_call, name);
+    return calls.base.loader_result_override ? reinterpret_cast<BPTR>(calls.base.loader_result)
+        : base_handle(static_cast<ULONG>(result));
 }
 
 extern "C" BOOL Execute(CONST_STRPTR command, BPTR input, BPTR output)
@@ -1578,6 +1608,10 @@ struct Fixture
     explicit Fixture(const char *format = "")
     {
         calls = {};
+        debug_lines.clear();
+        debug_changes_ioerr = false;
+        debug_ioerr = 0;
+        debug_ioerr_changes = 0;
         ctx.mem = memory;
         ctx.mem_size = sizeof(memory);
         ctx.num_libs = 1;
@@ -2508,6 +2542,179 @@ static void write_tag(KaffeineContext *ctx, ULONG addr, ULONG tag, ULONG data)
 {
     m68k_write32(ctx, addr, tag);
     m68k_write32(ctx, addr + 4, data);
+}
+
+struct ProcessTraceItem
+{
+    ULONG address, tag, data;
+};
+
+/* Expected active items and step counts below are independent of the walker.
+   In particular, control-only cycles must hit the traversal budget, not spin
+   while looking for an item to log. Every case also checks the old refusal. */
+static void check_process_trace(Fixture &f, ULONG list,
+    const std::vector<ProcessTraceItem> &items, const char *stop,
+    unsigned tags, unsigned steps, const char *case_name)
+{
+    f.state.d[1] = list;
+    f.state.a[1] = 0x280;
+    f.ctx.task_ops = &fake_task_ops;
+    f.ctx.cpu_factory = &fake_factory;
+    f.ctx.running = TRUE;
+    f.ctx.exit_code = 123;
+    fake_creates = 0;
+    SetIoErr(0x1357);
+    const std::vector<UBYTE> before(f.ctx.mem, f.ctx.mem + f.ctx.mem_size);
+    f.dispatch(498);
+
+    check(f.state.d[0] == 0 && IoErr() == ERROR_NOT_IMPLEMENTED,
+        "CreateNewProc tracing preserves its null result and DOS refusal");
+    check(calls.createnewproc_calls == 0 && calls.createproc_calls == 0 &&
+        calls.allocate_object_calls == 0 && fake_creates == 0,
+        "CreateNewProc tracing never creates a native or guest process");
+    check(calls.taglist_converter_calls == 0 && calls.converter_calls == 0 &&
+        calls.alloc_mem_calls == 0 && calls.free_mem_calls == 0 &&
+        calls.alloc_vec_calls == 0 && calls.free_vec_calls == 0,
+        "CreateNewProc tracing performs no tag conversion or native allocation");
+    check(std::memcmp(f.ctx.mem, before.data(), before.size()) == 0 &&
+        f.ctx.num_shadows == 0 && f.ctx.running && f.ctx.exit_code == 123,
+        "CreateNewProc tracing leaves all guest memory and execution state alone");
+
+    std::vector<std::string> actual, expected;
+    for (const auto &line : debug_lines)
+        if (line.starts_with("[kaffeine] CreateNewProc"))
+            actual.push_back(line);
+    char line[256];
+    std::snprintf(line, sizeof(line),
+        "[kaffeine] CreateNewProc refused tags=%08lx\n", (unsigned long)list);
+    expected.emplace_back(line);
+    for (unsigned i = 0; i < items.size(); ++i)
+    {
+        std::snprintf(line, sizeof(line),
+            "[kaffeine] CreateNewProc tag[%lu] at=%08lx id=%08lx data=%08lx\n",
+            (unsigned long)i, (unsigned long)items[i].address,
+            (unsigned long)items[i].tag, (unsigned long)items[i].data);
+        expected.emplace_back(line);
+    }
+    std::snprintf(line, sizeof(line),
+        "[kaffeine] CreateNewProc trace stop=%s tags=%lu logged=%lu steps=%lu\n",
+        stop, (unsigned long)tags, (unsigned long)items.size(), (unsigned long)steps);
+    expected.emplace_back(line);
+    check(actual == expected, case_name);
+    check(actual.size() <= 18, "CreateNewProc traces at most 16 tags plus header and summary");
+    bool no_guest_name = true;
+    for (const auto &entry : actual)
+        no_guest_name &= entry.find("private-name-must-not-be-printed") == std::string::npos;
+    check(no_guest_name, "CreateNewProc never follows or prints a guest name string");
+}
+
+static void test_process_trace()
+{
+    fake_task_ops.create_proc = fake_create_proc;
+    {
+        Fixture f;
+        std::strcpy(reinterpret_cast<char *>(f.memory + 0x640),
+            "private-name-must-not-be-printed");
+        write_tag(&f.ctx, 0x400, NP_Entry, 0x600);
+        write_tag(&f.ctx, 0x408, NP_StackSize, 262144);
+        write_tag(&f.ctx, 0x410, NP_Seglist, 0x12345678);
+        write_tag(&f.ctx, 0x418, NP_Name, 0x640);
+        write_tag(&f.ctx, 0x420, NP_Priority, 0xFFFFFFFF);
+        write_tag(&f.ctx, 0x428, TAG_DONE, 0);
+        check_process_trace(f, 0x400,
+            {{0x400, NP_Entry, 0x600}, {0x408, NP_StackSize, 262144},
+             {0x410, NP_Seglist, 0x12345678}, {0x418, NP_Name, 0x640},
+             {0x420, NP_Priority, 0xFFFFFFFF}}, "end", 5, 5,
+            "CreateNewProc logs raw D1 tags, scalar values and pointer values exactly");
+    }
+    {
+        Fixture f;
+        write_tag(&f.ctx, 0x400, TAG_IGNORE, 0xDEAD);
+        write_tag(&f.ctx, 0x408, NP_StackSize, 16384);
+        write_tag(&f.ctx, 0x410, TAG_SKIP, 1);
+        write_tag(&f.ctx, 0x418, NP_Entry, 0xBAD);
+        write_tag(&f.ctx, 0x420, TAG_MORE, 0x500);
+        write_tag(&f.ctx, 0x500, NP_Seglist, 0xFFFFFFFF);
+        write_tag(&f.ctx, 0x508, TAG_MORE, 0);
+        check_process_trace(f, 0x400,
+            {{0x408, NP_StackSize, 16384}, {0x500, NP_Seglist, 0xFFFFFFFF}},
+            "end", 2, 5, "CreateNewProc honors IGNORE, SKIP and chained MORE without logging decoys");
+    }
+    for (ULONG list : {0U, 0x400U})
+    {
+        Fixture f;
+        check_process_trace(f, list, {}, "end", 0, 0,
+            "CreateNewProc reports empty and null lists without an active item");
+    }
+    for (ULONG list : {0xFFCU, 0x1000U, 0xFFFFFFFCU, 0xFFFFFFFFU})
+    {
+        Fixture f;
+        f.isolate_arena();
+        check_process_trace(f, list, {}, "invalid", 0, 0,
+            "CreateNewProc rejects truncated and out-of-arena list headers before reading");
+    }
+    {
+        Fixture f;
+        f.isolate_arena();
+        write_tag(&f.ctx, 0xFF8, NP_StackSize, 8192);
+        check_process_trace(f, 0xFF8, {{0xFF8, NP_StackSize, 8192}},
+            "invalid", 1, 1, "CreateNewProc stops after the last complete item without a terminator");
+    }
+    {
+        Fixture f;
+        write_tag(&f.ctx, 0x400, TAG_SKIP, 0xFFFFFFFF);
+        check_process_trace(f, 0x400, {}, "invalid", 0, 0,
+            "CreateNewProc refuses a wrapping TAG_SKIP before following it");
+    }
+    {
+        Fixture f;
+        write_tag(&f.ctx, 0x400, TAG_MORE, 0xFFFFFFFF);
+        check_process_trace(f, 0x400, {}, "invalid", 0, 1,
+            "CreateNewProc validates the destination of TAG_MORE");
+    }
+    {
+        Fixture f;
+        write_tag(&f.ctx, 0x400, TAG_MORE, 0x400);
+        check_process_trace(f, 0x400, {}, "limit", 0, 64,
+            "CreateNewProc bounds a control-only self cycle to 64 steps");
+    }
+    {
+        Fixture f;
+        write_tag(&f.ctx, 0x400, TAG_MORE, 0x500);
+        write_tag(&f.ctx, 0x500, TAG_IGNORE, 0);
+        write_tag(&f.ctx, 0x508, TAG_MORE, 0x400);
+        check_process_trace(f, 0x400, {}, "limit", 0, 64,
+            "CreateNewProc bounds a multi-node control-only cycle to 64 steps");
+    }
+    {
+        Fixture f;
+        write_tag(&f.ctx, 0x400, NP_Entry, 0x600);
+        write_tag(&f.ctx, 0x408, TAG_MORE, 0x400);
+        const std::vector<ProcessTraceItem> first16(16, {0x400, NP_Entry, 0x600});
+        check_process_trace(f, 0x400, first16, "limit", 32, 64,
+            "CreateNewProc caps cycle output independently of its traversal budget");
+    }
+    {
+        Fixture f;
+        for (unsigned i = 0; i < 128; ++i)
+            write_tag(&f.ctx, 0x400 + i * 8, TAG_IGNORE, 0);
+        check_process_trace(f, 0x400, {}, "limit", 0, 64,
+            "CreateNewProc bounds a long acyclic run of control tags");
+    }
+    for (unsigned count : {24U, 64U, 80U})
+    {
+        Fixture f;
+        std::vector<ProcessTraceItem> first16;
+        for (unsigned i = 0; i < count; ++i)
+        {
+            write_tag(&f.ctx, 0x400 + i * 8, NP_StackSize, 4096 + i);
+            if (i < 16)
+                first16.push_back({0x400 + i * 8, NP_StackSize, 4096 + i});
+        }
+        check_process_trace(f, 0x400, first16, count < 64 ? "end" : "limit",
+            count < 64 ? count : 64, count < 64 ? count : 64,
+            "CreateNewProc logs only the first 16 tags and reports a reached traversal cap");
+    }
 }
 
 /* SystemTagList() is at LVO -606 (slot 101 in dos_lib.fd), taking command in
@@ -4233,6 +4440,103 @@ static void test_base_valid()
     }
 }
 
+static void test_loadseg_trace()
+{
+    struct LoaderResult { IPTR handle; SIPTR error; };
+    const LoaderResult results[] =
+    {
+        {static_cast<IPTR>(0x123456789ABCDEF0ULL),
+            static_cast<SIPTR>(0x1122334455667788LL)},
+        {0, ERROR_OBJECT_NOT_FOUND},
+        {0x10203040, 0}
+    };
+    for (bool newer : {false, true})
+        for (bool converted : {false, true})
+        {
+            if (!newer && converted)
+                continue;
+            for (const auto &result : results)
+            {
+                Fixture f;
+                prepare_base(f);
+                std::strcpy(guest(f, base_name), "private-path-must-not-be-printed");
+                f.state.d[1] = base_name;
+                f.state.d[2] = converted ? base_tags : 0;
+                f.state.a[1] = 0x280;
+                f.ctx.running = TRUE;
+                f.ctx.exit_code = 123;
+                calls.base.loader_result_override = true;
+                calls.base.loader_result = result.handle;
+                calls.base.error = result.error;
+                calls.taglist_converts = converted;
+                calls.free_vec_changes_ioerr = true;
+                calls.free_vec_ioerr = -888;
+                debug_changes_ioerr = true;
+                debug_ioerr = -777;
+                SetIoErr(0x1234);
+                const std::vector<UBYTE> before(f.ctx.mem, f.ctx.mem + f.ctx.mem_size);
+
+                f.dispatch(newer ? 768 : 150);
+
+                const BaseCall which = newer ? newloadseg_call : loadseg_call;
+                check(calls.base.count[which] == 1 &&
+                    base_native_calls() == (newer ? 2U : 1U),
+                    "loader trace invokes only its existing native loader and tag conversion");
+                check(calls.base.pointer == f.ctx.mem + base_name &&
+                    calls.base.text == "private-path-must-not-be-printed",
+                    "loader trace still passes the checked D1 string to native DOS");
+                check(f.state.d[0] == static_cast<ULONG>(result.handle),
+                    "loader trace preserves the native handle's delivered 32-bit D0");
+                check(IoErr() == result.error,
+                    "loader trace restores the full post-loader IoErr after logging and freeing tags");
+                check(calls.free_vec_calls == (converted ? 1U : 0U) &&
+                    calls.alloc_vec_calls == (converted ? 1U : 0U) &&
+                    calls.vec_live.empty() && !calls.vec_double_free &&
+                    (!converted || calls.freed_converted_tags),
+                    "loader trace frees exactly its existing converted tags on success and failure");
+                check(std::memcmp(before.data(), f.ctx.mem, before.size()) == 0 &&
+                    f.ctx.running && f.ctx.exit_code == 123 && f.ctx.num_shadows == 0,
+                    "loader trace does not modify guest memory or execution state");
+                char expected[256];
+                std::snprintf(expected, sizeof(expected),
+                    "[kaffeine] %s input=%08lx native=%p d0=%08lx\n",
+                    newer ? "NewLoadSeg" : "LoadSeg", (unsigned long)base_name,
+                    reinterpret_cast<APTR>(result.handle),
+                    (unsigned long)static_cast<ULONG>(result.handle));
+                check(debug_lines == std::vector<std::string>{expected} && debug_ioerr_changes == 1,
+                    "loader trace logs raw input, full-width native BPTR and delivered D0 exactly once");
+                bool no_path = true;
+                for (const auto &line : debug_lines)
+                    no_path &= line.find("private-path-must-not-be-printed") == std::string::npos;
+                check(no_path, "loader trace never prints the filename string");
+            }
+        }
+
+    for (ULONG lvo : {150U, 768U})
+        for (ULONG bad : {0U, 0xFFFU, 0x1000U, 0xFFFFFFFFU})
+        {
+            Fixture f;
+            prepare_base(f);
+            f.ctx.mem[f.ctx.mem_size - 1] = 'x';
+            f.state.d[1] = bad;
+            f.state.d[2] = base_tags;
+            calls.taglist_converts = true;
+            debug_changes_ioerr = true;
+            debug_ioerr = -777;
+            const std::vector<UBYTE> before(f.ctx.mem, f.ctx.mem + f.ctx.mem_size);
+            f.dispatch(lvo);
+            check(f.state.d[0] == 0 && IoErr() == ERROR_BAD_NUMBER,
+                "invalid loader input still returns the original checked-string refusal");
+            check(base_native_calls() == 0 && calls.alloc_vec_calls == 0 &&
+                calls.free_vec_calls == 0,
+                "invalid loader input reaches no native loader or tag converter");
+            check(debug_lines.empty() && debug_ioerr_changes == 0,
+                "invalid loader input produces no provenance trace");
+            check(std::memcmp(before.data(), f.ctx.mem, before.size()) == 0,
+                "invalid loader input leaves the entire guest arena unchanged");
+        }
+}
+
 static void test_base_strings_refused()
 {
     for (const auto &v : base_vectors)
@@ -5643,6 +5947,19 @@ int main(int argc, char **argv)
         std::printf("DOS base call regressions: %u/%u checks passed\n", checks - failures, checks);
         return failures ? 1 : 0;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--process-trace-only") == 0)
+    {
+        test_process_launch();
+        test_process_trace();
+        std::printf("DOS process trace regressions: %u/%u checks passed\n", checks - failures, checks);
+        return failures ? 1 : 0;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--loadseg-trace-only") == 0)
+    {
+        test_loadseg_trace();
+        std::printf("DOS loader trace regressions: %u/%u checks passed\n", checks - failures, checks);
+        return failures ? 1 : 0;
+    }
     if (argc > 1 && !valid_only)
         return 2;
     if (!valid_only)
@@ -5666,6 +5983,8 @@ int main(int argc, char **argv)
     test_examine_lock();
     test_exnext_end();
     test_process_launch();
+    test_process_trace();
+    test_loadseg_trace();
     test_packet_boundaries();
     test_system_taglist_lvo();
     test_buffer_dispatch();
