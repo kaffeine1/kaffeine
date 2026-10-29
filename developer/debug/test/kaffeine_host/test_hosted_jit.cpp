@@ -417,6 +417,116 @@ static bool same_memory(const Machine &x, const Machine &y, ULONG sp)
     return true;
 }
 
+/* Original programs for the 68020 full extension's non-indirect forms.
+   Compare every guest register, CCR and the entire arena (apart from the
+   reference adapter's documented vector/exception-frame scratch). */
+static void full_index()
+{
+    auto seed = [](Machine &m) {
+        for (unsigned i = 0; i < 8; i++) m.d(i, 0xD0000000u + i);
+        for (unsigned i = 0; i < 7; i++) m.a(i, 0xA0000000u + i);
+    };
+    auto equal = [](Machine &reference, Machine &translated) {
+        return !HJ_LastFault(translated.jit)[0] &&
+            std::memcmp(reference.mem.data() + Layout::snapshot,
+                        translated.mem.data() + Layout::snapshot, 66) == 0 &&
+            same_memory(reference, translated, reference.read(Layout::snapshot + 60));
+    };
+    for (ULONG target : {Layout::scratch + 3696 + 7*4, (1u << 20) - 1, 1u << 20})
+    {
+        Machine reference, translated;
+        auto build = [&](Machine &m) {
+            seed(m); m.a(0, 7); m.a(2, target - 3696 - 7*4);
+            m.word(0x44FC); m.word(0x001F); /* MOVE #$1F,CCR */
+            m.code(m.pc, {0x4232, 0x8D20, 0x0E70}); m.pc += 6;
+            /* CLR.B (3696,A2,A0.L*4), with a full extension word. */
+            m.save(); m.rts();
+        };
+        build(reference); build(translated);
+        CHECK(reference.run(MOIRA) == translated.run(JIT_LIBRARY));
+        CHECK(equal(reference, translated));
+        CHECK(target >= translated.size || translated.mem[target] == 0);
+        CHECK(std::all_of(translated.mem.begin() + translated.size, translated.mem.end(),
+                          [](UBYTE byte) { return byte == 0; }));
+        CHECK((m68k_read16(&translated.ctx, Layout::snapshot + 64) & 0x1F) == 0x14);
+    }
+    /* A separate integer address oracle checks suppression, signed word
+       indexes, scaling and 32-bit wrapping, including out-of-arena reads. */
+    for (bool pc_relative : {false, true})
+        for (unsigned bd_size : {1u, 2u, 3u})
+            for (unsigned suppress = 0; suppress < 4; suppress++)
+                for (bool long_index : {false, true})
+                    for (unsigned scale = 0; scale < 4; scale++)
+                        for (bool address_index : {false, true})
+                        {
+                            const bool bs = suppress & 1, is = suppress & 2;
+                            const ULONG index = long_index ? (scale & 1 ? 0xFFFFFFFDu : 3u) :
+                                (scale & 1 ? 0xCAFEFFFDu : 0xCAFE0003u);
+                            const LONG disp = bd_size == 1 ? 0 : bd_size == 2 ?
+                                (scale & 1 ? -3696 : 3696) :
+                                (scale & 1 ? INT32_MIN : INT32_MAX);
+                            const ULONG scaled = (long_index ? index : ULONG(LONG(int16_t(index)))) << scale;
+                            const ULONG base = bs ? 0xBAD00002u : Layout::scratch - ULONG(disp) - (is ? 0 : scaled);
+                            const UWORD ext = UWORD((address_index ? 0x8000 : 0x1000) |
+                                (long_index ? 0x0800 : 0) | (scale << 9) | 0x0100 |
+                                (bs ? 0x0080 : 0) | (is ? 0x0040 : 0) | (bd_size << 4));
+                            Machine reference, translated;
+                            ULONG expected_address = 0, read_address = 0;
+                            auto address = [&](ULONG pcbase) {
+                                return (bs ? 0 : pc_relative ? pcbase : base) + ULONG(disp) + (is ? 0 : scaled);
+                            };
+                            auto build = [&](Machine &m) {
+                                seed(m); m.a(2, base);
+                                if (address_index) m.a(0, index); else m.d(1, index);
+                                m.word(0x44FC); m.word(0x001F);
+                                auto operand = [&] {
+                                    m.word(ext);
+                                    if (bd_size == 2) m.word(UWORD(disp));
+                                    if (bd_size == 3) m.longword(ULONG(disp));
+                                };
+                                m.word(pc_relative ? 0x49FB : 0x49F2); /* LEA <ea>,A4 */
+                                expected_address = address(m.pc); operand();
+                                m.word(pc_relative ? 0x263B : 0x2632); /* MOVE.L <ea>,D3 */
+                                read_address = address(m.pc); operand();
+                                m.save(); m.rts();
+                            };
+                            build(reference); build(translated);
+                            auto word = [&](ULONG at) -> ULONG {
+                                return uint64_t(at) + 2 <= reference.size ?
+                                    ULONG(reference.mem[at]) << 8 | reference.mem[at+1] : 0;
+                            };
+                            LONG reference_rc = reference.run(MOIRA), translated_rc = translated.run(JIT_LIBRARY);
+                            /* Both adapters initialize the reset vectors. A
+                               fully suppressed null BD reads vector zero. */
+                            const ULONG expected_value = word(read_address) << 16 | word(read_address + 2);
+                            CHECK(reference_rc == translated_rc);
+                            CHECK(equal(reference, translated));
+                            CHECK(translated.read(Layout::snapshot + 48) == expected_address);
+                            CHECK(translated.read(Layout::snapshot + 12) == expected_value);
+                            CHECK((m68k_read16(&translated.ctx, Layout::snapshot + 64) & 0x1F) ==
+                                  (0x10 | (expected_value == 0 ? 4 : expected_value & 0x80000000u ? 8 : 0)));
+                        }
+    for (UWORD ext : {0x0100, 0x0118, 0x0111, 0x0112, 0x0113, 0x0114, 0x0115, 0x0116, 0x0117})
+    {
+        Machine m;
+        m.a(2, Layout::scratch); m.d(0, 0x12345678);
+        m.word(0x4232); m.word(ext); m.word(0x4E75);
+        const auto before = m.mem;
+        CHECK(m.run(JIT_LIBRARY) == 20 && std::strstr(HJ_LastFault(m.jit), "unary mode"));
+        CHECK(std::equal(before.begin() + Layout::scratch, before.begin() + Layout::scratch_end,
+                         m.mem.begin() + Layout::scratch));
+    }
+    /* A valid long base displacement must not read beyond the code arena. */
+    for (ULONG bytes : {4u, 6u})
+    {
+        Machine m;
+        m.ctx.entry_point = m.size - bytes;
+        m.code(m.ctx.entry_point, {0x4AB2, 0x0130});
+        if (bytes == 6) m68k_write16(&m.ctx, m.size - 2, 0x1234);
+        CHECK(m.run(JIT_LIBRARY) == 20 && std::strstr(HJ_LastFault(m.jit), "fetch outside guest memory"));
+    }
+}
+
 /* ------------------------------------------------------------------
    Portable checks
    ------------------------------------------------------------------ */
@@ -2257,6 +2367,7 @@ int main(int argc, char **argv)
         {"callback-faults", callback_faults, true}, {"bitfield-boundaries", bitfield_boundaries, true},
         {"code-changes", code_changes, true},
         {"faults", faults, true}, {"extended-insns", extended_insns, true},
+        {"full-index", full_index, true},
         {"library-backend", library_backend, true},
         {"word-division", word_division, true},
         {"random-programs", random_programs, true}

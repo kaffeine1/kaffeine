@@ -269,7 +269,11 @@ copy taken at translation; the others are translated again.
   immediate or register counts, and 1-bit `<ea>.W` in memory), `Scc`, `Bcc`,
   `BSR`, `DBcc`, `JSR`, `JMP`, `RTS`, `RTR`, `RTD`, `MOVEM.W`, `MOVEM.L`,
   `MOVE` from and to `SR` and `CCR`, `ORI`/`ANDI`/`EORI` to `CCR` and `SR`,
-  `NOP` and A-line, with all addressing modes but the full extension word.
+  `NOP` and A-line. Indexed addressing accepts brief extensions and 68020
+  full extensions without memory indirection: null/word/long base
+  displacement, base/index suppression, scaled word/long data or address
+  indexes, and address-register or PC-relative bases. Reserved encodings
+  and all memory-indirect forms stop with 20.
   Everything else, `ILLEGAL` and Line-F stop with 20 and a message.
 - No exception frames at all: no `TRAP`, `CHK`, address error, privilege
   violation or trace, and no `Supervisor()`, which stops with 20.

@@ -518,6 +518,7 @@ struct HJEA
 {
     uint8_t mode, reg;
     uint8_t xreg, xlong, scale;   /* index register 0-15, .L index, scale shift */
+    uint8_t base_suppressed, index_suppressed;
     int32_t disp;
     uint32_t value;               /* address, immediate, or PC-relative address */
 };
@@ -620,15 +621,27 @@ static int decode_ea(struct HJDec *d, int mode, int reg, int size, unsigned allo
             return 0;
         base = d->at;
         ext = fetch16(d);
-        if (ext & 0x0100)
-            return 0;           /* full extension word format */
         ea->mode = mode == 6 ? EA_IDX : EA_PCIDX;
         ea->xreg = (uint8_t)(ext >> 12);
         ea->xlong = (uint8_t)((ext >> 11) & 1);
         ea->scale = (uint8_t)((ext >> 9) & 3);
-        ea->disp = (int8_t)(ext & 0xFF);
+        if (ext & 0x0100)
+        {
+            unsigned bd = (ext >> 4) & 3;
+
+            /* 68020 full format, without memory indirection (IIS=000).
+               BD=00 and bit 3 are reserved. Keep indirect forms outside
+               the subset rather than treating their pointer as data. */
+            if (!bd || (ext & 0x000F))
+                return 0;
+            ea->base_suppressed = (uint8_t)((ext >> 7) & 1);
+            ea->index_suppressed = (uint8_t)((ext >> 6) & 1);
+            ea->disp = bd == 2 ? (int16_t)fetch16(d) : bd == 3 ? (int32_t)fetch32(d) : 0;
+        }
+        else
+            ea->disp = (int8_t)(ext & 0xFF);
         if (mode == 7)
-            ea->value = base + (uint32_t)ea->disp;
+            ea->value = (ea->base_suppressed ? 0 : base) + (uint32_t)ea->disp;
         break;
     }
     return (allowed & M(ea->mode)) != 0;
@@ -1326,21 +1339,31 @@ static void emit_add_const(struct HJEmit *e, int rd, int rn, int32_t c)
 static void emit_index(struct HJTrans *t, int base, const struct HJEA *ea)
 {
     struct HJEmit *e = &t->e;
-    int x = ea->xreg < 8 ? REG_D(ea->xreg) : REG_A(ea->xreg - 8);
+    int x = -1;
 
-    if (!ea->xlong)
+    if (!ea->index_suppressed)
     {
-        put(e, a64_sxth(R_SCR, x));
-        x = R_SCR;
+        x = ea->xreg < 8 ? REG_D(ea->xreg) : REG_A(ea->xreg - 8);
+        if (!ea->xlong)
+        {
+            put(e, a64_sxth(R_SCR, x));
+            x = R_SCR;
+        }
     }
-    if (base < 0)
+    if (base < 0 || ea->base_suppressed)
     {
-        emit_mov32(e, R_ADDR, ea->value);
-        put(e, a64_addsub_reg(0, 0, 0, R_ADDR, R_ADDR, x, 0, ea->scale));
+        emit_mov32(e, R_ADDR, base < 0 ? ea->value : (uint32_t)ea->disp);
+        if (x >= 0)
+            put(e, a64_addsub_reg(0, 0, 0, R_ADDR, R_ADDR, x, 0, ea->scale));
         return;
     }
-    put(e, a64_addsub_reg(0, 0, 0, R_ADDR, base, x, 0, ea->scale));
-    emit_add_const(e, R_ADDR, R_ADDR, ea->disp);
+    if (x < 0)
+        emit_add_const(e, R_ADDR, base, ea->disp);
+    else
+    {
+        put(e, a64_addsub_reg(0, 0, 0, R_ADDR, base, x, 0, ea->scale));
+        emit_add_const(e, R_ADDR, R_ADDR, ea->disp);
+    }
 }
 
 /* The host register that holds the guest address of a memory operand.

@@ -45,6 +45,12 @@ refuses full SR writes, stack-bank changes and trace mode before executing
 them. CCR instructions and native updates of condition codes remain
 available. There is no automatic switch to Moira during execution.
 
+Indexed operands support the 68020 full extension without memory
+indirection, including base/index suppression and null, signed word or
+long base displacements. Address calculation wraps to 32 bits before the
+existing guest-memory checks. Reserved encodings and memory-indirect
+extensions remain unsupported.
+
 Code memory is allocated with `MEMF_EXECUTABLE` and published with
 `CacheClearE(CACRF_ClearD | CACRF_ClearI)` on standalone AROS AArch64.
 Hosted AROS is excluded from that allocation path. Other library targets
@@ -66,6 +72,22 @@ Host coverage includes nested callbacks, separate parent/child CPUs,
 shared-code invalidation in both directions, scheduler cleanup and
 explicit rejection of unsupported SR operations. Moira remains the
 reference for the existing instruction regression suite.
+
+The full-index regression passes 1,955 host checks, including ASan/UBSan.
+It compares 384 combinations of base/index suppression, displacement,
+index width/register class, scale and PC-relative addressing with Moira
+and an independent integer address oracle. It also covers the exact
+`CLR.B (3696,A2,A0.L*4)` encoding, the last arena byte, out-of-arena
+operands, reserved/indirect refusals and truncated displacement fetches.
+The complete hosted translator suite passes 11,364 checks. On AROS ARM64
+in QEMU, `cpu_full_index` passes 5 checks in each Shell and `Run`
+invocation with both Moira and JIT.
+
+Unmodified Directory Opus 4.12 JR now opens with JIT, copies text and binary
+files, renames the text and lists both files after a normal quit and
+reopen. Extracted file bytes match the original inputs, and both launches
+return 0. See the [classic application checks](classic-applications.md)
+for the independently tested Moira path and the remaining scope limits.
 
 `DIVU.W` and `DIVS.W` additionally use an independent widened-integer oracle
 for arithmetic and defined flags. Their native standalone probe passed

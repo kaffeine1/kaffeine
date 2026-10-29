@@ -53,7 +53,7 @@ Darwin-specific JIT constraints.
 ## Coverage
 
 The Makefile is the authoritative list of executables. The current suite
-has 47 test executables and a thunk-registration audit.
+has 48 test executables and a thunk-registration audit.
 
 | Area | Coverage |
 | --- | --- |
