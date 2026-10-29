@@ -94,6 +94,14 @@ struct KaffeineTaskOps
     /* Whether cpu is the root's and the root is the current task, from the
        scheduler's own state, never from the guest ThisTask */
     BOOL  (*is_root)(struct KaffeineContext *ctx, void *cpu);
+    /* Trusted current live task, only for its own CPU; 0 for any other
+       caller. Independent of the writable guest ExecBase.ThisTask. */
+    ULONG (*caller_task)(struct KaffeineContext *ctx, void *cpu);
+    /* WaitIO blocks on a private request identity, never on a guest or
+       native signal bit. Completion wakes only its captured live owner. */
+    BOOL  (*block_io)(struct KaffeineContext *ctx, void *cpu, ULONG request,
+                      KaffeineTaskRetry retry, IPTR *result);
+    void  (*io_completed)(struct KaffeineContext *ctx, ULONG request, ULONG owner);
 };
 
 #ifdef __cplusplus

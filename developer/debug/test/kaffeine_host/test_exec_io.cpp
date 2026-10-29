@@ -2229,6 +2229,76 @@ static void test_cleanup()
 /* Native timer.device accepts a stack timerequest whose message length
    remains zero. The bridge captures that exact typed case, reserves all
    forty bytes and lets only its own completed reply traverse a queue. */
+static ULONG async_actor;
+static ULONG async_task_bits[3];
+static std::vector<std::pair<ULONG,ULONG>> async_arrivals, async_wakes;
+static BOOL child_root(KaffeineContext *,void *) {return async_actor==Fixture::task;}
+static ULONG child_caller(KaffeineContext *,void *) {return async_actor;}
+static BOOL child_known(KaffeineContext *,ULONG t) {return t==Fixture::task||t==0x3200||t==0x3300;}
+static BOOL child_owns(KaffeineContext *,ULONG t,ULONG bit)
+{return (t==Fixture::task?async_task_bits[0]:t==0x3200?async_task_bits[1]:t==0x3300?async_task_bits[2]:0)&bit;}
+static void child_signal(KaffeineContext *,ULONG t,ULONG b) {async_arrivals.emplace_back(t,b);}
+static BOOL child_block(KaffeineContext *c,void *,ULONG r,KaffeineTaskRetry retry,IPTR *out)
+{
+    assert(retry==Kaffeine_WaitIO);
+    for(auto &e:c->io_requests)if(e.guest==r){assert(e.pending&&e.owner==async_actor);*out=0;return TRUE;}
+    assert(false);return FALSE;
+}
+static void child_wake(KaffeineContext *,ULONG r,ULONG t) {async_wakes.emplace_back(t,r);}
+static void test_child_timer_io()
+{
+    Fixture f;f.ctx.exec_task=&owner_task;
+    const ULONG p[2]={f.port(),f.port()},r[2]={f.request(p[0],40),f.request(p[1],40)};
+    f.open(r[0]);f.open(r[1]);
+    async_task_bits[0]=0;async_task_bits[1]=1u<<f.memory[p[0]+MP_SIGBIT];
+    async_task_bits[2]=1u<<f.memory[p[1]+MP_SIGBIT];
+    m68k_write32(&f.ctx,p[0]+MP_SIGTASK,0x3200);m68k_write32(&f.ctx,p[1]+MP_SIGTASK,0x3300);
+    KaffeineTaskOps ops={};ops.is_root=child_root;ops.caller_task=child_caller;
+    ops.known_task=child_known;ops.owns_signal=child_owns;ops.send_signal=child_signal;
+    ops.block_io=child_block;ops.io_completed=child_wake;
+    f.ctx.sched=reinterpret_cast<KaffeineScheduler*>(&ops);f.ctx.task_ops=&ops;
+    async_arrivals.clear();async_wakes.clear();
+    for(unsigned i=0;i<2;i++)
+    {
+        async_actor=0x3200+i*0x100;f.delay(r[i],1,0);
+        check(f.send(r[i])==0&&f.record(r[i])->owner==async_actor,"child SendIO captures the trusted scheduler caller");
+        check(f.wait_io(r[i])==0&&f.record(r[i])->waiting==2&&!waitio_calls,"child WaitIO suspends without native WaitIO");
+    }
+    async_actor=0x3300;
+    refused(f,[&]{return f.wait_io(r[0]);},"another child cannot wait on a captured pending request");
+    refused(f,[&]{return f.abort_io(r[0]);},"another child cannot abort a captured pending request");
+    async_actor=Fixture::task;
+    refused(f,[&]{return f.wait_io(r[0]);},"the root cannot steal a child's pending WaitIO");
+    f.ctx.running=TRUE;
+    complete(f.native_of(r[1]),0,0,22);complete(f.native_of(r[0]),0,0,11);
+    check(f.ctx.io_poll(&f.ctx)&&async_arrivals.empty()&&async_wakes.size()==2&&!waitio_calls,
+          "two child WaitIO completions wake their private retries without guest arrivals");
+    for(unsigned i=0;i<2;i++)
+    {
+        async_actor=0x3200+i*0x100;
+        check(f.wait_io(r[i])==0&&f.queue(p[i]).empty()&&!f.record(r[i])->waiting,
+              "each child retry returns its own completion with no queued message");
+        f.delay(r[i],1,0);check(f.send(r[i])==0,"each child rearms its original request");
+    }
+    complete(f.native_of(r[1]));complete(f.native_of(r[0]));
+    check(f.ctx.io_poll(&f.ctx)&&async_arrivals.size()==2&&
+          async_arrivals[0].first==0x3200&&async_arrivals[1].first==0x3300,
+          "normal child completions route to their own captured signal targets");
+    for(unsigned i=0;i<2;i++){async_actor=0x3200+i*0x100;f.wait_io(r[i]);}
+    async_actor=0x3200;f.delay(r[0],1,0);f.send(r[0]);f.wait_io(r[0]);
+    const ULONG copy=f.copy_of(r[0],0x2800);f.delay(copy,1,0);
+    check(f.send(copy)==0&&f.wait_io(copy)==0,"a child also waits on its independent timer copy");
+    const auto wakes=async_wakes.size();
+    f.ctx.io_task_removed(&f.ctx,0x3200);
+    check(!f.record(r[0])&&!f.record(copy),"a removed task's pending original and copy are quarantined");
+    std::memset(f.memory.data()+r[0],0x83,40);std::memset(f.memory.data()+copy,0x91,40);const auto freed=f.memory;
+    check(f.ctx.io_poll(&f.ctx)&&f.memory==freed&&async_wakes.size()==wakes,
+          "late orphan reply never writes reused child storage or wakes a reused task");
+    f.ctx.sched=nullptr;f.ctx.task_ops=nullptr;
+    f.call(450,0xA0A0A0A0,r[1]);f.call(660,r[1]);
+    f.call(672,p[0]);f.call(672,p[1]);
+}
+
 static void test_stack_timer_message()
 {
     Fixture f;
@@ -2245,6 +2315,13 @@ static void test_stack_timer_message()
     check(f.check_io(r)==r && f.queue(p)==std::vector<ULONG>({r}),"the typed zero-length reply is a valid queue node");
     check(f.get(p)==r && f.get(p)==0 && f.wait_io(r)==0 && !m68k_read16(&f.ctx,r+MN_LENGTH),
           "GetMsg and WaitIO preserve the caller zero and deliver once");
+    f.delay(r,0,10);f.send(r);complete(f.native_of(r));f.check_io(r);
+    f.call(450,0xA0A0A0A0,r);
+    check(f.record(r) && !f.record(r)->native && f.queue(p)==std::vector<ULONG>({r}),
+          "closing a completed stack timer retains its typed queued reply");
+    check(f.wait_io(r)==0 && !f.record(r) && f.get(p)==0,
+          "WaitIO takes the closed timer reply and retires its identity");
+    check(f.open(r,UNIT_VBLANK)==0,"reopen stack storage after taking its old reply");
     check(f.fill_is(r+40,8,0x73),"timer operations do not write beyond forty bytes");
     f.delay(r,0,10);check(f.send(r)==0,"rearm the same zero-length timer");
     on_waitio=[&]{complete(f.native_of(r));};
@@ -2281,6 +2358,7 @@ int main()
     test_doio();
     test_async();
     test_async_source();
+    test_child_timer_io();
     test_stack_timer_message();
     test_async_copies();
     test_async_waitio();

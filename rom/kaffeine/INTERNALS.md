@@ -783,10 +783,10 @@ before `lib->gen_thunks[]` (generated).
 | -444 | OpenDevice | timer.device on a native timerequest, and console.device unit -1 on a native IOStdReq, each with a private reply port; keyboard.device and input.device unit zero use native IOStdReq adapters. Console accepts the 32-byte guest IORequest prefix, including zero mn_Length; its guest unit is -1. Adapter selection uses trusted native records |
 | -450 | CloseDevice | Closes and deletes native request and port. Console clears guest io_Device and io_Unit to zero; timer keeps its -1 closed-device marker |
 | -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter |
-| -462 | SendIO | Root-only native async timer submit with checked reply queues; copied MICROHZ/VBLANK timerequests share one private FIFO completion port |
+| -462 | SendIO | Current-task native async timer submit with checked reply queues; copied MICROHZ/VBLANK timerequests share one private FIFO completion port |
 | -468 | CheckIO | Pumps completions and returns NULL only while the trusted native record is pending; unknown requests retain Exec marker checks |
-| -474 | WaitIO | Root-only wait for pending native timer I/O, yielding through the guest scheduler when active; completes in place or removes only its own queued reply |
-| -480 | AbortIO | Root-only native AbortIO for a pending request; -1 when nothing remains pending |
+| -474 | WaitIO | Captured-owner wait for pending native timer I/O, yielding through the guest scheduler when active; completes in place or removes only its own queued reply |
+| -480 | AbortIO | Captured-owner native AbortIO for a pending request; -1 when nothing remains pending |
 | -486 | AddResource | No-op; guest resource publication is unsupported |
 | -492 | RemResource | No-op, paired with AddResource |
 | -498 | OpenResource | Checks the guest name and returns NULL; native resource ABIs are not bridged |
@@ -2064,7 +2064,7 @@ m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
   clock of the whole system and ends with `IOERR_NOCMD`, as every other
   command does. The time fields pass unchanged, so the native driver treats
   oversized microseconds as it does for native callers.
-- Asynchronous I/O: the root task, outside callbacks, can `SendIO()` open
+- Asynchronous I/O: a live guest task, outside callbacks, can `SendIO()` open
   timer requests using TR_ADDREQUEST on non-EClock units or TR_GETSYSTIME.
   Native completion queues are pumped from Exec queue/signal calls and guest
   scheduler polls. The pump preserves the shared copy-port FIFO order and
@@ -3672,3 +3672,22 @@ message is accepted. A changed captured length stops before completion
 writes. Copies still require exactly 40 and CreateIORequest storage keeps
 its normal length/capacity checks. Existing conservative request reservations
 remain in place.
+
+### Timers of cooperative guest tasks
+
+SendIO captures the trusted scheduler caller and reply port. A signalling
+port must belong to that caller; the guest ThisTask field cannot establish
+ownership. Pending WaitIO and AbortIO require the captured task. Scheduled
+WaitIO blocks on a private request identity while other CPUs run; completion
+wakes that owner's retry without appending a guest message or setting a guest
+signal. When every task waits only on I/O, the native runner waits on its
+private completion bits. Ordinary SendIO completions still enter the captured
+port and signal its own guest task. The private native bits remain hidden for
+the complete native port lifetime.
+
+Before a child is reaped, outstanding originals and copies become orphans
+before native AbortIO. Late replies close native records without writing
+reused guest storage or waking a replacement task. Idle records are retired
+before signal/stack reuse. The root cannot free another task's pending copy.
+Closed original zero-length timers retain their typed queued reply until it
+is removed; de-queued closed records and freed storage retire that identity.

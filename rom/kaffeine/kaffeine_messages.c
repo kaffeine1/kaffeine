@@ -83,7 +83,7 @@ static BOOL ordinary(struct KaffeineContext *ctx, ULONG port, ULONG size,
     for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; ++i)
     {
         const struct KaffeineIORequest *e = &ctx->io_requests[i];
-        if (!e->guest || e->orphan || e == self || (releasing && e->copy)) continue;
+        if (!e->guest || e->orphan || e == self || (releasing && (e->copy || (!e->native && e->stack_message)))) continue;
         if (on_port && !e->pending && e->replied && e->port == on_port && port == e->guest &&
             size <= request_span(e)) continue;
         if (Kaffeine_Overlap(port, size, e->guest, request_span(e))) return FALSE;
@@ -105,8 +105,9 @@ static BOOL message_size(struct KaffeineContext *ctx, ULONG msg, ULONG *size)
         for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
         {
             const struct KaffeineIORequest *e = &ctx->io_requests[i];
-            if (e->guest == msg && e->native && !e->capacity && !e->copy &&
-                e->kind == KAFFEINE_IO_TIMER && e->stack_message && e->replied &&
+            if (e->guest == msg && !e->capacity && !e->copy &&
+                (e->kind == KAFFEINE_IO_TIMER || (!e->native && e->kind == KAFFEINE_IO_NONE)) &&
+                e->stack_message && e->replied &&
                 !e->pending && !e->orphan)
             {
                 *size = 40;

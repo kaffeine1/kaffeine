@@ -110,9 +110,10 @@ struct KaffeineIORequest
     enum KaffeineIODeviceKind kind; /* native state, never taken from guest fields */
     ULONG   open_flags;         /* OpenDevice() D1, which copies open with */
     ULONG   port;               /* guest mn_ReplyPort captured by SendIO() */
+    ULONG   owner;              /* trusted guest task captured by SendIO(), 0 before sending */
     UBYTE   pending;            /* the native request is at the device */
     UBYTE   replied;            /* native idle, guest results final: the node may be on port */
-    UBYTE   waiting;            /* the root waits in WaitIO(): 1 in the call, 2 blocked */
+    UBYTE   waiting;            /* the owner waits in WaitIO(): 1 in the call, 2 blocked */
     UBYTE   copy;               /* a copy record; reply is unused */
     UBYTE   orphan;             /* storage freed while pending: reaped, never written */
     UBYTE   stack_message;      /* original unowned timer sent with mn_Length == 0 */
@@ -263,6 +264,7 @@ struct KaffeineContext
     BOOL (*io_poll)(struct KaffeineContext *ctx);
     BOOL (*io_wait)(struct KaffeineContext *ctx, ULONG port);
     BOOL (*io_release)(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL commit);
+    void (*io_task_removed)(struct KaffeineContext *ctx, ULONG task);
     ULONG io_signals;
     /* Shadow struct mapping: m68k addr <-> native ptr */
     #define KAFFEINE_MAX_SHADOWS 1024

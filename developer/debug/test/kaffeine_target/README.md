@@ -33,6 +33,7 @@ at the end.
 | `gfx_rastport_state.c` | Classic caller-owned RastPort state, signed Move coordinates, pointer/guard preservation, Get/Set pens and drawing mode, and independent AllocRaster planes. Same source builds as native ARM reference. |
 | `gfx_classic_rastport.c` | Caller-owned planar RastPort drawing, rectangle clipping, every pixel of a two-plane pattern and BltTemplate source alignment, compared with independently computed plane bytes. Same source builds as native ARM reference. |
 | `gfx_copied_rastport.c` | Copied window RastPort text, independent state, untouched unused GelsInfo and real native layer clipping beneath a covering window. Same source builds as native ARM reference. |
+| `exec_timer_children.c` | Two independent child task timers, private pending WaitIO, queued completions, AbortIO, a root timer and another child making progress; all stack message lengths stay zero. Same source builds as native ARM reference. |
 | `exec_timer_stack.c` | Original timer.device request in cleared stack storage, without CreateIORequest or mn_Length initialization: WaitPort/GetMsg/WaitIO, unchanged zero length and exactly one delivery. Same source builds as native ARM reference. |
 | `gfx_gels_init.c` | InitGels sentinel links, signed extrema, collision-table entry zero, untouched surrounding/object storage, stable repeat and NULL collision table. Same source builds as native ARM reference. |
 | `intui_classic_draw.c` | Real Image chains with big-endian planar bytes and a depth-zero solid image, signed Border origins and WORD coordinate chains, pixel readback and RastPort state preservation. Same source builds as native ARM reference. |
@@ -544,3 +545,26 @@ previous bridge stops at SendIO with rc 20; the corrected adapter passes
 paths. Only an original timer opened on caller storage can capture this
 zero-length case; copied requests and CreateIORequest storage keep their
 length requirements, and arbitrary zero-length messages remain invalid.
+
+### Timers of cooperative guest tasks — 2026-10-29
+
+The original `exec_timer_children` protocol passes 10 checks on native AROS
+AArch64 and under 68k Moira and Kaffeine JIT, each through Shell and Run.
+Two children use independent timer units and queues, pending WaitIO and
+AbortIO; a root timer and another child making progress exercise cooperative
+waiting. Every stack request preserves its zero message length. The existing
+stack and async protocols still pass 7/0 and 25/0 on both 68k backends and
+launch paths.
+
+Host coverage passes I/O 454/454, scheduler 181/181, message-boundary
+13,441/13,441 and 22 memory groups, including ASan/UBSan. Private wait tests
+cover all tasks blocked only on I/O and a forged guest ThisTask. Original
+and copied requests from a removed child receive late native completions
+without touching reused guest storage or waking a replacement task. Closed
+zero-length timer replies remain readable until removed and then retire
+their typed identity.
+
+Directory Opus now starts and services its child clock timer. Its Shell
+launch next stops with rc 20 at TextFit on a copied window RastPort; the
+following Run launch still rejects an unrecognized screen identity. File
+operations remain unvalidated.
