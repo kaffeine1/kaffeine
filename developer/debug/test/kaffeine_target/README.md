@@ -62,7 +62,7 @@ at the end.
 | `libgcc_ieee_ports.c` | `__floatsisf()` and `__fixsfsi()` on mathieeesingbas.library and `__floatunsidf()` on mathieeedoubbas.library, the conversions that bzip2 1.0.8 and the IJG JPEG library 9f call and the empty libgcc of the toolchain lacks. Linked into `bzip2`, `cjpeg`, `djpeg` and `jpegtran`. |
 | `jpeg_jconfig.h` | The `jconfig.h` of the IJG JPEG library 9f for m68k-amigaos-gcc with libnix, after the `jconfig.sas` of its distribution: Unix command line with standard input and output, everything in memory with `jmemnobs.c`. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, and `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, and `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -153,6 +153,15 @@ as a word and is validated for little endian processors only.
 `make zlib-refs` writes the reference files to `build/zlib-refs`, with
 `HOST_CC` for the host build described below.
 
+Set `PNG_SRC` to the libpng 1.6.58 tree that the AROS build fetches for its
+Ports, together with `ZLIB_SRC`, to include `pngtest` on that zlib. Its
+`pnglibconf.h` is the `scripts/pnglibconf.h.prebuilt` of the distribution.
+The Makefile collects `pngtest.png` and the `png-3`, `crashers` and
+`badpal` drawers of `contrib/testpngs` in `build/pngtest-files`, and
+`make png-refs` writes the reference outputs to `build/png-refs`. The host
+build leaves out the SIMD paths that libpng turns on by itself on some
+processors.
+
 ## Running on AROS AArch64
 
 `run-raspi-qemu.py --help` lists all options. Supply an AROS raspi-aarch64
@@ -195,6 +204,7 @@ copy for inspection.
 | `exec_diskfont` | `--files exec_diskfont build/exec_diskfont-files` |
 | `exec_libraries` | `--files exec_libraries build/exec_libraries-files` |
 | `exec_packets` | `--files exec_packets build/exec_packets-files` |
+| each step of `pngtest` | `--files NAME build/pngtest-files` |
 
 The bitmap font is generated from original fixture data by the Makefile.
 The packet fixture is an original 12-byte file. Requests of 5, 9 and 4 bytes
@@ -256,6 +266,45 @@ build/zlib-refs/zlib.h-1.gz zlib_gz1=build/minigzip`.
 of AmigaOS 3.2.3 starts with a stack of 4096 bytes, so there they need a
 `Stack` command first; the runner gives every program 1048576 bytes.
 
+## The pngtest steps
+
+`pngtest` reads a PNG file, writes it again and compares the two. The
+steps are those of `tests/pngtest-all`, the script of the `make check` of
+libpng, in six programs. Each passes only if its output is byte for byte
+the one of the same program built for the host:
+
+| Program | Arguments | Images | Exit |
+| --- | --- | --- | --- |
+| `png_strict` | `--strict` | `pngtest.png` and the image of `png-3` | 0 |
+| `png_relaxed` | `--relaxed` | `crashers/badcrc.png` | 0 |
+| `png_xfail1` | `--xfail` | 7 of the other 22 images of `crashers` | 0, each one `XFAIL` |
+| `png_xfail2` | `--xfail` | 8 more of them | 0, each one `XFAIL` |
+| `png_xfail3` | `--xfail` | the last 7 | 0, each one `XFAIL` |
+| `png_badpal` | `-m` | the nine images of `badpal` | 1, each one with both palette warnings |
+
+The Makefile lists the images in `PNG_STRICT`, `PNG_RELAXED`,
+`PNG_XFAIL1`, `PNG_XFAIL2`, `PNG_XFAIL3` and `PNG_BADPAL`, named under
+`EMU68/`, in the order of `tests/pngtest-all`. The Shell takes command
+lines of up to 512 bytes, so the 22 images that must fail go in three
+steps. `pngtest` names each image in its output, so the names must be the
+same in the guest and for the host: `S:User-Startup` runs the programs in
+`SYS:`, where `EMU68/` is the drawer that `--files` fills, and
+`make png-refs` runs the host build next to an `EMU68` that names
+`build/pngtest-files`. For example, the first step is
+`--files png_strict build/pngtest-files --args png_strict "--strict
+EMU68/pngtest.png EMU68/png-3/cicp-display-p3_reencoded.png" --expect
+png_strict build/png-refs/png_strict.out png_strict=build/pngtest`.
+
+`png_badpal` ends with 1 on purpose. `tests/pngtest-all` expects these
+images to fail, and checks that each gives both
+`IDAT: Read palette index exceeding num_palette` and
+`Wrote palette index exceeding num_palette`; it runs them one at a time,
+and `-m` runs the same test on each of them in one execution. `pngtest`
+writes the copy of each image to `pngout.png` in the current directory,
+`SYS:` in the guest. On AmigaOS 3.2.3 under FS-UAE the six steps give the
+same output as the host build, and `png_strict` also with the 4096 bytes
+of stack that the Shell starts with.
+
 ## Expected containment and exit probes
 
 | Program or alias | Argument | Expected exit |
@@ -268,8 +317,9 @@ of AmigaOS 3.2.3 starts with a stack of 4096 bytes, so there they need a
 | `exec_memory_procure=exec_memory` | `procure` | 20 |
 | `exec_memory_vacate=exec_memory` | `vacate` | 20 |
 | `cpu_faults_mmu=cpu_faults` | `mmu` | 20 |
+| `png_badpal=pngtest` | `-m` and the nine `badpal` images | 1, as `tests/pngtest-all` expects |
 
-These sixteen Shell/Run executions are deliberate nonzero cases. They must
+These eighteen Shell/Run executions are deliberate nonzero cases. They must
 be checked against their expected behavior; raw nonzero status alone is
 not a regression verdict. Valid ordinary queues are positive tests in
 `exec_messages`.
