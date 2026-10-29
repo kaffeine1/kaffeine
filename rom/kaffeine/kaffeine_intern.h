@@ -94,7 +94,8 @@ struct KaffeineIOPort
 #define KAFFEINE_MAX_IO_REQUESTS 16
 enum KaffeineIODeviceKind
 {
-    KAFFEINE_IO_NONE, KAFFEINE_IO_TIMER, KAFFEINE_IO_CONSOLE
+    KAFFEINE_IO_NONE, KAFFEINE_IO_TIMER, KAFFEINE_IO_CONSOLE,
+    KAFFEINE_IO_KEYBOARD, KAFFEINE_IO_INPUT
 };
 struct KaffeineIORequest
 {
@@ -418,6 +419,8 @@ struct KaffeineContext
     ULONG   timer_base;
     struct Device *native_timer;
     ULONG   console_base;      /* shared guest Device, outside the library namespace */
+    ULONG   keyboard_base;     /* guest Devices of unit 0, with no native pointer */
+    ULONG   input_base;
 
     /* Supervisor() redirect: user function address, 0 = none */
     ULONG   sv_redirect;

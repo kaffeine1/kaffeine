@@ -86,6 +86,17 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
     if (!*file) return 0;
     name = file;
 
+    /* NewBroker, CxObj and CxMsg contain pointers and asynchronous ports.
+       The generated wrappers cannot translate those classic layouts or
+       own their native lifetimes. Do not publish a native base until a
+       typed Commodities bridge exists; the wrapper can still try a 68k
+       library from disk, and optional callers can use their fallback. */
+    if (strcmp(name, "commodities.library") == 0)
+    {
+        bug("[kaffeine] native commodities.library ABI is not supported yet\n");
+        return 0;
+    }
+
     ULONG base = Kaffeine_FindLibBase(ctx, name);
     if (base) return base;
 

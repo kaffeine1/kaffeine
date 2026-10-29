@@ -24,3 +24,13 @@ struct IOStdReq
     ULONG io_Offset;
 };
 #define IOF_QUICK 1
+#define CMD_INVALID 0
+#define CMD_RESET 1
+#define CMD_READ 2
+#define CMD_WRITE 3
+#define CMD_UPDATE 4
+#define CMD_CLEAR 5
+#define CMD_STOP 6
+#define CMD_START 7
+#define CMD_FLUSH 8
+#define CMD_NONSTD 9

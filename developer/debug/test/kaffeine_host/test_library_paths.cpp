@@ -209,7 +209,8 @@ static void registrations_and_reuse()
     }
     for (ULONG i = 0; i < kaffeine_all_gen_libs_count; ++i) {
         const auto &gen = kaffeine_all_gen_libs[i];
-        if (!std::strcmp(gen.name, "exec.library") || !std::strcmp(gen.name, "dos.library")) continue;
+        if (!std::strcmp(gen.name, "exec.library") || !std::strcmp(gen.name, "dos.library") ||
+            !std::strcmp(gen.name, "commodities.library")) continue;
         const Manual *manual = nullptr;
         for (const auto &candidate : manuals)
             if (!std::strcmp(candidate.name, gen.name)) manual = &candidate;
@@ -225,6 +226,31 @@ static void registrations_and_reuse()
                      slot ? 408 : 552, 0xffff0000) == f.ctx.libs[slot].m68k_addr);
     }
     CHECK(setup_calls == 0 && disk_calls == 0 && f.ctx.num_libs == 2 && f.ctx.num_libmap == 2);
+}
+
+static void deferred_commodities()
+{
+    const auto *gen=generated("commodities.library");
+    CHECK(gen&&gen->count==29);
+    for (const char *path : {"commodities.library","LIBS:commodities.library",
+                            "SYS:Classes//LIBS:m68k/commodities.library"})
+        for (ULONG lvo : {552u,408u})
+        {
+            Fixture f;
+            CHECK(f.native(path)==0&&setup_calls==0&&disk_calls==0);
+            CHECK(f.call(path,lvo,0xBEEF0025)==0);
+            CHECK(setup_calls==0&&disk_calls==1&&disk_name==path&&
+                  disk_version==(lvo==552?37u:0u)&&f.ctx.num_libs==2);
+            disk_result=0x12345678;
+            CHECK(f.call(path,lvo,0xBEEF0025)==disk_result);
+            CHECK(setup_calls==0&&disk_calls==2&&disk_name==path&&f.ctx.num_libmap==2);
+        }
+    Fixture cached;
+    Kaffeine_SetupLibBase(&cached.ctx,2,"commodities.library",KAFFEINE_MAX_LVO,
+                         nullptr,0,gen->thunks,gen->count);
+    setup_calls=0;
+    CHECK(cached.native("LIBS:commodities.library")==0&&setup_calls==0&&disk_calls==0);
+    CHECK(cached.call("commodities.library")==0&&disk_calls==1&&setup_calls==0);
 }
 
 static void rejection_and_fallback()
@@ -306,6 +332,7 @@ static void name_boundaries()
 int main()
 {
     registrations_and_reuse();
+    deferred_commodities();
     rejection_and_fallback();
     name_boundaries();
     std::printf("library paths: %u checks, %u failures\n", checks, failures);

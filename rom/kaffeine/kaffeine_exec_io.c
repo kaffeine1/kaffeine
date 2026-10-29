@@ -2,8 +2,9 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
     Exec ports, I/O requests and signals of 68k code, timer.device
-    through DoIO(), and console.device's no-window library unit.
-    Ports and requests stay 68k structures in the guest
+    through DoIO(), console.device's no-window library unit,
+    keyboard.device's KBD_READMATRIX and the open of input.device, both on
+    unit 0. Ports and requests stay 68k structures in the guest
     arena. Behind each open request stand a native request of the native
     size and its own reply port, which only this file passes to native
     Exec; DoIO() copies the fields of the command across. Asynchronous I/O
@@ -18,6 +19,7 @@
 #include "kaffeine_offsets.h"
 #include "kaffeine_workbench.h"
 #include "kaffeine_sched.h"
+#include "kaffeine_messages.h"
 
 #include <aros/debug.h>
 #include <exec/errors.h>
@@ -26,21 +28,31 @@
 #include <exec/nodes.h>
 #include <exec/ports.h>
 #include <devices/timer.h>
+#include <devices/keyboard.h>
+#include <devices/input.h>
 #include <proto/exec.h>
 #include <string.h>
 
-/* The 68k Message, IORequest, timerequest, MsgPort and Library of the NDK */
+/* The 68k Message, IORequest, IOStdReq, timerequest, MsgPort and Library
+   of the NDK, and the I/O errors of its exec/errors.h that go to the guest */
 enum
 {
     G_LN_TYPE = 8, G_LN_NAME = 10, G_MN_REPLYPORT = 14, G_MN_LENGTH = 18,
     G_MESSAGE_SIZE = 20,
     G_IO_DEVICE = 20, G_IO_UNIT = 24, G_IO_COMMAND = 28, G_IO_FLAGS = 30,
     G_IO_ERROR = 31, G_IOREQUEST_SIZE = 32,
+    G_IO_ACTUAL = 32, G_IO_LENGTH = 36, G_IO_DATA = 40, G_IOSTDREQ_SIZE = 48,
+    G_IOERR_BADADDRESS = -5,
     G_TV_SECS = 32, G_TV_MICRO = 36, G_TIMEREQUEST_SIZE = 40,
     G_MP_FLAGS = 14, G_MP_SIGBIT = 15, G_MP_SIGTASK = 16, G_MP_MSGLIST = 20,
     G_LH_TAIL = 4, G_LH_TAILPRED = 8,
     G_LIB_NEGSIZE = 16, G_LIB_POSSIZE = 18, G_LIB_VERSION = 20, G_LIB_REVISION = 22
 };
+
+/* AROS keyboard.device copies min(KB_MATRIXSIZE, io_Length) bytes of its
+   matrix, a bit for each of 256 keys (rom/devs/keyboard/keyboard_intern.h).
+   Classic matrices are 13 or 16 bytes. */
+#define KBD_MATRIX_MAX 32
 
 static BOOL guest_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)
 {
@@ -359,40 +371,104 @@ static BOOL timer_base(struct KaffeineContext *ctx, struct Device *native)
     return TRUE;
 }
 
-/* Allocate the name first: a failed Device registration must leave no
-   name allocation or partially published console identity behind. */
-static BOOL console_base(struct KaffeineContext *ctx, struct Device *native)
+/* A guest Device with the name, the type and the version of the native
+   one, and no native pointer. Allocate the name first: a failed Device
+   registration must leave no name allocation or partially published
+   identity behind. */
+static ULONG device_base(struct KaffeineContext *ctx, const char *name, UWORD vectors,
+                         const struct M68KThunkEntry *thunks, ULONG count,
+                         const struct Device *native)
 {
-    static const char name[] = "console.device";
-    ULONG base, text;
+    ULONG size = strlen(name) + 1, base, text;
 
-    if (ctx->console_base)
-        return TRUE;
-    text = Kaffeine_HeapAlloc(ctx, sizeof(name), MEMF_PUBLIC);
+    text = Kaffeine_HeapAlloc(ctx, size, MEMF_PUBLIC);
     if (!text)
-        return FALSE;
-    base = Kaffeine_SetupDeviceBase(ctx, name, KAFFEINE_CONSOLE_VECTORS,
-                                   kaffeine_thunks_console, kaffeine_thunks_console_count);
+        return 0;
+    base = Kaffeine_SetupDeviceBase(ctx, name, vectors, thunks, count);
     if (!base)
     {
-        Kaffeine_HeapFree(ctx, text, sizeof(name));
-        return FALSE;
+        Kaffeine_HeapFree(ctx, text, size);
+        return 0;
     }
-    memcpy(ctx->mem + text, name, sizeof(name));
+    memcpy(ctx->mem + text, name, size);
     m68k_write32(ctx, base + G_LN_NAME, text);
     ctx->mem[base + G_LN_TYPE] = NT_DEVICE;
-    m68k_write16(ctx, base + G_LIB_NEGSIZE, KAFFEINE_CONSOLE_VECTORS * 6);
+    m68k_write16(ctx, base + G_LIB_NEGSIZE, vectors * 6);
     m68k_write16(ctx, base + G_LIB_POSSIZE, M68K_SIZEOF_DEVICE);
     m68k_write16(ctx, base + G_LIB_VERSION, native->dd_Library.lib_Version);
     m68k_write16(ctx, base + G_LIB_REVISION, native->dd_Library.lib_Revision);
-    ctx->console_base = base;
-    return TRUE;
+    return base;
 }
 
+/* The guest base of an adapter, made at its first successful open; 0 when
+   it cannot be made. */
+static ULONG guest_device(struct KaffeineContext *ctx, enum KaffeineIODeviceKind kind,
+                          struct Device *native)
+{
+    switch (kind)
+    {
+    case KAFFEINE_IO_TIMER:
+        return timer_base(ctx, native) ? ctx->timer_base : 0;
+    case KAFFEINE_IO_CONSOLE:
+        if (!ctx->console_base)
+            ctx->console_base = device_base(ctx, "console.device", KAFFEINE_CONSOLE_VECTORS,
+                                            kaffeine_thunks_console,
+                                            kaffeine_thunks_console_count, native);
+        return ctx->console_base;
+    case KAFFEINE_IO_KEYBOARD:
+        if (!ctx->keyboard_base)
+            ctx->keyboard_base = device_base(ctx, "keyboard.device", KAFFEINE_KEYBOARD_VECTORS,
+                                             kaffeine_thunks_keyboard,
+                                             kaffeine_thunks_keyboard_count, native);
+        return ctx->keyboard_base;
+    case KAFFEINE_IO_INPUT:
+        if (!ctx->input_base)
+            ctx->input_base = device_base(ctx, "input.device", KAFFEINE_INPUT_VECTORS,
+                                          kaffeine_thunks_input,
+                                          kaffeine_thunks_input_count, native);
+        return ctx->input_base;
+    default:
+        return 0;
+    }
+}
+
+/* The adapter for a device and unit: timer.device on any unit, console's
+   library unit, and unit 0 of keyboard.device and input.device. */
+static enum KaffeineIODeviceKind device_kind(const char *name, ULONG unit)
+{
+    if (!name)
+        return KAFFEINE_IO_NONE;
+    if (strcmp(name, "timer.device") == 0)
+        return KAFFEINE_IO_TIMER;
+    if (strcmp(name, "console.device") == 0)
+        return unit == 0xFFFFFFFFu ? KAFFEINE_IO_CONSOLE : KAFFEINE_IO_NONE;
+    if (strcmp(name, "keyboard.device") == 0)
+        return unit == 0 ? KAFFEINE_IO_KEYBOARD : KAFFEINE_IO_NONE;
+    if (strcmp(name, "input.device") == 0)
+        return unit == 0 ? KAFFEINE_IO_INPUT : KAFFEINE_IO_NONE;
+    return KAFFEINE_IO_NONE;
+}
+
+/* By kind: the native device, the guest request it needs and the native
+   one behind it. */
+static const struct
+{
+    const char *name;
+    ULONG guest_size, native_size;
+} adapters[] =
+{
+    [KAFFEINE_IO_TIMER]    = { "timer.device", G_TIMEREQUEST_SIZE, sizeof(struct timerequest) },
+    [KAFFEINE_IO_CONSOLE]  = { "console.device", G_IOREQUEST_SIZE, sizeof(struct IOStdReq) },
+    [KAFFEINE_IO_KEYBOARD] = { "keyboard.device", G_IOSTDREQ_SIZE, sizeof(struct IOStdReq) },
+    [KAFFEINE_IO_INPUT]    = { "input.device", G_IOSTDREQ_SIZE, sizeof(struct IOStdReq) }
+};
+
 /* -444: OpenDevice(A0=devName, D0=unitNumber, A1=iORequest, D1=flags) -> D0.
-   timer.device and console.device CONU_LIBRARY have native adapters.
-   As Exec, a name of 0 means timer.device and 1 input.device. The guest
-   request needs a timerequest for timer, only the IORequest prefix for the
+   timer.device, console.device CONU_LIBRARY and unit 0 of keyboard.device
+   and input.device have native adapters; other units fail to open before
+   any native call. As Exec, a name of 0 means timer.device and 1
+   input.device. The guest request needs a timerequest for timer, an
+   IOStdReq for keyboard and input, and only the IORequest prefix for the
    no-window console unit, including a zero mn_Length and no reply port.
    It gets a guest Device base and unit number; the native request, of the
    native size, never leaves the bridge. Opening a request again closes the
@@ -400,7 +476,7 @@ static BOOL console_base(struct KaffeineContext *ctx, struct Device *native)
 IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG name_addr = THUNK_A(0), unit = THUNK_D(0), req = THUNK_A(1), flags = THUNK_D(1);
-    ULONG size, base;
+    ULONG base = 0;
     enum KaffeineIODeviceKind kind;
     struct KaffeineIORequest *entry;
     struct IORequest *native;
@@ -424,17 +500,16 @@ IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
         bug("[kaffeine] OpenDevice(%08lx): already open, closing it first\n", (unsigned long)req);
         close_native(entry);
     }
-    kind = name && strcmp(name, "timer.device") == 0 ? KAFFEINE_IO_TIMER :
-           name && strcmp(name, "console.device") == 0 && unit == 0xFFFFFFFFu ?
-           KAFFEINE_IO_CONSOLE : KAFFEINE_IO_NONE;
+    kind = device_kind(name, unit);
     if (kind == KAFFEINE_IO_NONE)
     {
-        bug("[kaffeine] OpenDevice(%s): no adapter for this device\n", name ? name : "(bad name)");
+        bug("[kaffeine] OpenDevice(%s): no adapter for this device or unit\n",
+            name ? name : "(bad name)");
         if (entry)
             request_forget(entry);
         return open_failed(ctx, req, IOERR_OPENFAIL);
     }
-    if (!request_range(ctx, req, kind == KAFFEINE_IO_TIMER ? G_TIMEREQUEST_SIZE : G_IOREQUEST_SIZE))
+    if (!request_range(ctx, req, adapters[kind].guest_size))
     {
         if (entry)
             request_forget(entry);
@@ -443,9 +518,8 @@ IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
     if (!entry && !(entry = request_entry(ctx, 0)))
         return open_failed(ctx, req, IOERR_OPENFAIL);
 
-    size = kind == KAFFEINE_IO_TIMER ? sizeof(struct timerequest) : sizeof(struct IOStdReq);
     reply = CreateMsgPort();
-    native = reply ? (struct IORequest *)CreateIORequest(reply, size) : NULL;
+    native = reply ? (struct IORequest *)CreateIORequest(reply, adapters[kind].native_size) : NULL;
     if (!native)
     {
         if (reply)
@@ -454,10 +528,9 @@ IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
     }
     else
     {
-        error = OpenDevice(kind == KAFFEINE_IO_TIMER ? "timer.device" : "console.device",
-                           kind == KAFFEINE_IO_TIMER ? (IPTR)unit : (IPTR)-1, native, flags);
-        if (!error && !(kind == KAFFEINE_IO_TIMER ? timer_base(ctx, native->io_Device) :
-                                                  console_base(ctx, native->io_Device)))
+        error = OpenDevice(adapters[kind].name,
+                           kind == KAFFEINE_IO_CONSOLE ? (IPTR)-1 : (IPTR)unit, native, flags);
+        if (!error && !(base = guest_device(ctx, kind, native->io_Device)))
         {
             CloseDevice(native);
             error = IOERR_OPENFAIL;
@@ -478,7 +551,6 @@ IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
     entry->reply = reply;
     entry->unit = unit;
     entry->kind = kind;
-    base = kind == KAFFEINE_IO_TIMER ? ctx->timer_base : ctx->console_base;
     m68k_write32(ctx, req + G_IO_DEVICE, base);
     m68k_write32(ctx, req + G_IO_UNIT, unit);
     ctx->mem[req + G_IO_ERROR] = 0;
@@ -486,7 +558,8 @@ IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu)
 }
 
 /* -450: CloseDevice(A1=iORequest) -> D0. Console's library unit clears
-   both guest identities; timer retains its existing closed marker. */
+   both guest identities; timer, keyboard and input get Exec's closed
+   marker, an io_Device of -1. */
 IPTR Kaffeine_CloseDevice(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG req = THUNK_A(1);
@@ -507,6 +580,101 @@ IPTR Kaffeine_CloseDevice(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
+/* As Exec: a request is in flight when it is not QUICK and is still an
+   unreplied message. Nothing goes in flight through the bridge yet, so only
+   a guest edit can make it so. */
+static BOOL in_flight(struct KaffeineContext *ctx, ULONG req)
+{
+    return !(ctx->mem[req + G_IO_FLAGS] & IOF_QUICK) &&
+           ctx->mem[req + G_LN_TYPE] == NT_MESSAGE;
+}
+
+/* KBD_READMATRIX into a native buffer, of at most the native matrix: the
+   device copies min(matrix, io_Length) bytes. io_Data must hold that many
+   bytes in guest memory, apart from the request, or the native device is
+   not called and io_Error reports the failure. Back come io_Actual, at most the
+   length passed, and those bytes; io_Length, io_Data and io_Offset stay. */
+static BOOL matrix_storage(struct KaffeineContext *ctx, ULONG data, ULONG length)
+{
+    unsigned i;
+    if (!Kaffeine_MessageMemory(ctx, data, length)) return FALSE;
+    for (i = 0; i < KAFFEINE_MAX_IO_PORTS; i++)
+        if (ctx->io_ports[i].guest && Kaffeine_Overlap(data, length, ctx->io_ports[i].guest, 34))
+            return FALSE;
+    for (i = 0; i < KAFFEINE_MAX_FONTS; i++)
+        if (ctx->fonts[i].guest && Kaffeine_Overlap(data, length, ctx->fonts[i].guest,
+                                                  ctx->fonts[i].allocation_size))
+            return FALSE;
+    return TRUE;
+}
+
+static BYTE read_matrix(struct KaffeineContext *ctx, ULONG req, struct KaffeineIORequest *entry)
+{
+    struct IOStdReq *native = (struct IOStdReq *)entry->native;
+    ULONG length = m68k_read32(ctx, req + G_IO_LENGTH), data = m68k_read32(ctx, req + G_IO_DATA);
+    ULONG actual;
+    UBYTE matrix[KBD_MATRIX_MAX];
+    BYTE error;
+
+    if (length > sizeof(matrix))
+        length = sizeof(matrix);
+    if (length && (!matrix_storage(ctx, data, length) ||
+                   Kaffeine_Overlap(data, length, req, G_IOSTDREQ_SIZE)))
+    {
+        bug("[kaffeine] KBD_READMATRIX: %lu bytes at %08lx are not free guest memory\n",
+            (unsigned long)length, (unsigned long)data);
+        return G_IOERR_BADADDRESS;
+    }
+    memset(matrix, 0, sizeof(matrix));
+    native->io_Command = KBD_READMATRIX;
+    native->io_Flags = 0;
+    native->io_Actual = 0;
+    native->io_Length = length;
+    native->io_Data = matrix;
+    native->io_Offset = 0;
+    error = DoIO((struct IORequest *)native);
+    actual = native->io_Actual < length ? native->io_Actual : length;
+    native->io_Data = NULL;
+    native->io_Length = 0;
+    if (!error && actual)
+        memcpy(ctx->mem + data, matrix, actual);
+    m68k_write32(ctx, req + G_IO_ACTUAL, actual);
+    ctx->mem[req + G_IO_FLAGS] = native->io_Flags & IOF_QUICK;
+    ctx->mem[req + G_LN_TYPE] = native->io_Message.mn_Node.ln_Type;
+    return error;
+}
+
+/* DoIO() of an IOStdReq open on keyboard.device or input.device. The
+   record decides: the guest request must still name its guest base and
+   unit. KBD_READMATRIX is the one command that
+   reaches the native device; every other one, input's handler and event
+   commands among them, ends with IOERR_NOCMD before any native call and
+   without reading io_Data. */
+static IPTR std_doio(struct KaffeineContext *ctx, ULONG req, struct KaffeineIORequest *entry)
+{
+    ULONG base = entry->kind == KAFFEINE_IO_KEYBOARD ? ctx->keyboard_base : ctx->input_base;
+    BYTE error;
+
+    if (!request_range(ctx, req, G_IOSTDREQ_SIZE))
+        return Kaffeine_IORefuse(ctx, "DoIO(): the request is smaller than an IOStdReq");
+    /* CreateExtIO initializes ln_Type to NT_MESSAGE even before the first
+       submission. These adapters have no asynchronous submit path, so that
+       guest marker alone cannot mean a native request is pending. */
+    if (!base || m68k_read32(ctx, req + G_IO_DEVICE) != base ||
+        m68k_read32(ctx, req + G_IO_UNIT) != entry->unit)
+        return Kaffeine_IORefuse(ctx, "DoIO(): the request names another device or unit "
+                                     "than the one it was opened on");
+    ctx->mem[req + G_IO_FLAGS] = IOF_QUICK;
+    ctx->mem[req + G_LN_TYPE] = 0;
+    if (entry->kind == KAFFEINE_IO_KEYBOARD &&
+        m68k_read16(ctx, req + G_IO_COMMAND) == KBD_READMATRIX)
+        error = read_matrix(ctx, req, entry);
+    else
+        error = IOERR_NOCMD;
+    ctx->mem[req + G_IO_ERROR] = (UBYTE)error;
+    return (IPTR)(LONG)error;
+}
+
 /* -456: DoIO(A1=iORequest) -> D0=io_Error. As Exec, the request gets
    IOF_QUICK and ln_Type 0 first, and without a device the result is -1.
    For timer.device, TR_ADDREQUEST and TR_GETSYSTIME copy both time fields
@@ -514,7 +682,8 @@ IPTR Kaffeine_CloseDevice(struct KaffeineContext *ctx, void *cpu)
    clock of the whole system, and the AROS driver never replies to an EClock
    delay; they and every other command end with IOERR_NOCMD without
    reaching the device. Console requests always return IOERR_NOCMD, using
-   the native record's kind rather than guest-editable device/unit fields. */
+   the native record's kind rather than guest-editable device/unit fields.
+   Keyboard and input requests go to std_doio(). */
 IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG req = THUNK_A(1);
@@ -527,9 +696,12 @@ IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu)
         return (IPTR)(LONG)-1;
     if (!request_range(ctx, req, G_IOREQUEST_SIZE))
         return Kaffeine_IORefuse(ctx, "DoIO(): the request is not in guest memory");
+    entry = request_entry(ctx, req);
+    if (entry && entry->native &&
+        (entry->kind == KAFFEINE_IO_KEYBOARD || entry->kind == KAFFEINE_IO_INPUT))
+        return std_doio(ctx, req, entry);
     ctx->mem[req + G_IO_FLAGS] = IOF_QUICK;
     ctx->mem[req + G_LN_TYPE] = 0;
-    entry = request_entry(ctx, req);
     if (!entry || !entry->native)
     {
         if (!m68k_read32(ctx, req + G_IO_DEVICE))
@@ -568,15 +740,6 @@ IPTR Kaffeine_SendIO(struct KaffeineContext *ctx, void *cpu)
     return Kaffeine_IORefuse(ctx, "SendIO(): asynchronous device I/O is not supported yet");
 }
 
-/* As Exec: a request is in flight when it is not QUICK and is still an
-   unreplied message. Nothing goes in flight through the bridge yet, so only
-   a guest edit can make it so. */
-static BOOL in_flight(struct KaffeineContext *ctx, ULONG req)
-{
-    return !(ctx->mem[req + G_IO_FLAGS] & IOF_QUICK) &&
-           ctx->mem[req + G_LN_TYPE] == NT_MESSAGE;
-}
-
 /* -468: CheckIO(A1=iORequest) -> D0: the request when it is complete. */
 IPTR Kaffeine_CheckIO(struct KaffeineContext *ctx, void *cpu)
 {
@@ -611,6 +774,35 @@ IPTR Kaffeine_AbortIO(struct KaffeineContext *ctx, void *cpu)
         return Kaffeine_IORefuse(ctx, "AbortIO(): the request is not in guest memory");
     return (IPTR)(LONG)-1;
 }
+
+/* ── keyboard.device and input.device bases ──────────────────────── */
+
+/* Their requests go through Exec's DoIO() above. Called on the device
+   directly, Open, Close, Expunge, BeginIO, AbortIO and input's
+   PeekQualifier would act on native state or asynchronous I/O that the
+   bridge does not have yet, so they stop the guest. */
+static IPTR device_unsupported(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return Kaffeine_IORefuse(ctx, "keyboard.device/input.device: this device vector is not supported yet");
+}
+
+const struct M68KThunkEntry kaffeine_thunks_keyboard[] = {
+    { 6, device_unsupported }, { 12, device_unsupported }, { 18, device_unsupported },
+    { 24, device_unsupported }, { 30, device_unsupported }, { 36, device_unsupported },
+    { 0, NULL }
+};
+const ULONG kaffeine_thunks_keyboard_count =
+    sizeof(kaffeine_thunks_keyboard) / sizeof(kaffeine_thunks_keyboard[0]) - 1;
+
+const struct M68KThunkEntry kaffeine_thunks_input[] = {
+    { 6, device_unsupported }, { 12, device_unsupported }, { 18, device_unsupported },
+    { 24, device_unsupported }, { 30, device_unsupported }, { 36, device_unsupported },
+    { 42, device_unsupported },
+    { 0, NULL }
+};
+const ULONG kaffeine_thunks_input_count =
+    sizeof(kaffeine_thunks_input) / sizeof(kaffeine_thunks_input[0]) - 1;
 
 /* ── End of the program ──────────────────────────────────────────── */
 
