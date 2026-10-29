@@ -30,6 +30,8 @@ at the end.
 | `gfx_idcmp.c` | The IDCMP messages of a window, with no input needed: a window opened active gets `IDCMP_ACTIVEWINDOW` and `IDCMP_INTUITICKS`, whose classes, window and times are checked; `Wait()` on the signal bit of `win->UserPort`; `WaitPort()` returning the message that `GetMsg()` takes; `SizeWindow()` and `MoveWindow()` bringing `IDCMP_NEWSIZE` and `IDCMP_CHANGEWINDOW` with the new size and place in the Window; twenty messages through `GetMsg()`, twenty through `GT_GetIMsg()` and twenty through `WaitPort()` before `GT_GetIMsg()` without keeping guest memory; the window closed with a message from `GetMsg()`, one from `GT_GetIMsg()` and one that `WaitPort()` showed, none of them replied; `ModifyIDCMP()` giving a window without flags its IDCMP port and taking it away. |
 | `gfx_askfont.c` | InitRastPort preserves surrounding storage and sets system defaults; SetFont, AskFont and TextLength accept caller-owned and copied classic RastPorts, including signed text spacing. AskFont returns readable font-name identity, exact TextFont scalar values and stable repeated queries while preserving adjacent storage and RastPort identity. The same source builds for native ARM as an independent reference. |
 | `gfx_screen_pens.c` | An owned indexed screen with SA_SharePens, exact RGB acquisition, repeated shared obtains, release/query lifetime, guarded GetRGB32 storage, a public-screen obtain and final screen close. Built from the same source as an independent native ARM reference. |
+| `gfx_rastport_state.c` | Classic caller-owned RastPort state, signed Move coordinates, pointer/guard preservation, Get/Set pens and drawing mode, and independent AllocRaster planes. Same source builds as native ARM reference. |
+| `intui_classic_draw.c` | Real Image chains with big-endian planar bytes and a depth-zero solid image, signed Border origins and WORD coordinate chains, pixel readback and RastPort state preservation. Same source builds as native ARM reference. |
 | `gfx_requester_init.c` | Checks the 112-byte classic Requester layout and sentinel bytes immediately after it; native pointer size must not enlarge the guest write. |
 | `gfx_window_clip.c` | Original clip Regions installed, replaced and cleared on owned window and classic requester layers; typed old-Region identities and inside/outside pixel comparison for indexed or truecolor screens. |
 | `gfx_classic_request.c` | Owned classic Requesters with copied text, nested requests and out-of-order removal, Window stack/count fields, typed ReqLayer/RastPort pixel access, native failure rollback, and window teardown without touching released caller storage. |
@@ -497,3 +499,16 @@ disk contained both new lines and every original line (100 bytes for Moira,
 95 bytes for JIT). GUI stdout is empty, so the runner's generic console-test
 assessment remains incomplete; these are separate GUI/file acceptance
 checks. Clipboard support and other editor features are outside this result.
+
+### Classic graphics state and Intuition drawing — 2026-10-29
+
+The original `gfx_rastport_state` protocol passes 12 checks and
+`intui_classic_draw` passes 10 on native AROS AArch64. Each protocol also
+passes under 68k Moira and Kaffeine JIT, from Shell and Run. The image probe
+checks all patterned and solid-image pixels and border endpoints through
+ReadPixel, and preserves its caller-owned image descriptors.
+
+Directory Opus 4.12 JR now passes shared palette allocation, caller-owned
+RastPort state, guest raster allocation and classic Intuition image drawing.
+Startup next stops with return code 20 at Text on a copied window RastPort.
+Directory Opus file operations remain unvalidated at this stage.

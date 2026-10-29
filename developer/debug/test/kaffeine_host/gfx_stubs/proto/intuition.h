@@ -6,6 +6,9 @@ extern "C" {
 struct NewWindow;
 struct TagItem;
 struct List;
+struct RastPort;
+void DrawImage(struct RastPort *, struct Image *, WORD, WORD);
+void DrawBorder(struct RastPort *, struct Border *, WORD, WORD);
 struct Screen *LockPubScreen(CONST_STRPTR name);
 void UnlockPubScreen(UBYTE *name, struct Screen *screen);
 struct List *LockPubScreenList(void);

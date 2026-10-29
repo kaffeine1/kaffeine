@@ -58,9 +58,11 @@ SCHED_OBJS += $(BUILD_DIR)/sched_jit.o
 SCALING_OBJS := $(filter-out $(BUILD_DIR)/memory_memory.o,$(MEMORY_OBJS)) $(BUILD_DIR)/heap_scaling_memory.o
 BENCH_OBJS := $(addprefix $(BUILD_DIR)/heap_bench_,memory.o cpu.o)
 GFX_CPPFLAGS := -I$(TEST_DIR)/gfx_stubs $(TEST_CPPFLAGS)
-GFX_THUNK_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
+# The state calls of caller-owned RastPorts check their storage with the
+# production message boundary (Kaffeine_MessageMemory()).
+GFX_THUNK_OBJS := $(BUILD_DIR)/gfx_generated_rp.o $(BUILD_DIR)/gfx_thunk_copy.o $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
 DISKFONT_CPPFLAGS := -I$(TEST_DIR)/memory_stubs $(GFX_CPPFLAGS)
-DISKFONT_OBJS := $(addprefix $(BUILD_DIR)/diskfont_,cpu.o dispatch.o thunks_diskfont.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
+DISKFONT_OBJS := $(BUILD_DIR)/gfx_thunk_copy.o $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/diskfont_,cpu.o dispatch.o thunks_diskfont.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
 WINDOW_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o copy.o format.o rastport.o memory.o taglist.o)
 SCREEN_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o palette.o rastport.o memory.o taglist.o fontattr.o)
 # The layer bridge with the production run loop, window bridge and heap,
@@ -328,6 +330,12 @@ bench-hosted-jit: $(BUILD_DIR)/test_hosted_jit
 	$(RUNNER) $< --bench
 
 $(BUILD_DIR)/gfx_thunk_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/gfx_generated_rp.c: $(TEST_DIR)/gfx_generated_extract.py $(KAFFEINE_DIR)/kaffeine_thunks_gen.c | $(BUILD_DIR)
+	$(PYTHON) $(TEST_DIR)/gfx_generated_extract.py $(KAFFEINE_DIR)/kaffeine_thunks_gen.c $@
+
+$(BUILD_DIR)/gfx_generated_rp.o: $(BUILD_DIR)/gfx_generated_rp.c
 	$(CC) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
 
 $(BUILD_DIR)/test_gfx_thunks: $(TEST_DIR)/test_gfx_thunks.cpp $(GFX_THUNK_OBJS) | $(BUILD_DIR)

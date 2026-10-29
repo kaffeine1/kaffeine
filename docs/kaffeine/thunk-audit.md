@@ -1,6 +1,6 @@
 # Generated thunk interface audit
 
-The [CSV snapshot](thunk-audit.csv) describes 789 generated library entries
+The [CSV snapshot](thunk-audit.csv) describes 786 generated library entries
 across 17 libraries. It classifies interface risks in the generated layer;
 manual overrides determine the effective behavior of a supported call.
 This snapshot is not a compatibility guarantee for every listed API.

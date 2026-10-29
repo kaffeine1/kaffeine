@@ -102,8 +102,20 @@ void Kaffeine_RastPortDelete(struct KaffeineContext *ctx, ULONG guest);
    the native RastPort first, and right after the thunk the dispatcher
    copies the native fields back. */
 struct RastPort *Kaffeine_RastPortIn(struct KaffeineContext *ctx, ULONG guest);
-/* Copy the fields of a native RastPort to its 68k RastPort. */
+/* Copy the fields of a native RastPort to its 68k RastPort. Only the public
+   Flags bits are shown; the program's other bits stay. */
 void Kaffeine_RastPortOut(struct KaffeineContext *ctx, ULONG guest, struct RastPort *native);
+
+/* A temporary native RastPort for the pointer-free state of a caller-owned
+   classic RastPort, whose 100 bytes the caller has validated: cleared, then
+   every classic scalar from the guest, Flags masked to the public bits.
+   Layer, BitMap, Font and the other pointers stay NULL; no 68k pointer is
+   read. StateOut writes back, big-endian, only the scalars that differ
+   between before and rp; pointers, RP_User, the reserved bytes and the
+   program's private Flags bits stay as they are. */
+void Kaffeine_RastPortStateIn(struct KaffeineContext *ctx, ULONG guest, struct RastPort *rp);
+void Kaffeine_RastPortStateOut(struct KaffeineContext *ctx, ULONG guest,
+                               const struct RastPort *before, const struct RastPort *rp);
 
 #ifdef __cplusplus
 }

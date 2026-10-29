@@ -633,6 +633,62 @@ void Kaffeine_HeapFree(struct KaffeineContext *ctx, ULONG addr, ULONG size)
         heap_release(ctx, allocation, NULL);
 }
 
+BOOL Kaffeine_HeapFreeExact(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    struct M68KHeapAllocation *allocation;
+
+    if (!addr || addr == ctx->memory_info || addr < KAFFEINE_HEAP_HDR || !heap_ready(ctx))
+        return FALSE;
+    /* By the native interval alone: an interior address, a freed, pooled,
+       mirrored or other owned block has no ordinary interval at addr. Ask
+       the I/O hook first, so that a refusal changes nothing. */
+    allocation = heap_find_block(ctx, addr - KAFFEINE_HEAP_HDR);
+    if (!allocation || allocation->kind != HEAP_ALLOCATION || allocation->pool ||
+        allocation->requested != size || !heap_release_valid(ctx, allocation) ||
+        heap_io_keeps(ctx, allocation, FALSE))
+        return FALSE;
+    return heap_release(ctx, allocation, NULL);
+}
+
+BOOL Kaffeine_HeapGuestRange(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    unsigned long long cur = addr, end = (unsigned long long)addr + size;
+
+    if (!size || !ctx->heap_end || end <= ctx->heap_start || cur >= ctx->heap_end)
+        return TRUE;
+    /* The first header lies at heap_start, so a straddling range has one. */
+    if (cur < ctx->heap_start || !heap_ready(ctx))
+        return FALSE;
+    if (end > ctx->heap_end)
+        end = ctx->heap_end;
+    while (cur < end)
+    {
+        struct M68KHeapAllocation *node = NULL, *n;
+        ULONG payload, available;
+
+        /* The predecessor by address is the interval containing cur. */
+        for (n = ctx->heap_allocations; n; )
+            if (n->block <= cur)
+            {
+                node = n;
+                n = n->right;
+            }
+            else
+                n = n->left;
+        if (!node || cur - node->block >= node->size ||
+            (node->kind != HEAP_ALLOCATION && node->kind != HEAP_ABSOLUTE &&
+             node->kind != HEAP_ENTRY))
+            return FALSE;
+        payload = node->block + (node->kind == HEAP_ABSOLUTE ? 0 : KAFFEINE_HEAP_HDR);
+        available = node->size - (payload - node->block);
+        if (available > node->requested) available = node->requested;
+        if (cur < payload || cur - payload >= available || end - cur > available - (cur - payload))
+            return FALSE;
+        cur = end;
+    }
+    return TRUE;
+}
+
 enum { MEMLIST_HEADER = 16, MEMENTRY_SIZE = 8 };
 
 static BOOL entry_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)

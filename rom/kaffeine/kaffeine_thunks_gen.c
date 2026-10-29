@@ -2822,6 +2822,8 @@ static IPTR thunk_gadtools_GT_PostFilterIMsg(struct KaffeineContext *ctx, void *
 static IPTR thunk_gadtools_DrawBevelBoxA(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rport = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rport)
+        return ctx->exit_code;
     ULONG arg_left = THUNK_D(0);
     ULONG arg_top = THUNK_D(1);
     ULONG arg_width = THUNK_D(2);
@@ -2862,7 +2864,7 @@ static IPTR thunk_gadtools_GT_GetGadgetAttrsA(struct KaffeineContext *ctx, void 
     return _ret;
 }
 
-/* ── graphics.library (172 thunks) ── */
+/* ── graphics.library (165 thunks) ── */
 
 /* -30: BltBitMap(srcBitMap=a0, xSrc=d0, ySrc=d1, destBitMap=a1, xDest=d2, yDest=d3, xSize=d4, ySize=d5, minterm=d6, mask=d7, tempA=a2) */
 static IPTR thunk_graphics_BltBitMap(struct KaffeineContext *ctx, void *cpu)
@@ -2889,6 +2891,8 @@ static IPTR thunk_graphics_BltTemplate(struct KaffeineContext *ctx, void *cpu)
     ULONG arg_xSrc = THUNK_D(0);
     ULONG arg_srcMod = THUNK_D(1);
     struct RastPort *arg_destRP = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_destRP)
+        return ctx->exit_code;
     ULONG arg_xDest = THUNK_D(2);
     ULONG arg_yDest = THUNK_D(3);
     ULONG arg_xSize = THUNK_D(4);
@@ -2901,6 +2905,8 @@ static IPTR thunk_graphics_BltTemplate(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_ClearEOL(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ClearEOL(arg_rp);
     return 0;
 }
@@ -2909,6 +2915,8 @@ static IPTR thunk_graphics_ClearEOL(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_ClearScreen(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ClearScreen(arg_rp);
     return 0;
 }
@@ -2925,6 +2933,8 @@ static IPTR thunk_graphics_CloseFont(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_AskSoftStyle(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     return (IPTR)AskSoftStyle(arg_rp);
 }
 
@@ -2932,6 +2942,8 @@ static IPTR thunk_graphics_AskSoftStyle(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_SetSoftStyle(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_style = THUNK_D(0);
     ULONG arg_enable = THUNK_D(1);
     return (IPTR)SetSoftStyle(arg_rp, arg_style, arg_enable);
@@ -2942,6 +2954,8 @@ static IPTR thunk_graphics_AddBob(struct KaffeineContext *ctx, void *cpu)
 {
     APTR arg_bob = THUNK_PTR(0);
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     AddBob(arg_bob, arg_rp);
     return 0;
 }
@@ -2951,6 +2965,8 @@ static IPTR thunk_graphics_AddVSprite(struct KaffeineContext *ctx, void *cpu)
 {
     APTR arg_vs = THUNK_PTR(0);
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     AddVSprite(arg_vs, arg_rp);
     return 0;
 }
@@ -2959,6 +2975,8 @@ static IPTR thunk_graphics_AddVSprite(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_DoCollision(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     DoCollision(arg_rp);
     return 0;
 }
@@ -2967,6 +2985,8 @@ static IPTR thunk_graphics_DoCollision(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_DrawGList(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     struct ViewPort *arg_vp = (struct ViewPort *)m68k_to_host_or_shadow(ctx, THUNK_A(0));
     DrawGList(arg_rp, arg_vp);
     return 0;
@@ -2995,6 +3015,8 @@ static IPTR thunk_graphics_RemIBob(struct KaffeineContext *ctx, void *cpu)
 {
     APTR arg_bob = THUNK_PTR(0);
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     struct ViewPort *arg_vp = (struct ViewPort *)m68k_to_host_or_shadow(ctx, THUNK_A(2));
     RemIBob(arg_bob, arg_rp, arg_vp);
     return 0;
@@ -3022,6 +3044,8 @@ static IPTR thunk_graphics_SetCollision(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_SortGList(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     SortGList(arg_rp);
     return 0;
 }
@@ -3033,6 +3057,8 @@ static IPTR thunk_graphics_GetGBuffers(struct KaffeineContext *ctx, void *cpu)
 {
     APTR arg_anOb = THUNK_PTR(0);
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_db = THUNK_D(0);
     return (IPTR)GetGBuffers(arg_anOb, arg_rp, arg_db);
 }
@@ -3049,6 +3075,8 @@ static IPTR thunk_graphics_InitGMasks(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_DrawEllipse(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_xCenter = THUNK_D(0);
     ULONG arg_yCenter = THUNK_D(1);
     ULONG arg_a = THUNK_D(2);
@@ -3061,6 +3089,8 @@ static IPTR thunk_graphics_DrawEllipse(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_AreaEllipse(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_cx = THUNK_D(0);
     ULONG arg_cy = THUNK_D(1);
     ULONG arg_a = THUNK_D(2);
@@ -3082,6 +3112,8 @@ static IPTR thunk_graphics_LoadRGB4(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_InitRastPort(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     InitRastPort(arg_rp);
     return 0;
 }
@@ -3130,6 +3162,8 @@ static IPTR thunk_graphics_WaitBlit(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_SetRast(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_pen = THUNK_D(0);
     SetRast(arg_rp, arg_pen);
     return 0;
@@ -3139,6 +3173,8 @@ static IPTR thunk_graphics_SetRast(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_AreaMove(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_x = THUNK_D(0);
     ULONG arg_y = THUNK_D(1);
     return (IPTR)AreaMove(arg_rp, arg_x, arg_y);
@@ -3148,6 +3184,8 @@ static IPTR thunk_graphics_AreaMove(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_AreaDraw(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_x = THUNK_D(0);
     ULONG arg_y = THUNK_D(1);
     return (IPTR)AreaDraw(arg_rp, arg_x, arg_y);
@@ -3157,6 +3195,8 @@ static IPTR thunk_graphics_AreaDraw(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_AreaEnd(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     return (IPTR)AreaEnd(arg_rp);
 }
 
@@ -3219,6 +3259,8 @@ static IPTR thunk_graphics_BltClear(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_BltPattern(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     APTR arg_mask = THUNK_PTR(0);
     ULONG arg_xMin = THUNK_D(0);
     ULONG arg_yMin = THUNK_D(1);
@@ -3233,6 +3275,8 @@ static IPTR thunk_graphics_BltPattern(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_ReadPixel(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_x = THUNK_D(0);
     ULONG arg_y = THUNK_D(1);
     return (IPTR)ReadPixel(arg_rp, arg_x, arg_y);
@@ -3242,6 +3286,8 @@ static IPTR thunk_graphics_ReadPixel(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_WritePixel(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_x = THUNK_D(0);
     ULONG arg_y = THUNK_D(1);
     return (IPTR)WritePixel(arg_rp, arg_x, arg_y);
@@ -3251,6 +3297,8 @@ static IPTR thunk_graphics_WritePixel(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_Flood(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_mode = THUNK_D(2);
     ULONG arg_x = THUNK_D(0);
     ULONG arg_y = THUNK_D(1);
@@ -3261,6 +3309,8 @@ static IPTR thunk_graphics_Flood(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_PolyDraw(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_count = THUNK_D(0);
     APTR arg_polyTable = THUNK_PTR(0);
     PolyDraw(arg_rp, arg_count, arg_polyTable);
@@ -3436,24 +3486,6 @@ static IPTR thunk_graphics_RemFont(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
-/* -492: AllocRaster(width=d0, height=d1) */
-static IPTR thunk_graphics_AllocRaster(struct KaffeineContext *ctx, void *cpu)
-{
-    ULONG arg_width = THUNK_D(0);
-    ULONG arg_height = THUNK_D(1);
-    return (IPTR)AllocRaster(arg_width, arg_height);
-}
-
-/* -498: FreeRaster(p=a0, width=d0, height=d1) */
-static IPTR thunk_graphics_FreeRaster(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_p = THUNK_PTR(0);
-    ULONG arg_width = THUNK_D(0);
-    ULONG arg_height = THUNK_D(1);
-    FreeRaster(arg_p, arg_width, arg_height);
-    return 0;
-}
-
 /* -504: AndRectRegion(Reg=a0, Rect=a1) */
 static IPTR thunk_graphics_AndRectRegion(struct KaffeineContext *ctx, void *cpu)
 {
@@ -3525,9 +3557,13 @@ static IPTR thunk_graphics_FreeCopList(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_ClipBlit(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_srcRP = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_srcRP)
+        return ctx->exit_code;
     ULONG arg_xSrc = THUNK_D(0);
     ULONG arg_ySrc = THUNK_D(1);
     struct RastPort *arg_destRP = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_destRP)
+        return ctx->exit_code;
     ULONG arg_xDest = THUNK_D(2);
     ULONG arg_yDest = THUNK_D(3);
     ULONG arg_xSize = THUNK_D(4);
@@ -3600,6 +3636,8 @@ static IPTR thunk_graphics_FreeGBuffers(struct KaffeineContext *ctx, void *cpu)
 {
     APTR arg_anOb = THUNK_PTR(0);
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_db = THUNK_D(0);
     FreeGBuffers(arg_anOb, arg_rp, arg_db);
     return 0;
@@ -3612,6 +3650,8 @@ static IPTR thunk_graphics_BltBitMapRastPort(struct KaffeineContext *ctx, void *
     ULONG arg_xSrc = THUNK_D(0);
     ULONG arg_ySrc = THUNK_D(1);
     struct RastPort *arg_destRP = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_destRP)
+        return ctx->exit_code;
     ULONG arg_xDest = THUNK_D(2);
     ULONG arg_yDest = THUNK_D(3);
     ULONG arg_xSize = THUNK_D(4);
@@ -3664,6 +3704,8 @@ static IPTR thunk_graphics_BltMaskBitMapRastPort(struct KaffeineContext *ctx, vo
     ULONG arg_xSrc = THUNK_D(0);
     ULONG arg_ySrc = THUNK_D(1);
     struct RastPort *arg_destRP = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_destRP)
+        return ctx->exit_code;
     ULONG arg_xDest = THUNK_D(2);
     ULONG arg_yDest = THUNK_D(3);
     ULONG arg_xSize = THUNK_D(4);
@@ -3746,6 +3788,8 @@ static IPTR thunk_graphics_ScalerDiv(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_TextExtent(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     CONST_STRPTR arg_string = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(0));
     ULONG arg_count = THUNK_D(0);
     APTR arg_textExtent = THUNK_PTR(2);
@@ -3757,6 +3801,8 @@ static IPTR thunk_graphics_TextExtent(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_TextFit(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     CONST_STRPTR arg_string = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(0));
     ULONG arg_strLen = THUNK_D(0);
     APTR arg_textExtent = THUNK_PTR(2);
@@ -3840,11 +3886,15 @@ static IPTR thunk_graphics_FontExtent(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_ReadPixelLine8(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_xstart = THUNK_D(0);
     ULONG arg_ystart = THUNK_D(1);
     ULONG arg_width = THUNK_D(2);
     CONST_STRPTR arg_array = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(2));
     struct RastPort *arg_tempRP = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_tempRP)
+        return ctx->exit_code;
     return (IPTR)ReadPixelLine8(arg_rp, arg_xstart, arg_ystart, arg_width, arg_array, arg_tempRP);
 }
 
@@ -3852,11 +3902,15 @@ static IPTR thunk_graphics_ReadPixelLine8(struct KaffeineContext *ctx, void *cpu
 static IPTR thunk_graphics_WritePixelLine8(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_xstart = THUNK_D(0);
     ULONG arg_ystart = THUNK_D(1);
     ULONG arg_width = THUNK_D(2);
     CONST_STRPTR arg_array = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(2));
     struct RastPort *arg_tempRP = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_tempRP)
+        return ctx->exit_code;
     WritePixelLine8(arg_rp, arg_xstart, arg_ystart, arg_width, arg_array, arg_tempRP);
     return 0;
 }
@@ -3865,12 +3919,16 @@ static IPTR thunk_graphics_WritePixelLine8(struct KaffeineContext *ctx, void *cp
 static IPTR thunk_graphics_ReadPixelArray8(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_xstart = THUNK_D(0);
     ULONG arg_ystart = THUNK_D(1);
     ULONG arg_xstop = THUNK_D(2);
     ULONG arg_ystop = THUNK_D(3);
     CONST_STRPTR arg_array = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(2));
     struct RastPort *arg_temprp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_temprp)
+        return ctx->exit_code;
     return (IPTR)ReadPixelArray8(arg_rp, arg_xstart, arg_ystart, arg_xstop, arg_ystop, arg_array, arg_temprp);
 }
 
@@ -3878,12 +3936,16 @@ static IPTR thunk_graphics_ReadPixelArray8(struct KaffeineContext *ctx, void *cp
 static IPTR thunk_graphics_WritePixelArray8(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_xstart = THUNK_D(0);
     ULONG arg_ystart = THUNK_D(1);
     ULONG arg_xstop = THUNK_D(2);
     ULONG arg_ystop = THUNK_D(3);
     CONST_STRPTR arg_array = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(2));
     struct RastPort *arg_temprp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_temprp)
+        return ctx->exit_code;
     WritePixelArray8(arg_rp, arg_xstart, arg_ystart, arg_xstop, arg_ystop, arg_array, arg_temprp);
     return 0;
 }
@@ -3906,6 +3968,8 @@ static IPTR thunk_graphics_ModeNotAvailable(struct KaffeineContext *ctx, void *c
 static IPTR thunk_graphics_EraseRect(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_xMin = THUNK_D(0);
     ULONG arg_yMin = THUNK_D(1);
     ULONG arg_xMax = THUNK_D(2);
@@ -3977,6 +4041,8 @@ static IPTR thunk_graphics_SetRGB32(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_GetAPen(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     return (IPTR)GetAPen(arg_rp);
 }
 
@@ -3984,6 +4050,8 @@ static IPTR thunk_graphics_GetAPen(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_GetBPen(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     return (IPTR)GetBPen(arg_rp);
 }
 
@@ -3991,6 +4059,8 @@ static IPTR thunk_graphics_GetBPen(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_GetDrMd(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     return (IPTR)GetDrMd(arg_rp);
 }
 
@@ -3998,6 +4068,8 @@ static IPTR thunk_graphics_GetDrMd(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_GetOutlinePen(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     return (IPTR)GetOutlinePen(arg_rp);
 }
 
@@ -4126,6 +4198,8 @@ static IPTR thunk_graphics_FreeDBufInfo(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_SetOutlinePen(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_pen = THUNK_D(0);
     return (IPTR)SetOutlinePen(arg_rp, arg_pen);
 }
@@ -4134,6 +4208,8 @@ static IPTR thunk_graphics_SetOutlinePen(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_SetWriteMask(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_mask = THUNK_D(0);
     SetWriteMask(arg_rp, arg_mask);
     return 0;
@@ -4143,6 +4219,8 @@ static IPTR thunk_graphics_SetWriteMask(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_SetMaxPen(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_maxpen = THUNK_D(0);
     SetMaxPen(arg_rp, arg_maxpen);
     return 0;
@@ -4164,6 +4242,8 @@ static IPTR thunk_graphics_SetRGB32CM(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_ScrollRasterBF(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_dx = THUNK_D(0);
     ULONG arg_dy = THUNK_D(1);
     ULONG arg_xMin = THUNK_D(2);
@@ -4219,6 +4299,8 @@ static IPTR thunk_graphics_FreeSpriteData(struct KaffeineContext *ctx, void *cpu
 static IPTR thunk_graphics_SetRPAttrsA(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     struct TagItem *arg_tags = m68k_to_native_taglist(ctx, THUNK_A(1));
     SetRPAttrsA(arg_rp, arg_tags);
     if (arg_tags) FreeVec(arg_tags);
@@ -4229,6 +4311,8 @@ static IPTR thunk_graphics_SetRPAttrsA(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_GetRPAttrsA(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     struct TagItem *arg_tags = m68k_to_native_taglist(ctx, THUNK_A(1));
     GetRPAttrsA(arg_rp, arg_tags);
     if (arg_tags) FreeVec(arg_tags);
@@ -4248,6 +4332,8 @@ static IPTR thunk_graphics_BestModeIDA(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_graphics_WriteChunkyPixels(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     ULONG arg_xstart = THUNK_D(0);
     ULONG arg_ystart = THUNK_D(1);
     ULONG arg_xstop = THUNK_D(2);
@@ -4548,6 +4634,8 @@ static IPTR thunk_icon_IconControlA(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_icon_DrawIconStateA(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     APTR arg_icon = THUNK_PTR(1);
     CONST_STRPTR arg_label = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(2));
     ULONG arg_leftEdge = THUNK_D(0);
@@ -4563,6 +4651,8 @@ static IPTR thunk_icon_DrawIconStateA(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_icon_GetIconRectangleA(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     APTR arg_icon = THUNK_PTR(1);
     CONST_STRPTR arg_label = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(2));
     APTR arg_rectangle = THUNK_PTR(3);
@@ -4966,7 +5056,7 @@ static IPTR thunk_iffparse_IDtoStr(struct KaffeineContext *ctx, void *cpu)
     return (IPTR)IDtoStr(arg_id, arg_buf);
 }
 
-/* ── intuition.library (130 thunks) ── */
+/* ── intuition.library (126 thunks) ── */
 
 /* -42: AddGadget(window=a0, gadget=a1, position=d0) */
 static IPTR thunk_intuition_AddGadget(struct KaffeineContext *ctx, void *cpu)
@@ -5041,17 +5131,6 @@ static IPTR thunk_intuition_DoubleClick(struct KaffeineContext *ctx, void *cpu)
     ULONG arg_cSeconds = THUNK_D(2);
     ULONG arg_cMicros = THUNK_D(3);
     return (IPTR)DoubleClick(arg_sSeconds, arg_sMicros, arg_cSeconds, arg_cMicros);
-}
-
-/* -114: DrawImage(rp=a0, image=a1, leftOffset=d0, topOffset=d1) */
-static IPTR thunk_intuition_DrawImage(struct KaffeineContext *ctx, void *cpu)
-{
-    struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
-    APTR arg_image = THUNK_PTR(1);
-    ULONG arg_leftOffset = THUNK_D(0);
-    ULONG arg_topOffset = THUNK_D(1);
-    DrawImage(arg_rp, arg_image, arg_leftOffset, arg_topOffset);
-    return 0;
 }
 
 /* -120: EndRequest(requester=a0, window=a1) */
@@ -5640,6 +5719,8 @@ static IPTR thunk_intuition_ObtainGIRPort(struct KaffeineContext *ctx, void *cpu
 static IPTR thunk_intuition_ReleaseGIRPort(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     ReleaseGIRPort(arg_rp);
     return 0;
 }
@@ -5684,6 +5765,8 @@ static IPTR thunk_intuition_SysReqHandler(struct KaffeineContext *ctx, void *cpu
 static IPTR thunk_intuition_DrawImageState(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     APTR arg_image = THUNK_PTR(1);
     ULONG arg_leftOffset = THUNK_D(0);
     ULONG arg_topOffset = THUNK_D(1);
@@ -5705,6 +5788,8 @@ static IPTR thunk_intuition_PointInImage(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_intuition_EraseImage(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     APTR arg_image = THUNK_PTR(1);
     ULONG arg_leftOffset = THUNK_D(0);
     ULONG arg_topOffset = THUNK_D(1);
@@ -6305,6 +6390,8 @@ static IPTR thunk_layers_LockLayerInfo(struct KaffeineContext *ctx, void *cpu)
 static IPTR thunk_layers_SwapBitsRastPortClipRect(struct KaffeineContext *ctx, void *cpu)
 {
     struct RastPort *arg_rp = resolve_rp(ctx, THUNK_A(0));
+    if (!arg_rp)
+        return ctx->exit_code;
     APTR arg_cr = THUNK_PTR(1);
     SwapBitsRastPortClipRect(arg_rp, arg_cr);
     return 0;
@@ -6451,6 +6538,8 @@ static IPTR thunk_layers_DoHookClipRects(struct KaffeineContext *ctx, void *cpu)
 {
     APTR arg_hook = THUNK_PTR(0);
     struct RastPort *arg_rport = resolve_rp(ctx, THUNK_A(1));
+    if (!arg_rport)
+        return ctx->exit_code;
     APTR arg_rect = THUNK_PTR(2);
     DoHookClipRects(arg_hook, arg_rport, arg_rect);
     return 0;
@@ -7577,8 +7666,6 @@ const struct M68KThunkEntry kaffeine_thunks_graphics_gen[] = {
     { 468, thunk_graphics_InitTmpRas },
     { 480, thunk_graphics_AddFont },
     { 486, thunk_graphics_RemFont },
-    { 492, thunk_graphics_AllocRaster },
-    { 498, thunk_graphics_FreeRaster },
     { 504, thunk_graphics_AndRectRegion },
     { 510, thunk_graphics_OrRectRegion },
     { 516, thunk_graphics_NewRegion },
@@ -7683,7 +7770,7 @@ const struct M68KThunkEntry kaffeine_thunks_graphics_gen[] = {
     { 1206, thunk_graphics_UpdateBitMap },
     { 0, NULL }
 };
-const ULONG kaffeine_thunks_graphics_gen_count = 167;
+const ULONG kaffeine_thunks_graphics_gen_count = 165;
 
 const struct M68KThunkEntry kaffeine_thunks_icon_gen[] = {
     { 54, thunk_icon_FreeFreeList },
@@ -7766,7 +7853,6 @@ const struct M68KThunkEntry kaffeine_thunks_intuition_gen[] = {
     { 90, thunk_intuition_DisplayAlert },
     { 96, thunk_intuition_DisplayBeep },
     { 102, thunk_intuition_DoubleClick },
-    { 114, thunk_intuition_DrawImage },
     { 120, thunk_intuition_EndRequest },
     { 126, thunk_intuition_GetDefPrefs },
     { 132, thunk_intuition_GetPrefs },
@@ -7886,7 +7972,7 @@ const struct M68KThunkEntry kaffeine_thunks_intuition_gen[] = {
     { 966, thunk_intuition_GetMonitorList },
     { 0, NULL }
 };
-const ULONG kaffeine_thunks_intuition_gen_count = 127;
+const ULONG kaffeine_thunks_intuition_gen_count = 126;
 
 const struct M68KThunkEntry kaffeine_thunks_keymap_gen[] = {
     { 30, thunk_keymap_SetKeyMapDefault },
@@ -8041,4 +8127,4 @@ const struct M68KLibThunkSet kaffeine_all_gen_libs[] = {
 };
 const ULONG kaffeine_all_gen_libs_count = 17;
 
-/* Total: 789 auto-generated thunks across 17 libraries */
+/* Total: 786 auto-generated thunks across 17 libraries */

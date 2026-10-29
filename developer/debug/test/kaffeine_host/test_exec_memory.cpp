@@ -947,6 +947,64 @@ static void test_fallbacks()
         });
 }
 
+/* An I/O release hook that keeps everything; only ever asked, never told. */
+static BOOL keep_all(KaffeineContext *, ULONG, ULONG, BOOL commit)
+{
+    assert(!commit);
+    return FALSE;
+}
+
+/* Kaffeine_HeapFreeExact() (FreeRaster()) frees exactly an ordinary,
+   unpooled allocation of its requested size, and nothing else changes
+   anything; Kaffeine_HeapGuestRange() accepts only payloads of the
+   program's allocations and memory outside the heap. */
+static void test_free_exact()
+{
+    Fixture f;
+    const ULONG avail = f.avail();
+    const ULONG a = f.alloc(100), b = f.alloc(64);
+    assert(a && b);
+    // wrong size (also the rounded one), interior, header, NULL, low memory
+    f.unchanged([&] {
+        assert(!Kaffeine_HeapFreeExact(f.ctx, a, 99) && !Kaffeine_HeapFreeExact(f.ctx, a, 104));
+        assert(!Kaffeine_HeapFreeExact(f.ctx, a + 2, 100) && !Kaffeine_HeapFreeExact(f.ctx, a - 8, 100));
+        assert(!Kaffeine_HeapFreeExact(f.ctx, 0, 100) && !Kaffeine_HeapFreeExact(f.ctx, 4, 100));
+    });
+    // a mirror, a pooled block and the pool itself, even at their exact size
+    const ULONG mirror = Kaffeine_MirrorAlloc(f.ctx, 64);
+    const ULONG pool = f.pool(), pooled = f.pooled(pool, 64);
+    assert(mirror && pool && pooled);
+    f.unchanged([&] {
+        assert(!Kaffeine_HeapFreeExact(f.ctx, mirror, 64));
+        assert(!Kaffeine_HeapFreeExact(f.ctx, pooled, 64));
+        assert(!Kaffeine_HeapFreeExact(f.ctx, pool, 16));
+    });
+    f.unchanged([&] {
+        assert(Kaffeine_HeapGuestRange(f.ctx, a, 100) && Kaffeine_HeapGuestRange(f.ctx, pooled, 64));
+        assert(!Kaffeine_HeapGuestRange(f.ctx, a, 101));
+        assert(!Kaffeine_HeapGuestRange(f.ctx, a + 98, 3));
+        assert(Kaffeine_HeapGuestRange(f.ctx, a + 98, 2));
+        assert(Kaffeine_HeapGuestRange(f.ctx, 0x400, 100));
+        assert(!Kaffeine_HeapGuestRange(f.ctx, a - 4, 100));
+        // from the end of b into the header of a, when a follows b
+        assert(b + 72 != a || !Kaffeine_HeapGuestRange(f.ctx, b + 60, 8));
+        assert(!Kaffeine_HeapGuestRange(f.ctx, mirror, 4) && !Kaffeine_HeapGuestRange(f.ctx, pool, 4));
+        assert(!Kaffeine_HeapGuestRange(f.ctx, f.ctx->heap_start - 4, 8));
+    });
+    // asynchronous I/O keeps it: asked without commit, nothing changes
+    f.ctx->io_release = keep_all;
+    f.unchanged([&] { assert(!Kaffeine_HeapFreeExact(f.ctx, a, 100)); });
+    f.ctx->io_release = nullptr;
+    assert(Kaffeine_HeapFreeExact(f.ctx, a, 100));
+    assert(!Kaffeine_HeapGuestRange(f.ctx, a, 100));
+    f.unchanged([&] { assert(!Kaffeine_HeapFreeExact(f.ctx, a, 100)); });
+    // the guest's FreeMem() releases what the same heap allocated
+    f.release(b, 64);
+    Kaffeine_MirrorRelease(f.ctx, mirror);
+    f.delete_pool(pool);
+    assert(f.avail() == avail);
+}
+
 static void test_context_guard()
 {
     static_assert(KAFFEINE_MEM_GUARD == 0x8000);
@@ -1000,6 +1058,7 @@ int main(int argc, char **argv)
         { "entries", test_entries }, { "entry-failures", test_entry_failures },
         { "native-entry-spec", test_native_entry_spec },
         { "capacity-storage", test_capacity_storage },
+        { "free-exact", test_free_exact },
         { "fallbacks", test_fallbacks }
     };
     unsigned groups = 0;

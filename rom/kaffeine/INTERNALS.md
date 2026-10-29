@@ -1044,11 +1044,13 @@ guest callbacks must preserve this stop state and exit code when returning
 to their caller. Callback integration and target execution remain separate
 validation work.
 
-**intuition.library (54 manual thunks):**
+**intuition.library (56 manual thunks):**
 
 | LVO | Function | Handling |
 |-----|----------|----------|
 | -48 | ClearDMRequest | TRUE for an owned regular Window with no native double-menu requester; an unmanaged requester stops with 20 |
+| -108 | DrawBorder | Registered RastPort and a fully checked native copy of classic Border chains and signed WORD coordinate pairs; temporary copies are freed after WaitBlit |
+| -114 | DrawImage | Registered RastPort and bounded native Image chain copies; classic planar bytes stay in the checked guest arena, BOOPSI images are refused |
 | -120 | EndRequest | Ends only a matching owned classic requester, unlinks the guest stack and retires Layer/RastPort mirrors before native deletion |
 | -138 | InitRequester | Clears exactly 112 checked guest bytes, preserves adjacent storage, NULL is a no-op; active storage stops with 20 |
 | -240 | Request | Copies supported classic fields, text/border/image descriptors into retained native storage, exposes a typed Layer/RastPort and maintains Window stack/count; rolls back on allocation or snapshot failure |
@@ -1103,7 +1105,7 @@ validation work.
 | -702 | ResetMenuStrip | As SetMenuStrip, through native ResetMenuStrip, but a strip that the program built takes the copy that windows show or that waits, with the flags that the program changed, without memory; a new copy, for a strip without one, goes through native SetMenuStrip, which works out its page sizes |
 | -816 | SetWindowPointerA | No-op (avoids X11 blocking) (`kaffeine_thunks_gfx.c`) |
 
-**graphics.library (82 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
+**graphics.library (84 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
 
 RastPort thunks use the registered 68k RastPort of a window, a screen or a
 private offscreen planar layer (see RastPorts and Fonts and Layer Snapshots
@@ -3270,8 +3272,8 @@ Two generators exist:
 ### Host-Side Tests (no AROS required)
 
 `developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
-plus `test_thunk_registrations.py` (which verifies 326 explicit native-vector
-cases and all 564 manual thunk registrations across the 20 production tables)
+plus `test_thunk_registrations.py` (which verifies 337 explicit native-vector
+cases and all 568 manual thunk registrations across the 20 production tables)
 and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
 [developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
 for coverage details; the host Makefile is the authoritative executable list.

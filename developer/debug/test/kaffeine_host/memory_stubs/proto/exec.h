@@ -10,6 +10,8 @@ extern "C" {
 
 APTR AllocMem(ULONG size, ULONG flags);
 void FreeMem(APTR memory, ULONG size);
+APTR AllocVec(ULONG size, ULONG flags);
+void FreeVec(APTR memory);
 
 #ifdef __cplusplus
 }

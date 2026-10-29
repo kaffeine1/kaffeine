@@ -17,6 +17,8 @@ extern "C" {
 struct RastPort *resolve_rp(struct KaffeineContext *ctx, ULONG m68k_rp);
 
 IPTR thunk_intuition_SetWindowPointerA(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_intuition_DrawImage(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_intuition_DrawBorder(struct KaffeineContext *ctx, void *cpu);
 
 IPTR thunk_gfx_OpenFont(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetABPenDrMd(struct KaffeineContext *ctx, void *cpu);
@@ -42,12 +44,16 @@ IPTR thunk_gfx_GetAPen(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_GetBPen(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_GetDrMd(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_GetOutlinePen(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_AllocRaster(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_FreeRaster(struct KaffeineContext *ctx, void *cpu);
 
 #ifdef __cplusplus
 }
 #endif
 
 #define KAFFEINE_INTUITION_COMPAT_THUNKS \
+    { 108, thunk_intuition_DrawBorder }, \
+    { 114, thunk_intuition_DrawImage }, \
     { 816, thunk_intuition_SetWindowPointerA }
 
 #define KAFFEINE_GRAPHICS_COMPAT_THUNKS \
@@ -55,7 +61,8 @@ IPTR thunk_gfx_GetOutlinePen(struct KaffeineContext *ctx, void *cpu);
     { 894, thunk_gfx_SetABPenDrMd }, \
     { 396, thunk_gfx_ScrollRaster }
 
-/* Calls on the 68k RastPort of a window or a screen, and fonts */
+/* Calls on the 68k RastPort of a window or a screen, the state of a
+   caller-owned classic one, fonts, and guest heap rasters */
 #define KAFFEINE_GRAPHICS_RASTPORT_THUNKS \
     { 54,  thunk_gfx_TextLength }, \
     { 60,  thunk_gfx_Text }, \
@@ -71,6 +78,8 @@ IPTR thunk_gfx_GetOutlinePen(struct KaffeineContext *ctx, void *cpu);
     { 348, thunk_gfx_SetBPen }, \
     { 354, thunk_gfx_SetDrMd }, \
     { 474, thunk_gfx_AskFont }, \
+    { 492, thunk_gfx_AllocRaster }, \
+    { 498, thunk_gfx_FreeRaster }, \
     { 690, thunk_gfx_TextExtent }, \
     { 696, thunk_gfx_TextFit }, \
     { 858, thunk_gfx_GetAPen }, \

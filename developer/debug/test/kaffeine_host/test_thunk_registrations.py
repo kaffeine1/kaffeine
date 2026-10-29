@@ -325,6 +325,9 @@ CASES = (
     ("graphics", "getbpen.c", "GetBPen", "thunk_gfx_GetBPen"),
     ("graphics", "textextent.c", "TextExtent", "thunk_gfx_TextExtent"),
     ("graphics", "textfit.c", "TextFit", "thunk_gfx_TextFit"),
+    # Guest heap planes: D0/D1 for AllocRaster, A0/D0/D1 for FreeRaster, all read.
+    ("graphics", "allocraster.c", "AllocRaster", "thunk_gfx_AllocRaster"),
+    ("graphics", "freeraster.c", "FreeRaster", "thunk_gfx_FreeRaster"),
     ("exec", "getmsg.c", "GetMsg", "Kaffeine_GetMsg"),
     ("exec", "waitport.c", "WaitPort", "Kaffeine_WaitPort"),
     ("intuition", "modifyidcmp.c", "ModifyIDCMP", "Kaffeine_ModifyIDCMP"),
@@ -443,6 +446,8 @@ CASES = (
     ("timer", "beginio.c", "BeginIO", "kaffeine_timer_BeginIO"),
     ("timer", "abortio.c", "AbortIO", "kaffeine_timer_AbortIO"),
     ("timer", "getsystime.c", "GetSysTime", "kaffeine_timer_GetSysTime"),
+    ("intuition", "drawimage.c", "DrawImage", "thunk_intuition_DrawImage"),
+    ("intuition", "drawborder.c", "DrawBorder", "thunk_intuition_DrawBorder"),
     ("intuition", "windowtoback.c", "WindowToBack", "Kaffeine_WindowToBack"),
     ("intuition", "windowtofront.c", "WindowToFront", "Kaffeine_WindowToFront"),
     ("layers", "installlayerhook.c", "InstallLayerHook", "Kaffeine_InstallLayerHook"),
