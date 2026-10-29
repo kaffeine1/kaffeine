@@ -70,12 +70,19 @@
     CloseScreen() refuses a screen with copies. Each get and free reaches
     Intuition once, as the very pair, and a free of anything else stops the
     program first.
+
+    Pens that ObtainBestPenA() got for the program (kaffeine_palette.c)
+    keep the 68k Screen of their ColorMap in the same way, with one visitor
+    lock of the bridge for all of them on a screen that the program did not
+    open; CloseScreen() refuses a screen with any, and they go back at the
+    end of the program before anything else here.
 */
 
 #include "kaffeine_intern.h"
 #include "kaffeine_fontattr.h"
 #include "kaffeine_layers.h"
 #include "kaffeine_offsets.h"
+#include "kaffeine_palette.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_screens.h"
 #include "kaffeine_taglist.h"
@@ -478,7 +485,9 @@ static BOOL screen_drawinfos(struct KaffeineContext *ctx, const struct Screen *s
 
 static BOOL screen_used(struct KaffeineContext *ctx, int i)
 {
+    /* pen leases (kaffeine_palette.c) keep it like a DrawInfo copy */
     return ctx->pubscreens[i].owned || ctx->pubscreens[i].locks || ctx->pubscreen_list_locks ||
+           ctx->pubscreens[i].pens ||
            screen_windows(ctx, ctx->pubscreens[i].native) ||
            screen_visuals(ctx, ctx->pubscreens[i].native) ||
            screen_drawinfos(ctx, ctx->pubscreens[i].native);
@@ -492,8 +501,19 @@ static BOOL screen_mirrored(struct KaffeineContext *ctx, int i)
            Kaffeine_ShadowNative(ctx, ctx->pubscreens[i].guest, KAFFEINE_SHADOW_PUBSCREEN);
 }
 
+/* An entry without pen leases, as a new one starts and every one ends;
+   only kaffeine_palette.c gives the leases themselves back. */
+static void screen_pens_clear(struct KaffeineContext *ctx, int i)
+{
+    memset(ctx->pubscreens[i].pen_refs, 0, sizeof(ctx->pubscreens[i].pen_refs));
+    ctx->pubscreens[i].pens = 0;
+    ctx->pubscreens[i].pen_lock = FALSE;
+}
+
 /* The entry goes, with the 68k Screen that the bridge made for it; for a
-   screen that the program opened, only once Intuition has closed it */
+   screen that the program opened, only once Intuition has closed it. No
+   entry with pen leases goes: they keep it in use, CloseScreen() refuses
+   them and the cleanup gives them back first. */
 static void screen_forget(struct KaffeineContext *ctx, int i)
 {
     ULONG guest = ctx->pubscreens[i].guest;
@@ -524,6 +544,12 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
     ctx->pubscreens[i].locks = 0;
     ctx->pubscreens[i].owned = FALSE;
     ctx->pubscreens[i].keep = NULL;
+    if (ctx->pubscreens[i].pens)
+    {
+        bug("[kaffeine] screen %d forgotten with %u pen leases\n", i, (unsigned)ctx->pubscreens[i].pens);
+        ctx->pen_leases -= ctx->pubscreens[i].pens;
+    }
+    screen_pens_clear(ctx, i);
 }
 
 /* A screen that the program opened has closed: its entry and 68k Screen
@@ -584,6 +610,7 @@ static int screen_entry(struct KaffeineContext *ctx, struct Screen *scr)
     ctx->pubscreens[i].locks = 0;
     ctx->pubscreens[i].owned = FALSE;
     ctx->pubscreens[i].keep = NULL;
+    screen_pens_clear(ctx, i);
     ctx->screen_release = screen_release;
     return i;
 }
@@ -1197,6 +1224,7 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
     ctx->pubscreens[i].locks = 0;
     ctx->pubscreens[i].owned = TRUE;
     ctx->pubscreens[i].keep = keep;
+    screen_pens_clear(ctx, i);
     ctx->screen_release = screen_release;
     if (ctx->layer_ops)
         ctx->layer_ops->screen_mirrored(ctx, scr);
@@ -1228,8 +1256,9 @@ IPTR Kaffeine_OpenScreenTagList(struct KaffeineContext *ctx, void *cpu)
    and for NULL, as from Intuition; FALSE when Intuition refuses, as with
    windows or visitors on it, and then the 68k Screen stays as it was.
    Intuition gets only a screen that the program opened and has not closed,
-   and of which it holds no VisualInfo or DrawInfo copy; anything else gives
-   FALSE. While a BltBitMap() of the program runs, which
+   and of which it holds no VisualInfo, DrawInfo copy or pen of its
+   ColorMap; anything else gives FALSE, changing nothing, so the program
+   releases its pens first. While a BltBitMap() of the program runs, which
    may have the BitMap of the screen, the program stops instead. */
 IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
 {
@@ -1247,9 +1276,10 @@ IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
             (unsigned long)screen);
         return FALSE;
     }
-    /* a VisualInfo or a DrawInfo copy of the program still describes it */
+    /* a VisualInfo, a DrawInfo copy or a pen lease of the program still
+       uses it */
     if (screen_visuals(ctx, ctx->pubscreens[i].native) ||
-        screen_drawinfos(ctx, ctx->pubscreens[i].native))
+        screen_drawinfos(ctx, ctx->pubscreens[i].native) || ctx->pubscreens[i].pens)
         return FALSE;
     /* no 68k Layer may stand for a layer of a screen that closes; when
        Intuition refuses, the next snapshot is taken afresh */
@@ -1320,8 +1350,9 @@ static int drawinfo_free_entry(struct KaffeineContext *ctx)
 /* A native visitor lock of the bridge on a screen that the program did not
    open, taken by its name in the list of public screens, as Intuition
    locks a public screen; FALSE for a screen that is not public there or is
-   private, which the bridge cannot keep. */
-static BOOL screen_public_hold(struct Screen *screen)
+   private, which the bridge cannot keep. Also for the pen leases of
+   kaffeine_palette.c. */
+BOOL Kaffeine_ScreenPublicHold(struct Screen *screen)
 {
     struct List *list = LockPubScreenList();
     struct Screen *held = NULL;
@@ -1455,7 +1486,7 @@ IPTR Kaffeine_GetScreenDrawInfo(struct KaffeineContext *ctx, void *cpu)
     /* everything that can fail before anything is published */
     if (k < 0)
         bug("[kaffeine] DrawInfo table full, no copy of %p\n", dri);
-    else if (!ctx->pubscreens[i].owned && !(holding = screen_public_hold(scr)))
+    else if (!ctx->pubscreens[i].owned && !(holding = Kaffeine_ScreenPublicHold(scr)))
         bug("[kaffeine] GetScreenDrawInfo(): screen %p cannot be held, no copy\n", scr);
     else if (!(guest = Kaffeine_MirrorAlloc(ctx, size)))
         bug("[kaffeine] GetScreenDrawInfo(): no guest memory for the copy\n");
@@ -1523,7 +1554,11 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
     ULONG left = 0;
     int i;
 
-    /* the DrawInfo copies first, which keep 68k Screens, visitor locks and
+    /* the pens first, while every ColorMap of them is still there: the
+       program's own screens and locks, and the visitor locks of the leases,
+       go back only after them */
+    Kaffeine_PensCleanup(ctx);
+    /* the DrawInfo copies, which keep 68k Screens, visitor locks and
        the screens that the program opened */
     drawinfos_cleanup(ctx);
     /* every layer snapshot goes before the locks that keep screens open */

@@ -291,6 +291,14 @@ stays until context cleanup. Other drawing calls require a registered
 RastPort. See
 [INTERNALS.md](INTERNALS.md#rastports-and-fonts).
 
+`ObtainBestPenA` and `ReleasePen` accept the ColorMap of a live screen of
+this guest context. Each successful obtain holds a counted pen lease; a
+borrowed public screen gets an extra visitor lock until its last lease is
+released. An owned screen cannot close while it has leases. Context cleanup
+returns all remaining pens before releasing screens. The bridge bounds the
+context to 4,096 leases and pen numbers 0..255; unsupported ColorMaps or
+malformed tag lists stop with rc 20 before native access.
+
 ### IDCMP Messages
 
 The IDCMP port of a window is a 68k MsgPort with the signal bit of the native
@@ -535,7 +543,7 @@ within the emulator.
 | ROLEX | 13 KB | Clock (custom screen, GUI loop) | ✅ Opens screen, event loop works |
 | SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders full UI (title, menus, buttons, text) |
 | Personal Paint 7.2.1.0 | 777,824 bytes | 68k paint / image editor | 🟡 Moira on AROS AArch64/QEMU: native Shell launch, 24-bit Workbench, 1024×768/256-color canvas, rectangles/circles/text, pixel-verified IFF/ILBM save and exit code zero. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; full Workbench startup and other operations remain open. The opt-in JIT also passes startup/exit, drawing, saving and a 320×200/256-color save/modify/reload cycle; see [JIT validation](../../docs/kaffeine/jit-backend.md#validation) |
-| Directory Opus 4.12 JR | 240,292 bytes | File manager (GUI, m68k libraries) | 🟡 AROS AArch64/Moira: loads dopus.library, creates its service and hotkey tasks, opens keyboard/input devices and avoids unsafe native Commodities dispatch. Startup currently stops at palette access; file operations are not yet validated |
+| Directory Opus 4.12 JR | 240,292 bytes | File manager (GUI, m68k libraries) | 🟡 AROS AArch64/Moira: loads dopus.library, creates its service and hotkey tasks, opens keyboard/input devices and avoids unsafe native Commodities dispatch. Shared palette pen allocation now succeeds; startup next stops at drawing-mode setup on a caller-owned RastPort. File operations are not yet validated |
 | Redit 2.0 | 96,828 bytes | 68k text editor | 🟡 Compatibility testing in progress; editing, saving and reopening are not yet validated |
 | AmigaTerm 1.0 | 82 KB | Terminal emulator (GUI) | ✅ Opens window, clean exit |
 | Textcraft Plus | 208 KB | Word processor (GUI, custom screen) | ✅ Opens screen/window, sets colors, clean exit |
@@ -853,7 +861,7 @@ grep -oP '(OFF|SIZ)\|[^"]*' m68k.s | sed 's/#//g' > m68k_offsets.txt
 
 | Path | Description |
 |------|-------------|
-| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (326 native-vector cases and 564 manual thunks across 20 tables) and `run_sanitizers.sh` |
+| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (328 native-vector cases and 564 manual thunks across 20 tables) and `run_sanitizers.sh` |
 | [`developer/debug/test/kaffeine_native/`](../../developer/debug/test/kaffeine_native/README.md) | Standalone native AROS AArch64 translation probe (`jit_probe`) using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE` |
 | [`developer/debug/test/kaffeine_target/`](../../developer/debug/test/kaffeine_target/README.md) | Classic 68k HUNK target probes, bzip2 1.0.8 and IJG JPEG 9f self-tests, and QEMU AROS AArch64 runner (`run_qemu.py`) |
 | `developer/debug/test/kaffeine/test_kaffeine.c` | AROS-side smoke test that opens `kaffeine.library` |

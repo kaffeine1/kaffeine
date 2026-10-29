@@ -96,7 +96,10 @@ LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114, 12
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
 CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
 GRAPHICS_BITMAP_REFUSED = frozenset((606, 636, 678, 918, 924, 942, 1020, 1206))
-GRAPHICS_PALETTE_REFUSED = frozenset((570, 834, 840, 948, 954, 1008))
+# GetColorMap, AttachPalExtra, ObtainPen and FindColor: no owned ColorMaps
+# or other pen calls yet. ObtainBestPenA and ReleasePen are
+# manual handlers checked as native vector cases.
+GRAPHICS_PALETTE_REFUSED = frozenset((570, 834, 954, 1008))
 # Every graphics.conf vector that takes a Region but NewRegion, OrRectRegion
 # and DisposeRegion: the generated thunks would read a 68k Region as native.
 GRAPHICS_REGION_REFUSED = frozenset((504, 522, 528, 558, 612, 618, 624,
@@ -453,6 +456,9 @@ CASES = (
     ("graphics", "getbitmapattr.c", "GetBitMapAttr", "Kaffeine_GetBitMapAttr"),
     # A0, D0, D1 and D2, narrowed as the BYTE/UWORD prototype; Planes untouched.
     ("graphics", "initbitmap.c", "InitBitMap", "Kaffeine_InitBitMap"),
+    # Screen-owned pen leases: every fd register read, A1 by the tag walk.
+    ("graphics", "obtainbestpena.c", "ObtainBestPenA", "Kaffeine_ObtainBestPenA"),
+    ("graphics", "releasepen.c", "ReleasePen", "Kaffeine_ReleasePen"),
 )
 
 # Explicit table of manual handlers that intentionally ignore one or more

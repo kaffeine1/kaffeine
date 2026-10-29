@@ -320,12 +320,21 @@ struct KaffeineContext
        it; keep is the native copy of the title and the font that Intuition
        points to while such a screen is open. screen_release, set with the
        first one, lets the window bridge say that a 68k Window on that
-       screen has gone. */
+       screen has gone. pen_refs counts the ObtainBestPenA() results of the
+       program on the screen's ColorMap that it has not released, by pen
+       (kaffeine_palette.c), pens their sum; while any is left the entry
+       stays, and a screen that the program did not open also keeps one
+       native visitor lock of the bridge (pen_lock). pen_leases is the sum
+       over all screens. */
     #define KAFFEINE_MAX_PUBSCREENS 16
+    #define KAFFEINE_MAX_SCREEN_PENS 256
+    #define KAFFEINE_MAX_PEN_LEASES 4096
     struct {
         struct Screen *native; ULONG guest; ULONG font; ULONG colormap; UWORD locks;
         BOOL owned; struct KaffeineScreenKeep *keep;
+        UWORD pen_refs[KAFFEINE_MAX_SCREEN_PENS]; UWORD pens; BOOL pen_lock;
     } pubscreens[KAFFEINE_MAX_PUBSCREENS];
+    UWORD pen_leases;
     void (*screen_release)(struct KaffeineContext *ctx, struct Screen *screen);
     /* VisualInfo keeps DrawInfo/Screen alive. Borrowed screens also hold
        a native visitor lock until their VisualInfo references are freed. */

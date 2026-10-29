@@ -80,7 +80,16 @@ IPTR Kaffeine_FreeScreenDrawInfo(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_DrawImageState(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_GetDrawInfoAttr(struct KaffeineContext *ctx, void *cpu);
 
-/* At the end of the program, in the task that ran it: the DrawInfos that
+/* One native visitor lock of the bridge on a screen that the program did
+   not open, taken by its name in the list of public screens, as a DrawInfo
+   copy and the pen leases of kaffeine_palette.c keep such a screen; FALSE,
+   holding nothing, for a screen that is not public there, is private or
+   has 32767 visitors. UnlockPubScreen(NULL, screen) gives it back. */
+BOOL Kaffeine_ScreenPublicHold(struct Screen *screen);
+
+/* At the end of the program, in the task that ran it: the pens that the
+   program left go back to their ColorMaps (Kaffeine_PensCleanup()), before
+   anything that keeps a screen open goes; then the DrawInfos that
    the program left go back to Intuition, then the screen locks and the
    list lock that it left, then the screens that it opened and left close,
    those without a window of the program on them, and last the fonts. */
