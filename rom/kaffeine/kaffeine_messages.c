@@ -4,6 +4,7 @@
     Bounded classic Exec queues. Native objects never enter these lists.
 */
 #include "kaffeine_messages.h"
+#include "kaffeine_locks.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_sched.h"
 #include <aros/debug.h>
@@ -23,7 +24,7 @@ static BOOL arena(struct KaffeineContext *ctx, ULONG a, ULONG n)
 BOOL Kaffeine_GuestBytes(struct KaffeineContext *ctx, ULONG a, ULONG n)
 {
     unsigned i;
-    if (!arena(ctx, a, n)) return FALSE;
+    if (!arena(ctx, a, n) || Kaffeine_LockProtected(ctx, a, n)) return FALSE;
     for (i = 0; i < ctx->num_shadows; ++i)
     {
         ULONG size = 20;

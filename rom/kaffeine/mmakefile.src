@@ -64,6 +64,8 @@ KAFFEINE_FILES := \
     kaffeine_exec_compat \
     kaffeine_messages \
     kaffeine_filehandle \
+    kaffeine_locks \
+    kaffeine_thunks_locks \
     kaffeine_handlers \
     kaffeine_exec_io \
     kaffeine_thunks_timer \

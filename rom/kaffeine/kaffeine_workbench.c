@@ -30,6 +30,7 @@
 */
 
 #include "kaffeine_intern.h"
+#include "kaffeine_locks.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_workbench.h"
@@ -653,10 +654,12 @@ static IPTR add_snapshot_icon(struct KaffeineContext *ctx, void *cpu, int port,
     struct Library *base;
     struct DiskObject *clone;
     struct AppIcon *native;
+    BPTR lock;
     STRPTR text;
     APTR copy = NULL;
     int slot;
 
+    if (!Kaffeine_LockResolve(ctx, THUNK_A(2), &lock)) return 20;
     if (!snapshot_unchanged(ctx, icon))
         return refuse(ctx, "AddAppIconA(): a DiskObject of icon.library that the program changed "
                            "in more than its position");
@@ -679,7 +682,7 @@ static IPTR add_snapshot_icon(struct KaffeineContext *ctx, void *cpu, int port,
     clone->do_CurrentX = (LONG)m68k_read32(ctx, icon->guest + G_DO_CURRENTX);
     clone->do_CurrentY = (LONG)m68k_read32(ctx, icon->guest + G_DO_CURRENTY);
     if (!(native = AddAppIconA(THUNK_D(0), THUNK_D(1), text, ctx->app_ports[port].native,
-                               (BPTR)(IPTR)THUNK_A(2), clone, NULL)))
+                               lock, clone, NULL)))
     {
         __FreeDiskObject_WB(base, clone);
         goto no_clone;
@@ -747,11 +750,13 @@ static IPTR wb_AddAppWindowA(struct KaffeineContext *ctx, void *cpu)
 static IPTR wb_AddAppIconA(struct KaffeineContext *ctx, void *cpu)
 {
     struct DiskObject *dobj;
+    BPTR lock;
     struct KaffeineIcon *icon;
     STRPTR text = NULL;
     APTR copy = NULL;
     int port, slot;
 
+    if (!Kaffeine_LockResolve(ctx, THUNK_A(2), &lock)) return 20;
     if (!no_tags(ctx, THUNK_A(4)))
         return refuse(ctx, "AddAppIconA(): its tags are not bridged yet");
     if ((port = app_port(ctx, THUNK_A(1))) < 0)
@@ -775,7 +780,7 @@ static IPTR wb_AddAppIconA(struct KaffeineContext *ctx, void *cpu)
     }
     return add_object(ctx, slot, APP_ICON, port,
                       AddAppIconA(THUNK_D(0), THUNK_D(1), text, ctx->app_ports[port].native,
-                                  (BPTR)(IPTR)THUNK_A(2), dobj, NULL), copy);
+                                  lock, dobj, NULL), copy);
 }
 
 /* -72: AddAppMenuItemA(D0=id, D1=userdata, A0=text, A1=msgport, A2=taglist) */
@@ -843,13 +848,15 @@ static IPTR wb_RemoveAppMenuItem(struct KaffeineContext *ctx, void *cpu)
 static IPTR wb_WBInfo(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG name = THUNK_A(1);
+    BPTR lock;
     struct Screen *screen = THUNK_A(2) ? Kaffeine_ScreenNative(ctx, THUNK_A(2)) : NULL;
 
+    if (!Kaffeine_LockResolve(ctx, THUNK_A(0), &lock)) return 20;
     if (THUNK_A(2) && !screen)
         return refuse(ctx, "WBInfo(): not a screen of the program");
     if (guest_length(ctx, name, MAX_TEXT) == ~(ULONG)0)
         return refuse(ctx, "WBInfo(): no name of at most 1024 bytes in guest memory");
-    return WBInfo((BPTR)(IPTR)THUNK_A(0), (CONST_STRPTR)(ctx->mem + name), screen);
+    return WBInfo(lock, (CONST_STRPTR)(ctx->mem + name), screen);
 }
 
 const struct M68KThunkEntry kaffeine_thunks_workbench[] = {
@@ -907,9 +914,15 @@ static ULONG copy_message(struct KaffeineContext *ctx, int p, struct Carrier *ca
         ULONG arg = guest + ALIGN8(G_APPMESSAGE_SIZE) + i * G_WBARG_SIZE;
         const char *name = (const char *)am->am_ArgList[i].wa_Name;
 
-        /* a lock is the duplicate that the carrier keeps, a native BPTR as
-           every lock that the bridge passes */
-        m68k_write32(ctx, arg + G_WBARG_LOCK, (ULONG)(IPTR)am->am_ArgList[i].wa_Lock);
+        ULONG lock = Kaffeine_LockBorrow(ctx, am->am_ArgList[i].wa_Lock,
+                                         KAFFEINE_LOCK_WBARG, guest);
+        if (am->am_ArgList[i].wa_Lock && !lock)
+        {
+            Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_WBARG, guest);
+            Kaffeine_HeapFree(ctx, guest, 0);
+            return 0;
+        }
+        m68k_write32(ctx, arg + G_WBARG_LOCK, lock);
         if (name)
         {
             ULONG length = strlen(name) + 1;
@@ -984,6 +997,7 @@ static void reply_copy(struct KaffeineContext *ctx, int slot)
     ULONG guest = ctx->app_messages[slot].guest;
 
     unlink_copy(ctx, ctx->app_ports[ctx->app_messages[slot].port].guest, guest);
+    Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_WBARG, guest);
     free_carrier((struct Carrier *)ctx->app_messages[slot].native);
     Kaffeine_HeapFree(ctx, guest, 0);
     memset(&ctx->app_messages[slot], 0, sizeof(ctx->app_messages[slot]));

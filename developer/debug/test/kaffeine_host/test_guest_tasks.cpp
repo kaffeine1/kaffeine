@@ -55,6 +55,14 @@ static std::function<void()> native_event;  /* arrives while the native task wai
 static std::vector<ULONG> freed_entries;
 static unsigned retired_signals;
 
+/* This scheduler-only fixture creates no DOS lock views. The production
+   lock module has its own identity/lifetime tests in test_locks. */
+extern "C" BOOL Kaffeine_LockProtected(KaffeineContext *ctx, ULONG, ULONG)
+{
+    assert(!ctx->locks);
+    return FALSE;
+}
+
 extern "C" void Kaffeine_AppSignalGone(KaffeineContext *, BYTE)
 {
     ++retired_signals;

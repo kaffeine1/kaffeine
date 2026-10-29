@@ -30,6 +30,8 @@ SKIP_LIBRARIES = {
 
 # ── Functions to SKIP (manual impl, dangerous, or internal) ──
 SKIP_FUNCTIONS = {
+    # Typed FileLock ownership and explicit native-object refusals.
+    "DupLock", "ParentDir", "SameLock", "ReadLink", "MakeLink", "ErrorReport", "SetProgramDir", "GetProgramDir", "LockDosList", "UnLockDosList", "AttemptLockDosList", "RemDosEntry", "AddDosEntry", "FindDosEntry", "NextDosEntry", "MakeDosEntry", "FreeDosEntry", "SameDevice", "AssignAddToList", "NewFontContents",
     "AddPort", "AllocMem", "AllocPooled", "AllocVec", "AllocVecPooled",
     "AvailMem", "CacheClearU", "Close", "CloseLibrary", "CloseScreen",
     "CloseWindow", "CopyMem", "CreatePool", "CurrentDir", "Delay",
@@ -906,7 +908,7 @@ def parse_audit_clib_chunk(chunk):
 
 AUDIT_EXPECTED_LIBS = {
     "asl": 8, "commodities": 29, "cybergraphics": 24, "datatypes": 30,
-    "diskfont": 3, "dos": 112, "exec": 79, "expansion": 22, "gadtools": 17,
+    "diskfont": 2, "dos": 93, "exec": 79, "expansion": 22, "gadtools": 17,
     # AllocRaster/FreeRaster now live exclusively in the checked manual table.
     "graphics": 151, "icon": 21, "iffparse": 40, "intuition": 126,
     "keymap": 4, "layers": 40, "locale": 25, "utility": 41,

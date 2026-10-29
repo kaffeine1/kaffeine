@@ -21,6 +21,7 @@
 #include <utility/tagitem.h>
 
 #include "kaffeine_intern.h"
+#include "kaffeine_locks.h"
 #include "kaffeine_callback.h"
 #include "kaffeine_exec_compat.h"
 #include "kaffeine_messages.h"
@@ -39,7 +40,8 @@
    address avoids wrapping a guest ULONG when the caller supplies garbage. */
 static BOOL guest_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)
 {
-    if (!addr || addr >= ctx->mem_size || ctx->mem_size - addr < size)
+    if (!addr || addr >= ctx->mem_size || ctx->mem_size - addr < size ||
+        Kaffeine_LockProtected(ctx, addr, size))
         return FALSE;
     return TRUE;
 }
@@ -102,11 +104,13 @@ IPTR kaffeine_dos_Info(struct KaffeineContext *ctx, void *cpu)
     ULONG out = THUNK_D(2);
     struct InfoData info = { 0 };
     LONG result;
+    BPTR lock;
 
+    if (!Kaffeine_LockResolve(ctx, THUNK_D(1), &lock)) return 20;
     if (!guest_range(ctx, out, GUEST_INFO_SIZE))
         return bad_dos_buffer(0);
     /* Like Examine(), lock zero selects the boot filesystem. */
-    result = Info((BPTR)(IPTR)THUNK_D(1), &info);
+    result = Info(lock, &info);
     if (result)
     {
         m68k_write32(ctx, out, (ULONG)info.id_NumSoftErrors);
@@ -131,7 +135,7 @@ IPTR kaffeine_dos_CreateDir(struct KaffeineContext *ctx, void *cpu)
 
     if (!name)
         return bad_dos_buffer(0);
-    return (IPTR)CreateDir(name);
+    return Kaffeine_LockAdopt(ctx, CreateDir(name));
 }
 
 /* -366: SetVBuf(D1=fh, D2=buff, D3=type, D4=size) -> D0=0 or EOF */
@@ -330,7 +334,12 @@ IPTR kaffeine_dos_AssignLock(struct KaffeineContext *ctx, void *cpu)
 
     if (!name)
         return bad_dos_buffer(0);
-    return (IPTR)AssignLock(name, (BPTR)(IPTR)THUNK_D(2));
+    struct KaffeineLockTransfer lease;
+    LONG result;
+    if (!Kaffeine_LockTransferBegin(ctx, THUNK_D(2), &lease)) return 20;
+    result = AssignLock(name, lease.native);
+    Kaffeine_LockTransferEnd(ctx, &lease, result != 0);
+    return result;
 }
 
 static IPTR assign_path(struct KaffeineContext *ctx, void *cpu, BOOL late)
@@ -378,11 +387,13 @@ IPTR kaffeine_dos_AssignPath(struct KaffeineContext *ctx, void *cpu)
 IPTR kaffeine_dos_AssignAdd(struct KaffeineContext *ctx, void *cpu)
 {
     const char *name = guest_string(ctx, THUNK_D(1));
-    BPTR lock = (BPTR)(IPTR)THUNK_D(2);
-
-    if (!name || !lock)
-        return bad_dos_buffer(0);
-    return (IPTR)AssignAdd(name, lock);
+    struct KaffeineLockTransfer lease;
+    LONG result;
+    if (!name || !THUNK_D(2)) return bad_dos_buffer(0);
+    if (!Kaffeine_LockTransferBegin(ctx, THUNK_D(2), &lease)) return 20;
+    result = AssignAdd(name, lease.native);
+    Kaffeine_LockTransferEnd(ctx, &lease, result != 0);
+    return result;
 }
 
 IPTR kaffeine_dos_RemAssignList(struct KaffeineContext *ctx, void *cpu)
@@ -391,7 +402,13 @@ IPTR kaffeine_dos_RemAssignList(struct KaffeineContext *ctx, void *cpu)
 
     if (!name)
         return bad_dos_buffer(0);
-    return (IPTR)RemAssignList(name, (BPTR)(IPTR)THUNK_D(2));
+    struct KaffeineLockTransfer lease;
+    LONG result;
+    /* The assign releases its own reference; the caller must hold one. */
+    if (!Kaffeine_LockTransferBegin(ctx, THUNK_D(2), &lease)) return 20;
+    result = RemAssignList(name, lease.native);
+    Kaffeine_LockTransferEnd(ctx, &lease, FALSE);
+    return result;
 }
 
 IPTR kaffeine_dos_IsFileSystem(struct KaffeineContext *ctx, void *cpu)
@@ -821,7 +838,7 @@ IPTR kaffeine_dos_Lock(struct KaffeineContext *ctx, void *cpu)
 
     if (!name)
         return bad_dos_buffer(0);
-    return (IPTR)Lock((CONST_STRPTR)name, (LONG)THUNK_D(2));
+    return Kaffeine_LockAdopt(ctx, Lock((CONST_STRPTR)name, (LONG)THUNK_D(2)));
 }
 
 /* -72: DeleteFile(D1=name) -> D0=success */
@@ -963,9 +980,11 @@ IPTR kaffeine_dos_CliInitRun(struct KaffeineContext *ctx, void *cpu)
 /* -402: NameFromLock(D1=lock, D2=buffer, D3=len) -> D0=success */
 IPTR kaffeine_dos_NameFromLock(struct KaffeineContext *ctx, void *cpu)
 {
-    BPTR lock = (BPTR)(IPTR)THUNK_D(1);
+    BPTR lock;
     ULONG buffer = THUNK_D(2);
     LONG len = (LONG)THUNK_D(3);
+
+    if (!Kaffeine_LockResolve(ctx, THUNK_D(1), &lock)) return 20;
 
     if (len <= 0 || !guest_range(ctx, buffer, (ULONG)len))
         return bad_dos_buffer(0);
@@ -1503,11 +1522,13 @@ IPTR kaffeine_dos_ExamineFH(struct KaffeineContext *ctx, void *cpu)
    so an entry that could not be written back would be lost. */
 static IPTR examine_lock(struct KaffeineContext *ctx, void *cpu, BOOL next)
 {
-    BPTR lock = (BPTR)(IPTR)THUNK_D(1);
+    BPTR lock;
     ULONG guest_fib = THUNK_D(2);
     struct FileInfoBlock *fib;
     LONG result;
     SIPTR ioerr;
+
+    if (!Kaffeine_LockResolve(ctx, THUNK_D(1), &lock)) return 20;
 
     if (!guest_range(ctx, guest_fib, GUEST_FIB_SIZE))
     {
@@ -1576,6 +1597,7 @@ static int find_anchor(struct KaffeineContext *ctx, ULONG guest)
 /* MatchEnd() unlocks the native chain, also after a failed match. */
 static void release_anchor(struct KaffeineContext *ctx, int slot)
 {
+    Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_MATCH, ctx->anchor_map[slot].guest);
     MatchEnd((struct AnchorPath *)ctx->anchor_map[slot].native);
     FreeVec(ctx->anchor_map[slot].native);
     Kaffeine_AChainFree(ctx, ctx->anchor_map[slot].base);
@@ -1610,11 +1632,13 @@ static void anchor_from_guest(struct KaffeineContext *ctx, int slot, LONG len)
 }
 
 static void achain_to_guest(struct KaffeineContext *ctx, ULONG guest,
-                            const struct AChain *ac, ULONG child, ULONG parent)
+                            const struct AChain *ac, ULONG child, ULONG parent, ULONG owner)
 {
     m68k_write32(ctx, guest + M68K_AN_CHILD, child);
     m68k_write32(ctx, guest + M68K_AN_PARENT, parent);
-    m68k_write32(ctx, guest + M68K_AN_LOCK, (ULONG)(IPTR)ac->an_Lock);
+    ULONG lock = Kaffeine_LockBorrow(ctx, ac->an_Lock, KAFFEINE_LOCK_MATCH, owner);
+    if (ac->an_Lock && !lock) Kaffeine_MessageFailure(ctx, "Match lock publication");
+    m68k_write32(ctx, guest + M68K_AN_LOCK, lock);
     Kaffeine_FIBToGuest(ctx, guest + M68K_AN_INFO, &ac->an_Info);
     ctx->mem[guest + M68K_AN_FLAGS] = (UBYTE)ac->an_Flags;
     ctx->mem[guest + M68K_AN_STRING] = 0;
@@ -1638,15 +1662,15 @@ static void anchor_to_guest(struct KaffeineContext *ctx, int slot,
         if (ap->ap_Base == ap->ap_Current)
         {
             current = base;
-            achain_to_guest(ctx, base, ap->ap_Base, 0, 0);
+            achain_to_guest(ctx, base, ap->ap_Base, 0, 0, guest);
         }
         else
         {
             current = ctx->anchor_map[slot].current;
             achain_to_guest(ctx, base, ap->ap_Base,
-                            ap->ap_Base->an_Child == ap->ap_Current ? current : 0, 0);
+                            ap->ap_Base->an_Child == ap->ap_Current ? current : 0, 0, guest);
             achain_to_guest(ctx, current, ap->ap_Current, 0,
-                            ap->ap_Current->an_Parent == ap->ap_Base ? base : 0);
+                            ap->ap_Current->an_Parent == ap->ap_Base ? base : 0, guest);
         }
     }
     m68k_write32(ctx, guest + M68K_AP_BASE, base);
@@ -1739,6 +1763,7 @@ IPTR kaffeine_dos_MatchNext(struct KaffeineContext *ctx, void *cpu)
     ap = (struct AnchorPath *)ctx->anchor_map[slot].native;
     anchor_from_guest(ctx, slot, len);
     info = ap->ap_Info;
+    Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_MATCH, guest);
     error = MatchNext(ap);
     anchor_to_guest(ctx, slot, &info, len);
     return (IPTR)error;
@@ -2007,7 +2032,7 @@ static BOOL valid_guest_hook(struct KaffeineContext *ctx, ULONG hook)
 /* -432: ExAll(D1=lock, D2=buffer, D3=size, D4=data, D5=control) -> D0=continue */
 IPTR kaffeine_dos_ExAll(struct KaffeineContext *ctx, void *cpu)
 {
-    BPTR lock = (BPTR)(IPTR)THUNK_D(1);
+    BPTR lock;
     ULONG buffer = THUNK_D(2);
     LONG size = (LONG)THUNK_D(3);
     LONG data = (LONG)THUNK_D(4);
@@ -2019,6 +2044,8 @@ IPTR kaffeine_dos_ExAll(struct KaffeineContext *ctx, void *cpu)
     BOOL stopped = FALSE;
     SIPTR err = 0;
     int slot;
+
+    if (!Kaffeine_LockResolve(ctx, THUNK_D(1), &lock)) return 20;
 
     if (!guest_range(ctx, control, GUEST_EXALLCONTROL_SIZE) ||
         size < 0 || (size > 0 && !guest_range(ctx, buffer, (ULONG)size)))
@@ -2179,6 +2206,8 @@ IPTR kaffeine_dos_ExAll(struct KaffeineContext *ctx, void *cpu)
 IPTR kaffeine_dos_ExAllEnd(struct KaffeineContext *ctx, void *cpu)
 {
     int slot = find_exall(ctx, THUNK_D(5));
+    BPTR lock;
+    if (!Kaffeine_LockResolve(ctx, THUNK_D(1), &lock)) return 20;
 
     if (slot >= 0 && !ctx->exall_map[slot].active)
     {
@@ -2479,6 +2508,8 @@ static BOOL walk_system_tags(struct KaffeineContext *ctx, ULONG addr,
             }
             case NP_CurrentDir:
             case NP_HomeDir:
+                *err = ERROR_NOT_IMPLEMENTED;
+                return FALSE;
             case SYS_Asynch:
             case SYS_UserShell:
             case NP_StackSize:

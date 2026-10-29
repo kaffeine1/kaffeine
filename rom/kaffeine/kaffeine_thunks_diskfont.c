@@ -7,6 +7,7 @@
 #include <proto/diskfont.h>
 
 #include "kaffeine_intern.h"
+#include "kaffeine_messages.h"
 #include "kaffeine_fontattr.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_thunks_diskfont.h"
@@ -40,8 +41,15 @@ IPTR thunk_diskfont_OpenDiskFont(struct KaffeineContext *ctx, void *cpu)
     return guest;
 }
 
+static IPTR thunk_diskfont_NewFontContents(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return Kaffeine_MessageFailure(ctx, "NewFontContents native contents");
+}
+
 const struct M68KThunkEntry kaffeine_thunks_diskfont_manual[] = {
     { 30, thunk_diskfont_OpenDiskFont },
+    { 42, thunk_diskfont_NewFontContents },
     { 0, NULL }
 };
 const ULONG kaffeine_thunks_diskfont_manual_count =

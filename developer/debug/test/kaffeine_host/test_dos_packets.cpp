@@ -142,6 +142,9 @@ static void identities()
     }
     f.dos(450,1,t,3);check(seen_handle==open_result,"ChangeMode recognizes FH type");
     f.dos(450,0,0x123456,3);check(seen_handle==reinterpret_cast<BPTR>(0x123456),"lock BPTR remains a lock in ChangeMode");
+    unsigned mode_calls=scalar_calls;
+    check(f.dos(450,0,0,3)==20 && !f.ctx.running && scalar_calls==mode_calls,
+          "ChangeMode refuses a null FileLock before native DOS can dereference it");
     seen_lock=nullptr;
     check(f.dos(378,0x765432)==t && seen_lock==reinterpret_cast<BPTR>(0x765432),"OpenFromLock consumes a lock and imports a file identity");
     check(f.open()==t,"repeated native handle has one guest identity");

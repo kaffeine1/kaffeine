@@ -21,6 +21,7 @@
 #include "kaffeine_tasks.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_filehandle.h"
+#include "kaffeine_locks.h"
 #include "kaffeine_handlers.h"
 
 /* Keep registry ownership with the engine that creates and destroys shadows. */
@@ -154,7 +155,8 @@ const struct M68KStructLayout *shadow_find_layout(const char *name)
 ULONG shadow_create_by_name(struct KaffeineContext *ctx,
                             const char *struct_name, void *native)
 {
-    const struct M68KStructLayout *layout = shadow_find_layout(struct_name);
+    const struct M68KStructLayout *layout =
+        !strcmp(struct_name, "FileLock") ? NULL : shadow_find_layout(struct_name);
     if (!layout) {
         D(bug("[kaffeine] shadow_create_by_name: unknown struct '%s'\n", struct_name));
         return 0;
@@ -205,7 +207,8 @@ void free_native_taglist(struct TagItem *tags)
 void *m68k_to_native_struct(struct KaffeineContext *ctx,
                             const char *struct_name, ULONG m68k_addr)
 {
-    const struct M68KStructLayout *layout = shadow_find_layout(struct_name);
+    const struct M68KStructLayout *layout =
+        !strcmp(struct_name, "FileLock") ? NULL : shadow_find_layout(struct_name);
     if (!layout || !m68k_addr) return NULL;
 
     /* Find native size from the gen table */
@@ -302,6 +305,11 @@ ULONG shadow_task(struct KaffeineContext *ctx, void *native_task, BOOL current)
     }
     if (current && task->tc_Node.ln_Type == NT_PROCESS)
     {
+        ULONG current_lock = 0, program_lock = 0;
+        if (!Kaffeine_LockGetInstalled(ctx, KAFFEINE_LOCK_CURRENT, &current_lock) ||
+            !Kaffeine_LockGetInstalled(ctx, KAFFEINE_LOCK_PROGRAM, &program_lock)) return 0;
+        m68k_write32(ctx, guest + M68K_PR_CURRENTDIR, current_lock);
+        m68k_write32(ctx, guest + M68K_PR_HOMEDIR, program_lock);
         m68k_write32(ctx, guest + M68K_PR_CLI, Kaffeine_GetCLI(ctx) >> 2);
         m68k_write32(ctx, guest + M68K_PR_ARGUMENTS, ctx->m68k_argptr);
         m68k_write32(ctx, guest + M68K_PR_CIS, Kaffeine_FileImport(ctx, Input(), FALSE));

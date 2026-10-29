@@ -14,6 +14,7 @@
 #include <stdio.h>
 
 #include "kaffeine_intern.h"
+#include "kaffeine_locks.h"
 #include "kaffeine_shadow.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_readargs.h"
@@ -63,6 +64,7 @@ static LONG execute_owned(struct KaffeineContext *ctx)
     Kaffeine_VisualInfosCleanup(ctx);
     Kaffeine_FileCleanup(ctx);
     Kaffeine_HandlerCleanup(ctx);
+    Kaffeine_LockCleanup(ctx);
     Kaffeine_IOCleanup(ctx);
     Kaffeine_ScreensCleanup(ctx);
     /* after the windows and screens, which retire their 68k Layers first */
