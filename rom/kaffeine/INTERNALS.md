@@ -1105,13 +1105,17 @@ validation work.
 | -702 | ResetMenuStrip | As SetMenuStrip, through native ResetMenuStrip, but a strip that the program built takes the copy that windows show or that waits, with the flags that the program changed, without memory; a new copy, for a strip without one, goes through native SetMenuStrip, which works out its page sizes |
 | -816 | SetWindowPointerA | No-op (avoids X11 blocking) (`kaffeine_thunks_gfx.c`) |
 
-**graphics.library (84 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
+**graphics.library (100 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
 
 RastPort thunks use the registered 68k RastPort of a window, a screen or a
 private offscreen planar layer (see RastPorts and Fonts and Layer Snapshots
 below). ReadPixel also reads bounded guest planar
 bitmaps directly. Caller-owned classic RastPorts support bounded initialization
-and font-only SetFont/AskFont/TextLength calls through temporary native structures; other
+and SetFont/AskFont/TextLength calls through temporary native structures.
+Their pointer-free state calls and bounded Draw/RectFill/WritePixel/Text/
+BltTemplate drawing also use per-call native temporaries. The layer bridge
+resolves an owned window/requester/private layer or converts a checked
+unlayered planar bitmap; no copied native pointer is accepted. Other
 unsupported RastPorts stop with rc 20. A thunk that stops the
 program returns 20, so that the code reaches D0, from which the CPU loop
 takes the exit code.
@@ -1119,11 +1123,14 @@ takes the exit code.
 | LVO | Function | Handling |
 |-----|----------|----------|
 | -30 | BltBitMap | Copies bitplanes between checked classic planar bitmaps and/or owned indexed screens with minterm `0xC0`; unsupported bitmaps, planes, masks or minterms stop with rc 20 (`kaffeine_bitmaps.c`) |
+| -36 | BltTemplate | Converts all eight argument registers, validates the complete word-rounded source span and pre-clips planar destinations; source bytes cannot alias the caller-owned RastPort or its bitmap/planes |
 | -54 | TextLength | Checks UWORD(count) characters of guest text; caller-owned classic RastPorts use a resolved live TextFont and signed TxSpacing in a temporary native structure |
 | -60 | Text | Checks the text as TextLength; the pen position comes back |
 | -66 | SetFont | Takes a 68k TextFont of graphics.library, or NULL for the default font; any other font, also one closed and gone, stops the program with rc 20 |
 | -72 | OpenFont | Converts the checked TextAttr/TTextAttr at A0, calls native OpenFont and returns the shared 68k TextFont with monochrome glyph data, counting the open |
 | -78 | CloseFont | Balances the native open; the final native close and guest snapshot release wait while a RastPort or pin retains the font. Foreign and repeated closes acquire no native close |
+| -120 | InitGels | Initializes classic 60-byte VSprite sentinels and 38-byte GelsInfo with big-endian guest links; clears only collision-table entry zero when present. Every complete object is checked before any write; overlapping/protected storage stops with rc 20 |
+| -96, -102, -108, -114, -126, -132, -138, -144, -150, -156, -162, -168, -174, -600 | Other GELS calls (14 slots) | Stop with rc 20 before native graphics; no raw Bob/VSprite, animation list or guest collision callback crosses the native ABI |
 | -192 | LoadRGB4 | Decodes a bounded big-endian UWORD color array for a registered screen ViewPort (`kaffeine_palette.c`) |
 | -198 | InitRastPort | Initializes exactly 100 bytes of checked caller-owned classic storage, with a pinned default-font snapshot; no temporary native pointer escapes |
 | -240 | Move | WORD coordinates |
@@ -2931,10 +2938,23 @@ m68k: SetAPen(rp, 2); rp->cp_x = 10; Draw(rp, 50, 10)
 
 - `resolve_rp()` of the generated thunks takes the same path, so a call
   such as `PolyDraw()` leaves the right pen position in the 68k RastPort,
-  and the next call does not move the native pen back. For any other
-  address it still returns the native object of another shadow or the guest
-  bytes themselves.
-- The manual drawing thunks require a registered window or screen RastPort.
+  and the next call does not move the native pen back. Other addresses
+  stop the guest with rc 20 and return NULL, checked before every generated
+  native call.
+- Caller-owned state operations import only scalars, with native-private
+  Flags excluded, and copy back only changed scalar fields. Draw, RectFill,
+  WritePixel, Text, BltTemplate and layered ReadPixel additionally resolve a
+  typed live drawing target through the layer bridge. A copied window
+  RastPort uses that window's real clipping layer while preserving the
+  original RastPort and its independent state. Unlayered planar drawing
+  uses a stack bitmap adapter over checked, disjoint guest planes. Bitmap
+  metadata, planes, source data and caller RastPort cannot overlap bridge
+  memory or each other. AreaPtrn, TmpRas and AreaInfo remain unsupported;
+  unused GelsInfo stays in guest memory and the native temporary keeps NULL.
+  Blits finish before temporary adapters expire. No temporary is registered
+  or retained. Other caller-owned drawing calls stop with rc 20.
+  Intuition DrawImage/DrawBorder still require registered RastPorts and
+  use checked native copies of their classic chains.
   ReadPixel also accepts a complete, even-addressed 100-byte guest RastPort
   with Layer == NULL and an even-addressed 40-byte guest BitMap. Both headers
   must have addresses distinct from registered native shadows. BytesPerRow must be
@@ -2944,8 +2964,8 @@ m68k: SetAPen(rp, 2); rp->cp_x = 10; Draw(rp, 50, 10)
   must lie within BytesPerRow * 8 by Rows. The read combines MSB-first plane
   bits into a pen without changing guest memory or calling native graphics.
   Unsupported inputs stop with rc 20. InitBitMap has the separate metadata
-  adapter described below; InitRastPort and other guest-built drawing
-  operations still require their own adapters.
+  adapter described below. AllocRaster planes use exact ordinary guest heap
+  blocks, and FreeRaster validates their original requested size.
 - The layer bridge publishes typed guest Layer identities. Screen RastPorts,
   and window RastPorts whose native bitmap matches a live owned screen,
   expose that screen's typed BitMap handle; native planes remain opaque.
@@ -3272,8 +3292,8 @@ Two generators exist:
 ### Host-Side Tests (no AROS required)
 
 `developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
-plus `test_thunk_registrations.py` (which verifies 337 explicit native-vector
-cases and all 568 manual thunk registrations across the 20 production tables)
+plus `test_thunk_registrations.py` (which verifies 339 explicit native-vector
+cases and all 584 manual thunk registrations across the 20 production tables)
 and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
 [developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
 for coverage details; the host Makefile is the authoritative executable list.

@@ -8,7 +8,7 @@ import sys
 
 source, output = map(Path, sys.argv[1:])
 text = source.read_text()
-names = ("PolyDraw", "SetRast", "BltTemplate", "ClipBlit")
+names = ("PolyDraw", "SetRast", "ClipBlit")
 functions = []
 for name in names:
     matches = re.findall(

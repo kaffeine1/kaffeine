@@ -7,10 +7,20 @@
     unlayered guest planar bitmaps directly. Caller-owned classic RastPorts support bounded initialization and font-only
     operations through temporary native structures, and the pointer-free
     state calls (pens, drawing mode, Move) through a temporary native
-    RastPort with only its scalars. Other guest-built RastPorts, and every
-    drawing call on a caller-owned one, stop with return code 20 instead of
-    reaching native graphics.library. AllocRaster() planes are ordinary
-    guest heap allocations.
+    RastPort with only its scalars. Draw(), RectFill(), WritePixel(),
+    Text(), BltTemplate() and a layered ReadPixel() on a caller-owned one,
+    one that it built with InitRastPort() over its own planar BitMap or a
+    copy of the RastPort of its window, go through such a temporary too,
+    on the C stack for that call alone, whose Layer and BitMap the layer
+    bridge gives (layer_ops->draw_target): a native BitMap of the call over
+    the checked guest planes, or the real native layer of the window, which
+    clips as for the window's own RastPort. Only the changed scalars come
+    back; the program's pointers, font, RP_User and reserved bytes stay,
+    and so does the RastPort that it copied. Other guest-built RastPorts,
+    area patterns, TmpRas, AreaInfo and the other drawing calls
+    on a caller-owned one stop with return code 20 instead of reaching
+    native graphics.library. AllocRaster() planes are ordinary guest heap
+    allocations.
 */
 
 #include <aros/debug.h>
@@ -23,6 +33,7 @@
 #include <string.h>
 
 #include "kaffeine_intern.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_copy.h"
 #include "kaffeine_offsets.h"
@@ -34,7 +45,9 @@ extern void *shadow_lookup(struct KaffeineContext *ctx, ULONG m68k_addr);
 
 /* The 68k TextExtent, RastPort and TextFont of the NDK */
 enum { G_TE_WIDTH = 0, G_TE_HEIGHT = 2, G_TE_MINX = 4, G_TE_MINY = 6, G_TE_MAXX = 8, G_TE_MAXY = 10 };
-enum { G_RP_FONT = 52, G_RP_TXHEIGHT = 58, G_RP_TXWIDTH = 60,
+enum { G_RP_LAYER = 0, G_RP_BITMAP = 4, G_RP_AREAPTRN = 8, G_RP_TMPRAS = 12,
+       G_RP_AREAINFO = 16, G_RP_GELSINFO = 20,
+       G_RP_FONT = 52, G_RP_TXHEIGHT = 58, G_RP_TXWIDTH = 60,
        G_RP_TXBASELINE = 62, G_RP_TXSPACING = 64, G_LN_NAME = 10 };
 
 static BOOL guest_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)
@@ -167,28 +180,32 @@ static BOOL plain_rastport(struct KaffeineContext *ctx, ULONG guest)
     return TRUE;
 }
 
-/* Storage of a caller-owned classic RastPort for state calls: 100 word
-   aligned bytes of ordinary guest memory, in the heap, a hunk or the
-   stack alike, sharing no byte with a registered object (a 68k RastPort,
-   Window or Screen among them), a file, a port, a protected IORequest, a
-   queued message, a 68k TextFont, free or bridge-owned heap memory, a
-   library base with its jump table or the memory snapshot. */
-static BOOL state_storage(struct KaffeineContext *ctx, ULONG guest)
+/* size bytes of ordinary guest memory of the program, in the heap, a hunk
+   or the stack alike, sharing no byte with a registered object (a 68k
+   RastPort, Window or Screen among them), a file, a port, a protected
+   IORequest, a queued message, a 68k TextFont, free or bridge-owned heap
+   memory, a library base with its jump table or the memory snapshot. */
+static BOOL program_memory(struct KaffeineContext *ctx, ULONG addr, ULONG size)
 {
     UWORD i;
 
-    if ((guest & 1) || !Kaffeine_MessageMemory(ctx, guest, M68K_SIZEOF_RASTPORT) ||
-        !Kaffeine_HeapGuestRange(ctx, guest, M68K_SIZEOF_RASTPORT) ||
-        in_font(ctx, guest, M68K_SIZEOF_RASTPORT) ||
-        (ctx->memory_info &&
-         overlaps(guest, M68K_SIZEOF_RASTPORT, ctx->memory_info, KAFFEINE_MEMINFO_SIZE)))
+    if (!Kaffeine_MessageMemory(ctx, addr, size) || !Kaffeine_HeapGuestRange(ctx, addr, size) ||
+        in_font(ctx, addr, size) ||
+        (ctx->memory_info && overlaps(addr, size, ctx->memory_info, KAFFEINE_MEMINFO_SIZE)))
         return FALSE;
     for (i = 0; i < ctx->num_libs; i++)
         if (ctx->libs[i].m68k_addr >= ctx->libs[i].jt_start &&
-            overlaps(guest, M68K_SIZEOF_RASTPORT, ctx->libs[i].jt_start,
+            overlaps(addr, size, ctx->libs[i].jt_start,
                      ctx->libs[i].m68k_addr - ctx->libs[i].jt_start + ctx->libs[i].pos_size))
             return FALSE;
     return TRUE;
+}
+
+/* Storage of a caller-owned classic RastPort for state and drawing calls:
+   100 word aligned bytes of ordinary guest memory of the program. */
+static BOOL state_storage(struct KaffeineContext *ctx, ULONG guest)
+{
+    return !(guest & 1) && program_memory(ctx, guest, M68K_SIZEOF_RASTPORT);
 }
 
 /* The native RastPort for a state call (SetAPen() ... Move()): that of a
@@ -221,6 +238,142 @@ static void state_return(struct KaffeineContext *ctx, ULONG guest, const struct 
 {
     if (rp == temporary)
         Kaffeine_RastPortStateOut(ctx, guest, before, rp);
+}
+
+/* A temporary native RastPort for drawing through a caller-owned classic
+   RastPort, on the C stack for one thunk: the scalars as for the state
+   calls, the native font of its 68k TextFont, and the target that the
+   layer bridge gives (layer_ops->draw_target). Without a Layer, adapter is
+   the native BitMap of this call over the guest planes, width and height
+   are its pixels, and planes and plane_size the guest bytes that drawing
+   may write. Nothing of it outlives the thunk. */
+struct DrawTemporary
+{
+    struct RastPort rp, before;
+    struct BitMap adapter;
+    ULONG bitmap, planes[8], plane_size, width, height;
+    UBYTE depth;
+};
+
+static BOOL draw_refuse(struct KaffeineContext *ctx, ULONG guest, const char *call, const char *why)
+{
+    bug("[kaffeine] %s(%08lx): %s\n", call, (unsigned long)guest, why);
+    refuse(ctx, "a drawing call that the bridge cannot take");
+    return FALSE;
+}
+
+/* The temporary of a drawing call (Draw() ... BltTemplate()) for the
+   caller-owned classic RastPort at guest, checked whole before any native
+   call: the storage of a state call; no AreaPtrn, TmpRas or AreaInfo,
+   which native graphics would follow. These calls never read GelsInfo;
+   its guest value stays untouched and the native temporary keeps NULL.
+   For text, a Font that is a
+   68k TextFont of graphics, whose native font it gets (other calls get it
+   too, or NULL, as they never read it); the target of the layer bridge;
+   and for a planar BitMap, a descriptor and planes that are ordinary
+   memory of the program, apart from each other and from the RastPort. No
+   68k pointer is taken for a native one. FALSE after stopping the program
+   (20). */
+static BOOL draw_rastport(struct KaffeineContext *ctx, ULONG guest, BOOL text,
+                          struct DrawTemporary *t, const char *call)
+{
+    const struct KaffeineLayerOps *ops = ctx->layer_ops;
+    ULONG i, j;
+
+    if (!state_storage(ctx, guest))
+        return draw_refuse(ctx, guest, call, "not a RastPort of the program");
+    if (m68k_read32(ctx, guest + G_RP_AREAPTRN) || m68k_read32(ctx, guest + G_RP_TMPRAS) ||
+        m68k_read32(ctx, guest + G_RP_AREAINFO))
+        return draw_refuse(ctx, guest, call, "AreaPtrn, TmpRas and AreaInfo are unsupported");
+    Kaffeine_RastPortStateIn(ctx, guest, &t->rp);
+    t->rp.Font = Kaffeine_FontNative(ctx, m68k_read32(ctx, guest + G_RP_FONT));
+    if (text && !t->rp.Font)
+        return draw_refuse(ctx, guest, call, "no 68k TextFont of graphics in the RastPort");
+    if (!ops || !ops->draw_target)
+        return draw_refuse(ctx, guest, call, "drawing needs the layer bridge");
+    memset(&t->adapter, 0, sizeof(t->adapter));
+    t->bitmap = m68k_read32(ctx, guest + G_RP_BITMAP);
+    if (!ops->draw_target(ctx, m68k_read32(ctx, guest + G_RP_LAYER), t->bitmap, &t->rp, &t->adapter))
+    {
+        if (ctx->running)
+            refuse(ctx, "no drawing target for the RastPort");
+        return FALSE;
+    }
+    t->depth = 0;
+    t->plane_size = t->width = t->height = 0;
+    memset(t->planes, 0, sizeof(t->planes));
+    if (!t->rp.Layer)
+    {
+        if (t->rp.BitMap != &t->adapter || !t->adapter.Depth || t->adapter.Depth > 8)
+            return draw_refuse(ctx, guest, call, "the planar target is not this call's own BitMap");
+        t->depth = t->adapter.Depth;
+        /* at most 4094 * 32767 bytes and 32752 pixels (layers_private_bitmap()) */
+        t->plane_size = (ULONG)t->adapter.BytesPerRow * t->adapter.Rows;
+        t->width = (ULONG)t->adapter.BytesPerRow * 8;
+        t->height = t->adapter.Rows;
+        if ((t->bitmap & 1) || !program_memory(ctx, t->bitmap, M68K_SIZEOF_BITMAP) ||
+            overlaps(t->bitmap, M68K_SIZEOF_BITMAP, guest, M68K_SIZEOF_RASTPORT))
+            return draw_refuse(ctx, guest, call, "the BitMap is not ordinary memory of the program");
+        for (i = 0; i < t->depth; i++)
+        {
+            t->planes[i] = (ULONG)(t->adapter.Planes[i] - ctx->mem);
+            if (!program_memory(ctx, t->planes[i], t->plane_size) ||
+                overlaps(t->planes[i], t->plane_size, guest, M68K_SIZEOF_RASTPORT) ||
+                overlaps(t->planes[i], t->plane_size, t->bitmap, M68K_SIZEOF_BITMAP))
+                return draw_refuse(ctx, guest, call, "a plane is not ordinary memory of the program");
+            /* the same plane twice, as some programs give, is not taken yet */
+            for (j = 0; j < i; j++)
+                if (overlaps(t->planes[i], t->plane_size, t->planes[j], t->plane_size))
+                    return draw_refuse(ctx, guest, call, "planes that share bytes");
+        }
+    }
+    t->before = t->rp;
+    return TRUE;
+}
+
+/* Whether guest bytes that a drawing call only reads, its text or
+   template, share none with the RastPort, nor with the BitMap and planes
+   of a planar target */
+static BOOL draw_source(const struct DrawTemporary *t, ULONG guest, ULONG addr, ULONG size)
+{
+    ULONG i;
+
+    if (overlaps(addr, size, guest, M68K_SIZEOF_RASTPORT))
+        return FALSE;
+    if (t->rp.Layer)
+        return TRUE;
+    if (overlaps(addr, size, t->bitmap, M68K_SIZEOF_BITMAP))
+        return FALSE;
+    for (i = 0; i < t->depth; i++)
+        if (overlaps(addr, size, t->planes[i], t->plane_size))
+            return FALSE;
+    return TRUE;
+}
+
+/* Around the native call on a temporary: no LayerInfo of the program is
+   disposed of and no screen of it closes until the blitter has finished
+   with the call's BitMap; then exactly the changed scalars go back. */
+static void draw_begin(struct KaffeineContext *ctx)
+{
+    ctx->bitmap_blits++;
+}
+
+static void draw_end(struct KaffeineContext *ctx, ULONG guest, const struct DrawTemporary *t)
+{
+    WaitBlit();
+    ctx->bitmap_blits--;
+    Kaffeine_RastPortStateOut(ctx, guest, &t->before, &t->rp);
+}
+
+/* A rectangle on a planar target, clipped to its BitMap as graphics does;
+   FALSE when nothing of it is inside, also for an empty one. */
+static BOOL draw_clip(const struct DrawTemporary *t, LONG *x0, LONG *y0, LONG *x1, LONG *y1)
+{
+    if (*x0 < 0) *x0 = 0;
+    if (*y0 < 0) *y0 = 0;
+    if (*x1 >= (LONG)t->width) *x1 = (LONG)t->width - 1;
+    if (*y1 >= (LONG)t->height) *y1 = (LONG)t->height - 1;
+    return *x0 <= *x1 && *y0 <= *y1;
 }
 
 /* graphics -198: initialize exactly the classic 100 bytes, using a
@@ -409,18 +562,32 @@ IPTR thunk_gfx_TextLength(struct KaffeineContext *ctx, void *cpu)
     return (IPTR)(LONG)TextLength(rp, text, THUNK_D(0));
 }
 
-/* graphics -60: Text(A1=rp, A0=string, D0=count) */
+/* graphics -60: Text(A1=rp, A0=string, D0=count). On a caller-owned
+   RastPort with a 68k TextFont of graphics, through its temporary; the
+   text shares no byte with the RastPort or a planar target, and the pen
+   position comes back. */
 IPTR thunk_gfx_Text(struct KaffeineContext *ctx, void *cpu)
 {
-    CONST_STRPTR text = guest_text(ctx, THUNK_A(0), THUNK_D(0));
+    ULONG string = THUNK_A(0), guest = THUNK_A(1), count = THUNK_D(0) & 0xFFFF;
+    CONST_STRPTR text = guest_text(ctx, string, THUNK_D(0));
+    struct DrawTemporary t;
     struct RastPort *rp;
 
     if (!text)
         return refuse(ctx, "Text(): the text is not in guest memory");
-    rp = rastport(ctx, THUNK_A(1), "Text");
-    if (!rp)
+    rp = Kaffeine_RastPortIn(ctx, guest);
+    if (rp)
+    {
+        Text(rp, text, THUNK_D(0));
+        return 0;
+    }
+    if (!draw_rastport(ctx, guest, TRUE, &t, "Text"))
         return ctx->exit_code;
-    Text(rp, text, THUNK_D(0));
+    if (count && !draw_source(&t, guest, string, count))
+        return refuse(ctx, "Text(): the text shares bytes with the RastPort or its BitMap");
+    draw_begin(ctx);
+    Text(&t.rp, text, THUNK_D(0));
+    draw_end(ctx, guest, &t);
     return 0;
 }
 
@@ -501,25 +668,51 @@ IPTR thunk_gfx_Move(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
-/* graphics -246: Draw(A1=rp, D0=x, D1=y) */
+/* graphics -246: Draw(A1=rp, D0=x, D1=y). On a caller-owned RastPort
+   through its temporary, which graphics clips; the pen position comes
+   back. */
 IPTR thunk_gfx_Draw(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(1), "Draw");
+    ULONG guest = THUNK_A(1);
+    struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
+    struct DrawTemporary t;
 
-    if (!rp)
+    if (rp)
+    {
+        Draw(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
+        return 0;
+    }
+    if (!draw_rastport(ctx, guest, FALSE, &t, "Draw"))
         return ctx->exit_code;
-    Draw(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
+    draw_begin(ctx);
+    Draw(&t.rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
+    draw_end(ctx, guest, &t);
     return 0;
 }
 
-/* graphics -306: RectFill(A1=rp, D0=xMin, D1=yMin, D2=xMax, D3=yMax) */
+/* graphics -306: RectFill(A1=rp, D0=xMin, D1=yMin, D2=xMax, D3=yMax). On
+   a caller-owned RastPort through its temporary; on a planar target
+   clipped to the BitMap first, and nothing native for a rectangle that is
+   empty or wholly outside it. */
 IPTR thunk_gfx_RectFill(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(1), "RectFill");
+    ULONG guest = THUNK_A(1);
+    LONG x0 = (WORD)THUNK_D(0), y0 = (WORD)THUNK_D(1), x1 = (WORD)THUNK_D(2), y1 = (WORD)THUNK_D(3);
+    struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
+    struct DrawTemporary t;
 
-    if (!rp)
+    if (rp)
+    {
+        RectFill(rp, (WORD)x0, (WORD)y0, (WORD)x1, (WORD)y1);
+        return 0;
+    }
+    if (!draw_rastport(ctx, guest, FALSE, &t, "RectFill"))
         return ctx->exit_code;
-    RectFill(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1), (WORD)THUNK_D(2), (WORD)THUNK_D(3));
+    if (!t.rp.Layer && !draw_clip(&t, &x0, &y0, &x1, &y1))
+        return 0;
+    draw_begin(ctx);
+    RectFill(&t.rp, (WORD)x0, (WORD)y0, (WORD)x1, (WORD)y1);
+    draw_end(ctx, guest, &t);
     return 0;
 }
 
@@ -563,23 +756,111 @@ static IPTR guest_read_pixel(struct KaffeineContext *ctx, ULONG guest, WORD x, W
     return pen;
 }
 
-/* graphics -318: ReadPixel(A1=rp, D0=x, D1=y) -> D0 */
+/* graphics -318: ReadPixel(A1=rp, D0=x, D1=y) -> D0. A caller-owned
+   RastPort with a Layer, such as a copy of a window's, reads its real
+   native layer through a temporary, as for drawing; one without a Layer
+   is read from the guest planes alone. */
 IPTR thunk_gfx_ReadPixel(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG guest = THUNK_A(1);
     struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
+    struct DrawTemporary t;
+    LONG pen;
 
     if (rp)
         return (IPTR)ReadPixel(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
+    if (!(guest & 1) && guest_range(ctx, guest, M68K_SIZEOF_RASTPORT) &&
+        m68k_read32(ctx, guest + G_RP_LAYER))
+    {
+        if (!draw_rastport(ctx, guest, FALSE, &t, "ReadPixel"))
+            return ctx->exit_code;
+        draw_begin(ctx);
+        pen = ReadPixel(&t.rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
+        draw_end(ctx, guest, &t);
+        return (IPTR)pen;
+    }
     return guest_read_pixel(ctx, guest, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
 }
 
-/* graphics -324: WritePixel(A1=rp, D0=x, D1=y) -> D0 */
+/* graphics -324: WritePixel(A1=rp, D0=x, D1=y) -> D0. On a caller-owned
+   RastPort through its temporary; outside a planar target -1, as graphics
+   gives, with no native call. */
 IPTR thunk_gfx_WritePixel(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(1), "WritePixel");
+    ULONG guest = THUNK_A(1);
+    LONG x = (WORD)THUNK_D(0), y = (WORD)THUNK_D(1), result;
+    struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
+    struct DrawTemporary t;
 
-    return rp ? (IPTR)WritePixel(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1)) : (IPTR)ctx->exit_code;
+    if (rp)
+        return (IPTR)WritePixel(rp, (WORD)x, (WORD)y);
+    if (!draw_rastport(ctx, guest, FALSE, &t, "WritePixel"))
+        return ctx->exit_code;
+    if (!t.rp.Layer && (x < 0 || y < 0 || x >= (LONG)t.width || y >= (LONG)t.height))
+        return (IPTR)(LONG)-1;
+    draw_begin(ctx);
+    result = WritePixel(&t.rp, (WORD)x, (WORD)y);
+    draw_end(ctx, guest, &t);
+    return (IPTR)result;
+}
+
+/* graphics -36: BltTemplate(A0=source, D0=xSrc, D1=srcMod, A1=destRP,
+   D2=xDest, D3=yDest, D4=xSize, D5=ySize), WORD scalars. The template is
+   read-only guest bytes, the bit xSrc of a row of srcMod bytes on: xSrc
+   and srcMod must not be negative, and nothing native runs for an empty
+   size. On a caller-owned RastPort through its temporary; on a planar
+   target the rectangle is clipped to the BitMap first, the source moved
+   along with it, whole words of xSrc go to the source address, and a
+   rectangle wholly outside draws nothing. Every template byte that
+   graphics may read, ySize - 1 rows of srcMod and the words of the last
+   row, all in 64 bits, must lie in guest memory, and for a temporary
+   apart from the RastPort and a planar target's BitMap and planes. */
+IPTR thunk_gfx_BltTemplate(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG source = THUNK_A(0), guest = THUNK_A(1);
+    LONG xs = (WORD)THUNK_D(0), mod = (WORD)THUNK_D(1);
+    LONG xd = (WORD)THUNK_D(2), yd = (WORD)THUNK_D(3), w = (WORD)THUNK_D(4), h = (WORD)THUNK_D(5);
+    unsigned long long first, span;
+    struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
+    struct DrawTemporary t;
+
+    if (!rp && !draw_rastport(ctx, guest, FALSE, &t, "BltTemplate"))
+        return ctx->exit_code;
+    if (xs < 0 || mod < 0)
+        return refuse(ctx, "BltTemplate(): a negative source offset or modulo");
+    if (w <= 0 || h <= 0)
+        return 0;
+    if (!source)
+        return refuse(ctx, "BltTemplate(): no template");
+    first = source;
+    if (!rp && !t.rp.Layer)
+    {
+        if (xd < 0) { xs -= xd; w += xd; xd = 0; }
+        if (yd < 0) { first += (unsigned long long)(-yd) * (ULONG)mod; h += yd; yd = 0; }
+        if (xd >= (LONG)t.width || yd >= (LONG)t.height || w <= 0 || h <= 0)
+            return 0;
+        if (w > (LONG)t.width - xd) w = (LONG)t.width - xd;
+        if (h > (LONG)t.height - yd) h = (LONG)t.height - yd;
+        /* xSrc stays a WORD: whole words of it move the source */
+        first += (unsigned long long)(xs >> 4) * 2;
+        xs &= 15;
+    }
+    span = (unsigned long long)(h - 1) * (ULONG)mod + (((unsigned long long)xs + (ULONG)w + 15) >> 4) * 2;
+    if (first >= ctx->mem_size || span > ctx->mem_size - first)
+        return refuse(ctx, "BltTemplate(): the template is not in guest memory");
+    if (!rp && !draw_source(&t, guest, (ULONG)first, (ULONG)span))
+        return refuse(ctx, "BltTemplate(): the template shares bytes with the RastPort or its BitMap");
+    if (rp)
+    {
+        BltTemplate((PLANEPTR)(ctx->mem + first), (WORD)xs, (WORD)mod, rp,
+                    (WORD)xd, (WORD)yd, (WORD)w, (WORD)h);
+        return 0;
+    }
+    draw_begin(ctx);
+    BltTemplate((PLANEPTR)(ctx->mem + first), (WORD)xs, (WORD)mod, &t.rp,
+                (WORD)xd, (WORD)yd, (WORD)w, (WORD)h);
+    draw_end(ctx, guest, &t);
+    return 0;
 }
 
 /* graphics -342: SetAPen(A1=rp, D0=pen) */
@@ -694,6 +975,56 @@ IPTR thunk_gfx_AllocRaster(struct KaffeineContext *ctx, void *cpu)
     ULONG size = raster_size(ctx, THUNK_D(0), THUNK_D(1));
 
     return size ? Kaffeine_HeapAlloc(ctx, size, MEMF_CHIP | MEMF_PUBLIC) : 0;
+}
+
+/* graphics -120: InitGels(A0=head, A1=tail, A2=gelsInfo). Initialize the
+   classic 60-byte VSprite sentinels and 38-byte GelsInfo in guest memory,
+   with 32-bit big-endian links. This is list initialization only; GELS
+   drawing and collision handlers cannot run through the native ABI.
+   Preflight every complete object and every overlap before any write. */
+IPTR thunk_gfx_InitGels(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG head = THUNK_A(0), tail = THUNK_A(1), info = THUNK_A(2), collision;
+
+    if (((head | tail | info) & 1) ||
+        !program_memory(ctx, head, 60) || !program_memory(ctx, tail, 60) ||
+        !program_memory(ctx, info, 38) || overlaps(head, 60, tail, 60) ||
+        overlaps(head, 60, info, 38) || overlaps(tail, 60, info, 38))
+        return refuse(ctx, "InitGels(): invalid or overlapping classic structures");
+    collision = m68k_read32(ctx, info + 18);
+    if (collision && ((collision & 1) || !program_memory(ctx, collision, 64) ||
+                      overlaps(collision, 64, head, 60) || overlaps(collision, 64, tail, 60) ||
+                      overlaps(collision, 64, info, 38)))
+        return refuse(ctx, "InitGels(): invalid or overlapping collision table");
+
+    m68k_write32(ctx, head, tail);
+    m68k_write32(ctx, head + 4, 0);
+    m68k_write32(ctx, head + 8, 0); /* DrawPath; native AROS calls this IntVSprite */
+    m68k_write32(ctx, head + 12, tail);
+    m68k_write16(ctx, head + 16, 0x8000);
+    m68k_write16(ctx, head + 18, 0x8000);
+    m68k_write16(ctx, head + 22, 0x8000);
+    m68k_write16(ctx, head + 24, 0x8000);
+    m68k_write32(ctx, tail, 0);
+    m68k_write32(ctx, tail + 4, head);
+    m68k_write32(ctx, tail + 8, 0);
+    m68k_write16(ctx, tail + 16, 0x7FFF);
+    m68k_write16(ctx, tail + 18, 0x7FFF);
+    m68k_write16(ctx, tail + 22, 0x7FFF);
+    m68k_write16(ctx, tail + 24, 0x7FFF);
+    m68k_write32(ctx, info + 2, head);
+    m68k_write32(ctx, info + 6, tail);
+    if (collision)
+        m68k_write32(ctx, collision, 0);
+    return 0;
+}
+
+/* No raw VSprite, Bob, animation list or guest collision callback may
+   reach native graphics. InitGels alone does not register native GELS. */
+IPTR thunk_gfx_GelsUnsupported(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return refuse(ctx, "unsupported GELS drawing or collision call");
 }
 
 /* graphics -498: FreeRaster(A0=p, D0=width, D1=height). As AROS, with the

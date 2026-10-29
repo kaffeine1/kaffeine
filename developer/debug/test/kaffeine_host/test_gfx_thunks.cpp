@@ -9,14 +9,19 @@
     calls with their 68k TextExtents, AskFont() into a classic 68k
     TextAttr, bounded guest planar ReadPixel and the refusal of unsupported
     RastPorts, also by generated thunks, the pointer-free state calls on
-    RastPorts that the program built or copied, and AllocRaster() and
-    FreeRaster() in the guest heap. The native graphics.library acts as
-    AROS does and records every call.
+    RastPorts that the program built or copied, AllocRaster() and
+    FreeRaster() in the guest heap, and drawing through temporaries of such
+    RastPorts, with the manual BltTemplate(): over the program's own planes,
+    pre-clipped, or a copied window RastPort through the layer that a
+    stand-in layer bridge names, and every refusal before native graphics.
+    The native graphics.library acts as AROS does and records every call;
+    its WritePixel() can set a pixel through the converted BitMap.
 */
 
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -33,6 +38,7 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_thunks_gfx.h"
 #include "kaffeine_dispatch.h"
 
@@ -62,6 +68,17 @@ struct GfxCalls
     unsigned state = 0;         /* state calls, with the RastPort each saw */
     RastPort *state_rp = nullptr;
     RastPort seen = {};
+    /* drawing calls: the RastPort, a copy of it and of a BitMap that is no
+       fake pointer, the program's blits in progress, WaitBlit() calls */
+    unsigned draws = 0, waits = 0;
+    RastPort *draw_rp = nullptr;
+    RastPort drawn = {};
+    BitMap drawn_bm = {};
+    UWORD drawn_blits = 0;
+    bool paint = false;         /* WritePixel() sets the pixel in a real BitMap */
+    UWORD draw_flags = 0;       /* Draw() toggles these Flags */
+    const UBYTE *tmpl = nullptr;
+    WORD tmpl_args[6] = {};     /* xSrc, srcMod, xDest, yDest, xSize, ySize */
 };
 static GfxCalls gfx;
 struct ClassicDrawCalls
@@ -91,12 +108,8 @@ extern "C" void DrawBorder(RastPort *rp, Border *border, WORD x, WORD y)
         if(border->Count>0)classic_draw.pairs.back().assign(border->XY,border->XY+2*border->Count);
     }
 }
-extern "C" void WaitBlit(void)
-{
-    ++classic_draw.waits;
-    if(drawing_context)assert(drawing_context->bitmap_blits==1);
-}
 
+static KaffeineContext *live;
 
 static void reset_native()
 {
@@ -200,9 +213,22 @@ extern "C" WORD TextLength(struct RastPort *rp, CONST_STRPTR string, ULONG count
     return (WORD)(read_text(string, count) * (rp->Font->tf_XSize + rp->TxSpacing));
 }
 
+/* A drawing call: what it saw, before it changes anything. The BitMap of
+   the window's native RastPort is a fake pointer and is not read. */
+static void draw_call(struct RastPort *rp)
+{
+    ++gfx.any; ++gfx.draws;
+    gfx.draw_rp = rp;
+    gfx.drawn = *rp;
+    gfx.drawn_bm = {};
+    if (rp != &native_rp && rp->BitMap)
+        gfx.drawn_bm = *rp->BitMap;
+    gfx.drawn_blits = live ? live->bitmap_blits : 0;
+}
+
 extern "C" void Text(struct RastPort *rp, CONST_STRPTR string, ULONG count)
 {
-    ++gfx.any;
+    draw_call(rp);
     rp->cp_x += read_text(string, count) * rp->TxWidth;
 }
 
@@ -298,31 +324,64 @@ extern "C" void Move(struct RastPort *rp, WORD x, WORD y)
 
 extern "C" void Draw(struct RastPort *rp, WORD x, WORD y)
 {
-    ++gfx.any;
+    draw_call(rp);
     gfx.draw_from_x = rp->cp_x;
     gfx.draw_from_y = rp->cp_y;
     rp->cp_x = x;
     rp->cp_y = y;
+    rp->Flags ^= gfx.draw_flags;
 }
 
 extern "C" void RectFill(struct RastPort *rp, WORD x0, WORD y0, WORD x1, WORD y1)
 {
-    ++gfx.any;
+    draw_call(rp);
     gfx.fill_fg = rp->FgPen;
     gfx.fill_drmd = rp->DrawMode;
     gfx.fill[0] = x0; gfx.fill[1] = y0; gfx.fill[2] = x1; gfx.fill[3] = y1;
 }
 
-extern "C" LONG ReadPixel(struct RastPort *, WORD x, WORD y)
+extern "C" LONG ReadPixel(struct RastPort *rp, WORD x, WORD y)
 {
-    ++gfx.any;
+    draw_call(rp);
     return x == 3000 ? -1 : x + y;
 }
 
-extern "C" LONG WritePixel(struct RastPort *, WORD x, WORD)
+/* With gfx.paint, the pixel of a planar BitMap of the bridge gets FgPen,
+   as JAM2 would, through the native plane pointers */
+extern "C" LONG WritePixel(struct RastPort *rp, WORD x, WORD y)
 {
-    ++gfx.any;
+    draw_call(rp);
+    if (gfx.paint)
+    {
+        const BitMap *bm = rp->BitMap;
+        assert(rp != &native_rp && !rp->Layer && x >= 0 && y >= 0 &&
+               x < bm->BytesPerRow * 8 && y < bm->Rows);
+        for (int p = 0; p < bm->Depth; ++p)
+        {
+            UBYTE &b = bm->Planes[p][y * bm->BytesPerRow + (x >> 3)];
+            const UBYTE mask = UBYTE(0x80 >> (x & 7));
+            b = (rp->FgPen >> p) & 1 ? b | mask : b & ~mask;
+        }
+    }
     return x == 3000 ? -1 : 0;
+}
+
+extern "C" void BltTemplate(PLANEPTR source, WORD xSrc, WORD srcMod, struct RastPort *rp,
+                            WORD xDest, WORD yDest, WORD xSize, WORD ySize)
+{
+    draw_call(rp);
+    gfx.tmpl = source;
+    const WORD args[] = { xSrc, srcMod, xDest, yDest, xSize, ySize };
+    std::memcpy(gfx.tmpl_args, args, sizeof(args));
+}
+
+/* The drawing of a temporary has finished before its BitMap goes. */
+extern "C" void WaitBlit(void)
+{
+    ++gfx.waits;
+    ++classic_draw.waits;
+    assert(live && live->bitmap_blits == 1);
+    if(drawing_context)assert(drawing_context->bitmap_blits==1);
 }
 
 /* As setapen.c, setbpen.c, setdrmd.c and setabpendrmd.c (UBYTE pens and
@@ -416,11 +475,9 @@ static unsigned generated_native;
 extern "C" {
 IPTR gfx_generated_PolyDraw(KaffeineContext *, void *);
 IPTR gfx_generated_SetRast(KaffeineContext *, void *);
-IPTR gfx_generated_BltTemplate(KaffeineContext *, void *);
 IPTR gfx_generated_ClipBlit(KaffeineContext *, void *);
 void PolyDraw(RastPort *rp, WORD, WORD *) { ++generated_native; rp->cp_x=77; rp->cp_y=88; }
 void SetRast(RastPort *, UBYTE) { ++generated_native; }
-void BltTemplate(PLANEPTR, WORD, WORD, RastPort *, WORD, WORD, WORD, WORD) { ++generated_native; }
 void ClipBlit(RastPort *, WORD, WORD, RastPort *, WORD, WORD, WORD, WORD, UBYTE) { ++generated_native; }
 }
 
@@ -432,7 +489,22 @@ static const M68KThunkEntry graphics_manual[] =
     { KAFFEINE_GRAPHICS_COMPAT_THUNKS, KAFFEINE_GRAPHICS_RASTPORT_THUNKS };
 static const M68KThunkEntry graphics_generated[] =
 {
-    { 36, gfx_generated_BltTemplate }, { 54, poison }, { 60, poison }, { 66, poison }, { 72, poison }, { 78, poison },
+    { 36, poison }, { 54, poison }, { 60, poison }, { 66, poison }, { 72, poison }, { 78, poison },
+    { 96, poison },
+    { 102, poison },
+    { 108, poison },
+    { 114, poison },
+    { 120, poison },
+    { 126, poison },
+    { 132, poison },
+    { 138, poison },
+    { 144, poison },
+    { 150, poison },
+    { 156, poison },
+    { 162, poison },
+    { 168, poison },
+    { 174, poison },
+    { 600, poison },
     { 198, poison }, { 234, gfx_generated_SetRast }, { 240, poison }, { 246, poison }, { 306, poison },
     { 318, poison }, { 324, poison },
     { 336, gfx_generated_PolyDraw }, { 342, poison }, { 348, poison }, { 354, poison },
@@ -489,7 +561,9 @@ struct Fixture
            Poisoning ta_Style would request a TTextAttr with a bad tag pointer. */
         std::memset(memory.data() + attr, 0, M68K_SIZEOF_TEXTATTR);
         m68k_write32(&ctx, stack, 0x76543210);
+        live = &ctx;
     }
+    ~Fixture() { live = nullptr; }
 
     void put(ULONG addr, const char *s)
     {
@@ -560,8 +634,25 @@ static void test_registration()
                (entry.lvo == 894 && entry.thunk == thunk_gfx_SetABPenDrMd));
     const struct { ULONG lvo; IPTR (*thunk)(KaffeineContext *, void *); } rastport[] =
     {
+        { 36, thunk_gfx_BltTemplate },
         { 54, thunk_gfx_TextLength }, { 60, thunk_gfx_Text }, { 66, thunk_gfx_SetFont },
-        { 78, thunk_gfx_CloseFont }, { 198, thunk_gfx_InitRastPort }, { 240, thunk_gfx_Move }, { 246, thunk_gfx_Draw },
+        { 78, thunk_gfx_CloseFont },
+        { 96, thunk_gfx_GelsUnsupported },
+        { 102, thunk_gfx_GelsUnsupported },
+        { 108, thunk_gfx_GelsUnsupported },
+        { 114, thunk_gfx_GelsUnsupported },
+        { 120, thunk_gfx_InitGels },
+        { 126, thunk_gfx_GelsUnsupported },
+        { 132, thunk_gfx_GelsUnsupported },
+        { 138, thunk_gfx_GelsUnsupported },
+        { 144, thunk_gfx_GelsUnsupported },
+        { 150, thunk_gfx_GelsUnsupported },
+        { 156, thunk_gfx_GelsUnsupported },
+        { 162, thunk_gfx_GelsUnsupported },
+        { 168, thunk_gfx_GelsUnsupported },
+        { 174, thunk_gfx_GelsUnsupported },
+        { 600, thunk_gfx_GelsUnsupported },
+        { 198, thunk_gfx_InitRastPort }, { 240, thunk_gfx_Move }, { 246, thunk_gfx_Draw },
         { 306, thunk_gfx_RectFill }, { 318, thunk_gfx_ReadPixel }, { 324, thunk_gfx_WritePixel },
         { 342, thunk_gfx_SetAPen }, { 348, thunk_gfx_SetBPen }, { 354, thunk_gfx_SetDrMd },
         { 474, thunk_gfx_AskFont }, { 492, thunk_gfx_AllocRaster }, { 498, thunk_gfx_FreeRaster },
@@ -1769,6 +1860,438 @@ static void test_classic_drawborder()
     drawing_context=nullptr;
 }
 
+/* ── Drawing through caller-owned RastPorts ──────────────────────── */
+
+/* The layer bridge, as kaffeine_layers.c answers (test_layers and
+   test_layers_private check its own side): without a Layer, the classic
+   BitMap converted into the adapter over the guest planes, unchecked, so
+   that the checks of the graphics thunks alone stand between it and
+   native graphics here; with one, only the window layer that the test
+   names, with the BitMap that it publishes. */
+static int window_layer_storage;
+static Layer *const window_layer = reinterpret_cast<Layer *>(&window_layer_storage);
+static BitMap window_bm;
+static struct { ULONG layer, bitmap; unsigned calls; } bridge;
+static BOOL fake_draw_target(KaffeineContext *ctx, ULONG layer, ULONG bitmap, RastPort *rp, BitMap *adapter)
+{
+    ++bridge.calls;
+    assert(!rp->Layer && !rp->BitMap);
+    if (!layer && bitmap)
+    {
+        adapter->BytesPerRow = m68k_read16(ctx, bitmap);
+        adapter->Rows = m68k_read16(ctx, bitmap + 2);
+        adapter->Flags = BMF_STANDARD;
+        adapter->Depth = ctx->mem[bitmap + 5];
+        for (int p = 0; p < 8; ++p)
+            adapter->Planes[p] = p < adapter->Depth ? ctx->mem + m68k_read32(ctx, bitmap + 8 + 4 * p) : nullptr;
+        rp->BitMap = adapter;
+        return TRUE;
+    }
+    if (layer && layer == bridge.layer && bitmap == bridge.bitmap)
+    {
+        rp->Layer = window_layer;
+        rp->BitMap = &window_bm;
+        return TRUE;
+    }
+    ctx->running = FALSE;
+    ctx->exit_code = 20;
+    return FALSE;
+}
+/* every other operation NULL, as an older table has them */
+static KaffeineLayerOps bridge_ops;
+
+/* Caller 1: InitRastPort() into an AllocMem() block, a 32 x 16 BitMap of
+   depth 2 whose planes come from AllocRaster(), its RastPort.BitMap set */
+struct Planar { ULONG rp, bm, planes[2]; };
+static Planar planar(Fixture &f)
+{
+    Planar p;
+    p.rp = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_RASTPORT, 0);
+    p.bm = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_BITMAP, 0);
+    assert(p.rp && p.bm);
+    assert(f.call(198, { 0, p.rp }) == 0 && !f.stopped());
+    std::memset(f.memory.data() + p.bm, 0, M68K_SIZEOF_BITMAP);
+    m68k_write16(&f.ctx, p.bm, 4);
+    m68k_write16(&f.ctx, p.bm + 2, 16);
+    f.memory[p.bm + 4] = BMF_STANDARD;
+    f.memory[p.bm + 5] = 2;
+    for (int i = 0; i < 2; ++i)
+    {
+        p.planes[i] = f.call(492, {}, { 32, 16 });
+        assert(p.planes[i] && !f.stopped());
+        std::memset(f.memory.data() + p.planes[i], 0, 64);
+        m68k_write32(&f.ctx, p.bm + 8 + 4 * i, p.planes[i]);
+    }
+    m68k_write32(&f.ctx, p.rp + RP_BITMAP, p.bm);
+    bridge_ops.draw_target = fake_draw_target;
+    f.ctx.layer_ops = &bridge_ops;
+    bridge = {};
+    gfx.draws = gfx.waits = 0;
+    return p;
+}
+
+static bool outside(const Fixture &f, const void *p)
+{
+    const auto at = reinterpret_cast<uintptr_t>(p), mem = reinterpret_cast<uintptr_t>(f.memory.data());
+    return at < mem || at >= mem + f.memory.size();
+}
+
+/* Every pixel of the planes, a rectangle, a template, a line and text,
+   through a temporary over the very guest planes: native graphics sees
+   no Layer, the converted BitMap, the native font and no other pointer;
+   pre-clipped arguments, -1 without a native call outside the BitMap, and
+   exactly the changed scalars back, big-endian. */
+static void test_draw_planar()
+{
+    Fixture f;
+    const Planar p = planar(f);
+    const ULONG rp = p.rp, font = guest_font(f, &topaz);
+    assert(font && f.lng(rp + RP_FONT) == font && !f.lng(rp + RP_LAYER));
+    m68k_write32(&f.ctx, rp + 20, 0xFFFFFFF1U); /* unused GelsInfo */
+    /* RP_User, the reserved bytes and the pad byte are the program's, so
+       are its private Flags bits */
+    poison_bytes(f, rp + 66, 34);
+    f.memory[rp + 31] = 0x77;
+    m68k_write16(&f.ctx, rp + RP_FLAGS, 0x8100);
+    const std::vector<UBYTE> kept(f.memory.begin() + rp + 66, f.memory.begin() + rp + 100);
+    const ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+
+    /* each of the 512 pixels in a pen of its own */
+    auto pen = [](ULONG x, ULONG y) -> ULONG { return (x * 3 + y * 5 + (x >> 3)) & 3; };
+    Memory want = f.memory;
+    gfx.paint = true;
+    for (ULONG y = 0; y < 16; ++y)
+        for (ULONG x = 0; x < 32; ++x)
+        {
+            assert(f.call(342, { 0, rp }, { pen(x, y) }) == 0);
+            assert(f.call(324, { 0, rp }, { x, y }) == 0 && !f.stopped());
+            for (int i = 0; i < 2; ++i)
+                if ((pen(x, y) >> i) & 1)
+                    want[p.planes[i] + y * 4 + (x >> 3)] |= UBYTE(0x80 >> (x & 7));
+        }
+    gfx.paint = false;
+    want[rp + RP_FGPEN] = UBYTE(pen(31, 15));
+    want[rp + RP_LINPATCNT] = 15;
+    assert(f.memory == want);
+    assert(gfx.draws == 512 && gfx.waits == 512 && !f.ctx.bitmap_blits && bridge.calls == 512);
+    const RastPort &s = gfx.drawn;
+    assert(outside(f, gfx.draw_rp) && !s.Layer && s.BitMap && outside(f, s.BitMap));
+    assert(s.Font == &topaz && !s.AreaPtrn && !s.TmpRas && !s.AreaInfo && !s.GelsInfo && !s.RP_User);
+    assert(s.Flags == 0 && s.FgPen == BYTE(pen(31, 15)) && s.Mask == 0xFF && gfx.drawn_blits == 1);
+    assert(gfx.drawn_bm.BytesPerRow == 4 && gfx.drawn_bm.Rows == 16 && gfx.drawn_bm.Depth == 2 &&
+           gfx.drawn_bm.Planes[0] == f.ctx.mem + p.planes[0] &&
+           gfx.drawn_bm.Planes[1] == f.ctx.mem + p.planes[1] && !gfx.drawn_bm.Planes[2]);
+    /* the read-only guest ReadPixel() sees the same planes */
+    for (ULONG y = 0; y < 16; ++y)
+        for (ULONG x = 0; x < 32; ++x)
+            assert(f.call(318, { 0, rp }, { x, y }) == pen(x, y));
+    assert(gfx.draws == 512 && f.memory == want);
+
+    /* outside the BitMap: -1, nothing native */
+    for (const auto &xy : { std::array<ULONG, 2>{ 32, 0 }, { 0, 16 }, { 0xFFFF, 0 }, { 0, 0xFFFFFFFF },
+                            { 0x7FFF, 0 }, { 0x10000, 16 } })
+        assert(f.call(324, { 0, rp }, { xy[0], xy[1] }) == 0xFFFFFFFFU && !f.stopped());
+    assert(gfx.draws == 512 && f.memory == want);
+
+    /* RectFill(): clipped to the BitMap; nothing for an empty or outside one */
+    assert(f.call(306, { 0, rp }, { 0xFFFB, 0xFFFD, 40, 20 }) == 0 && gfx.draws == 513);
+    assert(gfx.fill[0] == 0 && gfx.fill[1] == 0 && gfx.fill[2] == 31 && gfx.fill[3] == 15);
+    assert(f.call(306, { 0, rp }, { 10, 2, 12, 3 }) == 0 && gfx.draws == 514);
+    assert(gfx.fill[0] == 10 && gfx.fill[1] == 2 && gfx.fill[2] == 12 && gfx.fill[3] == 3);
+    for (const auto &r : { std::array<ULONG, 4>{ 32, 0, 40, 5 }, { 0, 16, 5, 20 },
+                           { 0xFFF6, 0xFFF6, 0xFFFF, 0xFFFF }, { 5, 5, 4, 5 }, { 0, 0, 0x8000, 3 } })
+        assert(f.call(306, { 0, rp }, { r[0], r[1], r[2], r[3] }) == 0 && !f.stopped());
+    assert(gfx.draws == 514 && gfx.waits == 514);
+
+    /* BltTemplate(): clipped, the source moved along, whole words of xSrc
+       into the address */
+    const ULONG tmpl = Fixture::text;
+    for (ULONG i = 0; i < 64; ++i)
+        f.memory[tmpl + i] = want[tmpl + i] = UBYTE(i * 37 + 1);
+    assert(f.call(36, { tmpl, rp }, { 3, 2, 0xFFFE, 0xFFFF, 10, 4 }) == 0 && gfx.draws == 515);
+    assert(gfx.tmpl == f.ctx.mem + tmpl + 2 && gfx.tmpl_args[0] == 5 && gfx.tmpl_args[1] == 2 &&
+           gfx.tmpl_args[2] == 0 && gfx.tmpl_args[3] == 0 && gfx.tmpl_args[4] == 8 && gfx.tmpl_args[5] == 3);
+    assert(f.call(36, { tmpl, rp }, { 20, 4, 30, 14, 10, 5 }) == 0 && gfx.draws == 516);
+    assert(gfx.tmpl == f.ctx.mem + tmpl + 2 && gfx.tmpl_args[0] == 4 && gfx.tmpl_args[1] == 4 &&
+           gfx.tmpl_args[2] == 30 && gfx.tmpl_args[3] == 14 && gfx.tmpl_args[4] == 2 && gfx.tmpl_args[5] == 2);
+    assert(gfx.drawn.DrawMode == JAM2 && !gfx.drawn.Layer);
+    /* wholly outside, or empty: nothing, also without a template */
+    for (const auto &a : { std::array<ULONG, 7>{ tmpl, 0, 2, 32, 0, 8, 1 }, { tmpl, 0, 2, 0xFFF8, 0, 8, 1 },
+                           { tmpl, 0, 2, 0, 16, 8, 1 }, { 0, 0, 2, 0, 0, 0, 5 }, { 0, 0, 2, 0, 0, 5, 0xFFFF } })
+        assert(f.call(36, { a[0], rp }, { a[1], a[2], a[3], a[4], a[5], a[6] }) == 0 && !f.stopped());
+    assert(gfx.draws == 516 && gfx.waits == 516 && f.memory == want);
+
+    /* Move() and Draw(): BE pen position in, the changed one and only the
+       public Flags back */
+    assert(f.call(240, { 0, rp }, { 0xFFFFFFFB, 2 }) == 0);
+    gfx.draw_flags = ONE_DOT | RPF_NO_PENS;
+    assert(f.call(246, { 0, rp }, { 0x1000A, 12 }) == 0 && !f.stopped());
+    gfx.draw_flags = 0;
+    assert(gfx.draw_from_x == -5 && gfx.draw_from_y == 2 && gfx.drawn.cp_x == -5 && !gfx.drawn.Layer);
+    assert(f.word(rp + RP_CP_X) == 10 && f.word(rp + RP_CP_Y) == 12);
+    assert(f.word(rp + RP_FLAGS) == (0x8100 | FRST_DOT | ONE_DOT));
+
+    /* Text() with the native font of its 68k TextFont */
+    f.put(Fixture::text + 0x80, "Hi");
+    gfx.text.clear();
+    assert(f.call(60, { Fixture::text + 0x80, rp }, { 2 }) == 0 && !f.stopped());
+    assert(gfx.text == "Hi" && gfx.drawn.Font == &topaz && gfx.drawn.TxWidth == 8);
+    assert(f.word(rp + RP_CP_X) == 26 && f.lng(rp + RP_FONT) == font);
+
+    /* the program's bytes stay; nothing registered, settled or allocated */
+    assert(std::equal(kept.begin(), kept.end(), f.memory.begin() + rp + 66) && f.memory[rp + 31] == 0x77);
+    assert(f.lng(rp + RP_LAYER) == 0 && f.lng(rp + RP_BITMAP) == p.bm);
+    for (ULONG off = 8; off < 20; off += 4)
+        assert(f.lng(rp + off) == 0);
+    assert(f.lng(rp + 20) == 0xFFFFFFF1U);
+    assert(!f.ctx.num_shadows && !f.ctx.settle_rastports[0] && !f.ctx.settle_rastports[1]);
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail && !f.ctx.bitmap_blits && gfx.waits == gfx.draws);
+}
+
+/* Anything that the bridge cannot draw through stops the program before
+   native graphics, with no byte changed: pointer fields that graphics
+   would follow, planes that alias each other, the RastPort, the BitMap or
+   bridge memory, freed planes, no layer bridge or target, text without a
+   68k TextFont, and templates that are negative, missing, too long or on
+   the target. */
+static void test_draw_refusals()
+{
+    enum { CASES = 14 };
+    for (int c = 0; c < CASES; ++c)
+    {
+        Fixture f;
+        const Planar p = planar(f);
+        const ULONG rp = p.rp;
+        switch (c)
+        {
+            case 0: m68k_write32(&f.ctx, rp + 8, Fixture::text); break;      /* AreaPtrn */
+            case 1: m68k_write32(&f.ctx, rp + 12, Fixture::text); break;     /* TmpRas */
+            case 2: m68k_write32(&f.ctx, rp + 16, Fixture::text); break;     /* AreaInfo */
+            case 3: m68k_write32(&f.ctx, p.bm + 12, f.ctx.heap_start); break; /* heap metadata */
+            case 4: m68k_write32(&f.ctx, p.bm + 12, p.planes[0]); break;     /* the same plane twice */
+            case 5:
+            {
+                const ULONG block = Kaffeine_HeapAlloc(&f.ctx, 128, 0);
+                m68k_write32(&f.ctx, p.bm + 8, block);
+                m68k_write32(&f.ctx, p.bm + 12, block + 32);
+                break;
+            }
+            case 6: m68k_write32(&f.ctx, p.bm + 12, rp); break;              /* a plane over the RastPort */
+            case 7:
+            {
+                /* a plane over the BitMap, both in one block */
+                const ULONG block = Kaffeine_HeapAlloc(&f.ctx, 200, 0);
+                std::memcpy(f.memory.data() + block, f.memory.data() + p.bm, M68K_SIZEOF_BITMAP);
+                m68k_write32(&f.ctx, block + 12, block + 32);
+                m68k_write32(&f.ctx, rp + RP_BITMAP, block);
+                break;
+            }
+            case 8: m68k_write32(&f.ctx, p.bm + 12, Kaffeine_MirrorAlloc(&f.ctx, 64)); break;
+            case 9: m68k_write32(&f.ctx, p.bm + 12, guest_font(f, &topaz)); break;
+            case 10:
+            {
+                const ULONG mirror = Kaffeine_MirrorAlloc(&f.ctx, M68K_SIZEOF_BITMAP);
+                std::memcpy(f.memory.data() + mirror, f.memory.data() + p.bm, M68K_SIZEOF_BITMAP);
+                m68k_write32(&f.ctx, rp + RP_BITMAP, mirror);
+                break;
+            }
+            case 11: assert(f.call(498, { p.planes[1] }, { 32, 16 }) == 0); break;   /* freed */
+            case 12: f.ctx.layer_ops = nullptr; break;
+            case 13: m68k_write32(&f.ctx, rp + RP_LAYER, Fixture::raw); break;   /* no target */
+        }
+        f.put(Fixture::text + 0x80, "Hi");
+        const Memory with_text = f.memory;
+        assert(f.call(246, { 0, rp }, { 1, 1 }) == 20 && f.stopped());
+        assert(f.call(306, { 0, rp }, { 0, 0, 5, 5 }) == 20 && f.stopped());
+        assert(f.call(324, { 0, rp }, { 1, 1 }) == 20 && f.stopped());
+        assert(f.call(60, { Fixture::text + 0x80, rp }, { 2 }) == 20 && f.stopped());
+        assert(f.call(36, { Fixture::text, rp }, { 0, 2, 0, 0, 8, 2 }) == 20 && f.stopped());
+        assert(f.memory == with_text && gfx.draws == 0 && gfx.waits == 0 && !f.ctx.bitmap_blits);
+    }
+
+    /* Text() needs a 68k TextFont of graphics; the other calls never read it */
+    {
+        Fixture f;
+        const Planar p = planar(f);
+        f.put(Fixture::text + 0x80, "Hi");
+        for (ULONG font : { 0U, Fixture::raw })
+        {
+            m68k_write32(&f.ctx, p.rp + RP_FONT, font);
+            assert(f.call(60, { Fixture::text + 0x80, p.rp }, { 2 }) == 20 && f.stopped() && !gfx.draws);
+        }
+        assert(f.call(306, { 0, p.rp }, { 0, 0, 3, 3 }) == 0 && gfx.draws == 1 && !gfx.drawn.Font);
+        m68k_write32(&f.ctx, p.rp + RP_FONT, guest_font(f, &topaz));
+        /* text on the target or in the RastPort */
+        const Memory before = f.memory;
+        assert(f.call(60, { p.planes[1] + 8, p.rp }, { 2 }) == 20 && f.stopped());
+        assert(f.call(60, { p.rp + 70, p.rp }, { 2 }) == 20 && f.stopped());
+        assert(f.call(60, { p.bm + 38, p.rp }, { 4 }) == 20 && f.stopped());
+        assert(f.memory == before && gfx.draws == 1);
+    }
+
+    /* templates */
+    {
+        Fixture f;
+        const Planar p = planar(f);
+        const ULONG end = f.ctx.mem_size;
+        const Memory before = f.memory;
+        for (const auto &a : { std::array<ULONG, 7>{ Fixture::text, 0, 0xFFFE, 0, 0, 8, 2 },   /* srcMod < 0 */
+                               { Fixture::text, 0xFFFF, 2, 0, 0, 8, 2 },                     /* xSrc < 0 */
+                               { 0, 0, 2, 0, 0, 8, 2 },                                      /* no template */
+                               { end - 0x10, 0, 0x7FFF, 0, 0, 8, 0x7FFF },                   /* too long */
+                               { end - 1, 0, 2, 0, 0, 16, 1 },                               /* the last word */
+                               { 0xFFFFFFF0, 0, 2, 0, 0, 8, 1 },
+                               { p.planes[0] + 4, 0, 2, 0, 0, 8, 2 },                        /* on a plane */
+                               { p.rp + 90, 0, 2, 0, 0, 8, 2 },                              /* on the RastPort */
+                               { p.bm + 36, 0, 2, 0, 0, 8, 4 } })                            /* on the BitMap */
+            assert(f.call(36, { a[0], p.rp }, { a[1], a[2], a[3], a[4], a[5], a[6] }) == 20 && f.stopped());
+        assert(f.memory == before && !gfx.draws);
+        /* exactly the bytes graphics may read: one word for 16 pixels */
+        assert(f.call(36, { end - 2, p.rp }, { 0, 2, 0, 0, 16, 1 }) == 0 && gfx.draws == 1 &&
+               gfx.tmpl == f.ctx.mem + end - 2);
+    }
+}
+
+/* Caller 2: a CopyMem() of the 68k RastPort of a window, whose Layer and
+   BitMap handles stay as the bridge published them, with its own font,
+   pens and pen position: native graphics draws through a temporary with
+   the window's real native layer, which clips it, and that layer's
+   BitMap; the window's native and 68k RastPorts stay as they were. A copy
+   whose handles no longer match draws nothing. */
+static void test_draw_copied_window()
+{
+    Fixture f;
+    const ULONG rp = f.rastport(), layer = Fixture::raw + 0x200;
+    bridge_ops.draw_target = fake_draw_target;
+    f.ctx.layer_ops = &bridge_ops;
+    m68k_write32(&f.ctx, rp + RP_LAYER, layer);   /* as the layer bridge publishes it */
+    bridge = { layer, 0, 0 };
+    const ULONG copy = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_RASTPORT, 0);
+    assert(copy);
+    std::memcpy(f.memory.data() + copy, f.memory.data() + rp, M68K_SIZEOF_RASTPORT);
+    f.put(Fixture::name, "other.font");
+    m68k_write32(&f.ctx, Fixture::attr + M68K_TA_NAME, Fixture::name);
+    const ULONG font = f.call(72, { Fixture::attr });
+    assert(font && guest_font(f, &other) == font);
+    UBYTE native_before[sizeof(RastPort)];
+    std::memcpy(native_before, &native_rp, sizeof(RastPort));
+    const std::vector<UBYTE> window_before(f.memory.begin() + rp, f.memory.begin() + rp + 100);
+    gfx.draws = gfx.waits = 0;
+
+    assert(f.call(342, { 0, copy }, { 5 }) == 0 && f.call(66, { font, copy }) == 0);
+    assert(f.call(240, { 0, copy }, { 3, 4 }) == 0 && !f.stopped());
+    f.put(Fixture::text, "Hi");
+    gfx.text.clear();
+    assert(f.call(60, { Fixture::text, copy }, { 2 }) == 0 && !f.stopped());
+    assert(gfx.draw_rp != &native_rp && outside(f, gfx.draw_rp) && gfx.text == "Hi");
+    assert(gfx.drawn.Layer == window_layer && gfx.drawn.BitMap == &window_bm && gfx.drawn.Font == &other);
+    assert(gfx.drawn.FgPen == 5 && gfx.drawn.TxWidth == 7 && gfx.drawn.cp_x == 3 && gfx.drawn_blits == 1);
+    assert(!gfx.drawn.AreaPtrn && !gfx.drawn.TmpRas && !gfx.drawn.AreaInfo && !gfx.drawn.GelsInfo);
+    assert(f.word(copy + RP_CP_X) == 17 && f.lng(copy + RP_FONT) == font);
+    /* the layer clips: nothing clipped before */
+    assert(f.call(306, { 0, copy }, { 0xFFFB, 0xFFFB, 500, 500 }) == 0);
+    assert(gfx.fill[0] == -5 && gfx.fill[1] == -5 && gfx.fill[2] == 500 && gfx.fill[3] == 500);
+    assert(f.call(246, { 0, copy }, { 9, 9 }) == 0 && f.word(copy + RP_CP_X) == 9);
+    assert(f.call(318, { 0, copy }, { 2, 3 }) == 5 && gfx.drawn.Layer == window_layer);
+    assert(f.call(324, { 0, copy }, { 3000, 1 }) == 0xFFFFFFFFU);
+    assert(f.call(36, { Fixture::text, copy }, { 0, 2, 0xFFFC, 0xFFFC, 8, 2 }) == 0);
+    assert(gfx.tmpl == f.ctx.mem + Fixture::text && gfx.tmpl_args[2] == -4 && gfx.tmpl_args[3] == -4 &&
+           gfx.tmpl_args[4] == 8 && gfx.tmpl_args[5] == 2 && gfx.drawn.Layer == window_layer);
+    assert(gfx.draws == 6 && gfx.waits == 6 && bridge.calls == 6 && !f.stopped());
+    /* the whole template counts on a layer */
+    assert(f.call(36, { f.ctx.mem_size - 0x10, copy }, { 0, 0x7FFF, 0, 0, 8, 0x7FFF }) == 20 && f.stopped());
+    /* the window's RastPorts are untouched */
+    assert(!std::memcmp(native_before, &native_rp, sizeof(RastPort)));
+    assert(std::equal(window_before.begin(), window_before.end(), f.memory.begin() + rp));
+
+    /* another BitMap handle, or the window has closed */
+    const Memory before = f.memory;
+    m68k_write32(&f.ctx, copy + RP_BITMAP, 0x1234);
+    assert(f.call(306, { 0, copy }, { 0, 0, 1, 1 }) == 20 && f.stopped());
+    m68k_write32(&f.ctx, copy + RP_BITMAP, 0);
+    bridge.layer = 0;
+    assert(f.call(246, { 0, copy }, { 1, 1 }) == 20 && f.stopped());
+    assert(f.call(318, { 0, copy }, { 1, 1 }) == 20 && f.stopped());
+    assert(gfx.draws == 6 && f.memory == before);
+}
+
+/* -36 is manual: every register, WORD halves, for a window's RastPort as
+   before; the generated thunk is never reached. */
+static void test_blttemplate_registers()
+{
+    Fixture f;
+    const ULONG rp = f.rastport();
+    generated_native = 0;
+    assert(f.call(36, { Fixture::text, rp }, { 0xABCD0001, 0x12340004, 5, 0xFFFF0006, 7, 2 }) == 0);
+    assert(gfx.draw_rp == &native_rp && gfx.tmpl == f.ctx.mem + Fixture::text);
+    assert(gfx.tmpl_args[0] == 1 && gfx.tmpl_args[1] == 4 && gfx.tmpl_args[2] == 5 &&
+           gfx.tmpl_args[3] == 6 && gfx.tmpl_args[4] == 7 && gfx.tmpl_args[5] == 2);
+    assert(!generated_native && !gfx.waits && !f.stopped());
+    /* a negative modulo or an unbounded template stops it there too */
+    assert(f.call(36, { Fixture::text, rp }, { 0, 0xFFFE, 0, 0, 8, 2 }) == 20 && f.stopped());
+    assert(f.call(36, { f.ctx.mem_size - 1, rp }, { 0, 2, 0, 0, 16, 1 }) == 20 && f.stopped());
+    assert(gfx.draws == 1 && !generated_native);
+}
+
+/* Literal classic offsets from graphics/gels.h and rastport.h, dispatched
+   through -120. Compare the whole arena: sentinel links/coordinates and
+   collision entry zero are the only writes, no native pointer or call. */
+static void test_initgels()
+{
+    for (bool table : {false, true})
+    {
+        Fixture f;
+        const ULONG head=0x2800, tail=0x2900, info=0x2A00, coll=table?0x2B00:0;
+        m68k_write32(&f.ctx, info+18, coll);
+        Memory want=f.memory;
+        auto put16=[&](ULONG p, UWORD v){want[p]=UBYTE(v>>8);want[p+1]=UBYTE(v);};
+        auto put32=[&](ULONG p, ULONG v){put16(p,UWORD(v>>16));put16(p+2,UWORD(v));};
+        put32(head,tail);put32(head+4,0);put32(head+8,0);put32(head+12,tail);
+        put32(tail,0);put32(tail+4,head);put32(tail+8,0);
+        for (ULONG off : {16U,18U,22U,24U}) {put16(head+off,0x8000);put16(tail+off,0x7FFF);}
+        put32(info+2,head);put32(info+6,tail);
+        if(table)put32(coll,0);
+        const unsigned native=gfx.any, generated=generated_calls;
+        assert(f.call(120,{head,tail,info})==0 && !f.stopped());
+        assert(f.memory==want && gfx.any==native && generated_calls==generated);
+        assert(f.call(120,{head,tail,info})==0 && f.memory==want);
+    }
+    for (unsigned which=0;which<16;which++)
+    {
+        Fixture f;
+        ULONG head=0x2800,tail=0x2900,info=0x2A00,coll=0x2B00;
+        switch(which)
+        {
+            case 0:head=0;break;
+            case 1:tail++;break;
+            case 2:info=f.ctx.mem_size-36;break;
+            case 3:tail=head+58;break;
+            case 4:info=head+2;break;
+            case 5:coll=info+36;break;
+            case 6:coll=tail+58;break;
+            case 7:coll=0xFFFFFFFEU;break;
+            case 8:coll++;break;
+            case 9:head=Kaffeine_MirrorAlloc(&f.ctx,60);break;
+            case 10:tail=guest_font(f,&topaz);break;
+            case 11:info=f.rastport();break;
+            case 12:coll=Kaffeine_HeapAlloc(&f.ctx,62,0);break;
+            case 13:head=Kaffeine_HeapAlloc(&f.ctx,58,0);break;
+            case 14:tail=Kaffeine_HeapAlloc(&f.ctx,60,0);assert(Kaffeine_HeapFreeExact(&f.ctx,tail,60));break;
+            case 15:info=Kaffeine_HeapAlloc(&f.ctx,36,0);break;
+        }
+        if (info && info+22<=f.ctx.mem_size)m68k_write32(&f.ctx,info+18,coll);
+        const Memory before=f.memory;
+        assert(f.call(120,{head,tail,info})==20 && f.stopped() && f.memory==before);
+        assert(!gfx.any);
+    }
+    for (ULONG vector : {96U,102U,108U,114U,126U,132U,138U,144U,150U,156U,162U,168U,174U,600U})
+    {
+        Fixture f;const Memory before=f.memory;const unsigned generated=generated_calls;
+        assert(f.call(vector,{0xFFFFFFFFU,0xFFFFFFFFU,0xFFFFFFFFU})==20 && f.stopped());
+        assert(f.memory==before && !gfx.any && generated_calls==generated);
+    }
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
@@ -1797,7 +2320,12 @@ int main()
         { "State calls on a copied window RastPort leave the window's alone", test_copied_rastport_state },
         { "Native private RastPort Flags are neither shown nor taken", test_registered_private_flags },
         { "State calls stop on storage that is not the program's own", test_state_refusals },
-        { "AllocRaster() and FreeRaster() use exact guest heap blocks", test_rasters }
+        { "AllocRaster() and FreeRaster() use exact guest heap blocks", test_rasters },
+        { "Drawing on a program's planar BitMap goes through the very guest planes, pre-clipped", test_draw_planar },
+        { "Drawing stops before native graphics on pointers, aliases, bridge memory and bad templates", test_draw_refusals },
+        { "A copied window RastPort draws through the real layer and leaves the window's alone", test_draw_copied_window },
+        { "Classic InitGels is bounded and other GELS calls stop before native graphics", test_initgels },
+        { "BltTemplate() is manual with every register; window RastPorts as before", test_blttemplate_registers }
     };
     for (const Test &test : tests)
     {
