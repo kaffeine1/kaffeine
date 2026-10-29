@@ -89,6 +89,7 @@ struct GuestTask
     BOOL  resume;               /* the result of a blocked call is due */
     KaffeineTaskRetry retry;    /* that call, or NULL for Wait() */
     ULONG wait;                 /* the signals that it waits for */
+    ULONG io_request;           /* private WaitIO retry identity; no signal bits */
     ULONG recvd;                /* a child's signals; the root's on child bits */
     ULONG alloc;                /* a child's tc_SigAlloc */
     ULONG native;               /* native bits that a child allocated */
@@ -553,6 +554,11 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
     unsigned count, i;
     BOOL listed;
 
+    /* Quarantine native requests before the task's signals or stack can
+       be reused. Late replies must never write into that old stack. */
+    if (ctx->io_task_removed)
+        ctx->io_task_removed(ctx, tcb);
+
     for (i = 0; i < 32; i++)
         if (t->native & (1UL << i))
         {
@@ -674,8 +680,15 @@ static void schedule(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
             want = wake_bits(ctx, s);
             if (!want)
             {
-                stop(ctx, "every guest task waits for signals that nothing can send");
-                return;
+                BOOL io_waiter = s->root.state == SLOT_WAIT && s->root.io_request;
+                for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
+                    if (s->child[i].state == SLOT_WAIT && s->child[i].io_request)
+                        io_waiter = TRUE;
+                if (!io_waiter || !ctx->io_signals)
+                {
+                    stop(ctx, "every guest task waits for signals that nothing can send");
+                    return;
+                }
             }
             /* No guest task can run: the native task waits for them all,
                and for the private bits of I/O in flight, which the next
@@ -1451,6 +1464,59 @@ static BOOL sched_is_root(struct KaffeineContext *ctx, void *cpu)
     return s && s->current == &s->root && (struct KaffeineCPU *)cpu == s->root.cpu;
 }
 
+static ULONG sched_caller_task(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s ? s->current : NULL;
+
+    return t && t->state == SLOT_RUN && t->cpu == (struct KaffeineCPU *)cpu ? t->tcb : 0;
+}
+
+static BOOL sched_block_io(struct KaffeineContext *ctx, void *cpu, ULONG request,
+                           KaffeineTaskRetry retry, IPTR *result)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s->current;
+    unsigned i;
+
+    if (ctx->callback_depth || !sched_caller_task(ctx, cpu))
+    {
+        *result = refuse(ctx, "WaitIO(): not the current guest task's CPU");
+        return TRUE;
+    }
+    for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
+    {
+        const struct KaffeineIORequest *e = &ctx->io_requests[i];
+        if (e->guest != request || e->orphan)
+            continue;
+        if ((e->owner != t->tcb && (e->owner || t != &s->root)) || !e->native)
+            break;
+        if (!e->pending)
+            return FALSE;
+        t->io_request = request;
+        t->wait = 0;
+        t->retry = retry;
+        suspend(ctx, s, t);
+        *result = 0;
+        return TRUE;
+    }
+    *result = refuse(ctx, "WaitIO(): no pending request of the current guest task");
+    return TRUE;
+}
+
+static void sched_io_completed(struct KaffeineContext *ctx, ULONG request, ULONG owner)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = owner ? task_of(s, owner) : &s->root;
+
+    if (t && t->state == SLOT_WAIT && t->io_request == request)
+    {
+        t->io_request = 0;
+        t->state = SLOT_READY;
+        mirror(ctx, s, t);
+    }
+}
+
 const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
 {
     Kaffeine_TaskAdd, Kaffeine_TaskRemove, sched_find_named, Kaffeine_TaskSetPri,
@@ -1459,5 +1525,5 @@ const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
     sched_boundary, sched_end, sched_known_task, sched_owns_signal,
     sched_send_signal, sched_block_guest_port,
     Kaffeine_ProcCreate, sched_process_port, sched_process_dos,
-    sched_is_root
+    sched_is_root, sched_caller_task, sched_block_io, sched_io_completed
 };

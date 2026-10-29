@@ -228,6 +228,7 @@ static constexpr size_t SLICE_LIMIT = 1000000;
 static IPTR alloc_signal(KaffeineContext *, void *);
 static IPTR free_signal(KaffeineContext *, void *);
 static IPTR port_wait(KaffeineContext *, void *);
+static IPTR private_io_wait(KaffeineContext *, void *);
 /* Native fallback of the production dispatcher when the last child ended. */
 static IPTR exec_wait(KaffeineContext *c, void *p)
 { return c->sched ? Kaffeine_TaskWait(c,p) : (IPTR)Wait(Kaffeine_GetD(p,0)); }
@@ -247,7 +248,7 @@ static const M68KThunkEntry exec_table[] =
     { 300, Kaffeine_TaskSetPri }, { 306, Kaffeine_TaskSetSignal }, { 318, exec_wait },
     { 324, Kaffeine_TaskSignal }, { 330, alloc_signal }, { 336, free_signal },
     { 366, guest_put }, { 372, guest_get }, { 378, guest_reply },
-    { 384, port_wait }, { 390, guest_wait }
+    { 474, private_io_wait }, { 384, port_wait }, { 390, guest_wait }
 };
 
 /* dos.library: CreateProc() as kaffeine_dos_CreateProc() calls it, and two
@@ -1379,6 +1380,60 @@ static void test_io_poll_failure()
           "a completion that cannot reach its guest port stops the program with 20");
 }
 
+/* The actual scheduler's private IO wait route. Native device stand-ins
+   complete records in reverse order; no guest queue or signal is involved. */
+static unsigned private_io_ready;
+static BOOL private_io_poll(KaffeineContext *ctx)
+{
+    SetSignal(0,IO_BIT);
+    for(int i=2;i>=0;--i)
+        if(private_io_ready&(1u<<i))
+        {
+            auto &e=ctx->io_requests[i];e.pending=0;e.replied=1;
+            ctx->task_ops->io_completed(ctx,e.guest,e.owner);
+        }
+    private_io_ready=0;return TRUE;
+}
+static IPTR private_io_wait(KaffeineContext *ctx,void *cpu)
+{
+    ULONG req=Kaffeine_GetA(cpu,1);unsigned i=(req-IO_MSG)/40;
+    assert(i<3);auto &e=ctx->io_requests[i];IPTR out;
+    if(e.pending && ctx->task_ops->block_io(ctx,cpu,req,private_io_wait,&out))return out;
+    return 0x5500+i;
+}
+static void private_io_start(Mock &m,unsigned i)
+{
+    auto &c=world->ctx;auto &e=c.io_requests[i];
+    e.guest=IO_MSG+40*i;e.native=reinterpret_cast<IORequest*>(uintptr_t(0x1000+i*8));
+    e.owner=c.task_ops->caller_task(&c,&m.handle);e.pending=1;
+    world->put(SHARED+16+i*4,e.owner);
+}
+static void test_private_io_waiters()
+{
+    World w;w.child(0,1);w.child(1,1);private_io_ready=0;
+    native_alloc|=IO_BIT;w.ctx.io_signals=IO_BIT;w.ctx.io_poll=private_io_poll;
+    Program(ROOT_CODE).d(0,0).call(132).add_task(TCB(0),CODE).add_task(TCB(1),CODE+0x100)
+        .call(138).op([](Mock &m){private_io_start(m,2);})
+        .a(1,IO_MSG+80).call(474).store(SHARED+8,0).d(0,0).rts();
+    Program(CODE).a(6,SYSBASE).op([](Mock &m){
+            auto &c=world->ctx;world->put(SYSBASE+276,ROOT);
+            world->seen[20]=c.task_ops->caller_task(&c,&m.handle)==TCB(0)&&
+                           !c.task_ops->caller_task(&c,&world->root.handle);
+            world->put(SYSBASE+276,TCB(0));private_io_start(m,0);
+        }).a(1,IO_MSG).call(474).store(SHARED,0).rts();
+    Program(CODE+0x100).a(6,SYSBASE).op([](Mock &m){private_io_start(m,1);})
+        .a(1,IO_MSG+40).call(474).store(SHARED+4,0).rts();
+    native_event=[] {private_io_ready=7;native_recvd|=IO_BIT;};
+    check(w.run()==0&&w.at(SHARED)==0x5500&&w.at(SHARED+4)==0x5501&&w.at(SHARED+8)==0x5502,
+          "two children and the root resume their distinct private IO retries");
+    check(native_waits==1&&native_wait_mask==IO_BIT,
+          "when all tasks wait only on IO, the native task waits on the private completion bit");
+    check(w.seen[20]&&w.at(SHARED+16)==TCB(0)&&w.at(SHARED+20)==TCB(1)&&w.at(SHARED+24)==ROOT,
+          "IO callers come from current scheduler CPUs despite a forged guest ThisTask");
+    check(!(native_recvd&IO_BIT)&&!(w.at(ROOT+26)&IO_BIT),
+          "private IO retries publish no guest signal or arrival");
+}
+
 /* ── Guest processes of CreateProc() ─────────────────────────────── */
 
 static void message(World &w, ULONG msg, ULONG reply)
@@ -1935,6 +1990,7 @@ int main()
     test_io_blocked_on_private_port();
     test_io_reaped_copy_storage();
     test_io_poll_failure();
+    test_private_io_waiters();
     test_process_handshake();
     test_process_priorities();
     test_process_forbid_wait();
