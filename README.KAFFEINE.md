@@ -153,12 +153,13 @@ The current test and target baseline includes:
 
 | Environment | Result |
 | --- | --- |
-| macOS arm64 and Linux CI | All 47 host executables pass; the macOS JIT run passes 3,797 checks. The registration audit checks 319 native-vector cases and 544 manual thunks across 18 tables |
-| Focused ASan/UBSan JIT build | 304 bitfield boundary checks, 164 extended-instruction checks and 256 randomized programs pass |
+| macOS arm64 and Linux CI | All 47 host executables pass; the macOS JIT run passes 9,409 checks. The registration audit checks 319 native-vector cases and 544 manual thunks across 18 tables |
+| Focused ASan/UBSan JIT build | 5,612 word-division checks pass; the earlier bitfield, extended-instruction and randomized checks remain separate regression evidence |
 | Library JIT on AROS AArch64/QEMU | Relocated HUNK, 17 hook checks, 12 guest-task checks, 120 window checks, 7 child-window checks and the 12-check native API client pass in Shell and `Run`; the default remains Moira |
-| Standalone AROS AArch64 JIT probe in QEMU | `jit_probe` passes 38 checks in Shell and `Run`; a separate instruction corpus passes 490 checks covering 432 programs and eight callback boundary cases in each mode |
+| Standalone AROS AArch64 JIT probe in QEMU | `jit_probe` passes 38 checks and `word_division` passes 22 in Shell and `Run`; a separate instruction corpus passes 490 checks covering 432 programs and eight callback boundary cases in each mode |
 | AROS AArch64 in QEMU | Synthetic CLI/GUI probes, the 6-step `bzip2 1.0.8` self-test and the 7-step IJG JPEG `9f` self-test pass in both Shell and `Run` modes |
-| Personal Paint 7.2.1.0 on AROS AArch64 in QEMU | Original 68k executable opens from a desktop icon through the `CLI` route, draws, saves a 1024×768 ILBM image and returns to the desktop; [video, screenshots and output](docs/kaffeine/personal-paint-demo.md) are available |
+| Personal Paint 7.2.1.0 with Moira on AROS AArch64 in QEMU | Original 68k executable opens from a desktop icon through the `CLI` route, draws, saves a 1024×768 ILBM image and returns to the desktop; [video, screenshots and output](docs/kaffeine/personal-paint-demo.md) are available |
+| Personal Paint 7.2.1.0 with the JIT on AROS AArch64 in QEMU | [Startup and exit smoke test](docs/kaffeine/jit-backend.md#validation) opens the original editor from Shell and `Run`, draws a line in the first run and exits with 0 in both; save/reload on the JIT remains unverified |
 | Native AmigaOS reference | Message, packet, `ExAll`, `icon.library`, `AppIcon`, layer, region, bitmap, screen and `NewWindow` observations match the bridged AROS contract |
 
 The target suite includes deliberate nonzero refusal/exit probes alongside

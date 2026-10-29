@@ -39,6 +39,11 @@ Icon launch uses the standard `CLI` tooltype and CPU blitting; the CPU
 backend is Moira. Loading saved 1024×768 images, full Workbench `WBStartup`
 handling and broader application compatibility remain open checks.
 
+A separate [JIT smoke test](docs/kaffeine/jit-backend.md#validation) now
+opens the same 68k editor from Shell and `Run`, draws a line and exits
+normally. Saving and reloading images on the JIT remain to be validated;
+the published video uses Moira.
+
 PPC guests, RISC-V hosting, a general hybrid CPU backend and multicore
 execution are future work. The manifesto does not claim them as implemented.
 
