@@ -115,6 +115,7 @@ struct KaffeineIORequest
     UBYTE   waiting;            /* the root waits in WaitIO(): 1 in the call, 2 blocked */
     UBYTE   copy;               /* a copy record; reply is unused */
     UBYTE   orphan;             /* storage freed while pending: reaped, never written */
+    UBYTE   stack_message;      /* original unowned timer sent with mn_Length == 0 */
 };
 
 #define KAFFEINE_MAX_LIBS        32

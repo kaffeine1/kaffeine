@@ -2226,6 +2226,51 @@ static void test_cleanup()
     }
 }
 
+/* Native timer.device accepts a stack timerequest whose message length
+   remains zero. The bridge captures that exact typed case, reserves all
+   forty bytes and lets only its own completed reply traverse a queue. */
+static void test_stack_timer_message()
+{
+    Fixture f;
+    f.ctx.exec_task=&owner_task;
+    const ULONG p=f.port(), r=0x2800;
+    std::memset(f.memory.data()+r,0,40);
+    std::memset(f.memory.data()+r+40,0x73,8);
+    check(f.open(r,UNIT_VBLANK)==0 && !f.record(r)->capacity,"open an original stack timer");
+    m68k_write32(&f.ctx,r+MN_REPLYPORT,p);
+    f.delay(r,0,50000);
+    check(f.send(r)==0 && f.record(r)->stack_message && !m68k_read16(&f.ctx,r+MN_LENGTH),
+          "SendIO captures zero length only for the complete original timer");
+    complete(f.native_of(r),0,0,17);
+    check(f.check_io(r)==r && f.queue(p)==std::vector<ULONG>({r}),"the typed zero-length reply is a valid queue node");
+    check(f.get(p)==r && f.get(p)==0 && f.wait_io(r)==0 && !m68k_read16(&f.ctx,r+MN_LENGTH),
+          "GetMsg and WaitIO preserve the caller zero and deliver once");
+    check(f.fill_is(r+40,8,0x73),"timer operations do not write beyond forty bytes");
+    f.delay(r,0,10);check(f.send(r)==0,"rearm the same zero-length timer");
+    on_waitio=[&]{complete(f.native_of(r));};
+    check(f.wait_io(r)==0 && f.queue(p).empty() && !m68k_read16(&f.ctx,r+MN_LENGTH),
+          "in-flight WaitIO completes without a guest queue arrival");
+    f.delay(r,0,10);f.send(r);
+    m68k_write16(&f.ctx,r+MN_LENGTH,1);
+    const auto changed=f.memory;
+    complete(f.native_of(r));
+    check(f.check_io(r)==20 && f.stopped() && f.memory==changed,
+          "a zero-length timer whose captured length changes stops before delivery");
+    f.call(450,0xA0A0A0A0,r);f.call(672,p);
+    {
+        Fixture owned;const auto [port,req]=async_setup(owned);
+        m68k_write16(&owned.ctx,req+MN_LENGTH,0);owned.delay(req,0,1);
+        refused(owned,[&]{return owned.send(req);},"CreateIORequest storage cannot use the stack exception");
+        const ULONG c=owned.copy_of(req,0x2800);m68k_write16(&owned.ctx,c+MN_LENGTH,0);owned.delay(c,0,1);
+        refused(owned,[&]{return owned.send(c);},"a copied timer still requires exact length forty");
+    }
+    {
+        Fixture arbitrary;const ULONG port=arbitrary.port(),msg=0x2800;
+        std::memset(arbitrary.memory.data()+msg,0,40);
+        refused(arbitrary,[&]{return arbitrary.call(366,port,msg);},"arbitrary zero-length messages stay invalid");
+    }
+}
+
 int main()
 {
     test_signals();
@@ -2236,6 +2281,7 @@ int main()
     test_doio();
     test_async();
     test_async_source();
+    test_stack_timer_message();
     test_async_copies();
     test_async_waitio();
     test_async_abort_cascade();

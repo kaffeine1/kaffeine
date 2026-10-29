@@ -3660,3 +3660,15 @@ OldOpenLibrary wrappers retain the original complete path and requested
 version for the 68k disk fallback; if none exists they return NULL so optional
 callers can use their fallback. The generated Commodities table remains in
 the source but cannot acquire a native base through this lookup.
+
+### Original stack timer messages
+
+An original timer.device request opened on caller storage may be sent with
+zero mn_Length, as native AROS accepts a stack timerequest. SendIO validates
+the whole 40-byte timerequest and captures that exact case in private
+metadata. The zero remains in guest memory. Only that record's completed,
+non-orphaned reply acquires a typed queue extent; no arbitrary zero-length
+message is accepted. A changed captured length stops before completion
+writes. Copies still require exactly 40 and CreateIORequest storage keeps
+its normal length/capacity checks. Existing conservative request reservations
+remain in place.

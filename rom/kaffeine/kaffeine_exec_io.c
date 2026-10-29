@@ -468,11 +468,13 @@ static void results(struct KaffeineContext *ctx, ULONG req, const struct timereq
 static BOOL io_deliver(struct KaffeineContext *ctx, struct KaffeineIORequest *entry)
 {
     struct KaffeineQueue q;
-    ULONG req = entry->guest, length = m68k_read16(ctx, req + G_MN_LENGTH);
+    ULONG req = entry->guest, raw_length = m68k_read16(ctx, req + G_MN_LENGTH);
+    ULONG length = entry->stack_message ? G_TIMEREQUEST_SIZE : raw_length;
 
     if (!request_range(ctx, req, G_TIMEREQUEST_SIZE) ||
         !Kaffeine_GuestBytes(ctx, req, G_TIMEREQUEST_SIZE) ||
         m68k_read32(ctx, req + G_MN_REPLYPORT) != entry->port ||
+        (entry->stack_message && raw_length != 0) ||
         (entry->copy ? length != G_TIMEREQUEST_SIZE :
                        length < G_TIMEREQUEST_SIZE || length > request_span(entry)) ||
         !request_range(ctx, req, length) || !Kaffeine_QueueRead(ctx, entry->port, &q) ||
@@ -1193,7 +1195,7 @@ IPTR Kaffeine_SendIO(struct KaffeineContext *ctx, void *cpu)
     struct KaffeineQueue q;
     struct timerequest *native;
     UWORD command;
-    BOOL copy, fresh;
+    BOOL copy, fresh, stack_message;
     unsigned i;
 
     bug("[kaffeine] SendIO(%08lx)\n", (unsigned long)req);
@@ -1258,6 +1260,13 @@ IPTR Kaffeine_SendIO(struct KaffeineContext *ctx, void *cpu)
     }
     if (copy && command != TR_ADDREQUEST)
         return Kaffeine_IORefuse(ctx, "SendIO(): a copied timer request supports TR_ADDREQUEST only");
+    /* Native timer.device accepts an original timerequest on the stack
+       without a Message length. Reserve its complete typed extent, keep
+       that captured case in native metadata, and preserve the guest zero.
+       Copies and CreateIORequest storage still need their exact length. */
+    stack_message = !copy && !entry->capacity && length == 0;
+    if (stack_message)
+        length = G_TIMEREQUEST_SIZE;
     if (copy ? length != G_TIMEREQUEST_SIZE :
                length < G_TIMEREQUEST_SIZE || length > request_span(entry) || !request_range(ctx, req, length))
         return Kaffeine_IORefuse(ctx, "SendIO(): mn_Length must hold the timerequest, "
@@ -1325,6 +1334,7 @@ IPTR Kaffeine_SendIO(struct KaffeineContext *ctx, void *cpu)
     native->tr_time.tv_secs = m68k_read32(ctx, req + G_TV_SECS);
     native->tr_time.tv_micro = m68k_read32(ctx, req + G_TV_MICRO);
     entry->port = port;
+    entry->stack_message = stack_message;
     entry->pending = 1;
     entry->replied = entry->waiting = 0;
     ctx->mem[req + G_IO_FLAGS] = 0;
