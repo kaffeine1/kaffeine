@@ -554,6 +554,14 @@ ULONG  Kaffeine_HeapAllocList(struct KaffeineContext *ctx, const ULONG *spec, UW
 void   Kaffeine_HeapFreeEntry(struct KaffeineContext *ctx, ULONG entry);
 BOOL   Kaffeine_HeapInit(struct KaffeineContext *ctx);
 void   Kaffeine_HeapFree(struct KaffeineContext *ctx, ULONG addr, ULONG size);
+/* Free exactly the ordinary, unpooled allocation at addr of the requested
+   size; FALSE with no effect for anything else, also while I/O keeps it. */
+BOOL   Kaffeine_HeapFreeExact(struct KaffeineContext *ctx, ULONG addr, ULONG size);
+/* Whether the part of a guest range inside the heap lies only in payloads
+   of the program's allocations (AllocMem, AllocAbs, AllocEntry, pooled),
+   never in free, reserved, pool, mirror or other bridge-owned intervals or
+   their headers. Memory outside the heap (hunks, stack) is not its own. */
+BOOL   Kaffeine_HeapGuestRange(struct KaffeineContext *ctx, ULONG addr, ULONG size);
 ULONG  Kaffeine_HeapAvail(struct KaffeineContext *ctx, ULONG requirements);
 /* Utility allocations: exact base, native ownership and requested capacity. */
 ULONG  Kaffeine_TagItemsAlloc(struct KaffeineContext *ctx, ULONG count);

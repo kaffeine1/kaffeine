@@ -8,8 +8,10 @@
     and gives the native one the fields that the program wrote, the text
     calls with their 68k TextExtents, AskFont() into a classic 68k
     TextAttr, bounded guest planar ReadPixel and the refusal of unsupported
-    RastPorts. The native graphics.library acts as AROS does and
-    records every call.
+    RastPorts, also by generated thunks, the pointer-free state calls on
+    RastPorts that the program built or copied, and AllocRaster() and
+    FreeRaster() in the guest heap. The native graphics.library acts as
+    AROS does and records every call.
 */
 
 #ifdef NDEBUG
@@ -22,6 +24,8 @@
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <vector>
+#include <intuition/intuition.h>
 
 #include <graphics/rastport.h>
 #include <graphics/text.h>
@@ -55,8 +59,44 @@ struct GfxCalls
     unsigned ask_font = 0;
     RastPort *ask_rp = nullptr;
     bool ask_wrong_name = false; /* a native AskFont() with another name */
+    unsigned state = 0;         /* state calls, with the RastPort each saw */
+    RastPort *state_rp = nullptr;
+    RastPort seen = {};
 };
 static GfxCalls gfx;
+struct ClassicDrawCalls
+{
+    unsigned images=0,borders=0,waits=0;
+    WORD x=0,y=0;
+    std::vector<Image> image;
+    std::vector<Border> border;
+    std::vector<std::vector<WORD>> pairs;
+};
+static ClassicDrawCalls classic_draw;
+static KaffeineContext *drawing_context;
+extern "C" void DrawImage(RastPort *rp, Image *image, WORD x, WORD y)
+{
+    assert(rp==&native_rp && drawing_context && drawing_context->bitmap_blits==1);
+    ++classic_draw.images;classic_draw.x=x;classic_draw.y=y;
+    for(;image;image=image->NextImage)classic_draw.image.push_back(*image);
+}
+extern "C" void DrawBorder(RastPort *rp, Border *border, WORD x, WORD y)
+{
+    assert(rp==&native_rp && drawing_context && drawing_context->bitmap_blits==1);
+    ++classic_draw.borders;classic_draw.x=x;classic_draw.y=y;
+    for(;border;border=border->NextBorder)
+    {
+        classic_draw.border.push_back(*border);
+        classic_draw.pairs.emplace_back();
+        if(border->Count>0)classic_draw.pairs.back().assign(border->XY,border->XY+2*border->Count);
+    }
+}
+extern "C" void WaitBlit(void)
+{
+    ++classic_draw.waits;
+    if(drawing_context)assert(drawing_context->bitmap_blits==1);
+}
+
 
 static void reset_native()
 {
@@ -219,12 +259,41 @@ extern "C" ULONG TextFit(struct RastPort *rp, CONST_STRPTR string, ULONG strLen,
     return fitted;
 }
 
+/* Private Flags of rom/graphics/gfxfuncsupport.h */
+enum { RPF_NO_PENS = 1 << 14, RPF_REMAP_COLORFONTS = 1 << 13 };
+
+static void state_call(struct RastPort *rp)
+{
+    ++gfx.any; ++gfx.state;
+    gfx.state_rp = rp;
+    gfx.seen = *rp;
+}
+
+/* GenMinterms() of rom/graphics/gfxfuncsupport.c */
+static void gen_minterms(struct RastPort *rp)
+{
+    if (rp->DrawMode & COMPLEMENT)
+    {
+        for (auto &m : rp->minterms) m = (rp->DrawMode & INVERSVID) ? 0x6a : 0x9a;
+        return;
+    }
+    for (int i = 0; i < 8; i++)
+    {
+        UBYTE a = ((rp->FgPen >> i) & 1) * 3;
+        UBYTE b = (rp->DrawMode & JAM2) ? ((rp->BgPen >> i) & 1) * 3 : 2;
+        a = (rp->DrawMode & INVERSVID) ? (b << 2) | a : (a << 2) | b;
+        rp->minterms[i] = (a << 4) | 0x0a;
+    }
+}
+
+/* As rom/graphics/move.c */
 extern "C" void Move(struct RastPort *rp, WORD x, WORD y)
 {
-    ++gfx.any;
+    state_call(rp);
     rp->cp_x = x;
     rp->cp_y = y;
     rp->linpatcnt = 15;
+    rp->Flags |= FRST_DOT;
 }
 
 extern "C" void Draw(struct RastPort *rp, WORD x, WORD y)
@@ -256,23 +325,46 @@ extern "C" LONG WritePixel(struct RastPort *, WORD x, WORD)
     return x == 3000 ? -1 : 0;
 }
 
-extern "C" void SetAPen(struct RastPort *rp, ULONG pen) { ++gfx.any; rp->FgPen = (BYTE)pen; rp->linpatcnt = 15; }
-extern "C" void SetBPen(struct RastPort *rp, ULONG pen) { ++gfx.any; rp->BgPen = (BYTE)pen; rp->linpatcnt = 15; }
-extern "C" void SetDrMd(struct RastPort *rp, ULONG mode) { ++gfx.any; rp->DrawMode = (BYTE)mode; rp->linpatcnt = 15; }
+/* As setapen.c, setbpen.c, setdrmd.c and setabpendrmd.c (UBYTE pens and
+   mode, ULONG for SetABPenDrMd()). SetAPen() leaves GenMinterms() out. */
+extern "C" void SetAPen(struct RastPort *rp, ULONG pen)
+{
+    state_call(rp);
+    rp->FgPen = (BYTE)pen; rp->linpatcnt = 15; rp->Flags &= ~RPF_NO_PENS;
+}
+extern "C" void SetBPen(struct RastPort *rp, ULONG pen)
+{
+    state_call(rp);
+    rp->BgPen = (BYTE)pen; rp->linpatcnt = 15; rp->Flags &= ~RPF_NO_PENS;
+    gen_minterms(rp);
+}
+extern "C" void SetDrMd(struct RastPort *rp, ULONG mode)
+{
+    state_call(rp);
+    rp->DrawMode = (BYTE)mode; rp->linpatcnt = 15;
+    gen_minterms(rp);
+}
 
 extern "C" void SetABPenDrMd(struct RastPort *rp, ULONG apen, ULONG bpen, ULONG mode)
 {
-    ++gfx.any;
+    state_call(rp);
     gfx.apen = apen; gfx.bpen = bpen; gfx.drmd = mode;
     rp->FgPen = (BYTE)apen;
     rp->BgPen = (BYTE)bpen;
     rp->DrawMode = (BYTE)mode;
+    rp->linpatcnt = 15;
+    rp->Flags &= ~RPF_NO_PENS;
+    gen_minterms(rp);
 }
 
-extern "C" ULONG GetAPen(struct RastPort *rp) { ++gfx.any; return (UBYTE)rp->FgPen; }
-extern "C" ULONG GetBPen(struct RastPort *rp) { ++gfx.any; return (UBYTE)rp->BgPen; }
-extern "C" ULONG GetDrMd(struct RastPort *rp) { ++gfx.any; return (UBYTE)rp->DrawMode; }
-extern "C" ULONG GetOutlinePen(struct RastPort *rp) { ++gfx.any; return (UBYTE)rp->AOlPen; }
+extern "C" ULONG GetAPen(struct RastPort *rp) { state_call(rp); return (UBYTE)rp->FgPen; }
+extern "C" ULONG GetBPen(struct RastPort *rp) { state_call(rp); return (UBYTE)rp->BgPen; }
+extern "C" ULONG GetDrMd(struct RastPort *rp) { state_call(rp); return (UBYTE)rp->DrawMode; }
+extern "C" ULONG GetOutlinePen(struct RastPort *rp) { state_call(rp); return (UBYTE)rp->AOlPen; }
+
+/* AllocRaster() planes are guest heap allocations: native ones never. */
+extern "C" PLANEPTR AllocRaster(ULONG, ULONG) { assert(false); return nullptr; }
+extern "C" void FreeRaster(PLANEPTR, ULONG, ULONG) { assert(false); }
 
 extern "C" void ScrollRaster(struct RastPort *, WORD dx, WORD dy,
                              WORD xMin, WORD yMin, WORD xMax, WORD yMax)
@@ -318,29 +410,34 @@ static const KaffeineCPUOps ops =
 static unsigned generated_calls;
 static IPTR poison(KaffeineContext *, void *) { ++generated_calls; return 0xBAD0F00D; }
 
-/* A generated drawing thunk, as PolyDraw() through resolve_rp(): it moves
-   the native pen. */
-static IPTR generated_draw(KaffeineContext *ctx, void *cpu)
-{
-    struct RastPort *rp = resolve_rp(ctx, THUNK_A(1));
-
-    rp->cp_x = 77;
-    rp->cp_y = 88;
-    return 0;
+/* These dispatch entries use production generated C bodies, extracted
+   verbatim. Native collaborators count calls and one changes the pen. */
+static unsigned generated_native;
+extern "C" {
+IPTR gfx_generated_PolyDraw(KaffeineContext *, void *);
+IPTR gfx_generated_SetRast(KaffeineContext *, void *);
+IPTR gfx_generated_BltTemplate(KaffeineContext *, void *);
+IPTR gfx_generated_ClipBlit(KaffeineContext *, void *);
+void PolyDraw(RastPort *rp, WORD, WORD *) { ++generated_native; rp->cp_x=77; rp->cp_y=88; }
+void SetRast(RastPort *, UBYTE) { ++generated_native; }
+void BltTemplate(PLANEPTR, WORD, WORD, RastPort *, WORD, WORD, WORD, WORD) { ++generated_native; }
+void ClipBlit(RastPort *, WORD, WORD, RastPort *, WORD, WORD, WORD, WORD, UBYTE) { ++generated_native; }
 }
 
 static const M68KThunkEntry intuition_manual[] = { KAFFEINE_INTUITION_COMPAT_THUNKS };
-static const M68KThunkEntry intuition_generated[] = { { 816, poison } };
+static const M68KThunkEntry intuition_generated[] = { { 108, poison }, { 114, poison }, { 816, poison } };
 static const M68KThunkEntry graphics_compat[] = { KAFFEINE_GRAPHICS_COMPAT_THUNKS };
 static const M68KThunkEntry graphics_rastport[] = { KAFFEINE_GRAPHICS_RASTPORT_THUNKS };
 static const M68KThunkEntry graphics_manual[] =
     { KAFFEINE_GRAPHICS_COMPAT_THUNKS, KAFFEINE_GRAPHICS_RASTPORT_THUNKS };
 static const M68KThunkEntry graphics_generated[] =
 {
-    { 54, poison }, { 60, poison }, { 66, poison }, { 72, poison }, { 78, poison },
-    { 198, poison }, { 240, poison }, { 246, poison }, { 306, poison }, { 318, poison }, { 324, poison },
-    { 336, generated_draw }, { 342, poison }, { 348, poison }, { 354, poison },
-    { 396, poison }, { 474, poison }, { 690, poison }, { 696, poison }, { 858, poison }, { 864, poison },
+    { 36, gfx_generated_BltTemplate }, { 54, poison }, { 60, poison }, { 66, poison }, { 72, poison }, { 78, poison },
+    { 198, poison }, { 234, gfx_generated_SetRast }, { 240, poison }, { 246, poison }, { 306, poison },
+    { 318, poison }, { 324, poison },
+    { 336, gfx_generated_PolyDraw }, { 342, poison }, { 348, poison }, { 354, poison },
+    { 396, poison }, { 474, poison }, { 492, poison }, { 498, poison }, { 552, gfx_generated_ClipBlit },
+    { 690, poison }, { 696, poison }, { 858, poison }, { 864, poison },
     { 870, poison }, { 876, poison }, { 894, poison }
 };
 
@@ -451,8 +548,10 @@ static void test_registration()
 {
     /* AddGList() and AddGadget() are in the gadget table of
        kaffeine_gadgets.c since gadget lists reach windows. */
-    assert(std::size(intuition_manual) == 1);
-    assert(intuition_manual[0].lvo == 816 && intuition_manual[0].thunk == thunk_intuition_SetWindowPointerA);
+    assert(std::size(intuition_manual) == 3);
+    assert(intuition_manual[0].lvo == 108 && intuition_manual[0].thunk == thunk_intuition_DrawBorder);
+    assert(intuition_manual[1].lvo == 114 && intuition_manual[1].thunk == thunk_intuition_DrawImage);
+    assert(intuition_manual[2].lvo == 816 && intuition_manual[2].thunk == thunk_intuition_SetWindowPointerA);
 
     assert(std::size(graphics_compat) == 3);
     for (const auto &entry : graphics_compat)
@@ -465,7 +564,8 @@ static void test_registration()
         { 78, thunk_gfx_CloseFont }, { 198, thunk_gfx_InitRastPort }, { 240, thunk_gfx_Move }, { 246, thunk_gfx_Draw },
         { 306, thunk_gfx_RectFill }, { 318, thunk_gfx_ReadPixel }, { 324, thunk_gfx_WritePixel },
         { 342, thunk_gfx_SetAPen }, { 348, thunk_gfx_SetBPen }, { 354, thunk_gfx_SetDrMd },
-        { 474, thunk_gfx_AskFont }, { 690, thunk_gfx_TextExtent }, { 696, thunk_gfx_TextFit }, { 858, thunk_gfx_GetAPen },
+        { 474, thunk_gfx_AskFont }, { 492, thunk_gfx_AllocRaster }, { 498, thunk_gfx_FreeRaster },
+        { 690, thunk_gfx_TextExtent }, { 696, thunk_gfx_TextFit }, { 858, thunk_gfx_GetAPen },
         { 864, thunk_gfx_GetBPen }, { 870, thunk_gfx_GetDrMd }, { 876, thunk_gfx_GetOutlinePen }
     };
     assert(std::size(graphics_rastport) == std::size(rastport));
@@ -653,17 +753,19 @@ static void test_generated_settle()
     f.call(246, { 0, rp }, { 1, 2 });
     assert(gfx.draw_from_x == 77 && gfx.draw_from_y == 88);
 
-    /* resolve_rp() as before for anything but a 68k RastPort */
+    /* resolve_rp() gives nothing but a 68k RastPort: the shadow of a window,
+       raw guest bytes, NULL and the end of the arena stop the program. */
     int native_window;
     f.ctx.shadow_map[f.ctx.num_shadows].m68k_addr = Fixture::raw + 0x40;
     f.ctx.shadow_map[f.ctx.num_shadows].native_ptr = &native_window;
     f.ctx.shadow_map[f.ctx.num_shadows++].type = KAFFEINE_SHADOW_WINDOW;
-    assert(resolve_rp(&f.ctx, Fixture::raw + 0x40) == reinterpret_cast<RastPort *>(&native_window));
-    assert(resolve_rp(&f.ctx, Fixture::raw) ==
-           reinterpret_cast<RastPort *>(f.memory.data() + Fixture::raw));
-    assert(resolve_rp(&f.ctx, 0) == nullptr);
-    assert(resolve_rp(&f.ctx, f.memory.size()) == nullptr);
-    assert(!f.ctx.after_thunk);
+    for (ULONG bad : { Fixture::raw + 0x40, Fixture::raw, 0U, static_cast<ULONG>(f.memory.size()),
+                       rp + 2 })
+    {
+        f.ctx.running = TRUE; f.ctx.exit_code = 0;
+        assert(resolve_rp(&f.ctx, bad) == nullptr);
+        assert(!f.ctx.running && f.ctx.exit_code == 20 && !f.ctx.after_thunk);
+    }
 
     /* A deleted RastPort is not settled any more. */
     assert(Kaffeine_RastPortIn(&f.ctx, rp) == &native_rp && f.ctx.after_thunk);
@@ -1275,6 +1377,398 @@ static void test_guest_planar_read()
     assert(f.call(306,{0,rp},{0,0,1,1})==20 && f.stopped() && f.memory==before && !gfx.any);
 }
 
+/* ── Generated thunks, state of caller-owned RastPorts, rasters ──── */
+
+enum { RP_AREAPTSZ = 29, RP_FLAGS = 32, RP_PENWIDTH = 48, RP_PENHEIGHT = 50, RP_TXFLAGS = 57 };
+
+/* Generated SetRast(), BltTemplate() and ClipBlit() (two RastPorts) reach
+   native graphics only with 68k RastPorts; anything else stops them before
+   it, every RastPort argument checked. */
+static void test_generated_guard()
+{
+    Fixture f;
+    const ULONG rp = f.rastport(), raw = Fixture::raw + 0x100;
+    int native_window;
+    f.ctx.shadow_map[f.ctx.num_shadows++] = { Fixture::raw + 0x40, &native_window, KAFFEINE_SHADOW_WINDOW };
+    std::memset(f.memory.data() + raw, 0, M68K_SIZEOF_RASTPORT);
+    f.put(Fixture::text, "\xFF\x81\x81\xFF");
+    generated_native = 0;
+    assert(f.call(234, { 0, rp }, { 1 }) == 0 && !f.stopped() && generated_native == 1);
+    assert(f.call(552, { rp, rp }) == 0 && !f.stopped() && generated_native == 2);
+    for (ULONG bad : { Fixture::raw + 0x40, raw, 0U, rp + 2, static_cast<ULONG>(f.memory.size()) })
+    {
+        const Memory before = f.memory;
+        assert(f.call(234, { 0, bad }, { 1 }) == 20 && f.stopped());
+        assert(f.call(36, { Fixture::text, bad }, { 0, 2, 0, 0, 8, 2 }) == 20 && f.stopped());
+        assert(f.call(552, { bad, rp }) == 20 && f.stopped());
+        assert(f.memory == before);
+        assert(f.call(552, { rp, bad }) == 20 && f.stopped());
+        expect_changes_within(before, f, 0, rp);
+        assert(generated_native == 2 && !gfx.any);
+    }
+}
+
+/* The classic RastPort that a program built for itself: its pointers,
+   RP_User, the reserved bytes, the pad byte and guard bytes on each side
+   poisoned; scalars known, with private and unknown Flags bits. */
+static Memory state_rastport(Fixture &f, ULONG rp, ULONG guard)
+{
+    poison_bytes(f, rp - guard, M68K_SIZEOF_RASTPORT + 2 * guard);
+    UBYTE *g = f.memory.data() + rp;
+    g[RP_MASK] = 0x0F; g[RP_FGPEN] = 1; g[RP_BGPEN] = 2; g[RP_AOLPEN] = 3;
+    g[RP_DRAWMODE] = JAM1; g[RP_AREAPTSZ] = 0xFC; g[RP_LINPATCNT] = 7;
+    m68k_write16(&f.ctx, rp + RP_FLAGS, 0xC090 | NOCROSSFILL);
+    m68k_write16(&f.ctx, rp + RP_LINEPTRN, 0xF0F0);
+    m68k_write16(&f.ctx, rp + RP_CP_X, 0x0102);
+    m68k_write16(&f.ctx, rp + RP_CP_Y, 0xFFFE);
+    for (unsigned i = 0; i < 8; ++i) g[RP_MINTERMS + i] = 0x11 + i;
+    m68k_write16(&f.ctx, rp + RP_PENWIDTH, 1);
+    m68k_write16(&f.ctx, rp + RP_PENHEIGHT, 1);
+    g[RP_ALGOSTYLE] = 1; g[RP_TXFLAGS] = 2;
+    m68k_write16(&f.ctx, rp + RP_TXHEIGHT, 9);
+    m68k_write16(&f.ctx, rp + RP_TXWIDTH, 7);
+    m68k_write16(&f.ctx, rp + RP_TXBASELINE, 6);
+    m68k_write16(&f.ctx, rp + RP_TXSPACING, 0xFFFF);
+    return f.memory;
+}
+
+/* What native graphics saw: a temporary of the bridge, outside guest
+   memory and never a registered one, with every pointer NULL and only the
+   public Flags. */
+static void expect_temporary(const Fixture &f, UWORD flags)
+{
+    const RastPort &s = gfx.seen;
+    const auto at = reinterpret_cast<uintptr_t>(gfx.state_rp);
+    const auto mem = reinterpret_cast<uintptr_t>(f.memory.data());
+    assert(gfx.state_rp != &native_rp && (at + sizeof(RastPort) <= mem || at >= mem + f.memory.size()));
+    assert(!s.Layer && !s.BitMap && !s.AreaPtrn && !s.TmpRas && !s.AreaInfo && !s.GelsInfo &&
+           !s.Font && !s.RP_User);
+    assert(s.Flags == flags);
+}
+
+static void set_minterms(Memory &want, ULONG rp, std::initializer_list<UBYTE> m)
+{
+    unsigned i = 0;
+    for (UBYTE v : m) want[rp + RP_MINTERMS + i++] = v;
+}
+
+/* State calls on a caller-owned classic RastPort, outside the heap as in
+   a hunk or on the stack, in an AllocMem() block and at an offset in one:
+   native graphics gets the scalars, and exactly the changed ones come
+   back, big-endian, as rom/graphics computes them. */
+static void test_classic_rastport_state()
+{
+    for (int where = 0; where < 3; ++where)
+    {
+        Fixture f;
+        const ULONG rp = where == 0 ? Fixture::raw : where == 1
+            ? Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_RASTPORT, 0)
+            : Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_RASTPORT + 64, 0) + 32;
+        assert(rp > 32);
+        const ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+        /* guards inside the arena's own bytes or the block, never on a
+           heap header */
+        Memory want = state_rastport(f, rp, where == 1 ? 0 : 16);
+
+        /* SetAPen(): FgPen as a UBYTE and linpatcnt; no GenMinterms() */
+        assert(f.call(342, { 0, rp }, { 0x1F3 }) == 0 && !f.stopped());
+        want[rp + RP_FGPEN] = 0xF3; want[rp + RP_LINPATCNT] = 15;
+        assert(f.memory == want);
+        expect_temporary(f, NOCROSSFILL);
+        assert(gfx.seen.FgPen == 1 && gfx.seen.cp_y == -2 && gfx.seen.TxSpacing == -1 &&
+               gfx.seen.minterms[7] == 0x18 && gfx.seen.TxHeight == 9 && gfx.seen.Mask == 0x0F);
+
+        /* SetBPen() in JAM1: FgPen 0xF3 gives the minterms 0xEA and 0x2A */
+        assert(f.call(348, { 0, rp }, { 3 }) == 0 && !f.stopped());
+        want[rp + RP_BGPEN] = 3;
+        set_minterms(want, rp, { 0xEA, 0xEA, 0x2A, 0x2A, 0xEA, 0xEA, 0xEA, 0xEA });
+        assert(f.memory == want);
+
+        /* SetDrMd() takes the low byte: COMPLEMENT | INVERSVID */
+        assert(f.call(354, { 0, rp }, { 0x106 }) == 0 && !f.stopped());
+        want[rp + RP_DRAWMODE] = COMPLEMENT | INVERSVID;
+        set_minterms(want, rp, { 0x6A, 0x6A, 0x6A, 0x6A, 0x6A, 0x6A, 0x6A, 0x6A });
+        assert(f.memory == want);
+
+        /* SetABPenDrMd(): BgPen is already 3, so only its byte stays */
+        assert(f.call(894, { 0, rp }, { 5, 3, JAM2 }) == 0 && !f.stopped());
+        want[rp + RP_FGPEN] = 5; want[rp + RP_DRAWMODE] = JAM2;
+        set_minterms(want, rp, { 0xFA, 0x3A, 0xCA, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A });
+        assert(f.memory == want && gfx.apen == 5 && gfx.bpen == 3 && gfx.drmd == JAM2);
+
+        /* Move() with signed WORD coordinates from the low halves; FRST_DOT
+           joins the program's own bits */
+        f.memory[rp + RP_LINPATCNT] = 3; want[rp + RP_LINPATCNT] = 3;
+        assert(f.call(240, { 0, rp }, { 0xFFFFFFFB, 0x12340007 }) == 0 && !f.stopped());
+        want[rp + RP_CP_X] = 0xFF; want[rp + RP_CP_X + 1] = 0xFB;
+        want[rp + RP_CP_Y] = 0x00; want[rp + RP_CP_Y + 1] = 0x07;
+        want[rp + RP_LINPATCNT] = 15;
+        want[rp + RP_FLAGS] = 0xC0; want[rp + RP_FLAGS + 1] = 0x90 | NOCROSSFILL | FRST_DOT;
+        assert(f.memory == want);
+        expect_temporary(f, NOCROSSFILL);
+
+        /* getters read the guest each time and write nothing */
+        assert(f.call(858, { rp }) == 5 && f.call(864, { rp }) == 3 &&
+               f.call(870, { rp }) == JAM2 && f.call(876, { rp }) == 3);
+        expect_temporary(f, NOCROSSFILL | FRST_DOT);
+        f.memory[rp + RP_FGPEN] = 0x80; want[rp + RP_FGPEN] = 0x80;
+        assert(f.call(858, { rp }) == 0x80 && f.memory == want && !f.stopped());
+
+        /* nothing registered, allocated, settled or closed */
+        assert(!f.ctx.num_shadows && Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+        assert(!f.ctx.settle_rastports[0] && !f.ctx.settle_rastports[1]);
+        assert(gfx.state == 10 && gfx.any == 10 && !gfx.close_font);
+
+        /* drawing on it still stops before native graphics */
+        f.put(Fixture::text, "Hello");
+        m68k_write32(&f.ctx, rp + RP_LAYER, 0x12345678);
+        want = f.memory;
+        assert(f.call(246, { 0, rp }, { 1, 1 }) == 20 && f.stopped());
+        assert(f.call(306, { 0, rp }, { 0, 0, 1, 1 }) == 20 && f.stopped());
+        assert(f.call(324, { 0, rp }, { 0, 0 }) == 20 && f.stopped());
+        assert(f.call(318, { 0, rp }, { 0, 0 }) == 20 && f.stopped());
+        assert(f.call(60, { Fixture::text, rp }, { 5 }) == 20 && f.stopped());
+        assert(f.call(396, { 0, rp }, { 1, 1, 0, 0, 8, 8 }) == 20 && f.stopped());
+        assert(f.call(36, { Fixture::text, rp }, { 0, 2, 0, 0, 8, 2 }) == 20 && f.stopped());
+        assert(f.memory == want && gfx.any == 10 && !generated_calls);
+    }
+}
+
+/* A copy of a window's 68k RastPort is the program's own: the state calls
+   change the copy, never the window's native RastPort or its 68k one, and
+   the copied font pointer is neither followed nor written. */
+static void test_copied_rastport_state()
+{
+    Fixture f;
+    const ULONG rp = f.rastport(), copy = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_RASTPORT, 0);
+    assert(copy);
+    std::memcpy(f.memory.data() + copy, f.memory.data() + rp, M68K_SIZEOF_RASTPORT);
+    const BYTE fg = native_rp.FgPen, lp = native_rp.linpatcnt;
+    const WORD x = native_rp.cp_x, y = native_rp.cp_y;
+    const UWORD flags = native_rp.Flags;
+    Memory want = f.memory;
+    assert(f.call(342, { 0, copy }, { 7 }) == 0 && f.call(240, { 0, copy }, { 10, 20 }) == 0);
+    want[copy + RP_FGPEN] = 7; want[copy + RP_LINPATCNT] = 15;
+    want[copy + RP_CP_X + 1] = 10; want[copy + RP_CP_Y + 1] = 20;
+    want[copy + RP_FLAGS + 1] |= FRST_DOT;
+    want[copy + RP_CP_X] = want[copy + RP_CP_Y] = 0;
+    assert(f.memory == want && !f.stopped());
+    expect_temporary(f, 0);
+    assert(native_rp.FgPen == fg && native_rp.linpatcnt == lp && native_rp.cp_x == x &&
+           native_rp.cp_y == y && native_rp.Flags == flags && native_rp.Font == &topaz);
+    /* the window's own RastPort still goes the registered way */
+    assert(f.call(342, { 0, rp }, { 4 }) == 0 && gfx.state_rp == &native_rp && native_rp.FgPen == 4);
+    assert(f.memory[copy + RP_FGPEN] == 7 && f.memory[rp + RP_FGPEN] == 4);
+}
+
+/* A registered RastPort: native private Flags stay native and are never
+   shown; the program's own bits stay in its 68k RastPort, and only the
+   public ones reach native graphics. */
+static void test_registered_private_flags()
+{
+    Fixture f;
+    native_rp.Flags = RPF_NO_PENS | RPF_REMAP_COLORFONTS | 0x0100 | AREAOUTLINE;
+    const ULONG rp = f.rastport();
+    assert(f.word(rp + RP_FLAGS) == AREAOUTLINE);
+    m68k_write16(&f.ctx, rp + RP_FLAGS, 0xFFFF);
+    assert(f.call(354, { 0, rp }, { JAM2 }) == 0);
+    assert(native_rp.Flags == (RPF_NO_PENS | RPF_REMAP_COLORFONTS | 0x0100 |
+                               FRST_DOT | ONE_DOT | DBUFFER | AREAOUTLINE | NOCROSSFILL));
+    assert(gfx.seen.Flags == native_rp.Flags && f.word(rp + RP_FLAGS) == 0xFFFF);
+    m68k_write16(&f.ctx, rp + RP_FLAGS, 0);
+    assert(f.call(342, { 0, rp }, { 2 }) == 0);
+    assert(native_rp.Flags == (RPF_REMAP_COLORFONTS | 0x0100) && f.word(rp + RP_FLAGS) == 0);
+    m68k_write16(&f.ctx, rp + RP_FLAGS, RPF_NO_PENS | 0x0010);
+    assert(f.call(240, { 0, rp }, { 1, 1 }) == 0 && !f.stopped());
+    assert(native_rp.Flags == (RPF_REMAP_COLORFONTS | 0x0100 | FRST_DOT));
+    assert(f.word(rp + RP_FLAGS) == (RPF_NO_PENS | 0x0010 | FRST_DOT));
+}
+
+/* Storage that is not the program's own classic RastPort stops every
+   state call before native graphics, with no byte changed. */
+static void test_state_refusals()
+{
+    Fixture f;
+    const ULONG owned = f.rastport(), font = guest_font(f, &topaz);
+    const ULONG block = Kaffeine_HeapAlloc(&f.ctx, 200, 0);
+    const ULONG mirror = Kaffeine_MirrorAlloc(&f.ctx, 200);
+    const ULONG pool = Kaffeine_PoolCreate(&f.ctx, 0, 1024, 512);
+    /* freed last, so that no later allocation takes its place */
+    const ULONG freed = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_RASTPORT, 0);
+    Kaffeine_HeapFree(&f.ctx, freed, M68K_SIZEOF_RASTPORT);
+    int native_window;
+    f.ctx.shadow_map[f.ctx.num_shadows++] = { 0x2600, &native_window, KAFFEINE_SHADOW_WINDOW };
+    f.ctx.memory_info = 0x3000;
+    f.ctx.io_requests[0].guest = 0x3400;
+    f.ctx.io_requests[0].capacity = 48;
+    const ULONG base = f.ctx.libs[0].m68k_addr, size = f.ctx.mem_size;
+    assert(font && freed && block && mirror && pool);
+    for (ULONG bad : { 0U, Fixture::raw + 1, size - 98, size - 2, 0xFFFFFFF0U,
+                       owned + 2, owned - 50, font, font + 4, freed, block - 8, mirror, pool,
+                       0x2600U - 98, 0x2600U + 100, 0x3000U - 40, 0x3400U + 46,
+                       f.ctx.libs[0].jt_start + 6, base - 50 })
+    {
+        const Memory before = f.memory;
+        for (ULONG lvo : { 240U, 342U, 348U, 354U, 894U })
+            assert(f.call(lvo, { 0, bad }, { 1, 1, 1 }) == 20 && f.stopped());
+        for (ULONG lvo : { 858U, 864U, 870U, 876U })
+            assert(f.call(lvo, { bad }) == 20 && f.stopped());
+        assert(f.memory == before && !gfx.any);
+    }
+    /* the payload of the same allocation is fine */
+    assert(f.call(342, { 0, block }, { 1 }) == 0 && !f.stopped() && gfx.state == 1);
+}
+
+/* AllocRaster() and FreeRaster(): guest heap planes of exactly RASSIZE()
+   bytes, never native ones; FreeMem() of the guest frees them too. */
+static ULONG io_keeps_calls;
+static BOOL io_keeps(KaffeineContext *, ULONG, ULONG, BOOL) { ++io_keeps_calls; return FALSE; }
+
+static void test_rasters()
+{
+    Fixture f;
+    const ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    /* 320 x 200: 40 bytes a row */
+    const ULONG p = f.call(492, {}, { 320, 200 });
+    assert(p >= f.ctx.heap_start && p < f.ctx.heap_end && !(p & 1) && !f.stopped());
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) <= avail - 8000);
+    /* wrong sizes, interior, NULL-less refusal: nothing freed */
+    for (auto args : { std::array<ULONG, 3>{ p, 321, 200 }, { p, 320, 199 }, { p, 0, 200 },
+                       { p, 320, 0 }, { p + 8, 320, 200 }, { p - 8, 320, 200 }, { p + 1, 320, 200 } })
+    {
+        const Memory before = f.memory;
+        const ULONG left = Kaffeine_HeapAvail(&f.ctx, 0);
+        assert(f.call(498, { args[0] }, { args[1], args[2] }) == 20 && f.stopped());
+        assert(f.memory == before && Kaffeine_HeapAvail(&f.ctx, 0) == left);
+    }
+    /* still allocated while asynchronous I/O keeps it */
+    f.ctx.io_release = io_keeps;
+    assert(f.call(498, { p }, { 320, 200 }) == 20 && f.stopped() && io_keeps_calls == 1);
+    f.ctx.io_release = nullptr;
+    /* 310 rounds to the same 40 bytes; D0 and D1 are UWORDs, as in AROS */
+    assert(f.call(498, { p }, { 0x7FFF0136, 0x000100C8 }) == 0 && !f.stopped());
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+    /* twice: refused */
+    assert(f.call(498, { p }, { 320, 200 }) == 20 && f.stopped());
+    /* NULL does nothing */
+    assert(f.call(498, { 0 }, { 320, 200 }) == 0 && !f.stopped());
+
+    /* the guest's FreeMem() of a raster, FreeRaster() of an AllocMem() */
+    const ULONG q = f.call(492, {}, { 17, 3 });
+    assert(q && !f.stopped());
+    Kaffeine_HeapFree(&f.ctx, q, 12);
+    const ULONG r = Kaffeine_HeapAlloc(&f.ctx, 12, 0);
+    assert(f.call(498, { r }, { 32, 3 }) == 0 && !f.stopped());
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+
+    /* a mirror, a pooled block, an AllocAbs() block of the same size */
+    const ULONG mirror = Kaffeine_MirrorAlloc(&f.ctx, 64);
+    const ULONG pool = Kaffeine_PoolCreate(&f.ctx, 0, 1024, 512);
+    const ULONG pooled = Kaffeine_PoolAlloc(&f.ctx, pool, 64);
+    /* the lowest free heap address, from a probe allocation */
+    const ULONG probe = Kaffeine_HeapAlloc(&f.ctx, 64, 0);
+    Kaffeine_HeapFree(&f.ctx, probe, 64);
+    const ULONG absolute = Kaffeine_HeapAllocAbs(&f.ctx, 64, (probe - 8) & ~7U);
+    assert(mirror && pool && pooled && absolute);
+    for (ULONG bad : { mirror, pooled, absolute, pool })
+    {
+        const Memory before = f.memory;
+        const ULONG left = Kaffeine_HeapAvail(&f.ctx, 0);
+        assert(f.call(498, { bad }, { 16, bad == pool ? 8U : 32U }) == 20 && f.stopped());
+        assert(f.memory == before && Kaffeine_HeapAvail(&f.ctx, 0) == left);
+    }
+    Kaffeine_MirrorRelease(&f.ctx, mirror);
+    Kaffeine_PoolDelete(&f.ctx, pool);
+    Kaffeine_HeapFree(&f.ctx, absolute, 64);
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+
+    /* empty, overflowing, beyond the 16-bit row of RASSIZE(), beyond the
+       arena or the heap: 0 and nothing allocated */
+    for (auto wh : { std::array<ULONG, 2>{ 0, 200 }, { 320, 0 }, { 0xFFFFFFFF, 0xFFFFFFFF },
+                     { 0xFFFFFFF0, 1 }, { 0x80000, 1 }, { 0x7FFF0, 0xFFFF }, { 64000, 200 },
+                     { 16, 0x7000 } })
+    {
+        assert(f.call(492, {}, { wh[0], wh[1] }) == 0 && !f.stopped());
+        assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+    }
+    assert(!gfx.any);
+}
+
+static void classic_intuition(Fixture &f)
+{
+    std::strcpy(f.ctx.libs[0].name,"intuition.library");
+    f.ctx.libs[0].thunks=intuition_manual;f.ctx.libs[0].num_thunks=std::size(intuition_manual);
+    f.ctx.libs[0].gen_thunks=intuition_generated;f.ctx.libs[0].num_gen_thunks=std::size(intuition_generated);
+    drawing_context=&f.ctx;classic_draw={};
+}
+static void test_classic_drawimage()
+{
+    Fixture f;const ULONG rp=f.rastport(),im=0x2100,next=0x2140,data=0x2180;
+    classic_intuition(f);std::memset(f.memory.data()+im,0,20);std::memset(f.memory.data()+next,0,20);
+    m68k_write16(&f.ctx,im,-7);m68k_write16(&f.ctx,im+2,9);
+    m68k_write16(&f.ctx,im+4,8);m68k_write16(&f.ctx,im+6,2);m68k_write16(&f.ctx,im+8,1);
+    m68k_write32(&f.ctx,im+10,data);f.memory[im+14]=1;f.memory[im+15]=2;
+    m68k_write32(&f.ctx,im+16,next);
+    m68k_write16(&f.ctx,next+4,3);m68k_write16(&f.ctx,next+6,4);
+    m68k_write32(&f.ctx,next+10,0xFFFFFFFF);f.memory[next+15]=5;
+    const Memory original=f.memory;
+    assert(f.call(114,{rp,im},{0x1234FFFD,0x56780005})==0&&!f.stopped());
+    assert(classic_draw.images==1&&classic_draw.borders==0&&classic_draw.waits==1);
+    assert(classic_draw.x==-3&&classic_draw.y==5&&classic_draw.image.size()==2);
+    const auto &a=classic_draw.image[0];const auto &b=classic_draw.image[1];
+    assert(a.LeftEdge==-7&&a.TopEdge==9&&a.Width==8&&a.Height==2&&a.Depth==1);
+    assert(a.ImageData==reinterpret_cast<UWORD*>(f.memory.data()+data)&&a.PlanePick==1&&a.PlaneOnOff==2);
+    assert(b.Width==3&&b.Height==4&&b.Depth==0&&!b.ImageData&&b.PlaneOnOff==5&&!b.NextImage);
+    assert(f.memory==original&&!f.ctx.bitmap_blits);
+    classic_draw={};assert(f.call(114,{rp,0})==0&&!classic_draw.images&&!classic_draw.waits);
+    for(int bad=0;bad<4;bad++)
+    {
+        f.memory=original;classic_draw={};
+        if(bad==0)m68k_write16(&f.ctx,im+8,0xFFFF); // BOOPSI class, no raw native object
+        if(bad==1)m68k_write32(&f.ctx,im+10,0xFFFF); // incomplete/unaligned plane
+        if(bad==2)m68k_write32(&f.ctx,im+16,im); // bounded cycle
+        if(bad==3)m68k_write16(&f.ctx,im+4,0xFFFF); // negative width
+        const Memory before=f.memory;
+        assert(f.call(114,{rp,im})==20&&f.stopped()&&!classic_draw.images&&!classic_draw.waits);
+        assert(f.memory==before&&!f.ctx.bitmap_blits);
+    }
+    f.memory=original;classic_draw={};
+    assert(f.call(114,{Fixture::raw,im})==20&&f.stopped()&&!classic_draw.images);
+    drawing_context=nullptr;
+}
+static void test_classic_drawborder()
+{
+    Fixture f;const ULONG rp=f.rastport(),bd=0x2100,next=0x2140,xy=0x2180;
+    classic_intuition(f);std::memset(f.memory.data()+bd,0,16);std::memset(f.memory.data()+next,0,16);
+    m68k_write16(&f.ctx,bd,-2);m68k_write16(&f.ctx,bd+2,11);
+    f.memory[bd+4]=0xA1;f.memory[bd+5]=0xA2;f.memory[bd+6]=JAM1;f.memory[bd+7]=2;
+    m68k_write32(&f.ctx,bd+8,xy);m68k_write32(&f.ctx,bd+12,next);
+    m68k_write16(&f.ctx,xy,-7);m68k_write16(&f.ctx,xy+2,10);
+    m68k_write16(&f.ctx,xy+4,30);m68k_write16(&f.ctx,xy+6,-40);
+    f.memory[next+7]=0xFF;m68k_write32(&f.ctx,next+8,0xFFFFFFFF); // unused when Count < 1
+    const Memory original=f.memory;
+    assert(f.call(108,{rp,bd},{0xFFFF0003,0x1234FFFC})==0&&!f.stopped());
+    assert(classic_draw.borders==1&&classic_draw.images==0&&classic_draw.waits==1);
+    assert(classic_draw.x==3&&classic_draw.y==-4&&classic_draw.border.size()==2);
+    const auto &a=classic_draw.border[0];const auto &b=classic_draw.border[1];
+    assert(a.LeftEdge==-2&&a.TopEdge==11&&a.FrontPen==0xA1&&a.BackPen==0xA2&&a.DrawMode==JAM1&&a.Count==2);
+    assert(classic_draw.pairs[0]==std::vector<WORD>({-7,10,30,-40}));
+    assert(b.Count==-1&&!b.XY&&!b.NextBorder&&classic_draw.pairs[1].empty());
+    assert(f.memory==original&&!f.ctx.bitmap_blits);
+    classic_draw={};assert(f.call(108,{rp,0})==0&&!classic_draw.borders&&!classic_draw.waits);
+    for(int bad=0;bad<3;bad++)
+    {
+        f.memory=original;classic_draw={};
+        if(bad==0)m68k_write32(&f.ctx,bd+8,0xFFFC);
+        if(bad==1)m68k_write32(&f.ctx,bd+12,bd);
+        if(bad==2)m68k_write32(&f.ctx,bd+8,0);
+        const Memory before=f.memory;
+        assert(f.call(108,{rp,bd})==20&&f.stopped()&&!classic_draw.borders&&!classic_draw.waits);
+        assert(f.memory==before&&!f.ctx.bitmap_blits);
+    }
+    drawing_context=nullptr;
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
@@ -1282,6 +1776,8 @@ int main()
     {
         { "Intuition and graphics tables use their ABI slots", test_registration },
         { "SetWindowPointerA is at -816 and does nothing", test_intuition },
+        { "DrawImage converts classic chains and preserves planar byte identity", test_classic_drawimage },
+        { "DrawBorder converts chains and signed WORD coordinates before Intuition", test_classic_drawborder },
         { "OpenFont() and CloseFont() with 68k TextFonts", test_fonts },
         { "A 68k RastPort gets the native fields without native pointers", test_rastport_fields },
         { "Pens, modes and the pen position both ways", test_pens },
@@ -1295,7 +1791,13 @@ int main()
         { "AskFont() fills a classic TextAttr with the font's own attributes", test_askfont },
         { "AskFont() follows the font of the RastPort with stable 68k names", test_askfont_fonts },
         { "AskFont() stops on bad TextAttrs, RastPorts and fonts before writing", test_askfont_refusals },
-        { "ReadPixel reads bounded guest planar bytes without native calls or mutation", test_guest_planar_read }
+        { "ReadPixel reads bounded guest planar bytes without native calls or mutation", test_guest_planar_read },
+        { "Generated thunks reach graphics only with 68k RastPorts", test_generated_guard },
+        { "State calls on caller-owned RastPorts write back exactly the changed scalars", test_classic_rastport_state },
+        { "State calls on a copied window RastPort leave the window's alone", test_copied_rastport_state },
+        { "Native private RastPort Flags are neither shown nor taken", test_registered_private_flags },
+        { "State calls stop on storage that is not the program's own", test_state_refusals },
+        { "AllocRaster() and FreeRaster() use exact guest heap blocks", test_rasters }
     };
     for (const Test &test : tests)
     {

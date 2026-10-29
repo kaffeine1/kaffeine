@@ -15,7 +15,8 @@
     The font that a window or a screen comes with stays for the whole
     program, because programs keep rp->Font to set it back later; a font
     that the program opened goes once it is closed and no 68k RastPort
-    shows it.
+    shows it. A caller-owned classic RastPort gets a temporary native one
+    for pointer-free state calls, with only the changed scalars back.
 */
 
 #include "kaffeine_intern.h"
@@ -44,6 +45,11 @@ enum
     G_TF_LOCHAR = 32, G_TF_HICHAR = 33, G_TF_CHARDATA = 34, G_TF_MODULO = 38,
     G_TF_CHARLOC = 40, G_TF_CHARSPACE = 44, G_TF_CHARKERN = 48
 };
+
+/* The public Flags of graphics/rastport.h. AROS keeps private bits above
+   them (RPF_NO_PENS, RPF_REMAP_COLORFONTS, rom/graphics/gfxfuncsupport.h):
+   a native one is never shown to 68k code, nor taken from it. */
+#define G_RP_PUBLIC_FLAGS (FRST_DOT | ONE_DOT | DBUFFER | AREAOUTLINE | NOCROSSFILL)
 
 /* ── Shadow map ──────────────────────────────────────────────────── */
 
@@ -392,6 +398,96 @@ void Kaffeine_FontsCleanup(struct KaffeineContext *ctx)
 
 /* ── RastPorts ───────────────────────────────────────────────────── */
 
+/* The 68k Flags with the public bits of native, keeping the others as the
+   program left them */
+static UWORD guest_flags(struct KaffeineContext *ctx, ULONG guest, UWORD native)
+{
+    return (m68k_read16(ctx, guest + G_RP_FLAGS) & ~G_RP_PUBLIC_FLAGS) |
+           (native & G_RP_PUBLIC_FLAGS);
+}
+
+/* The scalars that the program may write, for a registered RastPort and a
+   temporary one alike. Of Flags only the public bits; native keeps its
+   private ones. */
+static void scalars_in(struct KaffeineContext *ctx, ULONG guest, struct RastPort *rp)
+{
+    const UBYTE *g = ctx->mem + guest;
+
+    rp->Mask = g[G_RP_MASK];
+    rp->FgPen = (BYTE)g[G_RP_FGPEN];
+    rp->BgPen = (BYTE)g[G_RP_BGPEN];
+    rp->AOlPen = (BYTE)g[G_RP_AOLPEN];
+    rp->DrawMode = (BYTE)g[G_RP_DRAWMODE];
+    rp->AreaPtSz = (BYTE)g[G_RP_AREAPTSZ];
+    rp->linpatcnt = (BYTE)g[G_RP_LINPATCNT];
+    rp->Flags = (rp->Flags & ~G_RP_PUBLIC_FLAGS) |
+                (m68k_read16(ctx, guest + G_RP_FLAGS) & G_RP_PUBLIC_FLAGS);
+    rp->LinePtrn = m68k_read16(ctx, guest + G_RP_LINEPTRN);
+    rp->cp_x = (WORD)m68k_read16(ctx, guest + G_RP_CP_X);
+    rp->cp_y = (WORD)m68k_read16(ctx, guest + G_RP_CP_Y);
+    rp->PenWidth = (WORD)m68k_read16(ctx, guest + G_RP_PENWIDTH);
+    rp->PenHeight = (WORD)m68k_read16(ctx, guest + G_RP_PENHEIGHT);
+    rp->AlgoStyle = g[G_RP_ALGOSTYLE];
+    rp->TxSpacing = (WORD)m68k_read16(ctx, guest + G_RP_TXSPACING);
+}
+
+void Kaffeine_RastPortStateIn(struct KaffeineContext *ctx, ULONG guest, struct RastPort *rp)
+{
+    const UBYTE *g = ctx->mem + guest;
+    ULONG i;
+
+    memset(rp, 0, sizeof(*rp));
+    scalars_in(ctx, guest, rp);
+    /* For a caller-owned RastPort the 68k copy is the only one. */
+    for (i = 0; i < 8; i++)
+        rp->minterms[i] = g[G_RP_MINTERMS + i];
+    rp->TxFlags = g[G_RP_TXFLAGS];
+    rp->TxHeight = m68k_read16(ctx, guest + G_RP_TXHEIGHT);
+    rp->TxWidth = m68k_read16(ctx, guest + G_RP_TXWIDTH);
+    rp->TxBaseline = m68k_read16(ctx, guest + G_RP_TXBASELINE);
+}
+
+static void put8(struct KaffeineContext *ctx, ULONG at, UBYTE before, UBYTE after)
+{
+    if (before != after)
+        ctx->mem[at] = after;
+}
+
+static void put16(struct KaffeineContext *ctx, ULONG at, UWORD before, UWORD after)
+{
+    if (before != after)
+        m68k_write16(ctx, at, after);
+}
+
+void Kaffeine_RastPortStateOut(struct KaffeineContext *ctx, ULONG guest,
+                               const struct RastPort *before, const struct RastPort *rp)
+{
+    ULONG i;
+
+    put8(ctx, guest + G_RP_MASK, before->Mask, rp->Mask);
+    put8(ctx, guest + G_RP_FGPEN, (UBYTE)before->FgPen, (UBYTE)rp->FgPen);
+    put8(ctx, guest + G_RP_BGPEN, (UBYTE)before->BgPen, (UBYTE)rp->BgPen);
+    put8(ctx, guest + G_RP_AOLPEN, (UBYTE)before->AOlPen, (UBYTE)rp->AOlPen);
+    put8(ctx, guest + G_RP_DRAWMODE, (UBYTE)before->DrawMode, (UBYTE)rp->DrawMode);
+    put8(ctx, guest + G_RP_AREAPTSZ, (UBYTE)before->AreaPtSz, (UBYTE)rp->AreaPtSz);
+    put8(ctx, guest + G_RP_LINPATCNT, (UBYTE)before->linpatcnt, (UBYTE)rp->linpatcnt);
+    if ((before->Flags ^ rp->Flags) & G_RP_PUBLIC_FLAGS)
+        m68k_write16(ctx, guest + G_RP_FLAGS, guest_flags(ctx, guest, rp->Flags));
+    put16(ctx, guest + G_RP_LINEPTRN, before->LinePtrn, rp->LinePtrn);
+    put16(ctx, guest + G_RP_CP_X, (UWORD)before->cp_x, (UWORD)rp->cp_x);
+    put16(ctx, guest + G_RP_CP_Y, (UWORD)before->cp_y, (UWORD)rp->cp_y);
+    for (i = 0; i < 8; i++)
+        put8(ctx, guest + G_RP_MINTERMS + i, before->minterms[i], rp->minterms[i]);
+    put16(ctx, guest + G_RP_PENWIDTH, (UWORD)before->PenWidth, (UWORD)rp->PenWidth);
+    put16(ctx, guest + G_RP_PENHEIGHT, (UWORD)before->PenHeight, (UWORD)rp->PenHeight);
+    put8(ctx, guest + G_RP_ALGOSTYLE, before->AlgoStyle, rp->AlgoStyle);
+    put8(ctx, guest + G_RP_TXFLAGS, before->TxFlags, rp->TxFlags);
+    put16(ctx, guest + G_RP_TXHEIGHT, before->TxHeight, rp->TxHeight);
+    put16(ctx, guest + G_RP_TXWIDTH, before->TxWidth, rp->TxWidth);
+    put16(ctx, guest + G_RP_TXBASELINE, before->TxBaseline, rp->TxBaseline);
+    put16(ctx, guest + G_RP_TXSPACING, (UWORD)before->TxSpacing, (UWORD)rp->TxSpacing);
+}
+
 void Kaffeine_RastPortOut(struct KaffeineContext *ctx, ULONG guest, struct RastPort *rp)
 {
     UBYTE *g = ctx->mem + guest;
@@ -404,7 +500,7 @@ void Kaffeine_RastPortOut(struct KaffeineContext *ctx, ULONG guest, struct RastP
     g[G_RP_DRAWMODE] = (UBYTE)rp->DrawMode;
     g[G_RP_AREAPTSZ] = (UBYTE)rp->AreaPtSz;
     g[G_RP_LINPATCNT] = (UBYTE)rp->linpatcnt;
-    m68k_write16(ctx, guest + G_RP_FLAGS, rp->Flags);
+    m68k_write16(ctx, guest + G_RP_FLAGS, guest_flags(ctx, guest, rp->Flags));
     m68k_write16(ctx, guest + G_RP_LINEPTRN, rp->LinePtrn);
     m68k_write16(ctx, guest + G_RP_CP_X, (UWORD)rp->cp_x);
     m68k_write16(ctx, guest + G_RP_CP_Y, (UWORD)rp->cp_y);
@@ -498,27 +594,11 @@ static void settle(struct KaffeineContext *ctx)
 struct RastPort *Kaffeine_RastPortIn(struct KaffeineContext *ctx, ULONG guest)
 {
     struct RastPort *rp = Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_RASTPORT);
-    const UBYTE *g;
     ULONG i;
 
     if (!rp)
         return NULL;
-    g = ctx->mem + guest;
-    rp->Mask = g[G_RP_MASK];
-    rp->FgPen = (BYTE)g[G_RP_FGPEN];
-    rp->BgPen = (BYTE)g[G_RP_BGPEN];
-    rp->AOlPen = (BYTE)g[G_RP_AOLPEN];
-    rp->DrawMode = (BYTE)g[G_RP_DRAWMODE];
-    rp->AreaPtSz = (BYTE)g[G_RP_AREAPTSZ];
-    rp->linpatcnt = (BYTE)g[G_RP_LINPATCNT];
-    rp->Flags = m68k_read16(ctx, guest + G_RP_FLAGS);
-    rp->LinePtrn = m68k_read16(ctx, guest + G_RP_LINEPTRN);
-    rp->cp_x = (WORD)m68k_read16(ctx, guest + G_RP_CP_X);
-    rp->cp_y = (WORD)m68k_read16(ctx, guest + G_RP_CP_Y);
-    rp->PenWidth = (WORD)m68k_read16(ctx, guest + G_RP_PENWIDTH);
-    rp->PenHeight = (WORD)m68k_read16(ctx, guest + G_RP_PENHEIGHT);
-    rp->AlgoStyle = g[G_RP_ALGOSTYLE];
-    rp->TxSpacing = (WORD)m68k_read16(ctx, guest + G_RP_TXSPACING);
+    scalars_in(ctx, guest, rp);
     /* Settle it right after the thunk, once even when used twice. */
     for (i = 0; i < KAFFEINE_MAX_SETTLE; i++)
         if (!ctx->settle_rastports[i] || ctx->settle_rastports[i] == guest)

@@ -793,7 +793,7 @@ static void screen_image(Fixture &f, ULONG g, Screen &s, ULONG ta, ULONG tf, ULO
     const auto &rp = s.RastPort;
     want[RP + 24] = rp.Mask; want[RP + 25] = rp.FgPen; want[RP + 26] = rp.BgPen;
     want[RP + 27] = rp.AOlPen; want[RP + 28] = rp.DrawMode; want[RP + 29] = rp.AreaPtSz;
-    want[RP + 30] = rp.linpatcnt; w(RP + 32, rp.Flags); w(RP + 34, rp.LinePtrn);
+    want[RP + 30] = rp.linpatcnt; w(RP + 32, rp.Flags & 0x2F); w(RP + 34, rp.LinePtrn);
     w(RP + 36, rp.cp_x); w(RP + 38, rp.cp_y);
     std::copy(std::begin(rp.minterms), std::end(rp.minterms), want.begin() + RP + 40);
     w(RP + 48, rp.PenWidth); w(RP + 50, rp.PenHeight); l(RP + RP_FONT, tf);

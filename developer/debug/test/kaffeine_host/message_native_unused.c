@@ -6,6 +6,17 @@
 struct Task;
 struct MsgPort;
 struct IORequest;
+struct RastPort;
+struct Image;
+struct Border;
+__attribute__((weak)) void *AllocVec(unsigned int size, unsigned int flags)
+{ (void)size; (void)flags; abort(); }
+__attribute__((weak)) void FreeVec(void *memory) { (void)memory; abort(); }
+__attribute__((weak)) void DrawImage(struct RastPort *rp, struct Image *image, short x, short y)
+{ (void)rp; (void)image; (void)x; (void)y; abort(); }
+__attribute__((weak)) void DrawBorder(struct RastPort *rp, struct Border *border, short x, short y)
+{ (void)rp; (void)border; (void)x; (void)y; abort(); }
+__attribute__((weak)) void WaitBlit(void) { abort(); }
 __attribute__((weak)) void Signal(struct Task *task, unsigned int bits)
 { (void)task; (void)bits; abort(); }
 __attribute__((weak)) struct Task *FindTask(const char *name)

@@ -5,17 +5,26 @@
     host dispatch tests. The graphics calls here take the 68k RastPort of a
     window or a screen (kaffeine_rastport.c). ReadPixel also reads bounded,
     unlayered guest planar bitmaps directly. Caller-owned classic RastPorts support bounded initialization and font-only
-    operations through temporary native structures. Other guest-built RastPorts
-    stop with return code 20 instead of reaching native graphics.library.
+    operations through temporary native structures, and the pointer-free
+    state calls (pens, drawing mode, Move) through a temporary native
+    RastPort with only its scalars. Other guest-built RastPorts, and every
+    drawing call on a caller-owned one, stop with return code 20 instead of
+    reaching native graphics.library. AllocRaster() planes are ordinary
+    guest heap allocations.
 */
 
 #include <aros/debug.h>
+#include <exec/memory.h>
+#include <proto/exec.h>
 #include <graphics/rastport.h>
 #include <graphics/text.h>
 #include <proto/graphics.h>
+#include <proto/intuition.h>
 #include <string.h>
 
 #include "kaffeine_intern.h"
+#include "kaffeine_messages.h"
+#include "kaffeine_copy.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_fontattr.h"
@@ -64,16 +73,20 @@ static IPTR refuse(struct KaffeineContext *ctx, const char *why)
 }
 
 /* For the generated thunks: the native RastPort behind the 68k RastPort of
-   a window or a screen, or as before the native object of another shadow
-   or the guest bytes themselves. */
+   a window or a screen. Anything else, the shadow of another object and
+   raw guest bytes included, stops the program and gives NULL, for which
+   the thunk returns ctx->exit_code before any native call. */
 struct RastPort *resolve_rp(struct KaffeineContext *ctx, ULONG m68k_rp)
 {
     struct RastPort *rp = Kaffeine_RastPortIn(ctx, m68k_rp);
 
-    if (rp) return rp;
-    rp = (struct RastPort *)shadow_lookup(ctx, m68k_rp);
-    if (rp) return rp;
-    return (struct RastPort *)m68k_to_host(ctx, m68k_rp);
+    if (!rp)
+    {
+        bug("[kaffeine] resolve_rp(%08lx): not the RastPort of a window or a screen\n",
+            (unsigned long)m68k_rp);
+        refuse(ctx, "only the RastPort of a window or a screen reaches graphics.library");
+    }
+    return rp;
 }
 
 /* For the manual thunks: only the 68k RastPort of a window or a screen.
@@ -92,6 +105,51 @@ static struct RastPort *rastport(struct KaffeineContext *ctx, ULONG guest, const
     return rp;
 }
 
+/* Intuition follows these classic chains itself. Reuse the checked
+   two-pass copies used by requester/gadget rendering, including native
+   WORD border coordinates. Planar image bytes stay in the guest arena.
+   No guest structure or unconverted pointer reaches native Intuition. */
+static IPTR draw_classic(struct KaffeineContext *ctx, void *cpu, BOOL image)
+{
+    ULONG guest = THUNK_A(1);
+    struct RastPort *rp = rastport(ctx, THUNK_A(0), image ? "DrawImage" : "DrawBorder");
+    struct KaffeineCopy copy;
+    APTR block, native;
+
+    if (!rp) return ctx->exit_code;
+    if (!guest) return 0;
+    memset(&copy, 0, sizeof(copy));
+    if (image) Kaffeine_CopyImages(ctx, &copy, guest);
+    else Kaffeine_CopyBorders(ctx, &copy, guest);
+    if (copy.why)
+    {
+        bug("[kaffeine] %s(): %s\n", image ? "DrawImage" : "DrawBorder", copy.why);
+        return refuse(ctx, "Intuition drawing data that cannot be converted");
+    }
+    block = AllocVec(copy.used, MEMF_CLEAR);
+    if (!block) return refuse(ctx, "no memory for Intuition drawing data");
+    Kaffeine_CopyFill(&copy, block);
+    native = image ? (APTR)Kaffeine_CopyImages(ctx, &copy, guest) :
+                     (APTR)Kaffeine_CopyBorders(ctx, &copy, guest);
+    if (copy.why || !native)
+    {
+        FreeVec(block);
+        return refuse(ctx, "Intuition drawing data changed during conversion");
+    }
+    ctx->bitmap_blits++;
+    if (image) DrawImage(rp, (struct Image *)native, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
+    else DrawBorder(rp, (struct Border *)native, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
+    WaitBlit();
+    ctx->bitmap_blits--;
+    FreeVec(block);
+    return 0;
+}
+
+IPTR thunk_intuition_DrawImage(struct KaffeineContext *ctx, void *cpu)
+{ return draw_classic(ctx, cpu, TRUE); }
+IPTR thunk_intuition_DrawBorder(struct KaffeineContext *ctx, void *cpu)
+{ return draw_classic(ctx, cpu, FALSE); }
+
 /* A caller-owned classic RastPort may be used for font operations without
    registering a persistent native object. Never reinterpret its bytes as
    native pointers, or accept the storage of a registered graphics object. */
@@ -107,6 +165,62 @@ static BOOL plain_rastport(struct KaffeineContext *ctx, ULONG guest)
              overlaps(guest, M68K_SIZEOF_RASTPORT, ctx->shadow_map[i].m68k_addr, M68K_SIZEOF_RASTPORT)))
             return FALSE;
     return TRUE;
+}
+
+/* Storage of a caller-owned classic RastPort for state calls: 100 word
+   aligned bytes of ordinary guest memory, in the heap, a hunk or the
+   stack alike, sharing no byte with a registered object (a 68k RastPort,
+   Window or Screen among them), a file, a port, a protected IORequest, a
+   queued message, a 68k TextFont, free or bridge-owned heap memory, a
+   library base with its jump table or the memory snapshot. */
+static BOOL state_storage(struct KaffeineContext *ctx, ULONG guest)
+{
+    UWORD i;
+
+    if ((guest & 1) || !Kaffeine_MessageMemory(ctx, guest, M68K_SIZEOF_RASTPORT) ||
+        !Kaffeine_HeapGuestRange(ctx, guest, M68K_SIZEOF_RASTPORT) ||
+        in_font(ctx, guest, M68K_SIZEOF_RASTPORT) ||
+        (ctx->memory_info &&
+         overlaps(guest, M68K_SIZEOF_RASTPORT, ctx->memory_info, KAFFEINE_MEMINFO_SIZE)))
+        return FALSE;
+    for (i = 0; i < ctx->num_libs; i++)
+        if (ctx->libs[i].m68k_addr >= ctx->libs[i].jt_start &&
+            overlaps(guest, M68K_SIZEOF_RASTPORT, ctx->libs[i].jt_start,
+                     ctx->libs[i].m68k_addr - ctx->libs[i].jt_start + ctx->libs[i].pos_size))
+            return FALSE;
+    return TRUE;
+}
+
+/* The native RastPort for a state call (SetAPen() ... Move()): that of a
+   window or a screen, settled after the thunk as before, or else a
+   temporary one in *temporary for a caller-owned classic RastPort, with
+   its scalars only and a copy in *before (Kaffeine_RastPortStateIn()).
+   Anything else stops the program, and the thunk returns ctx->exit_code. */
+static struct RastPort *state_rastport(struct KaffeineContext *ctx, ULONG guest,
+                                       struct RastPort *temporary, struct RastPort *before,
+                                       const char *call)
+{
+    struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
+
+    if (rp)
+        return rp;
+    if (!state_storage(ctx, guest))
+    {
+        bug("[kaffeine] %s(%08lx): not a RastPort of the program\n", call, (unsigned long)guest);
+        refuse(ctx, "a RastPort state call on unsupported storage");
+        return NULL;
+    }
+    Kaffeine_RastPortStateIn(ctx, guest, temporary);
+    *before = *temporary;
+    return temporary;
+}
+
+/* After the native state call: the changed scalars of a temporary back. */
+static void state_return(struct KaffeineContext *ctx, ULONG guest, const struct RastPort *rp,
+                         const struct RastPort *temporary, const struct RastPort *before)
+{
+    if (rp == temporary)
+        Kaffeine_RastPortStateOut(ctx, guest, before, rp);
 }
 
 /* graphics -198: initialize exactly the classic 100 bytes, using a
@@ -376,11 +490,14 @@ IPTR thunk_gfx_TextFit(struct KaffeineContext *ctx, void *cpu)
 /* graphics -240: Move(A1=rp, D0=x, D1=y) */
 IPTR thunk_gfx_Move(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(1), "Move");
+    ULONG guest = THUNK_A(1);
+    struct RastPort temporary, before;
+    struct RastPort *rp = state_rastport(ctx, guest, &temporary, &before, "Move");
 
     if (!rp)
         return ctx->exit_code;
     Move(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
+    state_return(ctx, guest, rp, &temporary, &before);
     return 0;
 }
 
@@ -468,51 +585,64 @@ IPTR thunk_gfx_WritePixel(struct KaffeineContext *ctx, void *cpu)
 /* graphics -342: SetAPen(A1=rp, D0=pen) */
 IPTR thunk_gfx_SetAPen(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(1), "SetAPen");
+    ULONG guest = THUNK_A(1);
+    struct RastPort temporary, before;
+    struct RastPort *rp = state_rastport(ctx, guest, &temporary, &before, "SetAPen");
 
     if (!rp)
         return ctx->exit_code;
     SetAPen(rp, THUNK_D(0));
+    state_return(ctx, guest, rp, &temporary, &before);
     return 0;
 }
 
 /* graphics -348: SetBPen(A1=rp, D0=pen) */
 IPTR thunk_gfx_SetBPen(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(1), "SetBPen");
+    ULONG guest = THUNK_A(1);
+    struct RastPort temporary, before;
+    struct RastPort *rp = state_rastport(ctx, guest, &temporary, &before, "SetBPen");
 
     if (!rp)
         return ctx->exit_code;
     SetBPen(rp, THUNK_D(0));
+    state_return(ctx, guest, rp, &temporary, &before);
     return 0;
 }
 
 /* graphics -354: SetDrMd(A1=rp, D0=mode) */
 IPTR thunk_gfx_SetDrMd(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(1), "SetDrMd");
+    ULONG guest = THUNK_A(1);
+    struct RastPort temporary, before;
+    struct RastPort *rp = state_rastport(ctx, guest, &temporary, &before, "SetDrMd");
 
     if (!rp)
         return ctx->exit_code;
     SetDrMd(rp, THUNK_D(0));
+    state_return(ctx, guest, rp, &temporary, &before);
     return 0;
 }
 
 /* graphics -894: SetABPenDrMd(A1=rp, D0=apen, D1=bpen, D2=mode) */
 IPTR thunk_gfx_SetABPenDrMd(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(1), "SetABPenDrMd");
+    ULONG guest = THUNK_A(1);
+    struct RastPort temporary, before;
+    struct RastPort *rp = state_rastport(ctx, guest, &temporary, &before, "SetABPenDrMd");
 
     if (!rp)
         return ctx->exit_code;
     SetABPenDrMd(rp, THUNK_D(0), THUNK_D(1), THUNK_D(2));
+    state_return(ctx, guest, rp, &temporary, &before);
     return 0;
 }
 
 /* graphics -858: GetAPen(A0=rp) -> D0 */
 IPTR thunk_gfx_GetAPen(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(0), "GetAPen");
+    struct RastPort temporary, before;
+    struct RastPort *rp = state_rastport(ctx, THUNK_A(0), &temporary, &before, "GetAPen");
 
     return rp ? (IPTR)GetAPen(rp) : (IPTR)ctx->exit_code;
 }
@@ -520,7 +650,8 @@ IPTR thunk_gfx_GetAPen(struct KaffeineContext *ctx, void *cpu)
 /* graphics -864: GetBPen(A0=rp) -> D0 */
 IPTR thunk_gfx_GetBPen(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(0), "GetBPen");
+    struct RastPort temporary, before;
+    struct RastPort *rp = state_rastport(ctx, THUNK_A(0), &temporary, &before, "GetBPen");
 
     return rp ? (IPTR)GetBPen(rp) : (IPTR)ctx->exit_code;
 }
@@ -528,7 +659,8 @@ IPTR thunk_gfx_GetBPen(struct KaffeineContext *ctx, void *cpu)
 /* graphics -870: GetDrMd(A0=rp) -> D0 */
 IPTR thunk_gfx_GetDrMd(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(0), "GetDrMd");
+    struct RastPort temporary, before;
+    struct RastPort *rp = state_rastport(ctx, THUNK_A(0), &temporary, &before, "GetDrMd");
 
     return rp ? (IPTR)GetDrMd(rp) : (IPTR)ctx->exit_code;
 }
@@ -536,9 +668,48 @@ IPTR thunk_gfx_GetDrMd(struct KaffeineContext *ctx, void *cpu)
 /* graphics -876: GetOutlinePen(A0=rp) -> D0 */
 IPTR thunk_gfx_GetOutlinePen(struct KaffeineContext *ctx, void *cpu)
 {
-    struct RastPort *rp = rastport(ctx, THUNK_A(0), "GetOutlinePen");
+    struct RastPort temporary, before;
+    struct RastPort *rp = state_rastport(ctx, THUNK_A(0), &temporary, &before, "GetOutlinePen");
 
     return rp ? (IPTR)GetOutlinePen(rp) : (IPTR)ctx->exit_code;
+}
+
+/* The bytes of a plane of width x height pixels, as RASSIZE() of
+   graphics/gfx.h: rows rounded up to 16 pixels. 0 for an empty plane, a
+   row beyond the 16-bit mask of RASSIZE(), or more than the arena. */
+static ULONG raster_size(struct KaffeineContext *ctx, ULONG width, ULONG height)
+{
+    unsigned long long row = (((unsigned long long)width + 15) >> 4) * 2;
+    unsigned long long size = row * height;
+
+    return row > 0xFFFE || size > ctx->mem_size ? 0 : (ULONG)size;
+}
+
+/* graphics -492: AllocRaster(D0=width, D1=height) -> D0. As AROS,
+   AllocMem(RASSIZE()) of chip memory, here an ordinary allocation of the
+   guest heap, which FreeRaster() and FreeMem() of that size free. No
+   native plane is made. 0 for an empty, overflowing or oversized plane. */
+IPTR thunk_gfx_AllocRaster(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG size = raster_size(ctx, THUNK_D(0), THUNK_D(1));
+
+    return size ? Kaffeine_HeapAlloc(ctx, size, MEMF_CHIP | MEMF_PUBLIC) : 0;
+}
+
+/* graphics -498: FreeRaster(A0=p, D0=width, D1=height). As AROS, with the
+   UWORD width and height, FreeMem(p, RASSIZE()); nothing for NULL. Only
+   exactly an ordinary heap allocation of that size is freed; anything
+   else stops the program before any memory changes. */
+IPTR thunk_gfx_FreeRaster(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG plane = THUNK_A(0), size;
+
+    if (!plane)
+        return 0;
+    size = raster_size(ctx, (UWORD)THUNK_D(0), (UWORD)THUNK_D(1));
+    if (!size || !Kaffeine_HeapFreeExact(ctx, plane, size))
+        return refuse(ctx, "FreeRaster(): not a raster of that size from AllocRaster()");
+    return 0;
 }
 
 /* graphics -396: ScrollRaster(A1=rp, D0=dx, D1=dy, D2=xMin, D3=yMin, D4=xMax, D5=yMax) */

@@ -1,5 +1,6 @@
 #pragma once
 #include <exec/types.h>
+#include <graphics/gfx.h>
 #include <graphics/rastport.h>
 #include <graphics/text.h>
 #include <graphics/displayinfo.h>
@@ -37,6 +38,12 @@ ULONG TextFit(struct RastPort *rp, CONST_STRPTR string, ULONG strLen,
 void Move(struct RastPort *rp, WORD x, WORD y);
 void Draw(struct RastPort *rp, WORD x, WORD y);
 void RectFill(struct RastPort *rp, WORD xMin, WORD yMin, WORD xMax, WORD yMax);
+void SetRast(struct RastPort *rp, UBYTE pen);
+void PolyDraw(struct RastPort *rp, WORD count, WORD *points);
+void BltTemplate(PLANEPTR source, WORD xSrc, WORD srcMod, struct RastPort *rp,
+                 WORD xDest, WORD yDest, WORD width, WORD height);
+void ClipBlit(struct RastPort *src, WORD xSrc, WORD ySrc, struct RastPort *dest,
+              WORD xDest, WORD yDest, WORD width, WORD height, UBYTE minterm);
 LONG ReadPixel(struct RastPort *rp, WORD x, WORD y);
 LONG WritePixel(struct RastPort *rp, WORD x, WORD y);
 void SetAPen(struct RastPort *rp, ULONG pen);
@@ -52,6 +59,9 @@ void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy,
 struct Layer;
 BOOL AttemptLockLayerRom(struct Layer *layer);
 struct BitMap;
+/* Never called: AllocRaster() planes are guest heap allocations. */
+PLANEPTR AllocRaster(ULONG width, ULONG height);
+void FreeRaster(PLANEPTR p, ULONG width, ULONG height);
 void InitBitMap(struct BitMap *bm, BYTE depth, UWORD width, UWORD height);
 /* The native Region calls of the Region bridge (graphics.conf) */
 struct Region;

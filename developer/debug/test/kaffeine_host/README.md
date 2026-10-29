@@ -190,7 +190,7 @@ each mutation. The original rom/kaffeine stays unchanged.
 `make test` also runs `test_thunk_registrations.py`. Its default inputs are
 the AROS configuration files in this tree. Optional NDK and AROS FD inputs
 can extend the audit; use the script's `--help` for the available options.
-The audit covers 333 explicit native-vector cases and 564 manual thunk
+The audit covers 337 explicit native-vector cases and 568 manual thunk
 registrations across 20 tables. External SDK files are not included in this
 repository.
 
