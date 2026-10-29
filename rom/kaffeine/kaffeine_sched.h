@@ -2,7 +2,8 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
     Cooperative scheduler for classic 68k tasks that a program adds with
-    AddTask(). See kaffeine_sched.c.
+    AddTask(), and processes that it makes with CreateProc(). See
+    kaffeine_sched.c.
 */
 #ifndef KAFFEINE_SCHED_H
 #define KAFFEINE_SCHED_H
@@ -19,6 +20,11 @@ struct MsgPort;
 /* Smallest stack from the initial tc_SPReg down to tc_SPLower. A child runs
    in supervisor mode on that stack, so exception frames land there too. */
 #define KAFFEINE_TASK_MIN_STACK  256
+/* CreateProc(): the largest stack that the guest heap gives a Process, the
+   longest name and the most seglist entries that it accepts */
+#define KAFFEINE_PROC_MAX_STACK  (256 * 1024)
+#define KAFFEINE_PROC_MAX_NAME   255
+#define KAFFEINE_PROC_MAX_SEGS   64
 
 /* ExecBase TDNestCnt and IDNestCnt: the guest bytes are the Forbid() and
    Disable() nesting of the current guest task, -1 when it allows switches,
@@ -43,8 +49,8 @@ struct KaffeineCPUFactory
 typedef IPTR (*KaffeineTaskRetry)(struct KaffeineContext *ctx, void *cpu);
 
 /* Entry points behind ctx->task_ops. Other files reach the scheduler only
-   through them, so that they link without it. Except add_task/set_task_pri, they are
-   called only while ctx->sched is set. */
+   through them, so that they link without it. Except add_task/set_task_pri/
+   create_proc, they are called only while ctx->sched is set. */
 struct KaffeineTaskOps
 {
     IPTR  (*add_task)(struct KaffeineContext *ctx, void *cpu);       /* -282 */
@@ -73,6 +79,18 @@ struct KaffeineTaskOps
     void  (*send_signal)(struct KaffeineContext *ctx, ULONG task, ULONG signals);
     BOOL  (*block_guest_port)(struct KaffeineContext *ctx, ULONG port,
                               KaffeineTaskRetry retry, IPTR *result);
+    /* dos.library -138: CreateProc(D1=name, D2=pri, D3=seglist, D4=stack)
+       of the root -> pr_MsgPort of a guest Process, or 0 with the IoErr()
+       in *ioerr; what Exec could not use stops the program. */
+    IPTR  (*create_proc)(struct KaffeineContext *ctx, void *cpu, LONG *ioerr);
+    /* pr_MsgPort of owner, a live CreateProc() child, whose SIGB_DOS is a
+       guest signal of that child alone */
+    BOOL  (*process_port)(struct KaffeineContext *ctx, ULONG port, ULONG owner);
+    /* Before any dos.library call, lvo, of the current task: FALSE lets it
+       go to its thunk. A CreateProc() child has no DOS context, so its
+       Exit() ends that child alone and every other call stops the program;
+       *result is D0 then. */
+    BOOL  (*process_dos)(struct KaffeineContext *ctx, void *cpu, ULONG lvo, IPTR *result);
 };
 
 #ifdef __cplusplus
@@ -91,6 +109,7 @@ IPTR Kaffeine_TaskSetPri(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_TaskSetSignal(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_TaskWait(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_TaskSignal(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_ProcCreate(struct KaffeineContext *ctx, void *cpu, LONG *ioerr);
 
 #ifdef __cplusplus
 }

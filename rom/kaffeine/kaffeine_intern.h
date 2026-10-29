@@ -121,6 +121,7 @@ struct M68KFakeLibBase
     const struct M68KThunkEntry *gen_thunks;
     ULONG   num_gen_thunks;
     char    name[32];           /* library name for OpenLibrary matching */
+    BOOL    dos;                /* dos.library: no call of a CreateProc() child reaches it */
 };
 
 /* Map library names to fake base addresses for OpenLibrary */
@@ -224,8 +225,9 @@ struct KaffeineContext
        A flush by one CPU invalidates the others at their next slice. */
     unsigned long long jit_generation;
     /* Guest tasks (kaffeine_sched.c): the scheduler while the program has
-       AddTask() children, else NULL; its entry points, without which
-       AddTask() stops the program; and the backend's CPU factory while its
+       AddTask() or CreateProc() children, else NULL; its entry points,
+       without which AddTask() stops the program and CreateProc() fails;
+       and the backend's CPU factory while its
        Kaffeine_Execute() runs. Children are never native Exec tasks. */
     struct KaffeineScheduler *sched;
     const struct KaffeineTaskOps *task_ops;
@@ -508,6 +510,10 @@ LONG   Kaffeine_Execute(struct KaffeineContext *ctx);
 ULONG  Kaffeine_HeapAlloc(struct KaffeineContext *ctx, ULONG size, ULONG requirements);
 ULONG  Kaffeine_HeapAllocAbs(struct KaffeineContext *ctx, ULONG size, ULONG addr);
 ULONG  Kaffeine_HeapAllocEntry(struct KaffeineContext *ctx, ULONG entry);
+/* AllocEntry() of a bridge-owned specification: count pairs of requirements
+   and length in native memory. The guest MemList, or bit 31 on failure,
+   which leaves nothing allocated; Kaffeine_HeapFreeEntry() frees it. */
+ULONG  Kaffeine_HeapAllocList(struct KaffeineContext *ctx, const ULONG *spec, UWORD count);
 void   Kaffeine_HeapFreeEntry(struct KaffeineContext *ctx, ULONG entry);
 BOOL   Kaffeine_HeapInit(struct KaffeineContext *ctx);
 void   Kaffeine_HeapFree(struct KaffeineContext *ctx, ULONG addr, ULONG size);

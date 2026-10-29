@@ -31,12 +31,20 @@
     the scheduler destroys its CPU at the next slice boundary, then frees
     the MemLists of its tc_MemEntry that the guest heap made. A fault or a
     refused operation in any task stops the whole program, with its D0.
+
+    CreateProc() of the root makes a child that is a guest Process: Process,
+    stack, name and SegArray in one guest heap MemList of its tc_MemEntry,
+    the seglist the caller's. Its SIGB_DOS is a guest signal of that child
+    alone, never a native bit, for its pr_MsgPort. It has no DOS context:
+    no streams, current directory or CLI, and no dos.library call of it
+    reaches native DOS, which would act for the root's native process.
 */
 
 #include <aros/debug.h>
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <exec/ports.h>
+#include <dos/dos.h>
 #include <proto/exec.h>
 #include <string.h>
 
@@ -56,10 +64,15 @@ enum
     TC_TRAPCODE = 50, TC_SPREG = 54, TC_SPLOWER = 58, TC_SPUPPER = 62,
     TC_SWITCH = 66, TC_LAUNCH = 70, TC_MEMENTRY = 74, TC_SIZE = 92,
     LH_TAIL = 4, LH_TAILPRED = 8, MEMLIST_HEADER = 16,
-    G_NT_TASK = 1,
+    G_NT_TASK = 1, G_NT_MSGPORT = 4, G_NT_MESSAGE = 5, G_NT_MEMORY = 10, G_NT_PROCESS = 13,
     G_TS_RUN = 2, G_TS_READY = 3, G_TS_WAIT = 4, G_TS_REMOVED = 6,
     /* MemLists of one task that RemTask() frees */
-    MAX_MEMENTRY = 32
+    MAX_MEMENTRY = 32,
+    /* The classic Process past its Task, dos/dosextens.h of the NDK */
+    MP_FLAGS = 14, MP_SIGBIT = 15, MP_SIGTASK = 16, MP_MSGLIST = 20, LH_TYPE = 12,
+    PR_LOCALVARS = 208,
+    /* dos.library Exit() */
+    DOS_EXIT_LVO = 144
 };
 #define SYSTEM_SIGNALS 0x0000FFFFUL  /* the classic SysBase->TaskSigAlloc */
 #define TASK_SR        0x2000        /* supervisor: exception frames use the task's stack */
@@ -82,6 +95,7 @@ struct GuestTask
     ULONG lower;                /* a child's tc_SPLower */
     ULONG upper;                /* full stack reservation, including live frames */
     ULONG turn;                 /* when it last got the CPU */
+    ULONG size;                 /* a child's reserved TCB: TC_SIZE, or a Process */
 };
 
 struct KaffeineScheduler
@@ -185,6 +199,12 @@ static struct GuestTask *task_of(struct KaffeineScheduler *s, ULONG tcb)
             return t;
     }
     return NULL;
+}
+
+/* A child of CreateProc(): a guest Process without DOS context */
+static BOOL is_process(struct KaffeineScheduler *s, const struct GuestTask *t)
+{
+    return t && t != &s->root && t->size == M68K_SIZEOF_PROCESS;
 }
 
 static unsigned children(struct KaffeineScheduler *s)
@@ -707,7 +727,8 @@ static BOOL code_address(struct KaffeineContext *ctx, ULONG pc)
     return !(pc & 1) && pc >= KAFFEINE_VECTORS_SIZE && arena(ctx, pc, 2);
 }
 
-/* Bytes of another guest task: its Task and its entire reserved stack. */
+/* Bytes of another guest task: its Task, all of a Process, and its entire
+   reserved stack. */
 static BOOL claimed(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
                     ULONG addr, ULONG size)
 {
@@ -723,11 +744,53 @@ static BOOL claimed(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
 
         if (t->state == SLOT_FREE)
             continue;
-        if (overlap(addr, size, t->tcb, TC_SIZE) ||
+        if (overlap(addr, size, t->tcb, t->size) ||
             overlap(addr, size, t->lower, t->upper - t->lower))
             return TRUE;
     }
     return FALSE;
+}
+
+/* A new child in slot t: its CPU at initial in supervisor mode, all other
+   registers 0 apart from A7, then the state that the scheduler keeps. */
+static void start_guest(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
+                        struct GuestTask *t, struct KaffeineCPU *handle, struct KaffeineCPU *root,
+                        ULONG tcb, ULONG size, ULONG initial, ULONG sp, ULONG lower, ULONG upper,
+                        ULONG alloc)
+{
+    unsigned i;
+
+    for (i = 0; i < 8; i++)
+    {
+        Kaffeine_SetD(handle, i, 0);
+        if (i < 7)
+            Kaffeine_SetA(handle, i, 0);
+    }
+    /* SR first: A7 is then the stack pointer of that mode. */
+    Kaffeine_SetSR(handle, (UWORD)(TASK_SR | (Kaffeine_GetSR(root) & 0x0700)));
+    Kaffeine_SetA(handle, 7, sp);
+    Kaffeine_SetPC(handle, initial);
+
+    t->tcb = tcb;
+    t->cpu = handle;
+    t->state = SLOT_READY;
+    t->pri = (BYTE)ctx->mem[tcb + TC_PRI];
+    t->nest[0] = t->nest[1] = 0xFF;
+    t->alloc = alloc;
+    t->lower = lower;
+    t->upper = upper;
+    t->size = size;
+    mirror(ctx, s, t);
+    if (t->pri > s->current->pri)
+        s->reschedule = TRUE;
+    publish(ctx, s);
+}
+
+static ULONG initial_sigalloc(struct KaffeineContext *ctx, ULONG alloc)
+{
+    if (!alloc && execbase(ctx))
+        alloc = m68k_read32(ctx, ctx->m68k_sysbase + KAFFEINE_EXECBASE_TASKSIGALLOC);
+    return alloc ? alloc : SYSTEM_SIGNALS;
 }
 
 /* -282: AddTask(A1=task, A2=initialPC, A3=finalPC) -> D0=task or NULL.
@@ -808,39 +871,200 @@ IPTR Kaffeine_TaskAdd(struct KaffeineContext *ctx, void *cpu)
     ctx->mem[tcb + TC_IDNESTCNT] = 0xFF;
     ctx->mem[tcb + TC_TDNESTCNT] = 0xFF;
     m68k_write32(ctx, tcb + TC_SIGEXCEPT, 0);
-    alloc = m68k_read32(ctx, tcb + TC_SIGALLOC);
-    if (!alloc && execbase(ctx))
-        alloc = m68k_read32(ctx, ctx->m68k_sysbase + KAFFEINE_EXECBASE_TASKSIGALLOC);
-    if (!alloc)
-        alloc = SYSTEM_SIGNALS;
+    alloc = initial_sigalloc(ctx, m68k_read32(ctx, tcb + TC_SIGALLOC));
     sp -= 4;
     m68k_write32(ctx, sp, final ? final : KAFFEINE_TASK_EXIT_ADDR);
     m68k_write32(ctx, tcb + TC_SPREG, sp);
 
-    for (i = 0; i < 8; i++)
-    {
-        Kaffeine_SetD(handle, i, 0);
-        if (i < 7)
-            Kaffeine_SetA(handle, i, 0);
-    }
-    /* SR first: A7 is then the stack pointer of that mode. */
-    Kaffeine_SetSR(handle, (UWORD)(TASK_SR | (Kaffeine_GetSR(root) & 0x0700)));
-    Kaffeine_SetA(handle, 7, sp);
-    Kaffeine_SetPC(handle, initial);
-
-    t->tcb = tcb;
-    t->cpu = handle;
-    t->state = SLOT_READY;
-    t->pri = (BYTE)ctx->mem[tcb + TC_PRI];
-    t->nest[0] = t->nest[1] = 0xFF;
-    t->alloc = alloc;
-    t->lower = lower;
-    t->upper = upper;
-    mirror(ctx, s, t);
-    if (t->pri > s->current->pri)
-        s->reschedule = TRUE;
-    publish(ctx, s);
+    start_guest(ctx, s, t, handle, root, tcb, TC_SIZE, initial, sp, lower, upper, alloc);
     return tcb;
+}
+
+/* ── CreateProc() ────────────────────────────────────────────────── */
+
+/* The first segment of a seglist: a chain of at most KAFFEINE_PROC_MAX_SEGS
+   [next BPTR][code] segments in the guest heap, without a cycle, whose
+   first has code at seg + 4. Nothing here follows that code. */
+static ULONG seglist_start(struct KaffeineContext *ctx, ULONG bptr)
+{
+    ULONG seen[KAFFEINE_PROC_MAX_SEGS];
+    unsigned n = 0, j;
+
+    while (bptr)
+    {
+        ULONG seg;
+
+        if (n == KAFFEINE_PROC_MAX_SEGS || bptr >= 0x40000000UL)
+            return 0;
+        seg = bptr << 2;
+        if (seg < KAFFEINE_HEAP_BASE || !arena(ctx, seg, 8))
+            return 0;
+        for (j = 0; j < n; j++)
+            if (seen[j] == seg)
+                return 0;
+        seen[n++] = seg;
+        bptr = m68k_read32(ctx, seg);
+    }
+    return n && code_address(ctx, seen[0] + 4) ? seen[0] : 0;
+}
+
+/* CreateProc(D1=name, D2=pri, D3=seglist, D4=stackSize) of the root -> D0
+   pr_MsgPort. Everything is checked before anything changes; what Exec or
+   DOS could not use stops the program, a full table, a failed CPU or a
+   guest heap without room returns 0 with ERROR_NO_FREE_STORE and leaves
+   nothing allocated. The Process starts as NewAddTask() starts a Task, at
+   seg + 4 with the end address and the stack size on its stack, D0 0, A0
+   an empty argument string and A6 SysBase. */
+IPTR Kaffeine_ProcCreate(struct KaffeineContext *ctx, void *cpu, LONG *ioerr)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct KaffeineCPU *caller = (struct KaffeineCPU *)cpu, *root, *handle;
+    struct GuestTask *t;
+    ULONG bptr = THUNK_D(3), seg, stack, entry, proc, lower, upper, copy, segarray, sp, list, port;
+    LONG request = (LONG)THUNK_D(4);
+    ULONG spec[8];
+    const char *text;
+    char name[KAFFEINE_PROC_MAX_NAME + 1];
+    size_t length = 0;
+    unsigned i, slot;
+
+    *ioerr = 0;
+    if (!ctx->cpu_factory || !arena(ctx, ctx->guest_exec_task, M68K_SIZEOF_PROCESS) ||
+        ctx->cpu != caller || (s && s->current->cpu != caller))
+        return refuse(ctx, "CreateProc(): guest processes need a backend CPU factory and the root Task");
+    if (s && s->current != &s->root)
+    {
+        /* As before CreateProc(): only the root starts processes. */
+        bug("[kaffeine] CreateProc(): only the root task can create a process\n");
+        *ioerr = ERROR_NOT_IMPLEMENTED;
+        return 0;
+    }
+    root = s ? s->root.cpu : caller;
+    text = guest_string(ctx, THUNK_D(1));
+    if (!text || (length = strlen(text)) > KAFFEINE_PROC_MAX_NAME)
+        return refuse(ctx, "CreateProc(): the name is not a guest string of at most 255 bytes");
+    /* A copy now: allocation below may reuse free memory that held it. */
+    memcpy(name, text, length + 1);
+    seg = seglist_start(ctx, bptr);
+    if (!seg)
+        return refuse(ctx, "CreateProc(): the seglist is not a bounded chain of guest code");
+    stack = request > 0 ? (ULONG)request : 0;
+    if (stack > KAFFEINE_PROC_MAX_STACK)
+    {
+        bug("[kaffeine] CreateProc(%s): a stack of %lu bytes is more than the guest heap gives\n",
+            name, (unsigned long)stack);
+        *ioerr = ERROR_NO_FREE_STORE;
+        return 0;
+    }
+    stack = (stack + 3) & ~3UL;
+    if (stack < KAFFEINE_TASK_MIN_STACK + 8)
+        stack = KAFFEINE_TASK_MIN_STACK + 8;
+
+    for (slot = 0; s && slot < KAFFEINE_MAX_GUEST_TASKS && s->child[slot].state != SLOT_FREE; slot++)
+        ;
+    if (slot == KAFFEINE_MAX_GUEST_TASKS)
+    {
+        bug("[kaffeine] CreateProc(%s): already %d guest tasks\n", name, KAFFEINE_MAX_GUEST_TASKS);
+        *ioerr = ERROR_NO_FREE_STORE;
+        return 0;
+    }
+    handle = ctx->cpu_factory->create(ctx);
+    if (!handle)
+    {
+        *ioerr = ERROR_NO_FREE_STORE;
+        return 0;
+    }
+    /* The Process, its stack, its name, and its SegArray with a zero
+       longword after it, the empty argument string */
+    spec[0] = spec[2] = spec[4] = spec[6] = MEMF_PUBLIC | MEMF_CLEAR;
+    spec[1] = M68K_SIZEOF_PROCESS;
+    spec[3] = stack;
+    spec[5] = (ULONG)length + 1;
+    spec[7] = 20;
+    entry = Kaffeine_HeapAllocList(ctx, spec, 4);
+    if (entry & 0x80000000UL)
+    {
+        ctx->cpu_factory->destroy(ctx, handle);
+        *ioerr = ERROR_NO_FREE_STORE;
+        return 0;
+    }
+    proc = m68k_read32(ctx, entry + MEMLIST_HEADER);
+    lower = m68k_read32(ctx, entry + MEMLIST_HEADER + 8);
+    copy = m68k_read32(ctx, entry + MEMLIST_HEADER + 16);
+    segarray = m68k_read32(ctx, entry + MEMLIST_HEADER + 24);
+    upper = lower + stack;
+    /* What the heap made must be guest memory that no task holds, and the
+       seglist must have survived it unchanged. */
+    for (i = 0; i < 4; i++)
+    {
+        ULONG member = m68k_read32(ctx, entry + MEMLIST_HEADER + 8 * i), bytes = spec[2 * i + 1];
+
+        if ((member & 3) || member < KAFFEINE_HEAP_BASE || !arena(ctx, member, bytes) ||
+            !Kaffeine_GuestBytes(ctx, member, bytes) || claimed(ctx, s, member, bytes) ||
+            overlap(member, bytes, seg, 8))
+            break;
+    }
+    if (i < 4 || claimed(ctx, s, entry, MEMLIST_HEADER + 32) ||
+        overlap(entry, MEMLIST_HEADER + 32, seg, 8) || seglist_start(ctx, bptr) != seg)
+    {
+        Kaffeine_HeapFreeEntry(ctx, entry);
+        ctx->cpu_factory->destroy(ctx, handle);
+        return refuse(ctx, "CreateProc(): the guest heap gave memory that is not free for a process");
+    }
+    if (!s && !(s = activate(ctx, caller)))
+    {
+        Kaffeine_HeapFreeEntry(ctx, entry);
+        ctx->cpu_factory->destroy(ctx, handle);
+        *ioerr = ERROR_NO_FREE_STORE;
+        return 0;
+    }
+    t = &s->child[slot];
+
+    /* The Task, as AddTask() completes it, owning the MemList */
+    ctx->mem[entry + TC_TYPE] = G_NT_MEMORY;
+    list = proc + TC_MEMENTRY;
+    m68k_write32(ctx, list, entry);
+    m68k_write32(ctx, list + LH_TAIL, 0);
+    m68k_write32(ctx, list + LH_TAILPRED, entry);
+    m68k_write32(ctx, entry, list + LH_TAIL);
+    m68k_write32(ctx, entry + TC_PRED, list);
+    ctx->mem[proc + TC_TYPE] = G_NT_PROCESS;
+    ctx->mem[proc + TC_PRI] = (UBYTE)(BYTE)THUNK_D(2);
+    memcpy(ctx->mem + copy, name, length + 1);
+    m68k_write32(ctx, proc + TC_NAME, copy);
+    ctx->mem[proc + TC_IDNESTCNT] = 0xFF;
+    ctx->mem[proc + TC_TDNESTCNT] = 0xFF;
+    sp = upper - 8;
+    m68k_write32(ctx, sp, KAFFEINE_TASK_EXIT_ADDR);
+    m68k_write32(ctx, sp + 4, stack);
+    m68k_write32(ctx, proc + TC_SPREG, sp);
+    m68k_write32(ctx, proc + TC_SPLOWER, lower);
+    m68k_write32(ctx, proc + TC_SPUPPER, upper);
+    /* pr_MsgPort: PA_SIGNAL on the child's own SIGB_DOS */
+    port = proc + M68K_PR_MSGPORT;
+    ctx->mem[port + TC_TYPE] = G_NT_MSGPORT;
+    ctx->mem[port + MP_FLAGS] = 0;
+    ctx->mem[port + MP_SIGBIT] = SIGB_DOS;
+    m68k_write32(ctx, port + MP_SIGTASK, proc);
+    m68k_write32(ctx, port + MP_MSGLIST, port + MP_MSGLIST + LH_TAIL);
+    m68k_write32(ctx, port + MP_MSGLIST + LH_TAILPRED, port + MP_MSGLIST);
+    ctx->mem[port + MP_MSGLIST + LH_TYPE] = G_NT_MESSAGE;
+    /* SegArray { 3, 0, 0, seglist }: no BCPL segments, no global vector */
+    m68k_write32(ctx, segarray, 3);
+    m68k_write32(ctx, segarray + 12, bptr);
+    m68k_write32(ctx, proc + M68K_PR_SEGLIST, segarray >> 2);
+    m68k_write32(ctx, proc + M68K_PR_STACKSIZE, stack);
+    m68k_write32(ctx, proc + M68K_PR_STACKBASE, upper >> 2);
+    m68k_write32(ctx, proc + PR_LOCALVARS, proc + PR_LOCALVARS + LH_TAIL);
+    m68k_write32(ctx, proc + PR_LOCALVARS + LH_TAILPRED, proc + PR_LOCALVARS);
+
+    start_guest(ctx, s, t, handle, root, proc, M68K_SIZEOF_PROCESS, seg + 4, sp, lower, upper,
+                initial_sigalloc(ctx, 0) | SIGF_DOS);
+    Kaffeine_SetA(handle, 0, segarray + 16);
+    Kaffeine_SetA(handle, 6, ctx->m68k_sysbase);
+    bug("[kaffeine] CreateProc(%s): guest process %08lx, port %08lx, stack %lu\n",
+        name, (unsigned long)proc, (unsigned long)port, (unsigned long)stack);
+    return port;
 }
 
 /* ── Other Exec task functions ───────────────────────────────────── */
@@ -1119,8 +1343,42 @@ static BOOL sched_owns_signal(struct KaffeineContext *ctx, ULONG task, ULONG bit
     return t == &s->root ? !(child_bits(s) & bit) : (t->native & bit) == bit;
 }
 
+static BOOL sched_process_port(struct KaffeineContext *ctx, ULONG port, ULONG owner)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+
+    return s && is_process(s, task_of(s, owner)) && port == owner + M68K_PR_MSGPORT;
+}
+
+/* Before the thunk of every dos.library call: a CreateProc() child has no
+   DOS context of its own, and native DOS would act for the root's process. */
+static BOOL sched_process_dos(struct KaffeineContext *ctx, void *cpu, ULONG lvo, IPTR *result)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s->current;
+
+    if (!is_process(s, t))
+        return FALSE;
+    if (lvo == DOS_EXIT_LVO && !ctx->callback_depth && (struct KaffeineCPU *)cpu == t->cpu)
+    {
+        /* As RemTask(NULL): this child alone ends at the slice boundary. */
+        bug("[kaffeine] Exit() of guest process %08lx ends that process\n",
+            (unsigned long)t->tcb);
+        t->state = SLOT_REMOVED;
+        s->reschedule = TRUE;
+        mirror(ctx, s, t);
+        *result = 0;
+        return TRUE;
+    }
+    bug("[kaffeine] dos.library LVO -%lu of guest process %08lx\n",
+        (unsigned long)lvo, (unsigned long)t->tcb);
+    *result = refuse(ctx, "a CreateProc() process has no DOS context for dos.library");
+    return TRUE;
+}
+
 /* Queue geometry is checked by Kaffeine_GuestGetMsg before it calls here.
-   Only the receiving task can wait for its empty PA_SIGNAL port. */
+   Only the receiving task can wait for its empty PA_SIGNAL port; a child
+   Process also for its pr_MsgPort, on its own SIGB_DOS. */
 static BOOL sched_block_guest_port(struct KaffeineContext *ctx, ULONG port,
                                    KaffeineTaskRetry retry, IPTR *result)
 {
@@ -1131,7 +1389,8 @@ static BOOL sched_block_guest_port(struct KaffeineContext *ctx, ULONG port,
     owner = m68k_read32(ctx, port + 16);
     bit = ctx->mem[port + 15];
     if (ctx->mem[port + 14] || bit > 31 || owner != t->tcb ||
-        !sched_owns_signal(ctx, owner, 1UL << bit)) return FALSE;
+        !(sched_owns_signal(ctx, owner, 1UL << bit) ||
+          (bit == SIGB_DOS && sched_process_port(ctx, port, owner)))) return FALSE;
     if (ctx->callback_depth)
     {
         *result = refuse(ctx, "a callback cannot wait for a guest port");
@@ -1150,5 +1409,6 @@ const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
     Kaffeine_TaskSetSignal, Kaffeine_TaskWait, Kaffeine_TaskSignal,
     sched_signal_allocated, sched_signal_freeable, sched_block_port,
     sched_boundary, sched_end, sched_known_task, sched_owns_signal,
-    sched_send_signal, sched_block_guest_port
+    sched_send_signal, sched_block_guest_port,
+    Kaffeine_ProcCreate, sched_process_port, sched_process_dos
 };

@@ -622,35 +622,19 @@ static void entry_release(struct KaffeineContext *ctx, struct M68KHeapAllocation
     heap_release(ctx, header, NULL);
 }
 
-ULONG Kaffeine_HeapAllocEntry(struct KaffeineContext *ctx, ULONG entry)
+/* The MemList of count entries of spec, requirements and length pairs that
+   the caller owns, or failure with bit 31 set; spec stays the caller's. */
+static ULONG alloc_entry(struct KaffeineContext *ctx, const ULONG *spec, ULONG count)
 {
     struct M68KHeapAllocation *header, *allocation, *chunk;
-    ULONG count, bytes, addr, i, *spec, failure = 0x80000000UL | MEMF_PUBLIC;
+    ULONG bytes = MEMLIST_HEADER + count * MEMENTRY_SIZE, addr, i, failure = 0x80000000UL | MEMF_PUBLIC;
 
-    if (!entry_range(ctx, entry, MEMLIST_HEADER) || !heap_ready(ctx)) return failure;
-    count = m68k_read16(ctx, entry + 14);
-    /* The count is a guest UWORD, so this multiplication cannot overflow. */
-    bytes = MEMLIST_HEADER + count * MEMENTRY_SIZE;
-    if (!entry_range(ctx, entry, bytes)) return failure;
     /* Check all mirrors before starting a multi-allocation transaction, so an
        existing corrupt neighbour cannot prevent rollback of a later failure. */
     for (chunk = ctx->heap_first_free; chunk; chunk = chunk->next)
         if (!heap_free_valid(ctx, chunk)) return failure;
-    spec = (ULONG *)AllocMem(bytes, MEMF_PRIVATE);
-    if (!spec) return failure;
-    /* Snapshot before allocation: even a specification in currently free
-       guest memory must not change as allocation writes its own mirrors. */
-    for (i = 0; i < count; i++)
-    {
-        spec[2 * i] = m68k_read32(ctx, entry + MEMLIST_HEADER + i * MEMENTRY_SIZE);
-        spec[2 * i + 1] = m68k_read32(ctx, entry + MEMLIST_HEADER + i * MEMENTRY_SIZE + 4);
-    }
     header = heap_allocate(ctx, bytes, MEMF_PUBLIC | MEMF_CLEAR);
-    if (!header)
-    {
-        FreeMem(spec, bytes);
-        return failure;
-    }
+    if (!header) return failure;
     header->kind = HEAP_MEMLIST;
     addr = header->block + KAFFEINE_HEAP_HDR;
     m68k_write16(ctx, addr + 14, count);
@@ -664,7 +648,6 @@ ULONG Kaffeine_HeapAllocEntry(struct KaffeineContext *ctx, ULONG entry)
             allocation = heap_allocate(ctx, length, requirements);
             if (!allocation)
             {
-                FreeMem(spec, bytes);
                 entry_release(ctx, header);
                 return requirements | 0x80000000UL;
             }
@@ -678,8 +661,36 @@ ULONG Kaffeine_HeapAllocEntry(struct KaffeineContext *ctx, ULONG entry)
         m68k_write32(ctx, addr + MEMLIST_HEADER + i * MEMENTRY_SIZE, member);
         m68k_write32(ctx, addr + MEMLIST_HEADER + i * MEMENTRY_SIZE + 4, length);
     }
+    return addr;
+}
+
+ULONG Kaffeine_HeapAllocEntry(struct KaffeineContext *ctx, ULONG entry)
+{
+    ULONG count, bytes, addr, i, *spec, failure = 0x80000000UL | MEMF_PUBLIC;
+
+    if (!entry_range(ctx, entry, MEMLIST_HEADER) || !heap_ready(ctx)) return failure;
+    count = m68k_read16(ctx, entry + 14);
+    /* The count is a guest UWORD, so this multiplication cannot overflow. */
+    bytes = MEMLIST_HEADER + count * MEMENTRY_SIZE;
+    if (!entry_range(ctx, entry, bytes)) return failure;
+    spec = (ULONG *)AllocMem(bytes, MEMF_PRIVATE);
+    if (!spec) return failure;
+    /* Snapshot before allocation: even a specification in currently free
+       guest memory must not change as allocation writes its own mirrors. */
+    for (i = 0; i < count; i++)
+    {
+        spec[2 * i] = m68k_read32(ctx, entry + MEMLIST_HEADER + i * MEMENTRY_SIZE);
+        spec[2 * i + 1] = m68k_read32(ctx, entry + MEMLIST_HEADER + i * MEMENTRY_SIZE + 4);
+    }
+    addr = alloc_entry(ctx, spec, count);
     FreeMem(spec, bytes);
     return addr;
+}
+
+ULONG Kaffeine_HeapAllocList(struct KaffeineContext *ctx, const ULONG *spec, UWORD count)
+{
+    if (!spec || !heap_ready(ctx)) return 0x80000000UL | MEMF_PUBLIC;
+    return alloc_entry(ctx, spec, count);
 }
 
 void Kaffeine_HeapFreeEntry(struct KaffeineContext *ctx, ULONG entry)
@@ -1080,6 +1091,8 @@ static ULONG setup_base(struct KaffeineContext *ctx, UWORD lib_id,
     {
         snprintf(ctx->libs[ctx->num_libs].name, sizeof(ctx->libs[ctx->num_libs].name), "%s", name);
     }
+    /* Once here, so that the dispatcher compares no name for each call */
+    ctx->libs[ctx->num_libs].dos = library && name && !strcmp(name, "dos.library");
     ctx->num_libs++;
 
     /* Register in libmap for OpenLibrary lookups */

@@ -78,6 +78,15 @@ checks those fields independently of the host stack, invalid geometry and
 non-Process current tasks. The guest reservation remains 64 KiB; the native
 Shell stack setting does not resize it.
 
+### Classic service processes
+
+`test_guest_tasks` checks CreateProc with separate CPU instances, bounded
+Process/stack/MemList allocations, message handshakes, virtual SIGB_DOS,
+priorities, Forbid/Wait, child Exit, quarantine and failure rollback. DOS
+calls from child Processes stop before their native thunks. `test_exec_messages`
+checks the same gate before file and handler packet adapters, while root
+packet dispatch remains available. CreateNewProc remains unsupported.
+
 ### Classic RastPort initialization and font queries
 
 `test_gfx_thunks` exercises literal InitRastPort/AskFont dispatch, exact classic

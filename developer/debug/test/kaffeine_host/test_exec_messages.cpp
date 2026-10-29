@@ -1,5 +1,6 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
 #include "message_fixture.h"
+#include "kaffeine_sched.h"
 static void be32(std::vector<UBYTE> &b,ULONG a,ULONG v)
 { for(unsigned i=0;i<4;++i)b[a+i]=static_cast<UBYTE>(v>>(24-8*i)); }
 static void fifo()
@@ -358,11 +359,49 @@ static void released_manual_port_storage()
     }
 }
 
+static unsigned dos_gate_calls, adapter_calls;
+static BOOL deny_packet;
+static BOOL process_dos_gate(KaffeineContext *ctx, void *, ULONG lvo, IPTR *result)
+{
+    ++dos_gate_calls;
+    assert(lvo==0);
+    if(!deny_packet)return FALSE;
+    ctx->running=FALSE;ctx->exit_code=20;*result=20;return TRUE;
+}
+static IPTR recording_adapter(KaffeineContext *, ULONG, ULONG)
+{
+    ++adapter_calls;return 0;
+}
+static void process_packet_gate()
+{
+    for(unsigned handler=0;handler<2;handler++)
+        for(unsigned denied=0;denied<2;denied++)
+        {
+            Fixture f;
+            KaffeineTaskOps ops={};ops.process_dos=process_dos_gate;
+            f.ctx.sched=reinterpret_cast<KaffeineScheduler*>(&ops);f.ctx.task_ops=&ops;
+            if(handler)
+            { f.ctx.handlers[0].guest=f.port;f.ctx.handler_packet=recording_adapter; }
+            else
+            { f.ctx.files[0].guest=0x9000;f.ctx.files[0].handler=f.port;f.ctx.file_packet=recording_adapter; }
+            deny_packet=denied;dos_gate_calls=adapter_calls=0;
+            const auto before=f.bytes();const ULONG result=f.exec(366,f.port,f.msg);
+            check(dos_gate_calls==1&&adapter_calls==!denied&&f.bytes()==before,
+                  "process DOS guard runs before either native packet adapter");
+            check(denied?(result==20&&!f.ctx.running&&f.ctx.exit_code==20):
+                         (result==0xD0000000&&f.ctx.running),
+                  "denied process packets stop while root packet dispatch stays available");
+            f.ctx.sched=nullptr;f.ctx.task_ops=nullptr;
+            f.ctx.files[0]={};f.ctx.handlers[0]={};
+        }
+}
+
 int main()
 {
     fifo();ignore_and_null_reply();invalid();allocation_failures();real_shadows_and_port_lifetimes();queue_capacity_and_membership();manual_port_identity_and_owned_signal();read_after_arrival_metadata_change();inspection_ignores_other_arrival_metadata();
     released_manual_port_storage();
     retired_port_signal();
+    process_packet_gate();
     check(allocated_signals==0,"all owned native signals are released");
     check(native_blocks.empty(),"all native heap records and allocations are released");
     std::printf("Guest Exec message boundary: %u/%u checks passed\n",checks-failures,checks);

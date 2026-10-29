@@ -119,7 +119,11 @@ static BOOL queue_arrival(struct KaffeineContext *ctx, ULONG port)
                 ctx->m68k_sysbase + M68K_EXECBASE_THISTASK))) return FALSE;
         if (flags == 2) return !owner || ctx->task_ops->known_task(ctx, owner);
         bit = ctx->mem[port + 15];
+        /* SIGB_DOS: pr_MsgPort of the root, natively, or of a CreateProc()
+           child, a guest signal of that child alone */
         if (bit > 31 || (!(process_port(ctx, port) && bit == SIGB_DOS && owner == ctx->guest_exec_task) &&
+                         !(bit == SIGB_DOS && ctx->task_ops->process_port &&
+                           ctx->task_ops->process_port(ctx, port, owner)) &&
                          !ctx->task_ops->owns_signal(ctx, owner, 1UL << bit))) return FALSE;
         for (i = 0; i < KAFFEINE_MAX_IO_PORTS; ++i)
             if (ctx->io_ports[i].guest == port && ctx->io_ports[i].sigbit != (BYTE)bit)

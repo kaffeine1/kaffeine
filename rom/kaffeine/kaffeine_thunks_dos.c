@@ -29,6 +29,7 @@
 #include "kaffeine_offsets.h"
 #include "kaffeine_readargs.h"
 #include "kaffeine_shadow.h"
+#include "kaffeine_sched.h"
 #include "kaffeine_thunks_dos.h"
 
 #define GUEST_FIB_SIZE 260
@@ -1769,11 +1770,13 @@ void Kaffeine_MatchCleanup(struct KaffeineContext *ctx)
             release_anchor(ctx, i);
 }
 
-/* A new process would run guest code natively: NP_Entry, NP_Seglist and
-   the seglist of CreateProc() are 68k code, and the tag conversion also
-   turns small values such as NP_StackSize into guest pointers. Until a
-   launch path starts another emulator for the new process, both calls
-   fail as DOS does when it cannot create a process. */
+/* A native process would run guest code natively: NP_Entry, NP_Seglist
+   and the seglist of CreateProc() are 68k code, and the tag conversion
+   also turns small values such as NP_StackSize into guest pointers.
+   CreateNewProc() fails as DOS does when it cannot create a process.
+   CreateProc() makes a guest Process on the guest task scheduler, which
+   has no DOS context (kaffeine_sched.c); without a scheduler and a backend
+   CPU factory it fails like CreateNewProc(). */
 
 /* -498: CreateNewProc(D1=tags) -> D0=process */
 IPTR kaffeine_dos_CreateNewProc(struct KaffeineContext *ctx, void *cpu)
@@ -1787,10 +1790,15 @@ IPTR kaffeine_dos_CreateNewProc(struct KaffeineContext *ctx, void *cpu)
 /* -138: CreateProc(D1=name, D2=pri, D3=seglist, D4=stack) -> D0=port */
 IPTR kaffeine_dos_CreateProc(struct KaffeineContext *ctx, void *cpu)
 {
-    (void)ctx;
-    (void)cpu;
-    SetIoErr(ERROR_NOT_IMPLEMENTED);
-    return 0;
+    LONG ioerr = ERROR_NOT_IMPLEMENTED;
+    IPTR port = 0;
+
+    /* A refusal stops the program and returns its 20, without IoErr(). */
+    if (ctx->task_ops && ctx->task_ops->create_proc && ctx->cpu_factory)
+        port = ctx->task_ops->create_proc(ctx, cpu, &ioerr);
+    if (!port)
+        SetIoErr(ioerr);
+    return port;
 }
 
 /* ExAll() and ExAllEnd() are emulated on the bridge with native Examine()

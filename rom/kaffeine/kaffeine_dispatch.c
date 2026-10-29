@@ -10,6 +10,7 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_callback.h"
+#include "kaffeine_sched.h"
 
 static const struct M68KThunkEntry *find_thunk(
     const struct M68KThunkEntry *table, ULONG count, ULONG lvo)
@@ -59,6 +60,19 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
         result->return_pc = m68k_read32(ctx, sp);
         result->supervisor = FALSE;
         Kaffeine_SetA(cpu, 7, sp + 4);
+
+        /* A CreateProc() child reaches no dos.library thunk, implemented
+           or not: native DOS would act for the root's process. */
+        if (lib->dos && ctx->sched && ctx->task_ops->process_dos)
+        {
+            IPTR ret;
+
+            if (ctx->task_ops->process_dos(ctx, cpu, lvo, &ret))
+            {
+                Kaffeine_SetD(cpu, 0, (ULONG)ret);
+                return TRUE;
+            }
+        }
 
         if (entry)
         {

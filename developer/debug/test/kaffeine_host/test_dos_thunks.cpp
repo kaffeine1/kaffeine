@@ -34,6 +34,7 @@
 #include "kaffeine_messages.h"
 #include "kaffeine_cli.h"
 #include "kaffeine_offsets.h"
+#include "kaffeine_sched.h"
 
 extern "C" {
 #include "kaffeine_shadow.h"
@@ -2397,13 +2398,35 @@ static void test_examine_lock_invalid()
         }
 }
 
-/* A new process would run 68k code natively, so CreateNewProc() and
-   CreateProc() fail with ERROR_NOT_IMPLEMENTED and call no native DOS. */
+/* The scheduler's CreateProc(), as the DOS thunk sees it */
+static unsigned fake_creates;
+static LONG fake_ioerr;
+static IPTR fake_port;
+static IPTR fake_create_proc(KaffeineContext *, void *, LONG *ioerr)
+{
+    ++fake_creates;
+    *ioerr = fake_ioerr;
+    return fake_port;
+}
+static KaffeineTaskOps fake_task_ops;
+static const KaffeineCPUFactory fake_factory = { nullptr, nullptr };
+
+/* A native process would run 68k code natively, so CreateNewProc() fails
+   with ERROR_NOT_IMPLEMENTED and calls no native DOS, even with a guest
+   task scheduler. So does CreateProc() without the scheduler's entry
+   points or a backend CPU factory; with both it goes to the scheduler. */
 static void test_process_launch()
 {
-    for (ULONG lvo : { 498U, 138U })
+    fake_task_ops.create_proc = fake_create_proc;
+    for (unsigned setup = 0; setup < 8; ++setup)
     {
+        const ULONG lvo = setup & 4 ? 138U : 498U;
+        if (lvo == 138 && (setup & 3) == 3)
+            continue;
         Fixture f;
+        fake_creates = 0;
+        f.ctx.task_ops = setup & 1 ? &fake_task_ops : nullptr;
+        f.ctx.cpu_factory = setup & 2 ? &fake_factory : nullptr;
         /* NP_Entry with guest code, NP_StackSize 4096, TAG_DONE */
         const UBYTE tags[] =
         {
@@ -2423,10 +2446,31 @@ static void test_process_launch()
         check(f.state.d[0] == 0 && IoErr() == ERROR_NOT_IMPLEMENTED,
             (name + " fails with ERROR_NOT_IMPLEMENTED").c_str());
         check(calls.createnewproc_calls == 0 && calls.createproc_calls == 0 &&
-            calls.allocate_object_calls == 0,
-            (name + " never hands guest code to native DOS").c_str());
+            calls.allocate_object_calls == 0 && fake_creates == 0,
+            (name + " never hands guest code to native DOS or an unready scheduler").c_str());
         check(std::memcmp(f.memory, before, sizeof(before)) == 0 && f.ctx.num_shadows == 0,
             (name + " leaves guest memory and the shadows alone").c_str());
+    }
+
+    /* With the scheduler and a CPU factory: its port, or its IoErr() */
+    for (IPTR port : { (IPTR)0x2000, (IPTR)0 })
+    {
+        Fixture f;
+        fake_creates = 0;
+        fake_port = port;
+        fake_ioerr = port ? 0 : ERROR_NO_FREE_STORE;
+        f.ctx.task_ops = &fake_task_ops;
+        f.ctx.cpu_factory = &fake_factory;
+        f.state.d[1] = 0x400;
+        f.state.d[3] = 0x600 >> 2;
+        f.state.d[4] = 4096;
+        SetIoErr(1234);
+        f.dispatch(138);
+        check(fake_creates == 1 && f.state.d[0] == port &&
+            IoErr() == (port ? 1234 : ERROR_NO_FREE_STORE) &&
+            calls.createnewproc_calls == 0 && calls.createproc_calls == 0,
+            port ? "CreateProc returns the port of the scheduler's guest process"
+                 : "a failed guest process leaves its IoErr and no native process");
     }
 }
 
