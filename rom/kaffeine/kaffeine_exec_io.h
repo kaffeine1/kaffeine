@@ -49,6 +49,16 @@ extern const ULONG kaffeine_thunks_timer_count;
    CmpTime, ReadEClock, GetSysTime and AROS's GetUpTime. */
 #define KAFFEINE_TIMER_VECTORS 12
 
+/* keyboard.device and input.device: Open, Close, Expunge, the reserved
+   vector, BeginIO and AbortIO, and input's PeekQualifier. Called on the
+   device directly, every one of them stops the guest. */
+extern const struct M68KThunkEntry kaffeine_thunks_keyboard[];
+extern const ULONG kaffeine_thunks_keyboard_count;
+#define KAFFEINE_KEYBOARD_VECTORS 6
+extern const struct M68KThunkEntry kaffeine_thunks_input[];
+extern const ULONG kaffeine_thunks_input_count;
+#define KAFFEINE_INPUT_VECTORS 7
+
 #ifdef __cplusplus
 }
 #endif

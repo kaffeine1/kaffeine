@@ -78,6 +78,15 @@ checks those fields independently of the host stack, invalid geometry and
 non-Process current tasks. The guest reservation remains 64 KiB; the native
 Shell stack setting does not resize it.
 
+### Keyboard and input boundaries
+
+`test_exec_io` checks real unit-zero opens, private native request storage,
+KBD_READMATRIX data/length/actual conversion, 32-byte clamping, malformed and
+protected output spans, native errors, rollback and cleanup. Classic
+CreateExtIO NT_MESSAGE markers work before the first DoIO. Input handler
+registration/event commands return IOERR_NOCMD without reaching a native
+handler; direct device vectors stop with rc 20.
+
 ### Classic service processes
 
 `test_guest_tasks` checks CreateProc with separate CPU instances, bounded
@@ -181,8 +190,8 @@ each mutation. The original rom/kaffeine stays unchanged.
 `make test` also runs `test_thunk_registrations.py`. Its default inputs are
 the AROS configuration files in this tree. Optional NDK and AROS FD inputs
 can extend the audit; use the script's `--help` for the available options.
-The audit covers 326 explicit native-vector cases and 551 manual thunk
-registrations across 18 tables. External SDK files are not included in this
+The audit covers 326 explicit native-vector cases and 564 manual thunk
+registrations across 20 tables. External SDK files are not included in this
 repository.
 
 ## Sanitizers and build variants

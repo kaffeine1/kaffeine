@@ -38,7 +38,7 @@ all AmigaOS library calls to forward them to the native AROS implementations.
                   │  exec.library    dos.library      │
                   │  intuition.library  graphics.lib  │
                   │  ... 22 libs + 2 devs (789 auto,  │
-                  │      551 manual registrations)    │
+                  │      564 manual registrations)    │
                   └───────────────────────────────────┘
 ```
 
@@ -161,7 +161,7 @@ and native AROS C functions. There are two kinds:
   TagItem arrays, `resolve_rp` for RastPort resolution, and
   `shadow_create_by_name` for return values that need shadow wrapping.
 
-- **Manual thunks** (544 registrations across 18 tables) for functions needing
+- **Manual thunks** (544 registrations across 20 tables) for functions needing
   bounded conversion, guest-memory ownership, or explicit refusal:
   - **exec** (84): `OpenLibrary`/`OldOpenLibrary`/`CloseLibrary` (fake base creation + m68k library fallback),
     `AllocMem`/`FreeMem`/`AllocAbs`/`AvailMem`/`AllocEntry`/`FreeEntry`/`AllocVec`/`FreeVec`/`TypeOfMem` (containment heap),
@@ -233,7 +233,8 @@ and native AROS C functions. There are two kinds:
 
 Ports, I/O requests and signals of 68k code stay 68k structures in the
 guest memory (`kaffeine_exec_io.c`). `timer.device` works through `DoIO()`,
-and `console.device` supports `CONU_LIBRARY` (-1) for `RawKeyConvert`:
+`console.device` supports `CONU_LIBRARY` (-1) for `RawKeyConvert`, and unit zero
+of `keyboard.device` and `input.device` can be opened:
 
 1. `CreateMsgPort` → a 68k port with a signal of the guest, no native port
 2. `CreateIORequest` → a cleared 68k request of the requested size
@@ -247,6 +248,14 @@ and `console.device` supports `CONU_LIBRARY` (-1) for `RawKeyConvert`:
    `RawKeyConvert` through the guest `ConsoleDevice` base (`kaffeine_thunks_console.c`)
 6. `CloseDevice`/`DeleteIORequest`/`DeleteMsgPort` → native objects and guest
    memory freed; what a program leaves open is closed when it ends
+
+`keyboard.device` supports synchronous `KBD_READMATRIX` through a temporary
+native buffer, preserving the request inputs and copying at most 32 bytes of
+actual output. Bad output spans, active queues, owned ports and snapshots
+are rejected before the device call. `input.device` supports real opens and
+closes; all its commands, including handler registration and event injection,
+return `IOERR_NOCMD`. Guest handlers are never installed natively. Direct
+keyboard/input device vectors stop with rc 20.
 
 Other devices fail to open with `IOERR_OPENFAIL`, `TR_SETSYSTIME` and EClock
 delays end with `IOERR_NOCMD`, and `SendIO()` stops the program with rc 20
@@ -488,7 +497,6 @@ The bridge provides generated or manual thunks for the following libraries and d
 | diskfont.library | 3 | 1 | 4 | Checked OpenDiskFont plus AvailFonts, NewFontContents and DisposeFontContents |
 | iffparse.library | 40 | 0 | 40 | IFF file parsing |
 | datatypes.library | 30 | 0 | 30 | Multimedia data type system |
-| commodities.library | 29 | 0 | 29 | Input event handling |
 | expansion.library | 22 | 0 | 22 | Expansion board management |
 | asl.library | 8 | 0 | 8 | File/font/screenmode requesters |
 | keymap.library | 4 | 0 | 4 | Keyboard mapping |
@@ -499,11 +507,19 @@ The bridge provides generated or manual thunks for the following libraries and d
 | mathieeesingbas.library | 0 | 12 | 12 | IEEE 754 single-precision basic arithmetic and comparisons with guest condition codes |
 | timer.device | 0 | 7 | 7 | Synchronous `DoIO` (`TR_ADDREQUEST`, `TR_GETSYSTIME`) and `TimerBase` time helpers |
 | console.device | 0 | 12 | 12 | `CONU_LIBRARY` (-1) and single-event default-keymap `RawKeyConvert`; remaining slots stop with 20 |
+| keyboard.device | 0 | 6 | 6 | Unit-zero open/close and bounded `KBD_READMATRIX` through Exec DoIO; direct device slots stop with 20 |
+| input.device | 0 | 7 | 7 | Unit-zero open/close; DoIO commands return `IOERR_NOCMD`, direct device slots stop with 20 |
 
 Native lookup uses the filename after the final `:` or `/`, keeping its
 exact case. Paths such as `LIBS:diskfont.library` share the canonical base
 and its cache entry. When native lookup misses, the original complete
 path is passed to the 68k loader.
+
+Native `commodities.library` publication is deferred: its generated
+NewBroker/CxObj/CxMsg wrappers do not convert classic structures or own native
+message-port lifetimes safely. OpenLibrary still tries a 68k library from disk;
+without one, optional callers receive NULL. Global commodity hotkeys are not
+yet supported.
 
 Libraries not in this list are loaded as m68k code and executed
 within the emulator.
@@ -519,7 +535,7 @@ within the emulator.
 | ROLEX | 13 KB | Clock (custom screen, GUI loop) | ✅ Opens screen, event loop works |
 | SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders full UI (title, menus, buttons, text) |
 | Personal Paint 7.2.1.0 | 777,824 bytes | 68k paint / image editor | 🟡 Moira on AROS AArch64/QEMU: native Shell launch, 24-bit Workbench, 1024×768/256-color canvas, rectangles/circles/text, pixel-verified IFF/ILBM save and exit code zero. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; full Workbench startup and other operations remain open. The opt-in JIT also passes startup/exit, drawing, saving and a 320×200/256-color save/modify/reload cycle; see [JIT validation](../../docs/kaffeine/jit-backend.md#validation) |
-| Directory Opus 4.12 JR | 240,292 bytes | File manager (GUI, m68k libraries) | 🟡 AROS AArch64/Moira: loads dopus.library and passes the initial stack check. The service process starts through guest CreateProc; startup currently stops because keyboard.device has no adapter. File operations are not yet validated |
+| Directory Opus 4.12 JR | 240,292 bytes | File manager (GUI, m68k libraries) | 🟡 AROS AArch64/Moira: loads dopus.library, creates its service and hotkey tasks, opens keyboard/input devices and avoids unsafe native Commodities dispatch. Startup currently stops at palette access; file operations are not yet validated |
 | Redit 2.0 | 96,828 bytes | 68k text editor | 🟡 Compatibility testing in progress; editing, saving and reopening are not yet validated |
 | AmigaTerm 1.0 | 82 KB | Terminal emulator (GUI) | ✅ Opens window, clean exit |
 | Textcraft Plus | 208 KB | Word processor (GUI, custom screen) | ✅ Opens screen/window, sets colors, clean exit |
@@ -557,7 +573,8 @@ message handling remains separate.
 ### Device I/O and DOS Packets
 
 - `timer.device` through `DoIO()` and the no-window `console.device` library unit (`CONU_LIBRARY`, `RawKeyConvert`);
-  asynchronous device I/O and other device adapters remain unsupported
+  keyboard.device unit-zero matrix queries and input.device unit-zero opens/closes;
+  asynchronous device I/O, input handlers/event injection and other device adapters remain unsupported
 - Ordinary guest FIFO messages (`PutMsg`/`GetMsg`/`ReplyMsg`/`WaitPort`) work across registered guest tasks in the same context; cross-context messaging is unsupported
 - DOS packets (`DoPkt`/`SendPkt`/`WaitPkt`/`ReplyPkt`) are supported on FileHandle packet ports and on registered guest ports for native DOS handlers (`DeviceProc`, `GetDeviceProc`, `GetConsoleTask`, `GetFileSysTask`) for the documented action set; `AbortPkt` is a no-op
 - Personal Paint has verified editor use, rectangles/circles/text, pixel-checked IFF/ILBM saving and return to the native Shell with exit code zero under Moira in QEMU. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; the opt-in JIT additionally passes a 320×200/256-color save/modify/reload cycle. Other tools, larger-image loading and full Workbench startup remain open
@@ -836,7 +853,7 @@ grep -oP '(OFF|SIZ)\|[^"]*' m68k.s | sed 's/#//g' > m68k_offsets.txt
 
 | Path | Description |
 |------|-------------|
-| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (326 native-vector cases and 551 manual thunks across 18 tables) and `run_sanitizers.sh` |
+| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (326 native-vector cases and 564 manual thunks across 20 tables) and `run_sanitizers.sh` |
 | [`developer/debug/test/kaffeine_native/`](../../developer/debug/test/kaffeine_native/README.md) | Standalone native AROS AArch64 translation probe (`jit_probe`) using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE` |
 | [`developer/debug/test/kaffeine_target/`](../../developer/debug/test/kaffeine_target/README.md) | Classic 68k HUNK target probes, bzip2 1.0.8 and IJG JPEG 9f self-tests, and QEMU AROS AArch64 runner (`run_qemu.py`) |
 | `developer/debug/test/kaffeine/test_kaffeine.c` | AROS-side smoke test that opens `kaffeine.library` |

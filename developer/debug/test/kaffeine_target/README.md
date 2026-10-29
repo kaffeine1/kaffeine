@@ -71,6 +71,7 @@ at the end.
 | `exec_console.c` | The no-window console.device adapter and RawKeyConvert boundary. |
 | `exec_diskfont.c` | OpenDiskFont and original monochrome font fixtures. |
 | `exec_messages.c` | FIFO messages, signals, replies and nonempty WaitPort. |
+| `exec_keyboard.c` | Real keyboard/input device opens, bounded matrix reads of 0/13/64 bytes and RAWKEY delivery from `--keys exec_keyboard "a"`. The same source runs as a native ARM reference. Matrix key tracking is reported separately; pass argument `matrix` to require it. The current ARM USB image delivers the raw A events but leaves its native matrix zero. |
 | `exec_createproc.c` | A caller-owned classic JMP seglist creates a service Process with its own stack and virtual DOS port; two message/reply cycles, Forbid before final reply, normal return and child Exit in successive fresh processes, parent identity and guest-memory reclamation. Run on the 68k backend, not directly as native ARM code. |
 | `exec_process_stack.c` | Current Process stack bounds contain a live local variable, byte size agrees with the Task interval, StackBase is a BPTR to its high end and FindTask/ThisTask retain identity. |
 | `exec_guest_tasks.c` | Parent/child task identity, Forbid/Permit, Wait inside Forbid, signals, self-removal and normal child return. |

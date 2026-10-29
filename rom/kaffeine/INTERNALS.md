@@ -780,7 +780,7 @@ before `lib->gen_thunks[]` (generated).
 | -390 | FindPort | Searches only the checked guest public port list |
 | -408 | OldOpenLibrary | As OpenLibrary, with version 0 |
 | -414 | CloseLibrary | Calls the `Close()` of a 68k library from disk, also for a base that its `Open()` made for the opener (one whose `Close()` lies in the hunks of the library); the library goes when `Close()` gives its seglist back after an expunge; nothing for the base of a native library (`kaffeine_m68klib.c`) |
-| -444 | OpenDevice | timer.device on a native timerequest, and console.device unit -1 on a native IOStdReq, each with a private reply port. Console accepts the 32-byte guest IORequest prefix, including zero mn_Length; its guest unit is -1. Adapter selection uses trusted native records |
+| -444 | OpenDevice | timer.device on a native timerequest, and console.device unit -1 on a native IOStdReq, each with a private reply port; keyboard.device and input.device unit zero use native IOStdReq adapters. Console accepts the 32-byte guest IORequest prefix, including zero mn_Length; its guest unit is -1. Adapter selection uses trusted native records |
 | -450 | CloseDevice | Closes and deletes native request and port. Console clears guest io_Device and io_Unit to zero; timer keeps its -1 closed-device marker |
 | -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter |
 | -462 | SendIO | Stops the guest with rc 20 until asynchronous I/O exists |
@@ -1986,6 +1986,17 @@ The full list of 297 struct layouts is in `kaffeine_shadow_layouts.h` (auto-gene
 
 ## Device I/O Path
 
+Unit-zero `keyboard.device` and `input.device` opens use independent native
+IOStdReq records and guest Device bases. Keyboard `KBD_READMATRIX` copies only
+the bounded native result (at most 32 bytes), using temporary native storage;
+the caller's data/length/offset fields stay intact. Output cannot overlap its
+request, other protected request/port/font snapshots or active guest queues.
+Input commands return `IOERR_NOCMD` without inspecting guest handler pointers.
+All direct keyboard/input vectors are refused. A classic CreateExtIO
+`NT_MESSAGE` marker is accepted by DoIO; no asynchronous submit exists for
+these adapters, so it does not represent a native request in flight.
+
+
 Ports, I/O requests and signals of 68k code are 68k structures in the guest
 arena (`kaffeine_exec_io.c`). Behind each open request stand a native request
 of the native size and a private native reply port, which only that file
@@ -2034,8 +2045,10 @@ m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
   delivers the signal bits across the cooperative guest scheduler
   (`kaffeine_sched.c`), and `Signal()` of an unknown task stops the guest with
   rc 20. `FreeSignal()` frees only bits that the guest allocated.
-- Devices: `timer.device` and `console.device` (`CONU_LIBRARY` unit -1 for
-  `RawKeyConvert`) have adapters so far. Another name fails with
+- Devices: `timer.device`, `console.device` (`CONU_LIBRARY` unit -1 for
+  `RawKeyConvert`) and unit-zero keyboard/input requests have adapters so far.
+  Keyboard uses a checked 48-byte IOStdReq for `KBD_READMATRIX`; input
+  commands return `IOERR_NOCMD` and never inspect guest handler pointers. Another name fails with
   `IOERR_OPENFAIL`, as an unknown device does, without a native call. The
   guest timer request needs room for a 40-byte timerequest. Units 0 to 4 open;
   `TR_ADDREQUEST` on `UNIT_ECLOCK` and `UNIT_WAITECLOCK` ends with
@@ -3245,7 +3258,7 @@ Two generators exist:
 
 `developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
 plus `test_thunk_registrations.py` (which verifies 326 explicit native-vector
-cases and all 551 manual thunk registrations across the 18 production tables)
+cases and all 564 manual thunk registrations across the 20 production tables)
 and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
 [developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
 for coverage details; the host Makefile is the authoritative executable list.
@@ -3600,3 +3613,15 @@ NUL-terminated in the arena; optional TextAttr/TaggedTextAttr inputs use the
 shared font converter. NextText stays NULL in the native copy, matching
 Intuition's single-text contract. Native Intuition chooses the system font
 and handles unavailable-font fallback; no guest byte is written.
+
+
+### Deferred Commodities publication
+
+Native commodities.library is not published by Kaffeine_OpenLibrary, including
+path aliases and cached entries. NewBroker embeds classic pointers and a
+MsgPort, and CxObj/CxMsg need typed handles and asynchronous lifetimes. The
+generated wrappers alone cannot safely cross that ABI. The OpenLibrary and
+OldOpenLibrary wrappers retain the original complete path and requested
+version for the 68k disk fallback; if none exists they return NULL so optional
+callers can use their fallback. The generated Commodities table remains in
+the source but cannot acquire a native base through this lookup.

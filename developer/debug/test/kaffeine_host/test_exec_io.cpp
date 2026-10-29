@@ -1,15 +1,17 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    Exec ports, I/O requests and signals of 68k code, and timer.device,
-    through literal LVOs and the real dispatcher and heap. The native Exec
-    and timer below record every call, native signal and native object.
+    Exec ports, I/O requests and signals of 68k code, timer.device,
+    keyboard.device and input.device, through literal LVOs and the real
+    dispatcher and heap. The native Exec and devices below record every
+    call, native signal and native object.
 */
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,6 +23,8 @@
 #include <proto/timer.h>
 #include <proto/keymap.h>
 #include <exec/errors.h>
+#include <devices/keyboard.h>
+#include <devices/input.h>
 #include "kaffeine_intern.h"
 #include "kaffeine_exec_io.h"
 #include "kaffeine_dispatch.h"
@@ -43,7 +47,20 @@ static IPTR open_unit;
 static ULONG open_flags, open_size, request_size;
 static UWORD doio_command;
 static ULONG doio_secs, doio_micro;
-static Device native_timer;
+static Device native_timer, native_keyboard, native_input;
+/* keyboard.device: what its DoIO() got, and an io_Actual it may report
+   instead of AROS's min(32, io_Length) */
+static unsigned kbd_doio_calls, input_doio_calls;
+static ULONG kbd_length;
+static const void *kbd_data;
+static long kbd_actual = -1;
+static const UBYTE *arena_lo, *arena_hi;    /* guest memory, never a native address */
+
+static bool in_arena(const void *p)
+{
+    const UBYTE *b = static_cast<const UBYTE *>(p);
+    return b >= arena_lo && b < arena_hi;
+}
 
 /* workbench.library is not linked here: no port has App objects. */
 extern "C" void Kaffeine_AppPortGone(KaffeineContext *, ULONG) {}
@@ -166,7 +183,9 @@ extern "C" LONG OpenDevice(CONST_STRPTR name, IPTR unit, IORequest *req, ULONG f
         req->io_Device = nullptr;
         return open_error;
     }
-    req->io_Device = &native_timer;
+    assert(!in_arena(req));
+    req->io_Device = open_name == "keyboard.device" ? &native_keyboard :
+                     open_name == "input.device" ? &native_input : &native_timer;
     req->io_Unit = reinterpret_cast<void *>(unit);
     req->io_Error = 0;
     ++live_opens;
@@ -176,15 +195,42 @@ extern "C" LONG OpenDevice(CONST_STRPTR name, IPTR unit, IORequest *req, ULONG f
 extern "C" void CloseDevice(IORequest *req)
 {
     ++close_calls;
-    assert(req->io_Device == &native_timer);
+    assert(req->io_Device == &native_timer || req->io_Device == &native_keyboard ||
+           req->io_Device == &native_input);
     req->io_Device = reinterpret_cast<Device *>(-1);
     --live_opens;
+}
+
+/* AROS keyboard.device's KBD_READMATRIX: min(32, io_Length) bytes of the
+   matrix, here 0x40, 0x41, ... */
+static LONG keyboard_doio(IOStdReq *req)
+{
+    ++kbd_doio_calls;
+    assert(req->io_Command == KBD_READMATRIX && !in_arena(req) && !in_arena(req->io_Data));
+    kbd_length = req->io_Length;
+    kbd_data = req->io_Data;
+    req->io_Actual = req->io_Length < 32 ? req->io_Length : 32;
+    for (ULONG i = 0; i < req->io_Actual; ++i)
+        static_cast<UBYTE *>(req->io_Data)[i] = (UBYTE)(0x40 + i);
+    if (kbd_actual >= 0)
+        req->io_Actual = (ULONG)kbd_actual;
+    req->io_Flags = IOF_QUICK;
+    req->io_Message.mn_Node.ln_Type = NT_MESSAGE;
+    req->io_Error = doio_error;
+    return doio_error;
 }
 
 extern "C" LONG DoIO(IORequest *req)
 {
     auto *tr = reinterpret_cast<timerequest *>(req);
     ++doio_calls;
+    if (req->io_Device == &native_input)
+    {
+        ++input_doio_calls;
+        return IOERR_NOCMD;
+    }
+    if (req->io_Device == &native_keyboard)
+        return keyboard_doio(reinterpret_cast<IOStdReq *>(req));
     assert(req->io_Device == &native_timer);
     doio_command = req->io_Command;
     doio_secs = tr->tr_time.tv_secs;
@@ -267,6 +313,7 @@ enum
     LN_TYPE = 8, LN_NAME = 10, MN_REPLYPORT = 14, MN_LENGTH = 18,
     IO_DEVICE = 20, IO_UNIT = 24, IO_COMMAND = 28, IO_FLAGS = 30, IO_ERROR = 31,
     TV_SECS = 32, TV_MICRO = 36,
+    IO_ACTUAL = 32, IO_LENGTH = 36, IO_DATA = 40, IO_OFFSET = 44, IOSTDREQ = 48,
     MP_FLAGS = 14, MP_SIGBIT = 15, MP_SIGTASK = 16, MP_MSGLIST = 20
 };
 
@@ -274,6 +321,7 @@ struct Fixture
 {
     static constexpr ULONG base = 0x1000, stack = 0xF00, task = 0x2000;
     static constexpr ULONG name = 0x2400, storage = 0x2500, copy = 0x2600;
+    static constexpr ULONG kbd_name = 0x2420, input_name = 0x2440;
     static constexpr ULONG initial_d0 = 0xD0123456;
     KaffeineContext ctx = {};
     std::array<UBYTE, 0x10000> memory;
@@ -293,9 +341,17 @@ struct Fixture
         open_calls = close_calls = doio_calls = getsystime_calls = 0;
         native_timer.dd_Library.lib_Version = 41;
         native_timer.dd_Library.lib_Revision = 2;
+        native_keyboard.dd_Library.lib_Version = 41;
+        native_keyboard.dd_Library.lib_Revision = 3;
+        native_input.dd_Library.lib_Version = 41;
+        native_input.dd_Library.lib_Revision = 4;
+        kbd_doio_calls = input_doio_calls = 0;
+        kbd_length = 0; kbd_data = nullptr; kbd_actual = -1;
         memory.fill(0xA5);
         ctx.mem = memory.data();
         ctx.mem_size = memory.size();
+        arena_lo = memory.data();
+        arena_hi = memory.data() + memory.size();
         ctx.m68k_sysbase = base;
         ctx.heap_start = 0x4000;
         ctx.heap_end = 0xF000;
@@ -314,6 +370,8 @@ struct Fixture
         m68k_write32(&ctx, base + 276, task);
         m68k_write32(&ctx, stack, 0x76543210);
         text(name, "timer.device");
+        text(kbd_name, "keyboard.device");
+        text(input_name, "input.device");
     }
 
     ~Fixture()
@@ -323,6 +381,7 @@ struct Fixture
         Kaffeine_IOCleanup(&ctx);
         assert(!live_ports && !live_requests && !live_opens);
         assert(task_signals == 0xFFFF);
+        arena_lo = arena_hi = nullptr;
     }
 
     void text(ULONG addr, const char *s)
@@ -380,6 +439,26 @@ struct Fixture
         return call(456, 0xA0A0A0A0, req);
     }
     BYTE error(ULONG req) const { return (BYTE)memory[req + IO_ERROR]; }
+    /* DoIO() of an IOStdReq: only the command, io_Length and io_Data change. */
+    ULONG std_io(ULONG req, UWORD command, ULONG length, ULONG data)
+    {
+        m68k_write16(&ctx, req + IO_COMMAND, command);
+        m68k_write32(&ctx, req + IO_LENGTH, length);
+        m68k_write32(&ctx, req + IO_DATA, data);
+        return call(456, 0xA0A0A0A0, req);
+    }
+    bool fill_is(ULONG addr, ULONG size, UBYTE value) const
+    {
+        for (ULONG i = 0; i < size; ++i)
+            if (memory[addr + i] != value) return false;
+        return true;
+    }
+    bool matrix_is(ULONG addr, ULONG size) const
+    {
+        for (ULONG i = 0; i < size; ++i)
+            if (memory[addr + i] != (UBYTE)(0x40 + i)) return false;
+        return true;
+    }
 };
 
 static void test_signals()
@@ -512,7 +591,8 @@ static void test_open_close()
     check(f.open(r, 0, 0x2300) == 0xFFFFFFFF && f.error(r) == IOERR_OPENFAIL &&
           !m68k_read32(&f.ctx, r + IO_DEVICE) && !m68k_read32(&f.ctx, r + IO_UNIT) &&
           !open_calls && !live_ports, "OpenDevice() of another device fails with IOERR_OPENFAIL");
-    check(f.open(r, 0, 1) == 0xFFFFFFFF && !open_calls, "OpenDevice() name 1, input.device, fails too");
+    check(f.open(r, 0, 1) == 0xFFFFFFFF && !open_calls,
+          "OpenDevice() name 1, input.device, fails on a request smaller than an IOStdReq");
     check(f.open(r, 0, 0x7FFFFFFF) == 0xFFFFFFFF && !open_calls,
           "OpenDevice() with a name outside guest memory fails");
 
@@ -721,6 +801,402 @@ static void test_timer_base()
     f.call(672, p);
 }
 
+/* The low 32 bits of no native device or request anywhere in a guest
+   Device and its jump table. */
+static bool no_native_pointer(Fixture &f, ULONG base, ULONG vectors)
+{
+    std::vector<uintptr_t> natives = { (uintptr_t)&native_timer, (uintptr_t)&native_keyboard,
+                                       (uintptr_t)&native_input };
+    for (const auto &entry : f.ctx.io_requests)
+        if (entry.native) natives.push_back((uintptr_t)entry.native);
+    for (ULONG a = base - vectors * 6; a + 4 <= base + 34; a += 2)
+        for (uintptr_t p : natives)
+            if (m68k_read32(&f.ctx, a) == (ULONG)p)
+                return false;
+    return true;
+}
+
+static bool device_named(Fixture &f, ULONG base, const char *name, UWORD neg, UWORD revision)
+{
+    return base && f.memory[base + LN_TYPE] == NT_DEVICE &&
+           !std::strcmp(reinterpret_cast<char *>(f.memory.data() + m68k_read32(&f.ctx, base + LN_NAME)),
+                        name) &&
+           m68k_read16(&f.ctx, base + 16) == neg && m68k_read16(&f.ctx, base + 18) == 34 &&
+           m68k_read16(&f.ctx, base + 20) == 41 && m68k_read16(&f.ctx, base + 22) == revision;
+}
+
+static void test_input_open_close()
+{
+    Fixture f;
+    const ULONG p = f.port();
+    const ULONG r = f.request(p, IOSTDREQ), small = f.request(p, 40);
+
+    for (ULONG unit : { 1u, 2u, 0xFFFFFFFFu })
+    {
+        m68k_write32(&f.ctx, r + IO_DEVICE, 0x55555555);
+        check(f.open(r, unit, Fixture::kbd_name) == 0xFFFFFFFF && f.error(r) == IOERR_OPENFAIL &&
+              !m68k_read32(&f.ctx, r + IO_DEVICE) && !open_calls && !live_ports && !live_requests,
+              "keyboard.device units other than 0 fail to open before any native call");
+        check(f.open(r, unit, Fixture::input_name) == 0xFFFFFFFF && f.call(444, 1, r, unit, 0) == 0xFFFFFFFF &&
+              !open_calls && !live_ports, "input.device units other than 0 fail to open too");
+    }
+    check(f.open(small, 0, Fixture::kbd_name) == 0xFFFFFFFF && f.error(small) == IOERR_OPENFAIL &&
+          f.open(small, 0, Fixture::input_name) == 0xFFFFFFFF && !open_calls && !live_ports,
+          "a request smaller than an IOStdReq opens neither device");
+    check(f.call(444, Fixture::kbd_name, 0xFFF0, 0, 0) == 20 && f.stopped() && !open_calls,
+          "a request outside guest memory stops the guest");
+    check(f.call(444, Fixture::kbd_name, 0xFFD8, 0, 0) == 0xFFFFFFFF && !open_calls,
+          "guest storage without room for an IOStdReq at the end of memory cannot open it");
+
+    m68k_write32(&f.ctx, r + IO_UNIT, 0x66666666);
+    check(f.open(r, 0, Fixture::kbd_name, 0x12) == 0 && f.error(r) == 0 && open_calls == 1 &&
+          open_name == "keyboard.device" && open_unit == 0 && open_flags == 0x12 &&
+          request_size == sizeof(IOStdReq) && open_size == sizeof(IOStdReq) &&
+          live_ports == 1 && live_requests == 1 && live_opens == 1,
+          "OpenDevice(keyboard.device, 0) opens a native IOStdReq with its own reply port");
+    const ULONG kb = f.ctx.keyboard_base;
+    check(m68k_read32(&f.ctx, r + IO_DEVICE) == kb && !m68k_read32(&f.ctx, r + IO_UNIT) &&
+          device_named(f, kb, "keyboard.device", 36, 3) && no_native_pointer(f, kb, 6),
+          "the request gets a guest keyboard.device of six vectors and unit 0, with no native pointer");
+    check(f.ctx.io_requests[0].guest == r && f.ctx.io_requests[0].kind == KAFFEINE_IO_KEYBOARD &&
+          f.ctx.io_requests[0].unit == 0 && !in_arena(f.ctx.io_requests[0].native),
+          "the private record holds the kind and the native request");
+    check(!Kaffeine_FindLibBase(&f.ctx, "keyboard.device"), "OpenLibrary() does not find the device");
+
+    const ULONG s = f.request(p, IOSTDREQ);
+    check(f.call(444, 1, s, 0, 0) == 0 && open_name == "input.device" && open_unit == 0 &&
+          live_opens == 2, "OpenDevice() name 1 opens input.device unit 0");
+    const ULONG in = f.ctx.input_base;
+    check(in && in != kb && m68k_read32(&f.ctx, s + IO_DEVICE) == in &&
+          device_named(f, in, "input.device", 42, 4) && no_native_pointer(f, in, 7) &&
+          f.ctx.io_requests[2].kind == KAFFEINE_IO_INPUT,
+          "input.device gets its own guest base of seven vectors");
+    const ULONG storage = Fixture::storage;
+    std::memset(f.memory.data() + storage, 0, IOSTDREQ);
+    check(f.open(storage, 0, Fixture::input_name) == 0 && f.ctx.input_base == in &&
+          m68k_read32(&f.ctx, storage + IO_DEVICE) == in && live_opens == 3,
+          "an IOStdReq in guest storage opens input.device on the same guest base");
+
+    const unsigned closes = close_calls;
+    check(f.open(r, 0, Fixture::input_name) == 0 && close_calls == closes + 1 && live_opens == 3 &&
+          m68k_read32(&f.ctx, r + IO_DEVICE) == in && f.ctx.io_requests[0].kind == KAFFEINE_IO_INPUT,
+          "opening an open keyboard request on input.device closes the keyboard first");
+    check(f.open(r, 0, Fixture::kbd_name) == 0 && close_calls == closes + 2 &&
+          m68k_read32(&f.ctx, r + IO_DEVICE) == kb && f.ctx.keyboard_base == kb, "and back");
+
+    /* A failed native open, port or request leaves nothing behind. */
+    const ULONG e = f.request(p, IOSTDREQ);
+    open_error = IOERR_OPENFAIL;
+    check(f.open(e, 0, Fixture::kbd_name) == 0xFFFFFFFF && f.error(e) == IOERR_OPENFAIL &&
+          !m68k_read32(&f.ctx, e + IO_DEVICE) && live_ports == 3 && live_requests == 3 && live_opens == 3,
+          "a failed native keyboard open deletes its native request and port");
+    std::memset(f.memory.data() + Fixture::copy, 0, IOSTDREQ);
+    bool kept = false;
+    check(f.open(Fixture::copy, 0, Fixture::input_name) == 0xFFFFFFFF && live_ports == 3,
+          "a failed input open deletes its native request and port");
+    for (const auto &entry : f.ctx.io_requests) kept = kept || entry.guest == Fixture::copy;
+    check(!kept, "a failed open in guest storage keeps no record");
+    open_error = 0;
+    fail_port = true;
+    check(f.open(e, 0, Fixture::input_name) == 0xFFFFFFFF && live_ports == 3, "without a native port");
+    fail_port = false;
+    fail_request = true;
+    check(f.open(e, 0, Fixture::kbd_name) == 0xFFFFFFFF && live_ports == 3 && live_requests == 3,
+          "without a native request");
+    fail_request = false;
+
+    f.call(450, 0xA0A0A0A0, r);
+    check(close_calls == closes + 3 && live_opens == 2 && live_ports == 2 && live_requests == 2 &&
+          m68k_read32(&f.ctx, r + IO_DEVICE) == 0xFFFFFFFF && f.ctx.io_requests[0].kind == KAFFEINE_IO_NONE,
+          "CloseDevice() of keyboard closes and deletes everything; io_Device becomes -1");
+    f.call(450, 0xA0A0A0A0, r);
+    check(close_calls == closes + 3, "a second CloseDevice() does nothing");
+    f.call(660, s);
+    check(close_calls == closes + 4 && live_opens == 1, "DeleteIORequest() of an open input request closes it");
+    f.call(450, 0xA0A0A0A0, storage);
+    check(!live_opens && !live_ports && !live_requests && f.ctx.keyboard_base == kb && f.ctx.input_base == in,
+          "every native object is gone; the guest bases stay");
+    for (ULONG req : { r, small, e }) f.call(660, req);
+    f.call(672, p);
+}
+
+static void test_input_base_rollback()
+{
+    Fixture f;
+    const ULONG p = f.port();
+    const ULONG r = f.request(p, IOSTDREQ);
+    const ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
+    f.ctx.num_libs = KAFFEINE_MAX_LIBS;
+    check(f.open(r, 0, Fixture::kbd_name) == 0xFFFFFFFF && f.error(r) == IOERR_OPENFAIL &&
+          open_calls == 1 && close_calls == 1 && !live_opens && live_ports == 0 && live_requests == 0 &&
+          !f.ctx.keyboard_base && !m68k_read32(&f.ctx, r + IO_DEVICE) &&
+          Kaffeine_HeapAvail(&f.ctx, 0) == avail,
+          "without room for the guest base the native open is closed and the name freed");
+    check(f.open(r, 0, Fixture::input_name) == 0xFFFFFFFF && close_calls == 2 && !f.ctx.input_base &&
+          Kaffeine_HeapAvail(&f.ctx, 0) == avail, "the same for input.device");
+    f.ctx.num_libs = 1;
+    check(f.open(r, 0, Fixture::kbd_name) == 0 && f.ctx.keyboard_base && f.ctx.num_libs == 2,
+          "with room the next open makes the base");
+    f.call(660, r);
+    f.call(672, p);
+}
+
+static void test_keyboard_matrix()
+{
+    Fixture f;
+    const ULONG p = f.port();
+    const ULONG r = f.request(p, IOSTDREQ);
+    f.open(r, 0, Fixture::kbd_name);
+    const ULONG kb = f.ctx.keyboard_base, buf = 0x2810;
+    m68k_write32(&f.ctx, r + IO_ACTUAL, 0x11111111);
+    m68k_write32(&f.ctx, r + IO_OFFSET, 0x13579BDF);
+    /* Classic alib CreateExtIO sets NT_MESSAGE before the first DoIO. */
+    f.memory[r + LN_TYPE] = NT_MESSAGE;
+    f.memory[r + IO_FLAGS] = 0;
+
+    check(f.std_io(r, KBD_READMATRIX, 16, buf) == 0 && kbd_doio_calls == 1 && kbd_length == 16 &&
+          kbd_data && !in_arena(kbd_data) && f.matrix_is(buf, 16) && f.fill_is(buf - 16, 16, 0xA5) &&
+          f.fill_is(buf + 16, 32, 0xA5),
+          "KBD_READMATRIX of 16 bytes reads a native buffer and copies exactly 16 bytes");
+    check(m68k_read32(&f.ctx, r + IO_ACTUAL) == 16 && f.error(r) == 0 &&
+          m68k_read32(&f.ctx, r + IO_LENGTH) == 16 && m68k_read32(&f.ctx, r + IO_DATA) == buf &&
+          m68k_read32(&f.ctx, r + IO_OFFSET) == 0x13579BDF &&
+          m68k_read16(&f.ctx, r + IO_COMMAND) == KBD_READMATRIX &&
+          m68k_read32(&f.ctx, r + IO_DEVICE) == kb && !m68k_read32(&f.ctx, r + IO_UNIT) &&
+          m68k_read32(&f.ctx, r + MN_REPLYPORT) == p && m68k_read16(&f.ctx, r + MN_LENGTH) == IOSTDREQ &&
+          f.memory[r + IO_FLAGS] == IOF_QUICK && f.memory[r + LN_TYPE] == NT_MESSAGE,
+          "io_Actual and io_Error come back; length, data, offset, device, unit and port stay");
+    check(f.ctx.io_requests[0].native && !static_cast<IOStdReq *>(
+              static_cast<void *>(f.ctx.io_requests[0].native))->io_Data,
+          "the native request keeps no pointer to the temporary buffer");
+
+    std::memset(f.memory.data() + buf, 0xA5, 64);
+    check(f.std_io(r, KBD_READMATRIX, 13, buf) == 0 && kbd_length == 13 && f.matrix_is(buf, 13) &&
+          f.fill_is(buf + 13, 32, 0xA5) && m68k_read32(&f.ctx, r + IO_ACTUAL) == 13,
+          "a classic 13-byte matrix gets 13 bytes");
+    for (ULONG length : { 33u, 0x100u, 0x7FFFFFFFu, 0xFFFFFFFFu })
+    {
+        std::memset(f.memory.data() + buf, 0xA5, 64);
+        check(f.std_io(r, KBD_READMATRIX, length, buf) == 0 && kbd_length == 32 &&
+              f.matrix_is(buf, 32) && f.fill_is(buf + 32, 16, 0xA5) &&
+              m68k_read32(&f.ctx, r + IO_ACTUAL) == 32 && m68k_read32(&f.ctx, r + IO_LENGTH) == length,
+              "a longer io_Length passes the native maximum of 32 bytes and gets 32");
+    }
+    const unsigned calls = kbd_doio_calls;
+    check(f.std_io(r, KBD_READMATRIX, 0, 0) == 0 && kbd_doio_calls == calls + 1 && kbd_length == 0 &&
+          !m68k_read32(&f.ctx, r + IO_ACTUAL), "a zero length needs no io_Data and copies nothing");
+    check(f.std_io(r, KBD_READMATRIX, 32, 0xFFE0) == 0 && f.matrix_is(0xFFE0, 32),
+          "the matrix may end at the last byte of guest memory");
+
+    std::memset(f.memory.data() + buf, 0xA5, 64);
+    kbd_actual = 99;
+    check(f.std_io(r, KBD_READMATRIX, 8, buf) == 0 && m68k_read32(&f.ctx, r + IO_ACTUAL) == 8 &&
+          f.matrix_is(buf, 8) && f.fill_is(buf + 8, 32, 0xA5),
+          "a native io_Actual past the length is clamped, and no more bytes are copied");
+    kbd_actual = -1;
+    doio_error = IOERR_ABORTED;
+    std::memset(f.memory.data() + buf, 0xA5, 64);
+    check(f.std_io(r, KBD_READMATRIX, 16, buf) == 0xFFFFFFFE && f.error(r) == IOERR_ABORTED &&
+          m68k_read32(&f.ctx, r + IO_ACTUAL) == 16 && f.fill_is(buf, 64, 0xA5),
+          "a native error comes back with io_Actual, and no bytes");
+    doio_error = 0;
+
+    /* Malformed buffers: io_Error IOERR_BADADDRESS, before the native device. */
+    const ULONG storage = Fixture::storage;
+    std::memset(f.memory.data() + storage, 0, IOSTDREQ);
+    f.open(storage, 0, Fixture::kbd_name);
+    /* Output storage cannot overwrite bridge snapshots or active queues. */
+    const ULONG queue=0x2900, message=0x2A00, task_shadow=0x2C00, font=0x2E00;
+    std::memset(f.memory.data()+queue,0,34);
+    std::memset(f.memory.data()+message,0,20);
+    f.memory[queue+LN_TYPE]=4;f.memory[queue+14]=2;
+    m68k_write32(&f.ctx,queue+20,message);m68k_write32(&f.ctx,queue+28,message);
+    m68k_write32(&f.ctx,message,queue+24);m68k_write32(&f.ctx,message+4,queue+20);
+    f.memory[message+LN_TYPE]=NT_MESSAGE;m68k_write16(&f.ctx,message+MN_LENGTH,20);
+    f.ctx.message_ports[0]=queue;
+    f.ctx.shadow_map[0]={task_shadow,&owner_task,258};f.ctx.num_shadows=1;
+    f.ctx.fonts[0].guest=font;f.ctx.fonts[0].allocation_size=64;
+    struct { ULONG req, length, data; const char *what; } bad[] = {
+        { r, 4, 0, "io_Data NULL" },
+        { r, 16, 0xFFFC, "a matrix past the end of guest memory" },
+        { r, 32, 0xFFFFFFF0, "an io_Data that wraps around" },
+        { r, 1, 0x10000, "an io_Data at the end of guest memory" },
+        { r, 0xFFFFFFFF, 0xFFF0, "a clamped length still past the end" },
+        { r, 1, p, "an idle owned port" },
+        { r, 1, queue+20, "an active queue header" },
+        { r, 1, message+8, "an active message body" },
+        { r, 1, task_shadow+227, "the final byte of a Process snapshot" },
+        { r, 1, font+63, "the final byte of a guest font block" },
+        { storage, 16, storage + 40, "a matrix over the end of the request" },
+        { storage, 16, storage - 8, "a matrix over the start of the request" },
+        { storage, 1, storage, "a matrix at the request" },
+        { storage, 1, storage + IOSTDREQ - 1, "a matrix at its last byte" },
+    };
+    for (const auto &b : bad)
+    {
+        std::memset(f.memory.data() + 0xFFC0, 0xA5, 0x40);
+        std::memset(f.memory.data() + buf, 0xA5, 64);
+        m68k_write32(&f.ctx, b.req + IO_ACTUAL, 0x22222222);
+        const unsigned before = kbd_doio_calls;
+        check(f.std_io(b.req, KBD_READMATRIX, b.length, b.data) == 0xFFFFFFFB &&
+              f.error(b.req) == -5 && kbd_doio_calls == before &&
+              m68k_read32(&f.ctx, b.req + IO_ACTUAL) == 0x22222222 &&
+              m68k_read32(&f.ctx, b.req + IO_DATA) == b.data &&
+              m68k_read32(&f.ctx, b.req + IO_LENGTH) == b.length &&
+              f.fill_is(0xFFC0, 0x40, 0xA5) && f.fill_is(buf, 64, 0xA5), b.what);
+    }
+    f.ctx.message_ports[0]=0;f.ctx.num_shadows=0;f.ctx.fonts[0]={};
+    check(f.std_io(storage, KBD_READMATRIX, 16, storage + IOSTDREQ) == 0 &&
+          f.matrix_is(storage + IOSTDREQ, 16) && f.std_io(storage, KBD_READMATRIX, 16, storage - 16) == 0 &&
+          f.matrix_is(storage - 16, 16) && m68k_read16(&f.ctx, storage + IO_COMMAND) == KBD_READMATRIX,
+          "a matrix right before or after the request is fine");
+
+    /* Other keyboard commands: IOERR_NOCMD, no native call, io_Data untouched. */
+    for (UWORD command : { (UWORD)CMD_INVALID, (UWORD)CMD_READ, (UWORD)CMD_CLEAR, (UWORD)KBD_READEVENT,
+                           (UWORD)KBD_ADDRESETHANDLER, (UWORD)KBD_REMRESETHANDLER,
+                           (UWORD)KBD_RESETHANDLERDONE, (UWORD)0x4000 })
+    {
+        std::memset(f.memory.data() + buf, 0xA5, 64);
+        const unsigned before = doio_calls;
+        m68k_write32(&f.ctx, r + IO_ACTUAL, 0x33333333);
+        check(f.std_io(r, command, 22, buf) == 0xFFFFFFFD && f.error(r) == IOERR_NOCMD &&
+              doio_calls == before && f.fill_is(buf, 64, 0xA5) &&
+              m68k_read32(&f.ctx, r + IO_ACTUAL) == 0x33333333 && f.memory[r + IO_FLAGS] == IOF_QUICK,
+              "another keyboard command ends with IOERR_NOCMD before the native device");
+    }
+    f.call(450, 0xA0A0A0A0, storage);
+    f.call(660, r);
+    f.call(672, p);
+}
+
+static void test_keyboard_identity()
+{
+    Fixture f;
+    const ULONG p = f.port();
+    const ULONG r = f.request(p, IOSTDREQ), t = f.request(p, 40), s = f.request(p, IOSTDREQ);
+    f.open(t);
+    f.open(r, 0, Fixture::kbd_name);
+    f.open(s, 0, Fixture::input_name);
+    const ULONG kb = f.ctx.keyboard_base, buf = 0x2810;
+    const unsigned before = doio_calls;
+    auto refused = [&](const char *what) {
+        std::memset(f.memory.data() + buf, 0xA5, 64);
+        f.memory[r + IO_ERROR] = 0x77;
+        check(f.std_io(r, KBD_READMATRIX, 16, buf) == 20 && f.stopped() && doio_calls == before &&
+              f.memory[r + IO_ERROR] == 0x77 && f.fill_is(buf, 64, 0xA5), what);
+    };
+    for (ULONG device : { f.ctx.timer_base, f.ctx.input_base, 0u, kb + 2, 0xFFFFFFFFu })
+    {
+        m68k_write32(&f.ctx, r + IO_DEVICE, device);
+        refused("a request that names another device stops the guest before the native device");
+    }
+    m68k_write32(&f.ctx, r + IO_DEVICE, kb);
+    m68k_write32(&f.ctx, r + IO_UNIT, 1);
+    refused("a request that names another unit stops the guest");
+    m68k_write32(&f.ctx, r + IO_UNIT, 0);
+
+    /* Timer, copies and forged requests that name the keyboard base. */
+    m68k_write32(&f.ctx, t + IO_DEVICE, kb);
+    check(f.doio(t, TR_GETSYSTIME) == 0 && doio_calls == before + 1 && !kbd_doio_calls,
+          "a timer request stays a timer request, whatever device it names");
+    std::memcpy(f.memory.data() + Fixture::copy, f.memory.data() + r, IOSTDREQ);
+    check(f.std_io(Fixture::copy, KBD_READMATRIX, 16, buf) == 20 && f.stopped() && !kbd_doio_calls,
+          "DoIO() on a copy of an open keyboard request stops the guest");
+    const ULONG forged = f.request(p, IOSTDREQ);
+    m68k_write32(&f.ctx, forged + IO_DEVICE, kb);
+    check(f.std_io(forged, KBD_READMATRIX, 16, buf) == 20 && f.stopped() && !kbd_doio_calls,
+          "a request never opened that names the keyboard base stops the guest");
+    m68k_write32(&f.ctx, forged + IO_DEVICE, 0);
+    check(f.std_io(forged, KBD_READMATRIX, 16, buf) == 0xFFFFFFFF && !kbd_doio_calls,
+          "one without a device returns -1, as Exec");
+    check(f.std_io(r, KBD_READMATRIX, 16, buf) == 0 && kbd_doio_calls == 1,
+          "the real request still works");
+    check(f.std_io(s, KBD_READMATRIX, 16, buf) == 0xFFFFFFFD && kbd_doio_calls == 1 && !input_doio_calls,
+          "the record's kind decides: the matrix command of an input request is IOERR_NOCMD");
+    f.call(450, 0xA0A0A0A0, r);
+    check(f.std_io(r, KBD_READMATRIX, 16, buf) == 20 && f.stopped() && kbd_doio_calls == 1,
+          "a closed keyboard request stops the guest");
+    for (ULONG req : { r, t, s, forged }) f.call(660, req);
+    f.call(672, p);
+}
+
+static void test_input_commands()
+{
+    Fixture f;
+    const ULONG p = f.port();
+    const ULONG r = f.request(p, IOSTDREQ);
+    f.open(r, 0, Fixture::input_name);
+    const ULONG hook = 0x2900;          /* a guest Interrupt and InputEvent */
+    for (UWORD command : { (UWORD)IND_ADDHANDLER, (UWORD)IND_REMHANDLER, (UWORD)IND_WRITEEVENT,
+                           (UWORD)IND_SETTHRESH, (UWORD)IND_SETPERIOD, (UWORD)IND_SETMPORT,
+                           (UWORD)IND_SETMTYPE, (UWORD)IND_SETMTRIG, (UWORD)IND_ADDEVENT,
+                           (UWORD)CMD_READ, (UWORD)CMD_WRITE, (UWORD)CMD_RESET, (UWORD)0x4000 })
+    {
+        std::memset(f.memory.data() + hook, 0xA5, 0x40);
+        m68k_write32(&f.ctx, hook + 18, 0x2950);     /* is_Code */
+        m68k_write32(&f.ctx, r + IO_ACTUAL, 0x44444444);
+        m68k_write32(&f.ctx, r + IO_OFFSET, 0x55555555);
+        const unsigned before = doio_calls;
+        const ULONG ret = f.std_io(r, command, 22, hook);
+        check(ret == 0xFFFFFFFD && f.error(r) == IOERR_NOCMD && doio_calls == before &&
+              !input_doio_calls && f.memory[r + IO_FLAGS] == IOF_QUICK && f.memory[r + LN_TYPE] == 0 &&
+              m68k_read32(&f.ctx, r + IO_ACTUAL) == 0x44444444 && m68k_read32(&f.ctx, r + IO_LENGTH) == 22 &&
+              m68k_read32(&f.ctx, r + IO_DATA) == hook && m68k_read32(&f.ctx, r + IO_OFFSET) == 0x55555555 &&
+              m68k_read32(&f.ctx, hook + 18) == 0x2950 && f.fill_is(hook, 18, 0xA5) &&
+              f.fill_is(hook + 22, 0x40 - 22, 0xA5) && f.ctx.running,
+              "an input.device command ends with IOERR_NOCMD; the guest hook is never touched");
+    }
+    m68k_write32(&f.ctx, r + IO_UNIT, 1);
+    check(f.std_io(r, IND_ADDHANDLER, 22, hook) == 20 && f.stopped() && !input_doio_calls,
+          "an input request that names another unit stops the guest");
+    m68k_write32(&f.ctx, r + IO_UNIT, 0);
+    f.memory[r + IO_FLAGS] = 0;
+    f.memory[r + LN_TYPE] = NT_MESSAGE;
+    check(f.std_io(r, IND_WRITEEVENT, 22, hook) == 0xFFFFFFFD && !f.stopped() && !input_doio_calls,
+          "an initial CreateExtIO marker is not native pending I/O; unsupported input stays NOCMD");
+    f.memory[r + IO_FLAGS] = IOF_QUICK;
+    f.call(660, r);
+    f.call(672, p);
+}
+
+static void test_input_vectors()
+{
+    Fixture f;
+    const ULONG p = f.port();
+    const ULONG k = f.request(p, IOSTDREQ), i = f.request(p, IOSTDREQ);
+    f.open(k, 0, Fixture::kbd_name);
+    f.open(i, 0, Fixture::input_name);
+    const unsigned opens = open_calls, closes = close_calls, doios = doio_calls;
+    for (ULONG lvo : { 6, 12, 18, 24, 30, 36 })
+        check(f.call_at(f.ctx.keyboard_base, lvo, 0xA0A0A0A0, k) == 20 && f.stopped(),
+              "every keyboard.device vector called directly stops the guest");
+    for (ULONG lvo : { 6, 12, 18, 24, 30, 36, 42 })
+        check(f.call_at(f.ctx.input_base, lvo, 0xA0A0A0A0, i) == 20 && f.stopped(),
+              "every input.device vector, PeekQualifier too, stops the guest");
+    check(open_calls == opens && close_calls == closes && doio_calls == doios && live_opens == 2,
+          "no direct vector reaches a native device");
+    check(f.call(462, 0xA0A0A0A0, k) == 20 && f.call(462, 0xA0A0A0A0, i) == 20 &&
+          doio_calls == doios, "SendIO() stops the guest for both devices");
+    check(f.call(468, 0xA0A0A0A0, k) == k && f.call(480, 0xA0A0A0A0, i) == 0xFFFFFFFF,
+          "CheckIO() and AbortIO() of complete requests as for timer");
+
+    /* Cleanup closes both; the guest bases stay for the next open. */
+    const ULONG kb = f.ctx.keyboard_base, in = f.ctx.input_base;
+    const UWORD libs = f.ctx.num_libs;
+    Kaffeine_IOCleanup(&f.ctx);
+    check(!live_opens && !live_ports && !live_requests && close_calls == closes + 2,
+          "cleanup closes the keyboard and input opens");
+    bool clear = true;
+    for (const auto &entry : f.ctx.io_requests)
+        clear = clear && !entry.guest && !entry.native && entry.kind == KAFFEINE_IO_NONE;
+    check(clear, "cleanup clears every record");
+    const ULONG q = f.port();
+    const ULONG r = f.request(q, IOSTDREQ);
+    check(f.open(r, 0, Fixture::kbd_name) == 0 && f.ctx.keyboard_base == kb && f.ctx.input_base == in &&
+          f.ctx.num_libs == libs && m68k_read32(&f.ctx, r + IO_DEVICE) == kb,
+          "a later open reuses the cached guest base");
+}
+
 static void test_cleanup()
 {
     {
@@ -760,7 +1236,14 @@ int main()
     test_doio();
     test_async();
     test_timer_base();
+    test_input_open_close();
+    test_input_base_rollback();
+    test_keyboard_matrix();
+    test_keyboard_identity();
+    test_input_commands();
+    test_input_vectors();
     test_cleanup();
-    std::printf("Exec I/O and timer.device: %u/%u checks passed\n", checks - failures, checks);
+    std::printf("Exec I/O, timer.device, keyboard.device and input.device: %u/%u checks passed\n",
+                checks - failures, checks);
     return failures ? 1 : 0;
 }

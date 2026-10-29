@@ -3,10 +3,10 @@
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-The C preprocessor expands the production header macros for all eighteen manual
+The C preprocessor expands the production header macros for all twenty manual
 thunk tables (exec, dos, intuition, graphics, utility, locale, mathieeedoubbas,
-mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, diskfont, gadtools, icon,
-workbench, cybergraphics and layers). Expected
+mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, keyboard, input,
+diskfont, gadtools, icon, workbench, cybergraphics and layers). Expected
 vector numbers come independently from the native AROS entry points and from
 the NDK 3.2 fd files (or AROS fd / .conf files for
 AROS-only AVL functions). Each manual handler and the helpers it delegates to
@@ -47,6 +47,8 @@ TABLES = (
     ("mathffp", "kaffeine_thunks.c", "kaffeine_thunks_mathffp"),
     ("timer", "kaffeine_thunks_timer.c", "kaffeine_thunks_timer"),
     ("console", "kaffeine_thunks_console.c", "kaffeine_thunks_console"),
+    ("keyboard", "kaffeine_exec_io.c", "kaffeine_thunks_keyboard"),
+    ("input", "kaffeine_exec_io.c", "kaffeine_thunks_input"),
     ("gadtools", "kaffeine_thunks.c", "kaffeine_thunks_gadtools_manual"),
     ("workbench", "kaffeine_workbench.c", "kaffeine_thunks_workbench"),
     ("layers", "kaffeine_layers.c", "kaffeine_thunks_layers_manual"),
@@ -69,10 +71,18 @@ WORKBENCH_NDK32 = {
 DISKFONT_NDK32 = {30: ("OpenDiskFont", ("A0",))}
 
 # Tables of devices, whose bases are named .device.
-DEVICES = ("timer", "console")
+DEVICES = ("timer", "console", "keyboard", "input")
 
 # These device slots deliberately stop the guest; they claim no native API.
 CONSOLE_REFUSED = frozenset((6, 12, 18, 24, 30, 36, 42, 54, 60, 66, 72))
+# Every vector of keyboard.device and input.device: Open, Close, Expunge and
+# the reserved one, then BeginIO, AbortIO and the .conf function list
+# (input's PeekQualifier), which main() checks against the native .conf.
+DEVICE_LIBRARY_VECTORS = frozenset((6, 12, 18, 24))
+DEVICE_REFUSED = {
+    "keyboard": DEVICE_LIBRARY_VECTORS | {30, 36},
+    "input": DEVICE_LIBRARY_VECTORS | {30, 36, 42},
+}
 ICON_REFUSED = frozenset((54, 72, 84, 108, 126, 138, 150, 156, 162, 168, 180, 186, 192, 198))
 # Every generated layers.library slot but DeleteLayer, LockLayer, UnlockLayer,
 # NewLayerInfo, DisposeLayerInfo, CreateUpfrontHookLayer and InstallLayerHook,
@@ -1004,11 +1014,31 @@ def main():
             r'\s*\(void\)cpu;\s*return Kaffeine_IORefuse\(ctx,\s*"[^"\n]*"\);\s*',
             refused_body[0]):
         raise ValueError("console unsupported slots must only call Kaffeine_IORefuse")
+    device_refused_body = re.findall(r"static IPTR device_unsupported\([^\n]*\n\{(.*?)\n\}",
+                                     sources["kaffeine_exec_io.c"], re.DOTALL)
+    if len(device_refused_body) != 1 or not re.fullmatch(
+            r'\s*\(void\)cpu;\s*return Kaffeine_IORefuse\(ctx,\s*"[^"\n]*"\);\s*',
+            device_refused_body[0]):
+        raise ValueError("keyboard/input unsupported slots must only call Kaffeine_IORefuse")
+    seen_device_refusals = {library: set() for library in DEVICE_REFUSED}
+    for library, native_vectors in DEVICE_REFUSED.items():
+        conf = parse_conf_file(library_source_dir(root, library) / (library + ".conf"))
+        if set(conf) | DEVICE_LIBRARY_VECTORS != native_vectors:
+            failures += 1
+            print("FAIL", module_name(library), "native vectors", sorted(conf),
+                  "differ from the refused ones")
     for library, _, _ in TABLES:
         ndk_spec, aros_spec = load_library_specs(
             root, library, args.ndk_fd_dir, args.aros_fd_dir)
         for vector, handler in registrations[library]:
             total_manual += 1
+            if handler == "device_unsupported":
+                if library not in DEVICE_REFUSED or vector not in DEVICE_REFUSED[library]:
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, "unexpected device refusal slot")
+                else:
+                    seen_device_refusals[library].add(vector)
+                continue
             if library == "console" and handler == "unsupported":
                 if vector not in CONSOLE_REFUSED:
                     failures += 1
@@ -1125,6 +1155,10 @@ def main():
     if seen_console_refusals != CONSOLE_REFUSED:
         failures += 1
         print("FAIL console.device explicit refusal slots changed")
+    for library, vectors in DEVICE_REFUSED.items():
+        if seen_device_refusals[library] != vectors:
+            failures += 1
+            print("FAIL", module_name(library), "explicit refusal slots changed")
     if seen_layers_refusals != LAYERS_REFUSED:
         failures += 1
         print("FAIL layers.library explicit refusal slots changed")
