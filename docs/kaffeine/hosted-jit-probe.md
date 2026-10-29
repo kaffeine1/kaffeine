@@ -207,6 +207,16 @@ copy taken at translation; the others are translated again.
   access convention and untouched host guards. Five-byte callback cases
   also check that a completed leading longword store survives a fault on
   the fifth byte and that execution does not resume the caller.
+- `word-division` checks `DIVU.W` and `DIVS.W` with an independent widened
+  integer oracle: quotient/remainder packing, signed limits, quotient
+  overflow, source/destination aliasing, data addressing modes, full,
+  partial and dead flag needs, and refusal on zero divisors. The pinned
+  Moira configuration is still used
+  for register and addressing side effects, but its word-division Z and
+  overflow C flags differ from the
+  [Motorola reference manual](https://www.nxp.com/docs/en/reference-manual/M68000PRM.pdf).
+  Defined flags are checked against the manual; undefined overflow N/Z
+  bits are excluded from the comparison.
 - 20000 random programs compared with Moira: registers, SR, the scratch
   memory, the stack and the beam counter. The generator keeps to the
   subset and to what both backends define the same way: pointers that stay
@@ -248,7 +258,8 @@ copy taken at translation; the others are translated again.
   `UNLK`, `ADD`, `SUB`, `AND`, `OR`, `EOR`, `CMP` and their address,
   immediate (including PC-relative `CMPI`) and quick forms, `CMPM`, `ADDX`,
   `SUBX`, `NEGX`, `MULU.W`, `MULS.W`, `MULU.L`, `MULS.L` (32-bit and 64-bit
-  `Dh:Dl`), `DIVU.L`, `DIVS.L`, `DIVUL.L`, `DIVSL.L` (32-bit `Dq` and 64-bit
+  `Dh:Dl`), `DIVU.W`, `DIVS.W` (32-bit dividend, 16-bit remainder and quotient),
+  `DIVU.L`, `DIVS.L`, `DIVUL.L`, `DIVSL.L` (32-bit `Dq` and 64-bit
   `Dr:Dq`, stopping with 20 on divide by zero), `BFTST`, `BFEXTU`, `BFCHG`,
   `BFEXTS`, `BFCLR`, `BFFFO`, `BFSET`, `BFINS`, `CAS.B`, `CAS.W`, `CAS.L`,
   `MOVEP.W`, `MOVEP.L`, `TAS`, `BTST`, `BCHG`, `BCLR`, `BSET`, `CLR`, `TST`

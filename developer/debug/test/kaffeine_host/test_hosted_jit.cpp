@@ -280,6 +280,132 @@ static void library_backend()
     CHECK(std::strstr(HJ_LastFault(native_sr.jit), "SR mode/trace change"));
 }
 
+/* DIV.W has architected results independent of either CPU implementation.
+   The manual defines X unchanged, C clear and N/Z from a successful
+   quotient; N/Z are undefined on overflow. Arithmetic uses widened host
+   integers, including INT32_MIN / -1. */
+static void word_division()
+{
+    struct Case { bool sign; ULONG dividend; UWORD divisor; unsigned form, dst, flags; };
+    std::vector<Case> cases;
+    const ULONG dividends[] = {0, 1, 2, 0x7F, 0x80, 0xFF, 0x100, 0x7FFF,
+        0x8000, 0xFFFF, 0x10000, 0x1FFFF, 0x7FFFFFFF, 0x80000000, 0x80000001, 0xFFFFFFFF};
+    const UWORD divisors[] = {1, 2, 3, 0x7F, 0x80, 0xFF, 0x100, 0x7FFF, 0x8000, 0x8001, 0xFFFE, 0xFFFF};
+    unsigned serial = 0, executed = 0, reference_flags_differ = 0;
+    for (bool sign : {false, true})
+        for (ULONG dividend : dividends)
+            for (UWORD divisor : divisors)
+            {
+                unsigned i = serial++;
+                cases.push_back({sign, dividend, divisor, i % 8, (i / 8) % 8, (i * 7) & 31});
+            }
+    ULONG seed = 0xD1706802;
+    auto random = [&] { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; return seed; };
+    for (unsigned i = 0; i < 512; ++i)
+    {
+        ULONG dividend = random(), divisor = random();
+        cases.push_back({bool(i & 1), dividend, (UWORD)((divisor & 0xFFFF) ? divisor : 1),
+                         i % 8, (i / 8) % 8, random() & 31});
+    }
+    for (auto c : cases)
+    {
+        UWORD divisor = c.form == 5 ? (UWORD)c.dividend : c.divisor;
+        if (!divisor) continue;
+        ++executed;
+        std::int64_t numerator = c.sign ? (std::int32_t)c.dividend : std::int64_t(c.dividend);
+        std::int64_t denominator = c.sign ? (std::int16_t)divisor : std::int64_t(divisor);
+        std::int64_t quotient = numerator / denominator, remainder = numerator % denominator;
+        bool overflow = quotient < (c.sign ? -32768 : 0) || quotient > (c.sign ? 32767 : 65535);
+        ULONG expected = overflow ? c.dividend :
+            (ULONG)(UWORD)remainder << 16 | (UWORD)quotient;
+        UWORD mask = overflow ? 0x13 : 0x1F;
+        UWORD expected_flags = (UWORD)((c.flags & 0x10) | (overflow ? 2 :
+            ((quotient & 0x8000) ? 8 : 0) | (quotient == 0 ? 4 : 0)));
+        auto build = [&](Machine &m) {
+            const ULONG data = Layout::scratch;
+            unsigned source = (c.dst + 1) & 7, index = (c.dst + 2) & 7;
+            unsigned ea = c.form == 0 ? source : c.form == 1 ? 0x3C :
+                c.form == 2 ? 0x39 : c.form == 3 ? 0x18 : c.form == 4 ? 0x20 :
+                c.form == 5 ? c.dst : c.form == 6 ? 0x3A : 0x30;
+            m.d(source, 0xC0DE0000 | divisor);
+            m.d(index, 0xC0DE0004);
+            m.d(c.dst, c.dividend);
+            m.a(0, c.form == 4 ? data + 2 : c.form == 7 ? data - 4 : data);
+            m68k_write16(&m.ctx, data, divisor);
+            m.word(0x44FC); m.word((UWORD)c.flags); /* MOVE #flags,CCR */
+            m.word((UWORD)((c.sign ? 0x81C0 : 0x80C0) | (c.dst << 9) | ea));
+            if (c.form == 1) m.word(divisor);
+            if (c.form == 2) m.longword(data);
+            if (c.form == 6) m.word((UWORD)(data - m.pc));
+            if (c.form == 7) m.word((UWORD)(index << 12));
+            m.save(); m.rts();
+        };
+        Machine reference, translated;
+        build(reference); build(translated);
+        reference.run(MOIRA);
+        CHECK(reference.read(Layout::snapshot + 4 * c.dst) == expected);
+        UWORD reference_sr = m68k_read16(&reference.ctx, Layout::snapshot + 64);
+        if ((reference_sr & mask) != expected_flags)
+        {
+            if (++reference_flags_differ == 1)
+                std::printf("  first pinned-reference flag difference: SR=%04x, ISA flags=%02x, mask=%02x\n",
+                            reference_sr, expected_flags, mask);
+        }
+        translated.run(JIT_LIBRARY);
+        CHECK(HJ_LastFault(translated.jit)[0] == 0);
+        CHECK(translated.read(Layout::snapshot + 4 * c.dst) == expected);
+        CHECK((m68k_read16(&translated.ctx, Layout::snapshot + 64) & mask) == expected_flags);
+        CHECK(std::memcmp(reference.mem.data() + Layout::snapshot,
+                          translated.mem.data() + Layout::snapshot, 64) == 0);
+        if (c.form == 3 || c.form == 4)
+            CHECK(translated.read(Layout::snapshot + 32) == Layout::scratch + (c.form == 3 ? 2 : 0));
+        CHECK(translated.mem[Layout::scratch] == (UBYTE)(divisor >> 8) &&
+              translated.mem[Layout::scratch + 1] == (UBYTE)divisor);
+    }
+    std::printf("  %u word-division cases; %u pinned-reference flag differences from the independent ISA oracle\n",
+                executed, reference_flags_differ);
+    /* A following MOVEQ kills NZVC. Scc observes just one flag before
+       that overwrite, so these also exercise partial and dead needs. */
+    for (auto c : {Case{false, 0xFFFFFFFF, 0xFFFF, 0, 0, 31},
+                   Case{false, 0xFFFF, 1, 0, 0, 0},
+                   Case{true, 0, 0xFFFF, 0, 0, 31},
+                   Case{true, 0xFFFFFFF9, 2, 0, 0, 0}})
+    {
+        std::int64_t n = c.sign ? (std::int32_t)c.dividend : std::int64_t(c.dividend);
+        std::int64_t d = c.sign ? (std::int16_t)c.divisor : std::int64_t(c.divisor);
+        std::int64_t q = n / d, r = n % d;
+        bool overflow = q < (c.sign ? -32768 : 0) || q > (c.sign ? 32767 : 65535);
+        ULONG expected = overflow ? c.dividend : (ULONG)(UWORD)r << 16 | (UWORD)q;
+        for (unsigned cond : {0u, 5u, 9u, 11u, 7u}) /* dead, C, V, N, Z */
+        {
+            if (overflow && (cond == 11 || cond == 7)) continue;
+            Machine m;
+            m.d(0, c.dividend); m.d(1, 0xC0DE0000 | c.divisor); m.d(2, 0x12345600);
+            m.word(0x44FC); m.word((UWORD)c.flags);
+            m.word(c.sign ? 0x81C1 : 0x80C1);
+            if (cond) m.word((UWORD)(0x50C2 | (cond << 8)));
+            m.word(0x7600); /* MOVEQ #0,D3 */
+            m.save(); m.rts();
+            m.run(JIT_LIBRARY);
+            CHECK(!HJ_LastFault(m.jit)[0]);
+            CHECK(m.read(Layout::snapshot) == expected);
+            bool set = cond == 9 ? overflow : cond == 11 ? (q & 0x8000) : cond == 7 ? q == 0 : false;
+            CHECK(m.read(Layout::snapshot + 8) == (0x12345600U | (cond && set ? 255 : 0)));
+        }
+    }
+    for (bool sign : {false, true})
+    {
+        Machine zero;
+        zero.d(0, 0x12345678); zero.d(1, 0xC0DE0000);
+        zero.word(sign ? 0x81C1 : 0x80C1);
+        zero.word(0x23FC); zero.longword(0xBAD); zero.longword(Layout::data);
+        zero.rts();
+        CHECK(zero.run(JIT_LIBRARY) == 20);
+        CHECK(zero.read(Layout::data) == 0xA5A5A5A5);
+        CHECK(HJ_LastFault(zero.jit)[0] != 0);
+    }
+}
+
 /* Moira plants its RTE and trampoline in the vector page and leaves the
    frame of a Line-A exception in the 8 bytes below the stack pointer of
    the call; the probe needs neither. */
@@ -912,7 +1038,7 @@ static void faults()
 {
     struct { std::vector<UWORD> code; const char *why; } cases[] = {
         { {0x7005, 0x4AFC}, "ILLEGAL" },
-        { {0x7005, 0x80C1}, "MUL/DIV" },                          /* DIVU.W D1,D0 */
+        { {0x7005, 0x80C8}, "DIV.W mode" },                       /* DIVU.W A0,D0 is illegal */
         { {0x7005, 0x4C00, 0x8000}, "MUL.L extension" },          /* MULU.L with bit 15 set */
         { {0x7005, 0x4C40, 0x8000}, "DIV.L extension" },          /* DIVU.L with bit 15 set */
         { {0x7005, 0x4C7C, 0x0000, 0x0000, 0x0000}, "divide by zero" },
@@ -2132,6 +2258,7 @@ int main(int argc, char **argv)
         {"code-changes", code_changes, true},
         {"faults", faults, true}, {"extended-insns", extended_insns, true},
         {"library-backend", library_backend, true},
+        {"word-division", word_division, true},
         {"random-programs", random_programs, true}
     };
     unsigned skipped = 0;

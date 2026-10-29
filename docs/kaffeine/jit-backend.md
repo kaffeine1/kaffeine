@@ -67,9 +67,23 @@ shared-code invalidation in both directions, scheduler cleanup and
 explicit rejection of unsupported SR operations. Moira remains the
 reference for the existing instruction regression suite.
 
-Personal Paint on the JIT, full instruction coverage, native performance
-and physical Raspberry Pi cache behavior remain unverified. The published
-Personal Paint demonstration uses Moira.
+`DIVU.W` and `DIVS.W` additionally use an independent widened-integer oracle
+for arithmetic and defined flags. Their native standalone probe passed
+22 checks in both Shell and `Run` on AROS AArch64. Quotient overflow keeps
+the destination unchanged and sets V; division by zero stops with 20
+because exception delivery remains unsupported. See the
+[word-division test notes](hosted-jit-probe.md#verification) for the known
+flag differences in the pinned reference interpreter.
+
+The original 68k Personal Paint 7.2.1.0 also reached its editor with the JIT
+on AROS AArch64 in QEMU, from both Shell and `Run`, using the CPU blitting
+preferences of the existing Moira demonstration. A line was drawn in the
+first run, and both runs exited normally with return code 0. UART identified
+the JIT and reported translated blocks for each run. This is a startup,
+basic drawing and exit smoke test. Save/reload on the JIT, broader editor
+use, full instruction coverage, native performance and physical Raspberry
+Pi cache behavior remain unverified. The published Personal Paint video
+continues to show Moira.
 
 For repeatable target runs, pass `--cpu jit` or `--cpu moira` to
 `developer/debug/test/kaffeine_target/run-raspi-qemu.py`; it selects the
