@@ -1,8 +1,9 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    Guest tasks of AddTask() through literal Exec LVOs, with the production
-    scheduler, run loop and dispatcher compiled as C. Part one runs mock
+    Guest tasks of AddTask() and guest processes of CreateProc() through
+    literal Exec and DOS LVOs, with the production scheduler, run loop and
+    dispatcher compiled as C. Part one runs mock
     CPUs from a mock backend factory, whose instructions are literal
     register and memory effects, over a recording native Exec. Part two
     runs an original 68k parent and child (guest_tasks_68k.s) on Moira and
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include <exec/ports.h>
+#include <dos/dos.h>
 #include <proto/exec.h>
 #include "kaffeine_intern.h"
 #include "kaffeine_dispatch.h"
@@ -146,6 +148,45 @@ extern "C" void Kaffeine_HeapFreeEntry(KaffeineContext *, ULONG entry)
     freed_entries.push_back(entry);
 }
 
+/* CreateProc()'s MemList from a bump heap of 1 KiB slots above the
+   messages of these tests, below the root's stack. heap_force puts the
+   next first member there instead, as a corrupt heap would. */
+static constexpr ULONG HEAP_START = 0x33000, HEAP_END = 0x3F000;
+static ULONG heap_next, heap_force;
+static unsigned heap_lists;
+static bool fail_heap;
+extern "C" ULONG Kaffeine_HeapAllocList(KaffeineContext *ctx, const ULONG *spec, UWORD count)
+{
+    ULONG need = 0, entry, i;
+
+    for (i = 0; i <= count; ++i)
+        need += ((i ? spec[2 * i - 1] : 16 + 8 * count) + 0x3FF) & ~0x3FFu;
+    if (fail_heap || heap_next + need > HEAP_END) return 0x80000001u;
+    ++heap_lists;
+    entry = heap_next;
+    heap_next += (16 + 8 * count + 0x3FF) & ~0x3FFu;
+    std::memset(ctx->mem + entry, 0, 16 + 8 * count);
+    m68k_write16(ctx, entry + 14, count);
+    for (i = 0; i < count; ++i)
+    {
+        ULONG length = spec[2 * i + 1], member = heap_next;
+
+        if (!i && heap_force)
+        {
+            member = heap_force;
+            heap_force = 0;
+        }
+        else
+        {
+            heap_next += (length + 0x3FF) & ~0x3FFu;
+            std::memset(ctx->mem + member, 0, length);
+        }
+        m68k_write32(ctx, entry + 16 + 8 * i, member);
+        m68k_write32(ctx, entry + 20 + 8 * i, length);
+    }
+    return entry;
+}
+
 /* ── Mock CPUs ───────────────────────────────────────────────────── */
 
 struct Mock
@@ -175,7 +216,11 @@ static constexpr ULONG SHARED = 0xA000, NAMES = 0xB000, ROOT_CODE = 0x11000, COD
 static constexpr ULONG STACK_TOP = 0x40000, STACK_BOTTOM = 0x3F000, SENTINEL = 0x160;
 static constexpr ULONG TASK_READY = SYSBASE + 406, TASK_WAIT = SYSBASE + 420;
 static constexpr ULONG TDNEST = SYSBASE + 295;
+static constexpr ULONG DOSBASE = 0x7000;
 static constexpr ULONG TCB(unsigned i) { return 0x20000 + 0x100 * i; }
+/* A seglist of one segment whose code is CODE + 0x1000 * i */
+static constexpr ULONG SEG(unsigned i) { return 0x12000 + 0x1000 * i - 4; }
+static constexpr ULONG SEGLIST(unsigned i) { return SEG(i) >> 2; }
 static constexpr ULONG LOWER(unsigned i) { return 0x28000 + 0x400 * i; }
 static constexpr ULONG UPPER(unsigned i) { return LOWER(i) + 0x400; }
 static constexpr size_t SLICE_LIMIT = 1000000;
@@ -205,6 +250,30 @@ static const M68KThunkEntry exec_table[] =
     { 384, port_wait }, { 390, guest_wait }
 };
 
+/* dos.library: CreateProc() as kaffeine_dos_CreateProc() calls it, and two
+   calls that would act for the native process, which count when reached */
+static unsigned dos_calls, dos_exits;
+static LONG dos_ioerr;
+static IPTR dos_output(KaffeineContext *, void *) { ++dos_calls; return 0x1234; }
+static IPTR dos_exit(KaffeineContext *c, void *p)
+{
+    ++dos_exits;
+    c->running = FALSE;
+    c->exit_code = (LONG)Kaffeine_GetD(p, 1);
+    return (IPTR)c->exit_code;
+}
+static IPTR dos_create_proc(KaffeineContext *c, void *p)
+{
+    LONG ioerr = ERROR_NOT_IMPLEMENTED;
+    IPTR port = c->task_ops->create_proc(c, p, &ioerr);
+    if (!port) dos_ioerr = ioerr;
+    return port;
+}
+static const M68KThunkEntry dos_table[] =
+{
+    { 60, dos_output }, { 138, dos_create_proc }, { 144, dos_exit }
+};
+
 static KaffeineCPU *mock_create(KaffeineContext *);
 static void mock_destroy(KaffeineContext *, KaffeineCPU *);
 static const KaffeineCPUFactory mock_factory = { mock_create, mock_destroy };
@@ -232,6 +301,8 @@ struct World
         native_alloc = 0xFFFF; native_recvd = 0; native_pri = 0; native_wait_mask = 0;
         native_calls = native_waits = allocmems = freemems = 0;
         fail_allocmem = false; native_event = nullptr; freed_entries.clear(); retired_signals=0;
+        heap_next = HEAP_START; heap_force = 0; heap_lists = 0; fail_heap = false;
+        dos_calls = dos_exits = 0; dos_ioerr = 0;
         ctx.mem = mem.data(); ctx.mem_size = ARENA;
         ctx.m68k_sysbase = SYSBASE; ctx.guest_exec_task = ROOT;
         ctx.stack_top = STACK_TOP; ctx.stack_bottom = STACK_BOTTOM;
@@ -280,6 +351,20 @@ struct World
         }
         put(TCB(i) + 58, LOWER(i));
         put(TCB(i) + 62, UPPER(i));
+    }
+    /* dos.library, marked as Kaffeine_SetupLibBase() marks it */
+    void dos()
+    {
+        auto &lib = ctx.libs[1];
+        ctx.num_libs = 2;
+        lib.m68k_addr = DOSBASE; lib.jt_start = DOSBASE - 6 * 256;
+        std::strcpy(lib.name, "dos.library");
+        lib.dos = TRUE;
+        lib.thunks = dos_table; lib.num_thunks = sizeof(dos_table) / sizeof(dos_table[0]);
+    }
+    void name(ULONG at, const char *text)
+    {
+        std::strcpy(reinterpret_cast<char *>(mem.data() + at), text);
     }
     LONG run() { return Kaffeine_RunCPU(&ctx, &root.handle); }
     bool lists_empty()
@@ -441,6 +526,21 @@ struct Program
     Program &add_task(ULONG tcb, ULONG initial, ULONG final = 0)
     {
         return a(1, tcb).a(2, initial).a(3, final).call(282);
+    }
+    /* JSR -lvo(A6) with A6 dos.library, then SysBase again */
+    Program &dos(UWORD lvo) { return a(6, DOSBASE).call(lvo).a(6, SYSBASE); }
+    Program &create_proc(ULONG name, LONG pri, ULONG seglist, LONG stack)
+    {
+        return op([=](Mock &m) {
+            m.d[1] = name; m.d[2] = (ULONG)pri; m.d[3] = seglist; m.d[4] = (ULONG)stack;
+        }).dos(138);
+    }
+    /* A<r> = the port of CreateProc() that the root stored at SHARED */
+    Program &to_port(int r = 0) { return op([r](Mock &m) { m.a[r] = world->at(SHARED); }); }
+    /* A<r> = pr_MsgPort of ThisTask, in a child Process */
+    Program &own_port(int r = 0)
+    {
+        return op([r](Mock &m) { m.a[r] = world->at(SYSBASE + 276) + 92; });
     }
     Program &signal(ULONG task, ULONG set) { return a(1, task).d(0, set).call(324); }
     Program &wait(ULONG set) { return d(0, set).call(318); }
@@ -1094,6 +1194,447 @@ static void test_native_routing()
           "a native signal on a child's bit wakes that child alone");
 }
 
+/* ── Guest processes of CreateProc() ─────────────────────────────── */
+
+static void message(World &w, ULONG msg, ULONG reply)
+{
+    std::memset(w.mem.data() + msg, 0, 20);
+    w.put(msg + 14, reply);
+    m68k_write16(&w.ctx, msg + 18, 20);
+}
+
+/* The Process that CreateProc() made, from its pr_MsgPort: every field
+   that it sets, and every DOS field zero, none of the native process */
+static bool process_ok(ULONG port, const char *name, int pri, ULONG seglist, ULONG stack)
+{
+    World &w = *world;
+    ULONG p = port - 92, lower = w.at(p + 58), upper = w.at(p + 62), entry = w.at(p + 74);
+    ULONG text = w.at(p + 10), segarray = w.at(p + 128) << 2;
+    bool ok = w.mem[p + 8] == 13 && (BYTE)w.mem[p + 9] == pri && text && text != NAMES &&
+        !std::strcmp(reinterpret_cast<const char *>(w.mem.data() + text), name) &&
+        w.mem[p + 16] == 0xFF && w.mem[p + 17] == 0xFF && w.at(p + 18) == 0xFFFF &&
+        upper - lower == stack && w.at(p + 54) == upper - 8 &&
+        w.at(upper - 8) == KAFFEINE_TASK_EXIT_ADDR && w.at(upper - 4) == stack &&
+        /* tc_MemEntry: one MemList of Process, stack, name and SegArray */
+        entry && w.at(p + 82) == entry && w.at(entry) == p + 78 && w.at(entry + 4) == p + 74 &&
+        w.mem[entry + 8] == 10 && m68k_read16(&w.ctx, entry + 14) == 4 &&
+        w.at(entry + 16) == p && w.at(entry + 20) == 228 &&
+        w.at(entry + 24) == lower && w.at(entry + 28) == stack &&
+        w.at(entry + 32) == text && w.at(entry + 36) == std::strlen(name) + 1 &&
+        w.at(entry + 40) == segarray && w.at(entry + 44) == 20 &&
+        /* pr_MsgPort: PA_SIGNAL, SIGB_DOS, the Process, empty */
+        w.mem[port + 8] == 4 && w.mem[port + 14] == 0 && w.mem[port + 15] == SIGB_DOS &&
+        w.at(port + 16) == p && w.at(port + 20) == port + 24 && !w.at(port + 24) &&
+        w.at(port + 28) == port + 20 &&
+        w.at(segarray) == 3 && !w.at(segarray + 4) && !w.at(segarray + 8) &&
+        w.at(segarray + 12) == seglist && !w.at(segarray + 16) &&
+        w.at(p + 132) == stack && w.at(p + 144) == upper >> 2 &&
+        w.at(p + 208) == p + 212 && !w.at(p + 212) && w.at(p + 216) == p + 208;
+    /* GlobVec, TaskNum, Result2, CurrentDir, CIS, COS, ConsoleTask,
+       FileSystemTask, CLI, ReturnAddr, PktWait, WindowPtr, HomeDir, Flags,
+       ExitCode, ExitData, Arguments, ShellPrivate, CES */
+    for (ULONG at : { 136u, 140u, 148u, 152u, 156u, 160u, 164u, 168u, 172u, 176u, 180u, 184u,
+                      188u, 192u, 196u, 200u, 204u, 220u, 224u })
+        ok = ok && !w.at(p + at);
+    return ok;
+}
+
+/* The classic startup protocol: the root sends a startup message to the
+   new pr_MsgPort, the child replies it, then a message that tells it to
+   go, which it replies under Forbid() before it returns. */
+static void test_process_handshake()
+{
+    constexpr ULONG rp = 0x31000, startup = 0x31200, remove = 0x31300;
+    static Mock first;
+    World w;
+    w.dos();
+    w.name(NAMES, "worker");
+    guest_port(w, rp, ROOT, 20);
+    message(w, startup, rp);
+    message(w, remove, rp);
+    Program(ROOT_CODE)
+        .d(0, 20).call(330)
+        .create_proc(NAMES, 0, SEGLIST(0), 1024).store(SHARED, 0)
+        .see(0, [] { return (ULONG)process_ok(world->at(SHARED), "worker", 0, SEGLIST(0), 1024); })
+        .see(1, [] { ULONG p = world->at(SHARED) - 92;
+                     return (ULONG)(world->mem[p + 15] == 3 && world->at(TASK_READY) == p &&
+                                    world->at(p) == TASK_READY + 4); })
+        .a(1, NAMES).call(294).store(SHARED + 24, 0)
+        .to_port().a(1, startup).call(366)
+        .a(0, rp).call(390).a(0, rp).call(372).store(SHARED + 4, 0)
+        .see(2, [] { ULONG p = world->at(SHARED) - 92;
+                     return (ULONG)(world->mem[p + 15] == 4 && world->at(p + 22) == SIGF_DOS &&
+                                    world->at(TASK_WAIT) == p && !(native_recvd & SIGF_DOS)); })
+        .to_port().a(1, remove).call(366)
+        .a(0, rp).call(390).a(0, rp).call(372).store(SHARED + 8, 0)
+        .see(3, [] { return world->at(SYSBASE + 276); })
+        .see(4, [] { return (ULONG)(world->mem[TDNEST]); })
+        .d(0, 20).call(336)
+        .d(0, 0).rts();
+    Program(CODE)
+        .op([](Mock &m) { first = m; })
+        .a(1, 0).call(294).store(SHARED + 12, 0)
+        .op([](Mock &) { world->put(world->at(SHARED) - 92 + 184, 0xFFFFFFFF); })
+        .own_port().call(390).store(SHARED + 16, 0)
+        .own_port().call(372).op([](Mock &m) { m.a[1] = m.d[0]; }).call(378)
+        .own_port().call(390).own_port().call(372).store(SHARED + 20, 0)
+        .call(132).a(1, remove).call(378)
+        .rts();
+    LONG result = w.run();
+    ULONG port = w.at(SHARED), proc = port - 92, upper = w.at(proc + 62);
+    check(result == 0 && port && w.seen[0] && w.seen[1],
+          "CreateProc() returns pr_MsgPort of a ready NT_PROCESS with its own MemList and no DOS context");
+    check(w.at(SHARED + 24) == proc && w.at(SHARED + 12) == proc,
+          "FindTask() of its name and FindTask(NULL) in the child are the guest Process");
+    bool zero = first.pc == CODE && first.sr == 0x2700 && first.a[6] == SYSBASE &&
+                first.a[7] == upper - 8 && first.a[0] == (w.at(proc + 128) << 2) + 16 &&
+                !w.at(first.a[0]);
+    for (unsigned i = 0; i < 8; ++i) zero = zero && first.d[i] == 0;
+    for (unsigned i = 1; i < 6; ++i) zero = zero && first.a[i] == 0;
+    check(zero, "the child starts at seg+4: D0 0, A0 an empty string, A6 SysBase, others 0");
+    check(w.at(SHARED + 16) == startup && w.at(SHARED + 4) == startup &&
+          w.at(SHARED + 20) == remove && w.at(SHARED + 8) == remove && w.mem[remove + 8] == 7,
+          "the startup message, sent before the child ran, and the remove message are replied");
+    check(w.seen[2], "the child waits for its empty pr_MsgPort on its guest SIGB_DOS alone");
+    check(w.at(proc + 184) == 0xFFFFFFFF, "pr_WindowPtr = -1 of the child is a guest write");
+    check(freed_entries == std::vector<ULONG>({ HEAP_START }) && w.mem[proc + 15] == 6,
+          "the child's return ends it alone and frees its MemList");
+    check(w.seen[3] == ROOT && w.seen[4] == 0xFF && w.created == 1 && w.destroyed == 1 &&
+          !w.ctx.sched && w.lists_empty(),
+          "the root resumes as ThisTask without the child's Forbid(); the scheduler goes");
+    check(!native_waits && native_alloc == 0xFFFF && !w.ctx.guest_signals &&
+          !(native_recvd & SIGF_DOS) && !dos_calls,
+          "no native Wait(), and SIGB_DOS of the child never was a native bit");
+}
+
+/* Priorities as Exec's: a higher one preempts at the next slice, a lower
+   one runs while the root waits; both live at once, found by name */
+static void test_process_priorities()
+{
+    constexpr ULONG m1 = 0x31200;
+    World w;
+    w.dos();
+    w.name(NAMES, "alpha");
+    w.name(NAMES + 32, "beta");
+    message(w, m1, 0);
+    Program(ROOT_CODE)
+        .create_proc(NAMES, 1, SEGLIST(0), 1024).store(SHARED, 0).mark(1)
+        .create_proc(NAMES + 32, -1, SEGLIST(1), 1024).store(SHARED + 4, 0).mark(2)
+        .a(1, NAMES).call(294).store(SHARED + 8, 0)
+        .a(1, NAMES + 32).call(294).store(SHARED + 12, 0)
+        .see(7, [] { return (ULONG)world->mem[world->at(SHARED) - 92 + 9] |
+                            (ULONG)world->mem[world->at(SHARED + 4) - 92 + 9] << 8; })
+        .to_port().a(1, m1).call(366).mark(3)
+        .wait(0x1000).mark(8)
+        .d(0, 0).rts();
+    Program(CODE).mark(4).own_port().call(390).mark(6).own_port().call(372).rts();
+    Program(CODE + 0x1000).mark(5).signal(ROOT, 0x1000).rts();
+    LONG result = w.run();
+    check(result == 0 && w.seen[4] < w.seen[1] && w.seen[1] < w.seen[2],
+          "a process of higher priority runs right after its CreateProc()");
+    check(w.seen[6] < w.seen[3] && w.seen[3] < w.seen[5] && w.seen[5] < w.seen[8],
+          "PutMsg() wakes it at once; the lower one runs only while the root waits");
+    check(w.at(SHARED + 8) == w.at(SHARED) - 92 && w.at(SHARED + 12) == w.at(SHARED + 4) - 92 &&
+          w.seen[7] == 0xFF01, "two processes live at once with their names and priorities");
+    check(w.created == 2 && w.destroyed == 2 && !w.ctx.sched && freed_entries.size() == 1,
+          "the returned one frees its memory; the other ends with the program");
+}
+
+/* Forbid() keeps a new process out until Permit(); its Wait() breaks its
+   own Forbid(), which it gets back, and which ends with it */
+static void test_process_forbid_wait()
+{
+    constexpr ULONG m1 = 0x31200;
+    World w;
+    w.dos();
+    w.name(NAMES, "forbid");
+    message(w, m1, 0);
+    Program(ROOT_CODE)
+        .call(132).create_proc(NAMES, 1, SEGLIST(0), 1024).store(SHARED, 0)
+        .mark(1).mark(2).call(138).mark(3)
+        .see(10, [] { return (ULONG)world->mem[TDNEST]; })
+        .to_port().a(1, m1).call(366)
+        .see(12, [] { return (ULONG)world->mem[TDNEST]; })
+        .d(0, 0).rts();
+    Program(CODE)
+        .mark(4).call(132).d(0, SIGF_DOS).call(318).store(SHARED + 4, 0)
+        .see(11, [] { return (ULONG)world->mem[TDNEST]; })
+        .own_port().call(372).rts();
+    LONG result = w.run();
+    check(result == 0 && w.seen[4] > w.seen[2] && w.seen[4] < w.seen[3],
+          "Forbid() keeps a higher-priority process out until the slice after Permit()");
+    check(w.at(SHARED + 4) == SIGF_DOS && w.seen[10] == 0xFF && w.seen[11] == 0 && w.seen[12] == 0xFF,
+          "Wait() of the guest SIGB_DOS breaks the child's Forbid(), which it gets back and keeps to its end");
+    check(!native_waits && freed_entries.size() == 1 && !w.ctx.sched,
+          "PutMsg() to its pr_MsgPort wakes it without native signals");
+}
+
+/* A native SIGB_DOS stays the native process's; the child's is virtual */
+static void test_process_signals()
+{
+    constexpr ULONG other = 0x31000, msg = 0x31200;
+    World w;
+    w.dos();
+    w.name(NAMES, "signals");
+    message(w, msg, 0);
+    Program(ROOT_CODE)
+        .create_proc(NAMES, 1, SEGLIST(0), 1024).store(SHARED, 0)
+        .op([&w](Mock &) {
+            auto *ops = w.ctx.task_ops;
+            ULONG port = w.at(SHARED), p = port - 92;
+            KaffeineQueue queue;
+            check(ops->process_port(&w.ctx, port, p) && !ops->process_port(&w.ctx, port, ROOT) &&
+                  !ops->process_port(&w.ctx, port + 4, p) && !ops->process_port(&w.ctx, ROOT + 92, ROOT),
+                  "process_port() is the pr_MsgPort of a live child Process alone");
+            check(!ops->owns_signal(&w.ctx, p, SIGF_DOS) && !(w.ctx.guest_signals & SIGF_DOS),
+                  "the child's SIGB_DOS is neither a native nor an owned bridge signal");
+            guest_port(w, other, p, SIGB_DOS);
+            check(Kaffeine_QueueRead(&w.ctx, other, &queue) &&
+                  !Kaffeine_MessagePreflight(&w.ctx, &queue, msg, 20),
+                  "a child Process's SIGB_DOS serves its pr_MsgPort alone");
+            native_event = [] { native_recvd |= 0x1000; };
+            native_recvd |= SIGF_DOS;
+        })
+        .wait(0x1000).store(SHARED + 4, 0)
+        .see(0, [] { ULONG p = world->at(SHARED) - 92;
+                     return (ULONG)(world->mem[p + 15] == 4 && !(world->at(p + 26) & SIGF_DOS)); })
+        .see(1, [] { return native_wait_mask; })
+        .to_port().a(1, msg).call(366)
+        .see(2, [] { return native_recvd; })
+        .wait(0x2000).store(SHARED + 8, 0)
+        .d(0, 0).rts();
+    Program(CODE).own_port().call(390).store(SHARED + 12, 0).own_port().call(372)
+        .signal(ROOT, 0x2000).rts();
+    LONG result = w.run();
+    check(result == 0 && w.at(SHARED + 4) == 0x1000 && w.seen[0] && w.seen[1] == 0x1000,
+          "a native SIGB_DOS neither wakes the child nor joins the native wait");
+    check((w.seen[2] & SIGF_DOS) && w.at(SHARED + 12) == msg && w.at(SHARED + 8) == 0x2000,
+          "the child wakes for its message alone; the native SIGB_DOS stays the root's");
+    check(native_waits == 2 && native_wait_mask == 0x2000,
+          "only the root's two ordinary signal waits reach native Exec");
+    check(native_alloc == 0xFFFF && !w.ctx.guest_signals && !w.ctx.sched,
+          "no native signal was allocated for the child");
+}
+
+/* No dos.library call of a child Process reaches its thunk; its Exit()
+   ends it alone. Other tasks call DOS as before. */
+static void test_process_dos_guard()
+{
+    for (UWORD lvo : { 60, 72, 138 })
+    {
+        World w;
+        w.dos();
+        Program(ROOT_CODE).create_proc(NAMES, 1, SEGLIST(0), 1024).d(0, 0x55).rts();
+        Program(CODE).op([](Mock &m) { m.d[1] = NAMES; m.d[3] = SEGLIST(1); }).dos(lvo)
+            .see(9, [] { return 1u; }).rts();
+        LONG result = w.run();
+        check(result == 20 && w.ctx.exit_code == 20 && !w.seen[9] && !dos_calls &&
+              w.created == 1 && heap_lists == 1 && w.destroyed == 1 && !w.ctx.sched,
+              "any dos.library call of a child Process stops the program before its thunk");
+    }
+
+    World task;
+    task.dos();
+    task.child(0, 1);
+    Program(ROOT_CODE).add_task(TCB(0), CODE).d(0, 0x55).rts();
+    Program(CODE).dos(60).store(SHARED, 0).rts();
+    check(task.run() == 0x55 && dos_calls == 1 && task.at(SHARED) == 0x1234,
+          "an AddTask() child calls dos.library as before");
+
+    World parent;
+    parent.dos();
+    Program(ROOT_CODE).create_proc(NAMES, -1, SEGLIST(0), 1024).dos(60).store(SHARED, 0)
+        .d(0, 0x56).rts();
+    Program(CODE).rts();
+    check(parent.run() == 0x56 && dos_calls == 1 && parent.at(SHARED) == 0x1234,
+          "the root calls dos.library as before while a child Process lives");
+
+    World child_exit;
+    child_exit.dos();
+    child_exit.child(0, 1);
+    Program(ROOT_CODE).add_task(TCB(0), CODE).d(0, 0x55).rts();
+    Program(CODE).d(1, 7).dos(144).rts();
+    check(child_exit.run() == 7 && dos_exits == 1,
+          "Exit() of an AddTask() child still reaches DOS and ends the program");
+
+    for (bool forbid : { false, true })
+    {
+        World w;
+        w.dos();
+        Program(ROOT_CODE).create_proc(NAMES, 1, SEGLIST(0), 1024)
+            .see(0, [] { return (ULONG)freed_entries.size(); })
+            .see(1, [] { return (ULONG)world->mem[TDNEST]; })
+            .see(2, [] { return world->destroyed; })
+            .a(1, 0).call(294).store(SHARED, 0).d(0, 0x66).rts();
+        Program p(CODE);
+        if (forbid) p.call(132);
+        p.d(1, 5).dos(144).see(9, [] { return 1u; }).rts();
+        LONG result = w.run();
+        check(result == 0x66 && !dos_exits && w.seen[0] == 1 && w.seen[1] == 0xFF &&
+              w.seen[2] == 1 && !w.seen[9] && w.at(SHARED) == ROOT && !w.ctx.sched,
+              forbid ? "Exit() of a child Process under Forbid() ends that child alone"
+                     : "Exit() of a child Process ends that child alone, never the root");
+    }
+}
+
+/* A message still queued on the child's pr_MsgPort keeps its memory; its
+   old port takes no message once it has gone */
+static void test_process_quarantine()
+{
+    constexpr ULONG m1 = 0x31200, m2 = 0x31300, m3 = 0x31400;
+    World w;
+    w.dos();
+    message(w, m1, 0); message(w, m2, 0); message(w, m3, 0);
+    Program(ROOT_CODE)
+        .create_proc(NAMES, 1, SEGLIST(0), 1024).store(SHARED, 0)
+        .call(132).to_port().a(1, m1).call(366).to_port().a(1, m2).call(366).call(138)
+        .see(0, [] { return (ULONG)freed_entries.size() + 1; })
+        .see(1, [] { return world->destroyed; })
+        .to_port().a(1, m3).call(366)
+        .see(2, [] { return 1u; })
+        .d(0, 0).rts();
+    Program(CODE).own_port().call(390).own_port().call(372).store(SHARED + 4, 0).rts();
+    LONG result = w.run();
+    check(w.seen[0] == 1 && w.seen[1] == 1 && w.at(SHARED + 4) == m1,
+          "a child Process that ends with a queued message keeps its MemList");
+    check(result == 20 && !w.seen[2] && !w.ctx.sched,
+          "PutMsg() to the pr_MsgPort of a removed process stops with 20");
+}
+
+/* Another task's memory never overlaps any of the 228 bytes of a Process */
+static void test_process_overlap()
+{
+    for (ULONG offset : { 100u, 228u })
+    {
+        World w;
+        w.dos();
+        w.child(1, -1);
+        Program(ROOT_CODE)
+            .create_proc(NAMES, -1, SEGLIST(0), 1024).store(SHARED, 0)
+            .op([offset](Mock &) {
+                ULONG p = world->at(SHARED) - 92;
+                world->put(TCB(1) + 58, p + offset);
+                world->put(TCB(1) + 62, p + offset + 0x200);
+            })
+            .add_task(TCB(1), CODE + 0x2000).store(SHARED + 4, 0).d(0, 0x44).rts();
+        Program(CODE).rts();
+        Program(CODE + 0x2000).rts();
+        LONG result = w.run();
+        check(offset == 100 ? result == 20 && w.created == 1 && !w.ctx.sched
+                            : result == 0x44 && w.at(SHARED + 4) == TCB(1) && w.created == 2,
+              offset == 100 ? "AddTask() of a stack over a Process past its Task stops with 20"
+                            : "a stack right after the Process is free");
+    }
+
+    World heap;
+    heap.dos();
+    Program(ROOT_CODE)
+        .create_proc(NAMES, -1, SEGLIST(0), 1024).store(SHARED, 0)
+        .op([](Mock &) { heap_force = world->at(SHARED) - 92 + 100; })
+        .create_proc(NAMES, -1, SEGLIST(1), 1024).d(0, 0).rts();
+    Program(CODE).rts();
+    LONG result = heap.run();
+    check(result == 20 && heap_lists == 2 && freed_entries.size() == 1 &&
+          freed_entries[0] != HEAP_START && heap.created == 2 && heap.destroyed == 2 && !heap.ctx.sched,
+          "memory of the heap over another Process stops with 20 and rolls the new one back");
+}
+
+/* What cannot be made returns NULL with ERROR_NO_FREE_STORE and leaves
+   nothing behind; what Exec could not use stops with 20 and changes nothing */
+static void test_process_failures()
+{
+    for (unsigned mode = 0; mode < 4; ++mode)
+    {
+        World w;
+        w.dos();
+        if (mode == 0) w.fail_create = true;
+        if (mode == 1) fail_heap = true;
+        if (mode == 2) fail_allocmem = true;
+        w.put(SHARED, 0xFFFFFFFF);
+        Program(ROOT_CODE).create_proc(NAMES, 0, SEGLIST(0), mode == 3 ? 0x40004 : 1024)
+            .store(SHARED, 0).d(0, 0x31).rts();
+        Program(CODE).rts();
+        LONG result = w.run();
+        static const char *const what[] =
+        {
+            "a failed CPU", "a guest heap without room",
+            "a failed scheduler allocation", "a stack over 256 KiB"
+        };
+        char text[160];
+        std::snprintf(text, sizeof(text),
+                      "CreateProc() with %s returns NULL, ERROR_NO_FREE_STORE and leaves nothing", what[mode]);
+        check(result == 0x31 && !w.at(SHARED) && dos_ioerr == ERROR_NO_FREE_STORE &&
+              w.created == w.destroyed && w.created == (unsigned)(mode == 1 || mode == 2) &&
+              heap_lists == (unsigned)(mode == 2) && freed_entries.size() == (size_t)(mode == 2) &&
+              !w.ctx.sched && w.mocks.empty(), text);
+    }
+
+    World full;
+    full.dos();
+    for (unsigned i = 0; i < KAFFEINE_MAX_GUEST_TASKS; ++i) full.child(i, -1);
+    full.put(SHARED, 0xFFFFFFFF);
+    Program p(ROOT_CODE);
+    for (unsigned i = 0; i < KAFFEINE_MAX_GUEST_TASKS; ++i) p.add_task(TCB(i), CODE + 0x2000);
+    p.create_proc(NAMES, 0, SEGLIST(0), 1024).store(SHARED, 0).d(0, 0x32).rts();
+    Program(CODE + 0x2000).rts();
+    check(full.run() == 0x32 && !full.at(SHARED) && dos_ioerr == ERROR_NO_FREE_STORE &&
+          full.created == KAFFEINE_MAX_GUEST_TASKS && !heap_lists && !full.ctx.sched,
+          "CreateProc() with 16 guest tasks returns NULL without a CPU or memory");
+
+    World nested;
+    nested.dos();
+    nested.child(0, 1);
+    nested.put(SHARED, 0xFFFFFFFF);
+    Program(ROOT_CODE).add_task(TCB(0), CODE + 0x2000).d(0, 0x33).rts();
+    Program(CODE + 0x2000).create_proc(NAMES, 0, SEGLIST(0), 1024).store(SHARED, 0).rts();
+    check(nested.run() == 0x33 && !nested.at(SHARED) && dos_ioerr == ERROR_NOT_IMPLEMENTED &&
+          nested.created == 1 && !heap_lists,
+          "CreateProc() of an AddTask() child fails as before, without a process");
+
+    struct Case
+    {
+        const char *what;
+        std::function<void(World &, ULONG &, ULONG &)> setup;
+    };
+    const Case cases[] =
+    {
+        { "a NULL name", [](World &, ULONG &n, ULONG &) { n = 0; } },
+        { "an unterminated name", [](World &w, ULONG &n, ULONG &)
+            { std::memset(w.mem.data() + ARENA - 4, 'x', 4); n = ARENA - 4; } },
+        { "a name of 256 bytes", [](World &w, ULONG &n, ULONG &)
+            { std::memset(w.mem.data() + 0xC000, 'n', 256); n = 0xC000; } },
+        { "a NULL seglist", [](World &, ULONG &, ULONG &s) { s = 0; } },
+        { "a seglist past the arena", [](World &, ULONG &, ULONG &s) { s = ARENA >> 2; } },
+        { "a seglist in the vectors", [](World &, ULONG &, ULONG &s) { s = 0x100 >> 2; } },
+        { "a seglist BPTR that wraps", [](World &, ULONG &, ULONG &s) { s = 0x40000000 | SEGLIST(0); } },
+        { "a seglist that links to itself", [](World &w, ULONG &, ULONG &s)
+            { w.put(SEG(0), SEGLIST(0)); s = SEGLIST(0); } },
+        { "a seglist cycle of two", [](World &w, ULONG &, ULONG &s)
+            { w.put(SEG(0), 0x30000 >> 2); w.put(0x30000, SEGLIST(0)); s = SEGLIST(0); } },
+        { "a seglist of 65 segments", [](World &w, ULONG &, ULONG &s)
+            { for (ULONG i = 0; i < 64; ++i) w.put(0x30000 + 8 * i, (0x30008 + 8 * i) >> 2);
+              s = 0x30000 >> 2; } },
+        { "a seglist whose next is out of the arena", [](World &w, ULONG &, ULONG &s)
+            { w.put(SEG(0), ARENA >> 2); s = SEGLIST(0); } },
+    };
+    for (const Case &c : cases)
+    {
+        World w;
+        ULONG name = NAMES, seglist = SEGLIST(0);
+        w.dos();
+        c.setup(w, name, seglist);
+        Program(ROOT_CODE).create_proc(name, 0, seglist, 1024).d(0, 0x77).rts();
+        Program(CODE).rts();
+        auto before = w.mem;
+        LONG result = w.run();
+        std::memcpy(before.data() + STACK_TOP - 8, w.mem.data() + STACK_TOP - 8, 4);
+        char what[160];
+        std::snprintf(what, sizeof(what), "CreateProc() of %s stops with 20 and changes nothing", c.what);
+        check(result == 20 && w.ctx.exit_code == 20 && !w.created && !heap_lists &&
+              !w.ctx.sched && w.mem == before, what);
+    }
+}
+
 /* ── Real Moira CPUs ─────────────────────────────────────────────── */
 
 /* guest_tasks_68k.s, assembled */
@@ -1203,6 +1744,14 @@ int main()
     test_unroutable_native_port();
     test_end_cleanup();
     test_native_routing();
+    test_process_handshake();
+    test_process_priorities();
+    test_process_forbid_wait();
+    test_process_signals();
+    test_process_dos_guard();
+    test_process_quarantine();
+    test_process_overlap();
+    test_process_failures();
     test_backend_parent_and_child(false);
     if (HJ_Available())
     {

@@ -85,6 +85,15 @@ factory; both Moira and the experimental library JIT provide one.
 Task memory still referenced by active bridge objects stays allocated until
 context cleanup. Applications must delete their guest ports when finished.
 
+`CreateProc()` also starts a classic guest Process from a bounded caller-owned
+seglist. Its 228-byte Process, stack, copied name and SegArray belong to one
+guest MemList. Its embedded MsgPort uses a virtual SIGB_DOS for Exec message
+protocols. It has no independent DOS context: child DOS calls and file/handler
+packets stop with rc 20; child `Exit()` ends only that child. `CreateNewProc()`
+is still refused. Stacks are rounded to four bytes, at least 264 bytes and at
+most 256 KiB. Each child uses the selected Moira or JIT backend; native Exec
+never receives a guest entry pointer.
+
 ### Containment Memory Model
 
 All m68k code and data lives inside a 32 MB memory block ("containment memory").
@@ -510,7 +519,7 @@ within the emulator.
 | ROLEX | 13 KB | Clock (custom screen, GUI loop) | ✅ Opens screen, event loop works |
 | SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders full UI (title, menus, buttons, text) |
 | Personal Paint 7.2.1.0 | 777,824 bytes | 68k paint / image editor | 🟡 Moira on AROS AArch64/QEMU: native Shell launch, 24-bit Workbench, 1024×768/256-color canvas, rectangles/circles/text, pixel-verified IFF/ILBM save and exit code zero. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; full Workbench startup and other operations remain open. The opt-in JIT also passes startup/exit, drawing, saving and a 320×200/256-color save/modify/reload cycle; see [JIT validation](../../docs/kaffeine/jit-backend.md#validation) |
-| Directory Opus 4.12 JR | 240,292 bytes | File manager (GUI, m68k libraries) | 🟡 AROS AArch64/Moira: loads dopus.library and passes the initial stack check. Startup currently stops when CreateProc cannot create its service process; file operations are not yet validated |
+| Directory Opus 4.12 JR | 240,292 bytes | File manager (GUI, m68k libraries) | 🟡 AROS AArch64/Moira: loads dopus.library and passes the initial stack check. The service process starts through guest CreateProc; startup currently stops because keyboard.device has no adapter. File operations are not yet validated |
 | Redit 2.0 | 96,828 bytes | 68k text editor | 🟡 Compatibility testing in progress; editing, saving and reopening are not yet validated |
 | AmigaTerm 1.0 | 82 KB | Terminal emulator (GUI) | ✅ Opens window, clean exit |
 | Textcraft Plus | 208 KB | Word processor (GUI, custom screen) | ✅ Opens screen/window, sets colors, clean exit |
@@ -528,7 +537,7 @@ message handling remains separate.
 ### CPU
 
 - No hardware interrupt delivery to m68k code (`INTREQR`/`INTENA` return 0)
-- Cooperative execution: one m68k instruction at a time across up to 16 classic guest child tasks (`AddTask`/`RemTask`), no per-instruction cycle counting
+- Cooperative execution: one m68k instruction at a time across up to 16 classic guest child tasks (`AddTask`/`CreateProc`/`RemTask`), no per-instruction cycle counting
 
 ### Memory
 

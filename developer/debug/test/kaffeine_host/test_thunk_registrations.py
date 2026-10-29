@@ -510,10 +510,6 @@ ALLOWED_IGNORED_REGS = {
         frozenset({"A0", "A1", "A2"}),
         "AVL_FindNode() is a no-op stub; the comparison callback is 68k code",
     ),
-    "kaffeine_dos_CreateProc": (
-        frozenset({"D1", "D2", "D3", "D4"}),
-        "CreateProc() refuses with ERROR_NOT_IMPLEMENTED",
-    ),
     "kaffeine_dos_CliInitNewcli": (
         frozenset({"A0"}),
         "CliInitNewcli() refuses a 68k DosPacket with ERROR_NOT_IMPLEMENTED",

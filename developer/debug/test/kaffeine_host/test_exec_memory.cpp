@@ -847,6 +847,36 @@ static void test_entries()
     assert(f.avail() == before);
 }
 
+static void test_native_entry_spec()
+{
+    Fixture f;
+    const ULONG before=f.avail(), flags=MEMF_PUBLIC|MEMF_CLEAR;
+    const std::array<ULONG,6> spec={flags,17,flags,25,flags,9};
+    const auto saved=spec;
+    const auto native_count=native_blocks.size();
+    const ULONG list=Kaffeine_HeapAllocList(f.ctx,spec.data(),3);
+    assert(list&&!(list&0x80000000u)&&m68k_read16(f.ctx,list+14)==3);
+    for(unsigned i=0;i<3;i++)
+    {
+        const ULONG p=m68k_read32(f.ctx,list+16+i*8);
+        assert(p&&m68k_read32(f.ctx,list+20+i*8)==spec[2*i+1]);
+        f.expect_bytes(p,spec[2*i+1],0);
+    }
+    Kaffeine_HeapFreeEntry(f.ctx,list);
+    assert(f.avail()==before&&spec==saved&&native_blocks.size()==native_count);
+    for(int failure=0;failure<4;failure++)
+    {
+        native_allocations_before_failure=failure;
+        const ULONG result=Kaffeine_HeapAllocList(f.ctx,spec.data(),3);
+        assert(result==(0x80000000u|(failure?flags:MEMF_PUBLIC)));
+        assert(f.avail()==before&&spec==saved&&native_blocks.size()==native_count);
+    }
+    const ULONG huge[]={flags,17,flags,before};
+    assert(Kaffeine_HeapAllocList(f.ctx,huge,2)==(0x80000000u|flags));
+    assert(f.avail()==before&&native_blocks.size()==native_count);
+    f.unchanged([&] { assert(Kaffeine_HeapAllocList(f.ctx,nullptr,3)==0x80000001u); });
+}
+
 static void test_entry_failures()
 {
     Fixture f;
@@ -968,6 +998,7 @@ int main(int argc, char **argv)
         { "copy", test_copy }, { "absolute", test_absolute },
         { "absolute-sequences", test_absolute_sequences },
         { "entries", test_entries }, { "entry-failures", test_entry_failures },
+        { "native-entry-spec", test_native_entry_spec },
         { "capacity-storage", test_capacity_storage },
         { "fallbacks", test_fallbacks }
     };

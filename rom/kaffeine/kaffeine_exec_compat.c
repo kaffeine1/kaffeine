@@ -511,6 +511,10 @@ IPTR Kaffeine_RoutePutMsg(struct KaffeineContext *ctx, ULONG gp, ULONG gm, ULONG
         for (i = 0; i < KAFFEINE_MAX_FILES; ++i)
             if (ctx->files[i].guest && ctx->files[i].handler == gp)
             {
+                IPTR refusal;
+                if (ctx->sched && ctx->task_ops->process_dos &&
+                    ctx->task_ops->process_dos(ctx, ctx->cpu, 0, &refusal))
+                    return refusal;
                 IPTR result = ctx->file_packet(ctx, gp, gm);
                 return ctx->running ? d0 : result;
             }
@@ -518,6 +522,10 @@ IPTR Kaffeine_RoutePutMsg(struct KaffeineContext *ctx, ULONG gp, ULONG gm, ULONG
         for (i = 0; i < KAFFEINE_MAX_HANDLERS; ++i)
             if (ctx->handlers[i].guest == gp)
             {
+                IPTR refusal;
+                if (ctx->sched && ctx->task_ops->process_dos &&
+                    ctx->task_ops->process_dos(ctx, ctx->cpu, 0, &refusal))
+                    return refusal;
                 IPTR result = ctx->handler_packet(ctx, gp, gm);
                 return ctx->running ? d0 : result;
             }

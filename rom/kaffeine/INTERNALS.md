@@ -854,8 +854,8 @@ classic-system observations recorded by `exec_library_paths`.
 | -120 | CreateDir | Bounded guest name; returns the native lock using the existing opaque BPTR convention |
 | -126 | CurrentDir | BPTR pass-through |
 | -132 | IoErr | Pass-through |
-| -138 | CreateProc | Fails with `ERROR_NOT_IMPLEMENTED`: the new process would run 68k code natively |
-| -144 | Exit | Stops via running = FALSE and returns signed D1 through D0; never calls native Exit |
+| -138 | CreateProc | Root-only bounded guest Process on the cooperative scheduler: own stack/TCB/name/SegArray in a guest MemList, caller-owned seglist and virtual SIGB_DOS for its embedded MsgPort. Child native DOS calls and file/handler packets stop with rc 20; resource failure returns NULL/IoErr, and no native process runs guest code |
+| -144 | Exit | Root stops via running = FALSE and returns signed D1 through D0; a CreateProc child ends only that child at a slice boundary. Never calls native Exit |
 | -150 | LoadSeg | Bounded guest name; native seglist |
 | -156 | UnLoadSeg | BPTR pass-through, except the guest seglist of a 68k library from disk, which stays until its expunge |
 | -174 | DeviceProc | Bounded or NULL name; the guest port of the native handler, one for each native port; IoErr() as native DOS leaves it, the lock of an assign with the opaque BPTR convention (`kaffeine_handlers.c`, see "DOS handler ports") |
