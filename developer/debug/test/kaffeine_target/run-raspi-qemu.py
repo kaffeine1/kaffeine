@@ -672,7 +672,8 @@ def run_guest(args, run, programs, names):
     mtool(args, 'mcopy', '-o', str(run / 'User-Startup'), '::S/User-Startup')
 
     cmd = [args.qemu, '-name', 'AROS-emu68-test', '-M', 'raspi3b', '-m', '1G', '-smp', '4',
-           '-accel', 'tcg', '-kernel', args.kernel, '-initrd', args.bsp, '-dtb', args.dtb,
+           '-accel', 'tcg,thread=' + args.tcg_thread,
+           '-kernel', args.kernel, '-initrd', args.bsp, '-dtb', args.dtb,
            '-drive', 'file=%s,format=raw,if=sd' % args.disk,
            '-device', 'usb-kbd', '-device', 'usb-mouse', '-nic', 'none', '-display', 'none',
            '-serial', 'file:%s' % (run / 'serial.log'),
@@ -793,6 +794,9 @@ def main():
     p.add_argument('--mtools', required=True, help='directory with mcopy, mmd, mtype')
     p.add_argument('--run-dir', required=True, help='new directory for this run')
     p.add_argument('--qemu', default='qemu-system-aarch64')
+    p.add_argument('--tcg-thread', choices=('single', 'multi'), default='single',
+                   help='QEMU CPU scheduling (default: single); multi gives each of the '
+                        'four virtual CPUs its own host thread')
     p.add_argument('--qemu-log', metavar='ITEMS',
                    help='QEMU -d items, for example int; logged to qemu-debug.log, and the '
                         'exceptions other than interrupts and system calls are copied to '
