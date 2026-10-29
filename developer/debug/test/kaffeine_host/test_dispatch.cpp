@@ -9,9 +9,11 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <aros/debug.h>
 
 #include "kaffeine_cpu.h"
 #include "kaffeine_dispatch.h"
@@ -19,7 +21,20 @@
 #include "kaffeine_thunks.h"
 
 #include "../../../../rom/kaffeine/kaffeine_cpu.c"
+
+static char dispatch_debug[1024];
+
+static void capture_dispatch_debug(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(dispatch_debug, sizeof(dispatch_debug), format, args);
+    va_end(args);
+}
+
+#define bug capture_dispatch_debug
 #include "../../../../rom/kaffeine/kaffeine_dispatch.c"
+#undef bug
 
 struct TestCPU
 {
@@ -284,6 +299,31 @@ static void test_unknown_aline()
     }
 }
 
+static void test_unimplemented_register_snapshot()
+{
+    Fixture f;
+    KaffeineDispatchResult result = {};
+    UBYTE memory_before[sizeof(f.memory)];
+
+    std::memcpy(memory_before, f.memory, sizeof(f.memory));
+    std::strcpy(f.ctx.libs[0].name, "exec.library");
+    f.state.d[7] = 0x80000035;
+    f.state.a[0] = 0x12345678;
+    f.state.a[1] = 0x87654321;
+    dispatch_debug[0] = '\0';
+
+    assert(Kaffeine_DispatchLibraryCall(&f.ctx, &f.cpu, 0x1000 - 108, &result));
+    assert(std::strstr(dispatch_debug, "UNIMPL exec.library LVO -108"));
+    assert(std::strstr(dispatch_debug, "PC=00000f94 return=10203040"));
+    assert(std::strstr(dispatch_debug, "D0=deadbeef D1=00000008 D7=80000035"));
+    assert(std::strstr(dispatch_debug, "A0=12345678 A1=87654321"));
+    assert(f.state.d[0] == 0 && f.state.d[1] == 8 && f.state.d[7] == 0x80000035);
+    assert(f.state.a[0] == 0x12345678 && f.state.a[1] == 0x87654321);
+    assert(f.state.a[7] == 0x84 && result.return_pc == 0x10203040 && !result.supervisor);
+    assert(std::memcmp(memory_before, f.memory, sizeof(f.memory)) == 0);
+    assert(f.state.manual_calls == 0 && f.state.generated_calls == 0);
+}
+
 static void test_supervisor_redirect()
 {
     Fixture f;
@@ -342,10 +382,11 @@ int main()
     test_generated_fallback();
     test_second_library();
     test_unimplemented_lvo();
+    test_unimplemented_register_snapshot();
     test_unknown_aline();
     test_supervisor_redirect();
     test_execution_loop();
     test_flush_code();
-    std::puts("PASS: CPU interface and library dispatch (9 cases, no Moira)");
+    std::puts("PASS: CPU interface and library dispatch (10 cases, no Moira)");
     return 0;
 }
