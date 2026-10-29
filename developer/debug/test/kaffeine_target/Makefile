@@ -94,6 +94,49 @@ ZLIB_GZ_MODES := 1 6 9 f h r
 ifneq ($(ZLIB_SRC),)
 PROGRAMS += minigzip zpipe
 endif
+
+# pngtest of libpng 1.6.58, from the source the AROS build fetches for its
+# Ports, on the zlib above: set PNG_SRC to its libpng directory, with
+# ZLIB_SRC, to build it. Its pnglibconf.h is the pnglibconf.h.prebuilt of
+# the distribution. The battery runs it through the steps of the
+# tests/pngtest-all of libpng, on the images that $(PNG_FILES) collects,
+# and compares its output with the one of the same program built for the
+# host, which "make png-refs" writes to $(PNG_REFS). The images are under
+# EMU68/, the drawer of the program in SYS: of the guest, which is the
+# current directory there.
+PNG_SRC ?=
+PNG_BUILD := $(BUILD_DIR)/png-src
+PNG_FILES := $(BUILD_DIR)/pngtest-files
+PNG_REFS := $(BUILD_DIR)/png-refs
+PNG_LIB := png pngerror pngget pngmem pngpread pngread pngrio pngrtran pngrutil \
+           pngset pngtrans pngwio pngwrite pngwtran pngwutil
+PNG_SOURCES := $(addprefix $(PNG_SRC)/,$(addsuffix .c,$(PNG_LIB)))
+PNG_FLAGS := -I$(PNG_BUILD) -I$(PNG_SRC)
+# libpng turns on its SIMD paths by itself on some hosts
+PNG_HOST_FLAGS := -DPNG_ARM_NEON_OPT=0 -DPNG_INTEL_SSE_OPT=0 -DPNG_MIPS_MSA_OPT=0 \
+                  -DPNG_MIPS_MMI_OPT=0 -DPNG_POWERPC_VSX_OPT=0 \
+                  -DPNG_LOONGARCH_LSX_OPT=0 -DPNG_RISCV_RVV_OPT=0
+PNG_STRICT := EMU68/pngtest.png EMU68/png-3/cicp-display-p3_reencoded.png
+PNG_RELAXED := EMU68/crashers/badcrc.png
+# The Shell takes command lines of up to 512 bytes, so the 22 images that
+# must fail go in three steps, in the order of tests/pngtest-all.
+png_crashers = $(patsubst %,EMU68/crashers/%.png,$(1))
+PNG_XFAIL1 := $(call png_crashers,badadler bad_iCCP empty_ancillary_chunks \
+              huge_bKGD_chunk huge_cHRM_chunk huge_eXIf_chunk huge_gAMA_chunk)
+PNG_XFAIL2 := $(call png_crashers,huge_hIST_chunk huge_iCCP_chunk huge_iTXt_chunk \
+              huge_pCAL_chunk huge_pHYs_chunk huge_sCAL_chunk huge_sPLT_chunk \
+              huge_sRGB_chunk)
+PNG_XFAIL3 := $(call png_crashers,huge_sTER_chunk huge_tEXt_chunk huge_tIME_chunk \
+              huge_zTXt_chunk huge_juNK_unsafe_to_copy huge_juNk_safe_to_copy \
+              huge_IDAT)
+PNG_BADPAL := $(patsubst %,EMU68/badpal/%.png,regression-palette-8 small-palette-1 \
+              small-palette-2 small-palette-4 small-palette-8 test-palette-1 \
+              test-palette-2 test-palette-4 test-palette-8)
+ifneq ($(PNG_SRC),)
+ifneq ($(ZLIB_SRC),)
+PROGRAMS += pngtest
+endif
+endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
@@ -191,6 +234,44 @@ $(ZLIB_REFS)/stamp: $(ZLIB_SRC)/test/minigzip.c $(ZLIB_SRC)/examples/zpipe.c $(Z
 
 zlib-refs: $(ZLIB_REFS)/stamp
 
+$(PNG_BUILD)/pnglibconf.h: $(PNG_SRC)/scripts/pnglibconf.h.prebuilt
+	mkdir -p $(@D)
+	cp $< $@
+
+# The images of the steps, installed with --files next to each step
+$(PNG_FILES).stamp: $(PNG_SRC)/pngtest.png | $(BUILD_DIR)
+	rm -rf $(PNG_FILES)
+	mkdir -p $(PNG_FILES)
+	cp $(PNG_SRC)/pngtest.png $(PNG_FILES)/
+	cp -R $(addprefix $(PNG_SRC)/contrib/testpngs/,png-3 crashers badpal) $(PNG_FILES)/
+	touch $@
+
+$(BUILD_DIR)/pngtest: $(PNG_SRC)/pngtest.c $(PNG_SOURCES) $(ZLIB_SOURCES) $(PNG_BUILD)/pnglibconf.h \
+                      $(ZLIB_BUILD)/zconf.h | $(BUILD_DIR) $(PNG_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) $(ZLIB_M68K_FLAGS) $(ZLIB_FLAGS) $(PNG_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $< $(PNG_SOURCES) $(ZLIB_SOURCES) -lm
+
+# The pngtest references: the outputs of the six steps through pngtest
+# built for the host, run where EMU68 names $(PNG_FILES). The badpal step
+# ends with 1, as tests/pngtest-all expects of those images.
+$(PNG_REFS)/stamp: $(PNG_SRC)/pngtest.c $(PNG_SOURCES) $(ZLIB_SOURCES) $(PNG_BUILD)/pnglibconf.h \
+                   $(ZLIB_BUILD)/zconf.h $(PNG_FILES).stamp
+	mkdir -p $(@D)
+	$(HOST_CC) -O2 $(ZLIB_FLAGS) $(PNG_FLAGS) $(PNG_HOST_FLAGS) -o $(@D)/pngtest \
+	    $(PNG_SRC)/pngtest.c $(PNG_SOURCES) $(ZLIB_SOURCES)
+	rm -f $(@D)/EMU68
+	ln -s $(PNG_FILES) $(@D)/EMU68
+	cd $(@D) && ./pngtest --strict $(PNG_STRICT) > png_strict.out
+	cd $(@D) && ./pngtest --relaxed $(PNG_RELAXED) > png_relaxed.out
+	cd $(@D) && ./pngtest --xfail $(PNG_XFAIL1) > png_xfail1.out 2> png_xfail1.err
+	cd $(@D) && ./pngtest --xfail $(PNG_XFAIL2) > png_xfail2.out 2> png_xfail2.err
+	cd $(@D) && ./pngtest --xfail $(PNG_XFAIL3) > png_xfail3.out 2> png_xfail3.err
+	cd $(@D) && { ./pngtest -m $(PNG_BADPAL) > png_badpal.out 2> png_badpal.err; test $$? = 1; }
+	rm -f $(@D)/pngout.png
+	touch $@
+
+png-refs: $(PNG_REFS)/stamp
+
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
 $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
@@ -206,19 +287,20 @@ $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LI
 $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
-# bzip2, the JPEG programs and the zlib ones too, also when they were built
-# with a BZIP2_SRC, JPEG_SRC or ZLIB_SRC that this make lacks
+# bzip2, the JPEG programs, the zlib ones and pngtest too, also when they
+# were built with a BZIP2_SRC, JPEG_SRC, ZLIB_SRC or PNG_SRC that this make
+# lacks
 clean:
 	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
-	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe
-	rm -rf $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS)
+	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
+	rm -rf $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner zlib-refs
+.PHONY: all clean check-runner zlib-refs png-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)
