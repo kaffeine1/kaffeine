@@ -75,6 +75,7 @@ static UWORD sent_command;
 static UBYTE sent_flags;
 static std::function<void()> on_waitio;     /* the device completes while WaitIO() waits */
 static std::function<void()> on_wait;       /* a completion while Wait() waits */
+static std::function<void(IORequest *)> on_doio; /* interleave replies during native DoIO() */
 
 static bool in_arena(const void *p)
 {
@@ -385,6 +386,19 @@ extern "C" LONG DoIO(IORequest *req)
     doio_command = req->io_Command;
     doio_secs = tr->tr_time.tv_secs;
     doio_micro = tr->tr_time.tv_micro;
+    if (on_doio && doio_command == TR_ADDREQUEST)
+    {
+        /* Native DoIO's non-quick path: BeginIO, then WaitIO removes only
+           this request, even when other replies use the same native port. */
+        assert(std::find(at_device.begin(), at_device.end(), req) == at_device.end() && !queued_natively(req));
+        req->io_Flags = 0;
+        req->io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        at_device.push_back(req);
+        auto event = on_doio;
+        on_doio = nullptr;
+        event(req);
+        return WaitIO(req);
+    }
     req->io_Flags = IOF_QUICK;
     req->io_Message.mn_Node.ln_Type = 0;
     if (doio_command == TR_GETSYSTIME)
@@ -510,7 +524,7 @@ struct Fixture
         at_device.clear(); native_queues.clear(); native_signals = 0; native_log.clear();
         sendio_calls = abortio_calls = waitio_calls = wait_calls = create_request_calls = 0;
         wait_mask = sent_secs = sent_micro = 0; sent_command = 0; sent_flags = 0xFF;
-        on_waitio = nullptr; on_wait = nullptr;
+        on_waitio = nullptr; on_wait = nullptr; on_doio = nullptr;
         memory.fill(0xA5);
         ctx.mem = memory.data();
         ctx.mem_size = memory.size();
@@ -548,7 +562,7 @@ struct Fixture
         assert(!live_ports && !live_requests && !live_opens);
         assert(task_signals == 0xFFFF);
         assert(at_device.empty() && native_queues.empty());
-        assert(!ctx.io_poll && !ctx.io_wait && !ctx.io_release && !ctx.io_signals && !ctx.io_copy_port);
+        assert(!ctx.io_poll && !ctx.io_wait && !ctx.io_release && !ctx.io_signals && !ctx.io_reply_port);
         arena_lo = arena_hi = nullptr;
     }
 
@@ -834,7 +848,7 @@ static void test_open_close()
     check(open_calls == 1 && open_name == "timer.device" && open_unit == UNIT_MICROHZ &&
           open_flags == 0x55 && request_size == sizeof(timerequest) && open_size == sizeof(timerequest) &&
           live_ports == 1 && live_requests == 1 && live_opens == 1,
-          "the native open gets a native timerequest of the native size and its own reply port");
+          "the native open gets a native timerequest of the native size and the shared private reply port");
     check(tb && m68k_read32(&f.ctx, r + IO_DEVICE) == tb && m68k_read32(&f.ctx, r + IO_UNIT) == 0,
           "the guest request gets the guest timer.device base and unit 0");
     check(f.memory[tb + LN_TYPE] == NT_DEVICE &&
@@ -864,15 +878,18 @@ static void test_open_close()
     open_error = IOERR_OPENFAIL;
     const ULONG e = f.request(p, 40);
     check(f.open(e, 9) == 0xFFFFFFFF && f.error(e) == IOERR_OPENFAIL &&
-          !m68k_read32(&f.ctx, e + IO_DEVICE) && live_ports == 3 && live_requests == 3,
-          "a failed native open deletes its native request and port");
+          !m68k_read32(&f.ctx, e + IO_DEVICE) && live_ports == 1 && live_requests == 3,
+          "a failed native open deletes its request while preserving the shared port");
     open_error = 0;
     fail_port = true;
-    check(f.open(e) == 0xFFFFFFFF && live_ports == 3, "without a native port the open fails");
+    MsgPort *shared = f.ctx.io_reply_port;
+    check(f.open(e) == 0 && live_ports == 1 && f.ctx.io_reply_port == shared,
+          "another original reuses the shared port even when creating a new port would fail");
+    f.call(450, 0xA0A0A0A0, e);
     fail_port = false;
     fail_request = true;
-    check(f.open(e) == 0xFFFFFFFF && live_ports == 3 && live_requests == 3,
-          "without a native request the open fails and deletes the port");
+    check(f.open(e) == 0xFFFFFFFF && live_ports == 1 && live_requests == 3,
+          "without a native request the open fails and retains the port of the other originals");
     fail_request = false;
 
     const unsigned closes = close_calls;
@@ -881,9 +898,9 @@ static void test_open_close()
           "opening an open request again closes the native open behind it first");
 
     f.call(450, 0xA0A0A0A0, r);
-    check(close_calls == closes + 2 && live_opens == 2 && live_requests == 2 && live_ports == 2 &&
+    check(close_calls == closes + 2 && live_opens == 2 && live_requests == 2 && live_ports == 1 &&
           m68k_read32(&f.ctx, r + IO_DEVICE) == 0xFFFFFFFF,
-          "CloseDevice() closes and deletes the native request and port; io_Device becomes -1");
+          "CloseDevice() closes its native request while other opens retain the shared port; io_Device becomes -1");
     f.call(450, 0xA0A0A0A0, r);
     f.call(450, 0xA0A0A0A0, 0);
     f.call(450, 0xA0A0A0A0, e);
@@ -1018,6 +1035,179 @@ static Async async_setup(Fixture &f, ULONG unit = UNIT_MICROHZ, ULONG flags = 0)
     return { p, r };
 }
 
+/* The native emulator task has only sixteen general signal bits. A guest
+   reply port and twelve ordinary bits leave room for one private native
+   port and two further guest bits, independent of the number of opens. */
+static void test_shared_signal_budget()
+{
+    Fixture f;
+    f.ctx.exec_task = &owner_task;
+    const ULONG p = f.port();
+    ULONG guest_bits = 1u << f.memory[p + MP_SIGBIT];
+    for (unsigned i = 0; i < 12; ++i)
+    {
+        const ULONG bit = f.call(330, 0, 0, 0xFFFFFFFF);
+        check(bit < 32, "the signal-pressure setup allocates thirteen ordinary bits including the guest port");
+        if (bit >= 32) return;
+        guest_bits |= 1u << bit;
+    }
+    const ULONG reqs[] = { f.request(p, 40), f.request(p, 40), f.request(p, 40) };
+    for (ULONG req : reqs)
+        check(f.open(req) == 0, "three independent timer opens fit within the native signal budget");
+    MsgPort *shared = f.ctx.io_reply_port;
+    const ULONG private_bit = f.ctx.io_signals;
+    check(shared && live_ports == 1 && live_requests == 3 && live_opens == 3 &&
+          private_bit && !(private_bit & (private_bit - 1)) && !(private_bit & guest_bits) &&
+          f.ctx.guest_signals == guest_bits && task_signals == (0xFFFF | guest_bits | private_bit),
+          "all original native requests use one private signal outside the guest's thirteen bits");
+    const ULONG fourteenth = f.call(330, 0, 0, 0xFFFFFFFF);
+    check(fourteenth < 32 && !(private_bit & (1u << fourteenth)),
+          "three native opens leave the fourteenth ordinary guest signal available");
+    if (fourteenth >= 32) return;
+    guest_bits |= 1u << fourteenth;
+
+    const ULONG copy = f.copy_of(reqs[0], 0x2800);
+    f.delay(reqs[1], 1, 0);
+    f.delay(copy, 1, 0);
+    const bool sent = f.send(reqs[1]) == 0 && f.send(copy) == 0;
+    check(sent && live_ports == 1 && live_requests == 4 && f.ctx.io_reply_port == shared &&
+          f.native_of(copy) && f.native_of(copy)->io_Message.mn_ReplyPort == shared,
+          "an original and its independent copy share the same private port under signal pressure");
+    if (!sent) return;
+    complete(f.native_of(copy), 0, 0, 1);
+    complete(f.native_of(reqs[1]), 0, 0, 2);
+    check(f.wait_io(reqs[1]) == 0 && !waitio_calls && f.queue(p) == std::vector<ULONG>({ copy }) &&
+          m68k_read32(&f.ctx, reqs[1] + TV_MICRO) == 2 && f.get(p) == copy,
+          "waiting for the original preserves the copy's earlier reply and its own result");
+    const ULONG fifteenth = f.call(330, 0, 0, 0xFFFFFFFF);
+    check(fifteenth < 32 && !(private_bit & (1u << fifteenth)),
+          "a completed copy still leaves the fifteenth ordinary guest signal available");
+    if (fifteenth >= 32) return;
+    guest_bits |= 1u << fifteenth;
+    check(task_signals == 0xFFFFFFFF && f.ctx.guest_signals == guest_bits &&
+          f.ctx.io_signals == private_bit && f.call(330, 0, 0, 0xFFFFFFFF) == 0xFFFFFFFF,
+          "fifteen guest bits and one private bit use exactly the sixteen native general bits");
+    const unsigned freed = free_signal_calls;
+    f.call(336, 0, 0, shared->mp_SigBit);
+    check(free_signal_calls == freed && task_signals == 0xFFFFFFFF && f.ctx.io_signals == private_bit,
+          "FreeSignal cannot release the private completion bit while native owners are idle");
+    for (unsigned i = 0; i < 2; ++i)
+    {
+        f.call(450, 0, reqs[i]);
+        check(f.ctx.io_reply_port == shared && f.ctx.io_signals == private_bit && live_ports == 1 &&
+              free_signal_calls == freed,
+              "closing an original retains the private port while another original or copy owns it");
+    }
+    f.call(450, 0, reqs[2]);
+    check(!f.ctx.io_reply_port && !f.ctx.io_signals && !live_ports && !live_requests && !live_opens &&
+          free_signal_calls == freed + 1 && task_signals == (0xFFFF | guest_bits),
+          "the last original closes its idle copy and releases the one private bit exactly once");
+    for (ULONG req : reqs) f.call(660, req);
+    f.call(672, p);
+}
+
+static void test_shared_first_open_failures()
+{
+    struct Step { unsigned failure; std::vector<std::string> log; };
+    const Step steps[] = {
+        { 0, {} },
+        { 1, {} },
+        { 2, { "port", "delete port" } },
+        { 3, { "port", "request", "open", "delete request", "delete port" } },
+        { 4, { "port", "request", "open", "close", "delete request", "delete port" } },
+    };
+    for (const auto &step : steps)
+    {
+        Fixture f;
+        const ULONG p = f.port(), r = f.request(p, 40);
+        const auto blocks = native_blocks;
+        const ULONG signals = task_signals;
+        switch (step.failure)
+        {
+        case 0: fail_port = true; break;
+        case 1: fail_signal = true; break;
+        case 2: fail_request = true; break;
+        case 3: open_error = IOERR_OPENFAIL; break;
+        case 4: f.ctx.num_libs = KAFFEINE_MAX_LIBS; break;
+        }
+        native_log.clear();
+        check(f.open(r) == 0xFFFFFFFF && f.error(r) == IOERR_OPENFAIL && !f.ctx.io_reply_port &&
+              !f.ctx.io_signals && !live_ports && !live_requests && !live_opens && native_queues.empty() &&
+              task_signals == signals && native_blocks == blocks && native_log == step.log &&
+              f.record(r) && f.record(r)->capacity == 40 && !f.record(r)->native,
+              "a failed first open rolls back port, signal, request and native open, retaining guest capacity");
+        fail_port = fail_signal = fail_request = false;
+        open_error = 0;
+        f.ctx.num_libs = 1;
+        check(f.open(r) == 0 && live_ports == 1 && live_requests == 1 && live_opens == 1 &&
+              f.native_of(r)->io_Message.mn_ReplyPort == f.ctx.io_reply_port,
+              "the same guest request can establish the shared native port after a setup failure");
+        f.call(450, 0, r);
+        check(!f.ctx.io_reply_port && !f.ctx.io_signals && task_signals == signals &&
+              !live_ports && !live_requests && !live_opens,
+              "closing the sole successful retry releases every private native resource");
+        f.call(660, r);
+        f.call(672, p);
+    }
+}
+
+static void test_shared_native_waitio()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG second = f.request(p, 40), copy = f.copy_of(r, 0x2800);
+    check(f.open(second) == 0, "another original shares the timer reply port for a native WaitIO");
+    for (ULONG req : { r, second, copy }) { f.delay(req, 5, 0); f.send(req); }
+    MsgPort *shared = f.ctx.io_reply_port;
+    check(live_ports == 1 && f.native_of(r)->io_Message.mn_ReplyPort == shared &&
+          f.native_of(second)->io_Message.mn_ReplyPort == shared &&
+          f.native_of(copy)->io_Message.mn_ReplyPort == shared,
+          "the awaited copy and both original requests use one native FIFO");
+    on_waitio = [&] {
+        complete(f.native_of(second), 0, 0, 21);
+        complete(f.native_of(copy), 0, 0, 22);
+        complete(f.native_of(r), 0, 0, 23);
+    };
+    check(f.wait_io(copy) == 0 && waitio_calls == 1 && native_queues[shared].empty() &&
+          f.queue(p) == std::vector<ULONG>({ second, r }) &&
+          m68k_read32(&f.ctx, copy + TV_MICRO) == 22 &&
+          m68k_read32(&f.ctx, second + TV_MICRO) == 21 && m68k_read32(&f.ctx, r + TV_MICRO) == 23 &&
+          !f.record(copy)->waiting && !f.record(copy)->pending && signal_calls == 2,
+          "native WaitIO removes only its middle reply; the pump drains both originals in FIFO order even after signal clear");
+    check(f.get(p) == second && f.get(p) == r && f.get(p) == 0,
+          "the other original replies remain available once each after the copy's native WaitIO");
+}
+
+static void test_shared_native_doio()
+{
+    Fixture f;
+    const auto [p, r] = async_setup(f);
+    const ULONG second = f.request(p, 40), copy = f.copy_of(r, 0x2800);
+    check(f.open(second) == 0, "a synchronous and asynchronous original can share a native reply port");
+    for (ULONG req : { second, copy }) { f.delay(req, 5, 0); f.send(req); }
+    MsgPort *shared = f.ctx.io_reply_port;
+    IORequest *native_copy = f.native_of(copy), *native_second = f.native_of(second);
+    on_doio = [&](IORequest *sync) {
+        check(sync == f.native_of(r) && sync->io_Message.mn_ReplyPort == shared,
+              "native DoIO uses the original request's exact native identity on the shared port");
+        complete(native_copy, 0, 0, 41);
+        complete(sync, 0, 0, 42);
+        complete(native_second, 0, 0, 43);
+    };
+    check(f.doio(r, TR_ADDREQUEST, 1, 0) == 0 && doio_calls == 1 && waitio_calls == 1 &&
+          live_ports == 1 && f.ctx.io_signals && !(native_signals & f.ctx.io_signals) &&
+          native_queues[shared] == std::deque<Message *>({ &native_copy->io_Message, &native_second->io_Message }) &&
+          f.record(copy)->pending && f.record(second)->pending && f.queue(p).empty() && !signal_calls &&
+          m68k_read32(&f.ctx, r + TV_MICRO) == 42,
+          "synchronous native DoIO removes only its own reply, leaving original and copy replies untouched");
+    check(f.wait_port(p) == copy && f.queue(p) == std::vector<ULONG>({ copy, second }) &&
+          m68k_read32(&f.ctx, copy + TV_MICRO) == 41 && m68k_read32(&f.ctx, second + TV_MICRO) == 43 &&
+          native_queues[shared].empty() && signal_calls == 2,
+          "a guest queue operation pumps outstanding native replies in FIFO order despite the consumed private signal");
+    check(f.get(p) == copy && f.get(p) == second && f.get(p) == 0 && waitio_calls == 1,
+          "both asynchronous completions survive native DoIO and are delivered once");
+}
+
 static void test_async_source()
 {
     Fixture f;
@@ -1089,10 +1279,10 @@ static void test_async_copies()
               f.error(copies[i]) == 0 && f.check_io(copies[i]) == 0 && f.record(copies[i])->copy &&
               !f.record(copies[i])->reply, "a copy in flight: NT_MESSAGE, CheckIO() NULL, no port of its own");
     }
-    check(live_ports == ports + 1 && live_requests == requests + 3 && f.ctx.io_copy_port &&
+    check(live_ports == ports && live_requests == requests + 3 && f.ctx.io_reply_port &&
           f.queue(p).empty() && !signal_calls && f.native_of(copies[0]) != f.native_of(r),
-          "three copies share one native copy port, each with its own native request");
-    const ULONG copy_bit = 1u << f.ctx.io_copy_port->mp_SigBit, port_bit = 1u << f.memory[p + MP_SIGBIT];
+          "three copies share the originals' native port, each with its own native request");
+    const ULONG copy_bit = 1u << f.ctx.io_reply_port->mp_SigBit, port_bit = 1u << f.memory[p + MP_SIGBIT];
     check(f.ctx.io_signals == (copy_bit | (1u << f.record(r)->reply->mp_SigBit)) &&
           !(f.ctx.guest_signals & f.ctx.io_signals),
           "the copy port's bit is private, never the guest's");
@@ -1126,7 +1316,7 @@ static void test_async_copies()
             check(f.wait_port(p) == c && f.get(p) == c && !wait_calls, "and its reply comes to the port again");
         }
     f.call(450, 0xA0A0A0A0, r);
-    check(!live_opens && live_requests == 0 && live_ports == 0 && !f.ctx.io_copy_port && !f.ctx.io_signals,
+    check(!live_opens && live_requests == 0 && live_ports == 0 && !f.ctx.io_reply_port && !f.ctx.io_signals,
           "closing the last open of the unit closes every copy and the copy port");
     f.call(660, window);
     f.call(660, r);
@@ -1141,7 +1331,7 @@ static void test_async_waitio()
     const ULONG port_bit = 1u << f.memory[p + MP_SIGBIT];
     f.delay(a, 3, 0); f.delay(b, 1, 0);
     f.send(a); f.send(b);
-    const ULONG copy_bit = 1u << f.ctx.io_copy_port->mp_SigBit;
+    const ULONG copy_bit = 1u << f.ctx.io_reply_port->mp_SigBit;
     complete(f.native_of(b));
     on_waitio = [&] { complete(f.native_of(a), 0, 4, 5); };
     check(f.wait_io(a) == 0 && waitio_calls == 1 && f.ctx.running && !wait_calls,
@@ -1217,10 +1407,10 @@ static void test_async_abort_cascade()
     native_log.clear();
     f.call(450, 0xA0A0A0A0, r);
     check(native_log == std::vector<std::string>({ "close", "delete request", "close", "delete request",
-                                                    "close", "delete request", "delete port",
+                                                    "close", "delete request",
                                                     "close", "delete request", "delete port" }) &&
           !live_opens && !live_requests && !live_ports && f.records() == 1,
-          "the last close closes each copy, then the copy port, then the source");
+          "the last close closes each copy and the source before deleting the shared port");
     refused(f, [&] { return f.send(copies[0]); }, "a copy whose unit has no open any more is refused");
     f.call(660, r);
     f.call(672, p);
@@ -1422,9 +1612,8 @@ static void test_async_setup_failures()
     f.delay(a, 1, 0);
     f.delay(b, 1, 0);
     struct { bool *flag; const char *what; std::vector<std::string> log; } steps[] = {
-        { &fail_port, "no native copy port", {} },
-        { &fail_request, "no native request for the copy", { "port", "delete port" } },
-        { nullptr, "the native open of the copy fails", { "port", "request", "open", "delete request", "delete port" } },
+        { &fail_request, "no native request for the copy", {} },
+        { nullptr, "the native open of the copy fails", { "request", "open", "delete request" } },
     };
     for (const auto &step : steps)
     {
@@ -1435,18 +1624,18 @@ static void test_async_setup_failures()
         native_log.clear();
         check(f.send(a) == 20 && f.stopped() && f.memory == memory && live_ports == ports &&
               live_requests == requests && live_opens == opened && f.records() == records &&
-              sendio_calls == sends && !f.ctx.io_copy_port && native_log == step.log &&
+              sendio_calls == sends && f.ctx.io_reply_port && native_log == step.log &&
               task_signals == (0xFFFF | 0xC0000000u), step.what);
         if (step.flag) *step.flag = false; else open_error = 0;
     }
-    check(f.send(a) == 0 && f.ctx.io_copy_port, "the same copy goes once the native side can be made");
+    check(f.send(a) == 0 && f.ctx.io_reply_port, "the same copy goes once the native side can be made");
     for (bool *flag : { &fail_request, (bool *)nullptr })
     {
         const auto memory = f.memory;
         const int ports = live_ports, requests = live_requests;
         if (flag) *flag = true; else open_error = IOERR_OPENFAIL;
         check(f.send(b) == 20 && f.stopped() && f.memory == memory && live_ports == ports &&
-              live_requests == requests && f.ctx.io_copy_port && !f.record(b) && f.record(a)->pending,
+              live_requests == requests && f.ctx.io_reply_port && !f.record(b) && f.record(a)->pending,
               "a failed setup with the copy port in use keeps the port and the other copy");
         if (flag) *flag = false; else open_error = 0;
     }
@@ -1476,9 +1665,9 @@ static void test_async_heap()
     ULONG avail = Kaffeine_HeapAvail(&f.ctx, 0);
     unsigned closes = close_calls;
     Kaffeine_HeapFree(&f.ctx, blk, 64);
-    check(!f.record(blk) && close_calls == closes + 1 && live_opens == 1 && !f.ctx.io_copy_port &&
+    check(!f.record(blk) && close_calls == closes + 1 && live_opens == 1 && f.ctx.io_reply_port &&
           Kaffeine_HeapAvail(&f.ctx, 0) > avail,
-          "freeing an idle copy closes its native open and drops the record and the copy port");
+          "freeing an idle copy closes its native open while the original retains the shared port");
     ULONG again = Kaffeine_HeapAlloc(&f.ctx, 64, MEMF_CLEAR);
     f.message(again);
     check(again == blk && f.put(p, again) == Fixture::initial_d0 && f.ctx.running && f.get(p) == again,
@@ -1500,7 +1689,7 @@ static void test_async_heap()
     std::memset(f.memory.data() + again, 0xD4, 64);
     const unsigned signals = signal_calls;
     check(again == blk && f.check_io(r) == r && close_calls == closes + 1 && f.records() == records - 1 &&
-          !f.ctx.io_copy_port && signal_calls == signals && f.queue(p).empty() &&
+          f.ctx.io_reply_port && signal_calls == signals && f.queue(p).empty() &&
           std::all_of(f.memory.begin() + again, f.memory.begin() + again + 64, [](UBYTE v) { return v == 0xD4; }),
           "the orphan is reaped at the next pump without a guest write or a reply");
     Kaffeine_HeapFree(&f.ctx, again, 64);
@@ -1624,8 +1813,8 @@ static void test_async_scheduler()
     blocks = 0;
     f.delay(a, 2, 0); f.delay(b, 1, 0);
     check(f.send(a) == 0 && f.send(b) == 0, "the root sends copies with guest tasks");
-    const ULONG copy_bit = 1u << f.ctx.io_copy_port->mp_SigBit;
-    check(f.wait_io(a) == 0 && f.ctx.running && blocks == 1 && blocked_port == f.ctx.io_copy_port &&
+    const ULONG copy_bit = 1u << f.ctx.io_reply_port->mp_SigBit;
+    check(f.wait_io(a) == 0 && f.ctx.running && blocks == 1 && blocked_port == f.ctx.io_reply_port &&
           blocked_retry == Kaffeine_WaitIO && !waitio_calls && f.record(a)->waiting == 2,
           "WaitIO() in flight blocks the root on the copy port and runs again, never a native WaitIO()");
     complete(f.native_of(b));
@@ -1667,7 +1856,7 @@ static void test_async_waitport()
     const ULONG a = f.copy_of(r, 0x2800);
     f.delay(a, 1, 0);
     f.send(a);
-    const ULONG copy_bit = 1u << f.ctx.io_copy_port->mp_SigBit;
+    const ULONG copy_bit = 1u << f.ctx.io_reply_port->mp_SigBit;
     on_wait = [&] { complete(f.native_of(a)); };
     check(f.wait_port(p) == a && wait_calls == 1 &&
           wait_mask == (copy_bit | (1u << f.record(r)->reply->mp_SigBit)) && f.ctx.running,
@@ -1733,9 +1922,9 @@ static void test_async_cleanup()
     native_log.clear();
     Kaffeine_IOCleanup(&f.ctx);
     check(native_log == std::vector<std::string>({ "abort", "waitio", "close", "delete request",
-                                                    "close", "delete request", "delete port",
+                                                    "close", "delete request",
                                                     "abort", "waitio", "close", "delete request", "delete port" }),
-          "cleanup: each copy in flight aborted and taken back before its close, the copy port, then the opens");
+          "cleanup: copies and originals return before closing, then the shared port is deleted");
     check(f.memory == memory && !live_opens && !live_requests && !live_ports && task_signals == 0xFFFF &&
           !f.ctx.io_poll && !f.ctx.io_release && !f.ctx.io_wait && !f.ctx.io_signals && !f.records(),
           "nothing reaches the guest in cleanup, and every native object and signal is back");
@@ -1888,31 +2077,33 @@ static void test_input_open_close()
     const ULONG e = f.request(p, IOSTDREQ);
     open_error = IOERR_OPENFAIL;
     check(f.open(e, 0, Fixture::kbd_name) == 0xFFFFFFFF && f.error(e) == IOERR_OPENFAIL &&
-          !m68k_read32(&f.ctx, e + IO_DEVICE) && live_ports == 3 && live_requests == 3 && live_opens == 3,
-          "a failed native keyboard open deletes its native request and port");
+          !m68k_read32(&f.ctx, e + IO_DEVICE) && live_ports == 1 && live_requests == 3 && live_opens == 3,
+          "a failed native keyboard open deletes its request while preserving the shared port");
     std::memset(f.memory.data() + Fixture::copy, 0, IOSTDREQ);
     bool kept = false;
-    check(f.open(Fixture::copy, 0, Fixture::input_name) == 0xFFFFFFFF && live_ports == 3,
-          "a failed input open deletes its native request and port");
+    check(f.open(Fixture::copy, 0, Fixture::input_name) == 0xFFFFFFFF && live_ports == 1,
+          "a failed input open deletes its request while preserving the shared port");
     for (const auto &entry : f.ctx.io_requests) kept = kept || entry.guest == Fixture::copy;
     check(!kept, "a failed open in guest storage keeps no record");
     open_error = 0;
     fail_port = true;
-    check(f.open(e, 0, Fixture::input_name) == 0xFFFFFFFF && live_ports == 3, "without a native port");
+    check(f.open(e, 0, Fixture::input_name) == 0 && live_ports == 1,
+          "input opens on the shared port even when creating another port would fail");
     fail_port = false;
+    f.call(450, 0, e);
     fail_request = true;
-    check(f.open(e, 0, Fixture::kbd_name) == 0xFFFFFFFF && live_ports == 3 && live_requests == 3,
+    check(f.open(e, 0, Fixture::kbd_name) == 0xFFFFFFFF && live_ports == 1 && live_requests == 3,
           "without a native request");
     fail_request = false;
 
     f.call(450, 0xA0A0A0A0, r);
-    check(close_calls == closes + 3 && live_opens == 2 && live_ports == 2 && live_requests == 2 &&
+    check(close_calls == closes + 4 && live_opens == 2 && live_ports == 1 && live_requests == 2 &&
           m68k_read32(&f.ctx, r + IO_DEVICE) == 0xFFFFFFFF && f.ctx.io_requests[0].kind == KAFFEINE_IO_NONE,
-          "CloseDevice() of keyboard closes and deletes everything; io_Device becomes -1");
+          "CloseDevice() of keyboard closes its request and preserves other opens' shared port");
     f.call(450, 0xA0A0A0A0, r);
-    check(close_calls == closes + 3, "a second CloseDevice() does nothing");
+    check(close_calls == closes + 4, "a second CloseDevice() does nothing");
     f.call(660, s);
-    check(close_calls == closes + 4 && live_opens == 1, "DeleteIORequest() of an open input request closes it");
+    check(close_calls == closes + 5 && live_opens == 1, "DeleteIORequest() of an open input request closes it");
     f.call(450, 0xA0A0A0A0, storage);
     check(!live_opens && !live_ports && !live_requests && f.ctx.keyboard_base == kb && f.ctx.input_base == in,
           "every native object is gone; the guest bases stay");
@@ -2205,13 +2396,13 @@ static void test_cleanup()
         const ULONG r = f.request(p, 40), s = f.request(p, 40);
         f.open(r);
         f.open(s, UNIT_VBLANK);
-        /* The native reply ports took bits 30 and 29: the guest gets 28. */
+        /* All native requests share bit30: the next guest signal gets29. */
         const ULONG own = 0x80000000u | (1u << f.call(330, 0, 0, 0xFFFFFFFF));
         current_task = &other_task;
         f.ctx.exec_task = &owner_task;
         const unsigned closes = close_calls, frees = free_signal_calls;
         Kaffeine_IOCleanup(&f.ctx);
-        check(own == 0x90000000u && close_calls == closes && free_signal_calls == frees &&
+        check(own == 0xA0000000u && close_calls == closes && free_signal_calls == frees &&
               live_opens == 2 && f.ctx.guest_signals == own,
               "cleanup outside the task that ran the guest touches nothing");
         current_task = &owner_task;
@@ -2282,8 +2473,9 @@ static void test_child_timer_io()
     }
     complete(f.native_of(r[1]));complete(f.native_of(r[0]));
     check(f.ctx.io_poll(&f.ctx)&&async_arrivals.size()==2&&
-          async_arrivals[0].first==0x3200&&async_arrivals[1].first==0x3300,
-          "normal child completions route to their own captured signal targets");
+          async_arrivals[0]==std::make_pair(ULONG(0x3300), async_task_bits[2])&&
+          async_arrivals[1]==std::make_pair(ULONG(0x3200), async_task_bits[1]),
+          "normal child completions follow native FIFO and signal their captured owners");
     for(unsigned i=0;i<2;i++){async_actor=0x3200+i*0x100;f.wait_io(r[i]);}
     async_actor=0x3200;f.delay(r[0],1,0);f.send(r[0]);f.wait_io(r[0]);
     const ULONG copy=f.copy_of(r[0],0x2800);f.delay(copy,1,0);
@@ -2297,6 +2489,92 @@ static void test_child_timer_io()
     f.ctx.sched=nullptr;f.ctx.task_ops=nullptr;
     f.call(450,0xA0A0A0A0,r[1]);f.call(660,r[1]);
     f.call(672,p[0]);f.call(672,p[1]);
+}
+
+static void test_shared_last_owner_orphans()
+{
+    for (bool cleanup : { false, true })
+    {
+        Fixture f;
+        f.ctx.exec_task = &owner_task;
+        f.ctx.guest_exec_task = Fixture::task;
+        const ULONG p = f.port(), r = f.request(p, 40);
+        check(f.open(r) == 0, "an orphan-lifetime fixture opens its original timer");
+        const ULONG copy = f.copy_of(r, 0x2800);
+        const ULONG child = 0x3200;
+        async_task_bits[0] = async_task_bits[2] = 0;
+        async_task_bits[1] = 1u << f.memory[p + MP_SIGBIT];
+        m68k_write32(&f.ctx, p + MP_SIGTASK, child);
+        KaffeineTaskOps task_ops = {};
+        task_ops.is_root = child_root;
+        task_ops.caller_task = child_caller;
+        task_ops.known_task = child_known;
+        task_ops.owns_signal = child_owns;
+        task_ops.send_signal = child_signal;
+        task_ops.io_completed = child_wake;
+        f.ctx.sched = reinterpret_cast<KaffeineScheduler *>(&task_ops);
+        f.ctx.task_ops = &task_ops;
+        async_actor = child;
+        async_arrivals.clear();
+        async_wakes.clear();
+        for (ULONG req : { r, copy })
+        {
+            f.delay(req, 5, 0);
+            check(f.send(req) == 0 && f.record(req)->owner == child,
+                  "the departing child owns both original and copied requests in flight");
+        }
+        MsgPort *shared = f.ctx.io_reply_port;
+        const UBYTE private_num = shared->mp_SigBit;
+        const ULONG private_bit = f.ctx.io_signals;
+        const auto before_removal = f.memory;
+        f.ctx.io_task_removed(&f.ctx, child);
+        check(f.memory == before_removal && !f.record(r) && !f.record(copy) && abortio_calls == 2 &&
+              live_ports == 1 && live_requests == 2 && live_opens == 2 &&
+              f.ctx.io_reply_port == shared && f.ctx.io_signals == private_bit &&
+              native_queues[shared].size() == 2,
+              "the final original and copy become native-owned orphans without releasing their shared port or touching guest memory");
+        f.ctx.sched = nullptr;
+        f.ctx.task_ops = nullptr;
+        async_actor = Fixture::task;
+        std::memset(f.memory.data() + r, 0x83, 40);
+        std::memset(f.memory.data() + copy, 0x91, 40);
+        check(f.call(330, 0, 0, private_num) == 0xFFFFFFFF &&
+              (task_signals & private_bit) && !(f.ctx.guest_signals & private_bit),
+              "the orphan-only private bit cannot be reallocated to the guest before its replies are reclaimed");
+
+        /* A setup failure must also count orphan records as native owners. */
+        const ULONG retry = f.request(p, 40);
+        const auto queued = native_queues[shared];
+        fail_request = true;
+        check(f.open(retry) == 0xFFFFFFFF && f.ctx.io_reply_port == shared &&
+              f.ctx.io_signals == private_bit && native_queues[shared] == queued &&
+              live_ports == 1 && live_requests == 2 && live_opens == 2,
+              "a failed new open preserves the port and queued replies when all existing native owners are orphans");
+        fail_request = false;
+        const auto reused = f.memory;
+        native_log.clear();
+        if (cleanup)
+            Kaffeine_IOCleanup(&f.ctx);
+        else
+            check(f.ctx.io_poll(&f.ctx), "the native FIFO reaps the last original and copy orphans");
+        const std::vector<std::string> expected = cleanup ?
+            std::vector<std::string>({ "abort", "waitio", "close", "delete request",
+                                      "abort", "waitio", "close", "delete request", "delete port" }) :
+            std::vector<std::string>({ "close", "delete request", "close", "delete request", "delete port" });
+        check(f.memory == reused && async_arrivals.empty() && async_wakes.empty() &&
+              !live_ports && !live_requests && !live_opens && !f.ctx.io_reply_port && !f.ctx.io_signals &&
+              !(task_signals & private_bit) && native_log == expected,
+              "drain or final cleanup closes both orphan requests before releasing their shared port, with no late guest write or wakeup");
+        if (!cleanup)
+        {
+            check(f.call(330, 0, 0, private_num) == private_num &&
+                  (f.ctx.guest_signals & private_bit),
+                  "the former private bit becomes available only after the last orphan's native ownership ends");
+            Kaffeine_HeapFree(&f.ctx, r, 40);
+            f.call(660, retry);
+            f.call(672, p);
+        }
+    }
 }
 
 static void test_stack_timer_message()
@@ -2357,8 +2635,13 @@ int main()
     test_open_close();
     test_doio();
     test_async();
+    test_shared_signal_budget();
+    test_shared_first_open_failures();
+    test_shared_native_waitio();
+    test_shared_native_doio();
     test_async_source();
     test_child_timer_io();
+    test_shared_last_owner_orphans();
     test_stack_timer_message();
     test_async_copies();
     test_async_waitio();

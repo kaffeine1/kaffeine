@@ -7,7 +7,7 @@ private test disk images are not distributed here.
 | Program | Verified behavior | Scope and next check |
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Repeated with the typed FileLock library on both backends; both launches return 0 and the extracted text matches each edit |
-| Directory Opus 4.12 JR | Opens on the native public Workbench screen using ordinary preferences; lists separate source/destination drawers; copied a 73-byte text file whose extracted bytes match the source with Moira | Cleared StandardPackets now pass native, Moira and JIT regressions; the application still passes an invalid -1 reply port after a port-creation failure. Full copy/rename, orderly exit and JIT application cycle remain open |
+| Directory Opus 4.12 JR | Moira: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | JIT currently stops during startup at an unsupported unary effective-address mode; complete JIT application acceptance remains open |
 
 The FileLock regression `dos_locks` passes 22 checks in each Shell and Run
 invocation on native ARM64, Moira and JIT. It covers readable FileLock fields,
@@ -24,3 +24,9 @@ Broader APIs such as DosList manipulation, hard links, ReadLink and native
 FontContents remain explicitly refused until their representations and
 ownership have typed adapters. Passing these tests does not imply general
 compatibility with every classic application or hardware-dependent software.
+
+The post-copy port failure was traced to physical signal exhaustion: the
+old bridge used four private native I/O signal bits in addition to the
+application's ports/tasks. All native I/O requests now share one private
+reply port. The 8-check signal-budget probe passes on native ARM64 and both
+backends, while the previous bridge failed after three original opens.

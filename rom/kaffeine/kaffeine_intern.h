@@ -90,11 +90,11 @@ struct KaffeineIOPort
 };
 
 /* A 68k IORequest from CreateIORequest() or open on a device. While it is
-   open, a native request of the native size and its own reply port stand
-   behind it, and only kaffeine_exec_io.c passes them to native Exec. A
-   copy is a 40-byte timerequest that the guest copied from an open one
-   and sent with SendIO(): it has a native open of its own on the same
-   unit, whose request replies to ctx->io_copy_port, shared by all copies. */
+   open, a native request of the native size stands behind it, and only
+   kaffeine_exec_io.c passes it to native Exec. Originals and 40-byte copies
+   sent with SendIO() all reply to ctx->io_reply_port. Each copy has a
+   native open of its own on the same unit; a native address identifies
+   each completion on the shared private FIFO. */
 #define KAFFEINE_MAX_IO_REQUESTS 16
 enum KaffeineIODeviceKind
 {
@@ -106,7 +106,7 @@ struct KaffeineIORequest
     ULONG   guest;              /* 68k IORequest, 0 for a free entry */
     ULONG   capacity;           /* bytes from CreateIORequest(), 0 for guest storage */
     struct IORequest *native;   /* while open */
-    struct MsgPort   *reply;
+    struct MsgPort   *reply;     /* non-owning shared-port alias for an original */
     ULONG   unit;
     enum KaffeineIODeviceKind kind; /* native state, never taken from guest fields */
     ULONG   open_flags;         /* OpenDevice() D1, which copies open with */
@@ -455,7 +455,7 @@ struct KaffeineContext
     ULONG   guest_signals;
     struct KaffeineIOPort io_ports[KAFFEINE_MAX_IO_PORTS];
     struct KaffeineIORequest io_requests[KAFFEINE_MAX_IO_REQUESTS];
-    struct MsgPort *io_copy_port;      /* native reply port of every copy, while there are copies */
+    struct MsgPort *io_reply_port;     /* one native port/signal, while any native IO request exists */
     ULONG   timer_base;
     struct Device *native_timer;
     ULONG   console_base;      /* shared guest Device, outside the library namespace */

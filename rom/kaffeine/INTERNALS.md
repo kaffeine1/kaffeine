@@ -780,7 +780,7 @@ before `lib->gen_thunks[]` (generated).
 | -390 | FindPort | Searches only the checked guest public port list |
 | -408 | OldOpenLibrary | As OpenLibrary, with version 0 |
 | -414 | CloseLibrary | Calls the `Close()` of a 68k library from disk, also for a base that its `Open()` made for the opener (one whose `Close()` lies in the hunks of the library); the library goes when `Close()` gives its seglist back after an expunge; nothing for the base of a native library (`kaffeine_m68klib.c`) |
-| -444 | OpenDevice | timer.device on a native timerequest, and console.device unit -1 on a native IOStdReq, each with a private reply port; keyboard.device and input.device unit zero use native IOStdReq adapters. Console accepts the 32-byte guest IORequest prefix, including zero mn_Length; its guest unit is -1. Adapter selection uses trusted native records |
+| -444 | OpenDevice | timer.device on a native timerequest, and console.device unit -1 on a native IOStdReq, sharing one private native reply port and signal; keyboard.device and input.device unit zero use native IOStdReq adapters. Console accepts the 32-byte guest IORequest prefix, including zero mn_Length; its guest unit is -1. Adapter selection uses trusted native records |
 | -450 | CloseDevice | Closes and deletes native request and port. Console clears guest io_Device and io_Unit to zero; timer keeps its -1 closed-device marker |
 | -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter |
 | -462 | SendIO | Current-task native async timer submit with checked reply queues; copied MICROHZ/VBLANK timerequests share one private FIFO completion port |
@@ -1416,8 +1416,8 @@ or ROM is included.
 
 **console.device (`kaffeine_thunks_console.c`, behind its guest Device base):**
 
-OpenDevice supports CONU_LIBRARY (-1), with separate native IOStdReq and
-reply-port resources for each guest request. Opens share one guest Device
+OpenDevice supports CONU_LIBRARY (-1), with a separate native IOStdReq for each guest request and
+one private native reply port/signal shared with all other native I/O opens. Opens share one guest Device
 identity outside the OpenLibrary namespace; close/delete/cleanup balance
 all native resources. Known CreateIORequest capacities bound every request
 access, including pointers into a short allocation. Native device kind is
@@ -2007,7 +2007,7 @@ these adapters, so it does not represent a native request in flight.
 
 Ports, I/O requests and signals of 68k code are 68k structures in the guest
 arena (`kaffeine_exec_io.c`). Behind each open request stand a native request
-of the native size and a private native reply port, which only that file
+of the native size and one shared private native reply port, which only that file
 passes to native Exec. Nothing native reaches the guest, and no guest
 structure reaches native Exec. Synchronous and bounded asynchronous timer requests use these native
 objects; console, keyboard and input retain their separate synchronous adapters.
@@ -2023,7 +2023,7 @@ m68k: CreateIORequest(port, sizeof(struct timerequest))
   → cleared 68k request of that size (20 to 65535) with mn_ReplyPort, mn_Length
 
 m68k: OpenDevice("timer.device", UNIT_MICROHZ, ioReq, 0)
-  → native CreateMsgPort() and CreateIORequest(sizeof(struct timerequest)),
+  → acquire the shared native reply port and CreateIORequest(sizeof(struct timerequest)),
     native OpenDevice() on that request
   → guest io_Device = guest timer.device base, io_Unit = unit, io_Error = 0
 
@@ -2035,7 +2035,7 @@ m68k: TimerBase = ioReq->io_Device; GetSysTime(&tv)
   → native GetSysTime() of the native TimerBase, both fields to the guest
 
 m68k: CloseDevice(ioReq)
-  → native CloseDevice(), DeleteIORequest() and DeleteMsgPort(); io_Device = -1
+  → native CloseDevice() and DeleteIORequest(); release the shared reply port after its last native owner; io_Device = -1
 
 m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
   → guest memory and the guest signal freed
@@ -2043,7 +2043,7 @@ m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
 
 ### Rules
 
-- Signals: `AllocSignal()`, `CreateMsgPort()` and the private reply ports take
+- Signals: `AllocSignal()`, `CreateMsgPort()` and the single private I/O reply port take
   native bits of the task that runs the guest, with child ownership tracked
   by the cooperative scheduler. With a stack size, `RunHunk()`
   runs the guest in a child process, not in the task behind the guest's
@@ -2066,7 +2066,7 @@ m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
 - Asynchronous I/O: a live guest task, outside callbacks, can `SendIO()` open
   timer requests using TR_ADDREQUEST on non-EClock units or TR_GETSYSTIME.
   Native completion queues are pumped from Exec queue/signal calls and guest
-  scheduler polls. The pump preserves the shared copy-port FIFO order and
+  scheduler polls. The pump preserves the shared original/copy FIFO order and
   publishes only checked classic replies. `WaitIO()` finishes a pending
   request in place without a guest queue arrival or signal, or removes only
   its own already queued reply without clearing the guest signal. Private
@@ -3753,3 +3753,32 @@ wrong lengths, protected storage, overlap, invalid reply permissions and
 wrong handler arguments cannot be authorized by a zero length. The original
 `dos_packet_zero` probe queries the filesystem and disk information and sends
 `ACTION_SET_DATE`, then examines the file to verify the resulting timestamp.
+
+
+### Native I/O signal budget
+
+Every original and copied native I/O request replies to one private native
+MsgPort per context. The pump matches each completion by its private native
+request address and delivers the original/copy FIFO in native arrival order.
+Guest reply ports, guest signal numbers and captured guest-task ownership
+keep their existing contracts. Synchronous native waits remove only their
+own request; another request's completion remains on the shared queue.
+
+The shared port and its signal stay private while any native request exists,
+including an idle open or a pending orphan. The final native owner releases
+them. Draining the queue defers that release until the final GetMsg, so an
+orphan finishing inside the pump cannot free the queue being read. Failed
+opens and copied-request setup unwind their temporary resources without
+removing a port still used by another request.
+
+AROS reserves the lower 16 native signal bits. Per-request native reply ports
+could exhaust the remaining physical pool when a classic program also used
+its own ports and guest tasks. Sharing one native I/O signal reduces that
+adapter overhead. Guest task signal allocation continues to use the native
+emulator task's physical pool.
+
+`exec_io_signal_budget` reserves 13 ordinary signals including one reply port,
+opens three original timers, adds a copied request, and checks that two more
+application signals remain available while completions and guards stay
+correct. Its native reference passes 8 checks; the previous bridge fails the
+fourth check before starting the asynchronous requests.

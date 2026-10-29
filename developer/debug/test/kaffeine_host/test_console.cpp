@@ -355,8 +355,9 @@ static void test_library_opens()
             "reopen passes flags and reuses the cached Device and name");
     ULONG second = Fixture::storage + 0x80;
     std::memset(f.memory + second, 0, 32);
-    require(f.open(second) == 0 && requests.size() == 2 && ports.size() == 2 &&
-            m68k_read32(&f.ctx, second + 20) == base, "two independent opens share only the guest Device identity");
+    require(f.open(second) == 0 && requests.size() == 2 && ports.size() == 1 &&
+            m68k_read32(&f.ctx, second + 20) == base,
+            "two independent opens share the private reply port and guest Device identity");
     f.close(second);
 }
 
