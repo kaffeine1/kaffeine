@@ -6,8 +6,8 @@ private test disk images are not distributed here.
 
 | Program | Verified behavior | Scope and next check |
 | --- | --- | --- |
-| Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Repeated with the typed FileLock library on both backends; both launches return 0 and the extracted text matches each edit |
-| Directory Opus 4.12 JR | Moira: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | JIT currently stops during startup at an unsupported unary effective-address mode; complete JIT application acceptance remains open |
+| Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
+| Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
 
 The FileLock regression `dos_locks` passes 22 checks in each Shell and Run
 invocation on native ARM64, Moira and JIT. It covers readable FileLock fields,
@@ -30,3 +30,8 @@ old bridge used four private native I/O signal bits in addition to the
 application's ports/tasks. All native I/O requests now share one private
 reply port. The 8-check signal-budget probe passes on native ARM64 and both
 backends, while the previous bridge failed after three original opens.
+
+The JIT startup stop was a 68020 full-format indexed `CLR.B` operand in
+the original support library. The translator now implements the
+non-indirect form, with separate host and AROS target regressions. The
+application binary and support library were not patched for these tests.

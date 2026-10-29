@@ -318,6 +318,25 @@ Line-F and terminate with 20 under the adapter's Line-F policy.
 M68040, runs every PFLUSH and PTEST opcode without the adapter's catch, and
 exercises the other Line-F stubs separately.
 
+### Kaffeine JIT indexed operands
+
+The optional AArch64 backend in `kaffeine_jit.c` uses the same production
+translator as the hosted differential tests. `HJEA` records base/index
+suppression independently of the index register, width and scale. Brief
+extensions retain their signed byte displacement. Full 68020 extensions
+accept null, signed word and long base displacements only with IIS=000;
+reserved BD=00/bit 3 and memory-indirect encodings are refused. PC-relative
+operands use the extension word's guest address before consuming any base
+displacement words. All effective-address arithmetic uses 32-bit registers,
+then follows the existing checked guest load/store paths. A truncated base
+displacement fails through the code-fetch bounds check before access.
+
+The host `full-index` group compares register/CCR/memory results with Moira
+and an independent address oracle. The original `cpu_full_index` HUNK
+probe checks the scaled `CLR.B`/`LEA` operand on both backends in AROS.
+See [the backend contract](../../docs/kaffeine/jit-backend.md) for the
+supported subset and separate host/target results.
+
 ### FPU
 
 The ExecBase shadow therefore reports `M68K_ATTNFLAGS_68040` (`AFF_68010`
