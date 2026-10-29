@@ -847,7 +847,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -72 | DeleteFile | Bounded guest name |
 | -78 | Rename | Two bounded guest names |
 | -84 | Lock | Bounded guest name; owned typed classic FileLock view |
-| -90 | UnLock | BPTR pass-through |
+| -90 | UnLock | Retires one caller-owned typed FileLock reference; borrowed, installed-only and stale identities are refused |
 | -102 | Examine | Checks the whole guest FIB, examines into a native FIB and converts its public fields (`kaffeine_thunks_dos.c`) |
 | -108 | ExNext | As Examine, starting from the key and type in the guest FIB |
 | -114 | Info | Checks the 36-byte guest InfoData; native temporary, BE32 fields, id_VolumeNode is zero until a DosList bridge exists |
