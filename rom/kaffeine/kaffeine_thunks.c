@@ -27,6 +27,8 @@
 #include "kaffeine_thunks_memory.h"
 #include "kaffeine_thunks_dos.h"
 #include "kaffeine_filehandle.h"
+#include "kaffeine_locks.h"
+#include "kaffeine_thunks_locks.h"
 #include "kaffeine_handlers.h"
 #include "kaffeine_thunks_utility.h"
 #include "kaffeine_thunks_locale.h"
@@ -495,8 +497,7 @@ static IPTR thunk_dos_SetIoErr(struct KaffeineContext *ctx, void *cpu)
 /* -90: UnLock(D1=lock) */
 static IPTR thunk_dos_UnLock(struct KaffeineContext *ctx, void *cpu)
 {
-    UnLock((BPTR)THUNK_D(1));
-    return 0;
+    return Kaffeine_LockRelease(ctx, THUNK_D(1)) ? 0 : 20;
 }
 
 /* -198: Delay(D1=timeout) */
@@ -510,7 +511,10 @@ static IPTR thunk_dos_Delay(struct KaffeineContext *ctx, void *cpu)
 /* -126: CurrentDir(D1=lock) -> D0=oldLock */
 static IPTR thunk_dos_CurrentDir(struct KaffeineContext *ctx, void *cpu)
 {
-    return (IPTR)CurrentDir((BPTR)THUNK_D(1));
+    ULONG previous;
+    if (!Kaffeine_LockSwapInstalled(ctx, KAFFEINE_LOCK_CURRENT, THUNK_D(1), &previous))
+        return ctx->running ? 0 : 20;
+    return previous;
 }
 
 
@@ -562,6 +566,7 @@ const struct M68KThunkEntry kaffeine_thunks_dos[] = {
     KAFFEINE_DOS_DATA_THUNKS,
     KAFFEINE_DOS_CLI_THUNKS,
     KAFFEINE_DOS_LAUNCH_THUNKS,
+    KAFFEINE_DOS_LOCK_THUNKS,
     { 156, thunk_dos_UnLoadSeg },
     { 132, thunk_dos_IoErr },
     { 462, thunk_dos_SetIoErr },

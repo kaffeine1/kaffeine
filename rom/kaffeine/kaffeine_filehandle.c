@@ -5,6 +5,7 @@
     Native BPTR width and all native handler pointers remain private.
 */
 #include "kaffeine_filehandle.h"
+#include "kaffeine_locks.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_offsets.h"
@@ -562,7 +563,7 @@ IPTR kaffeine_dos_DupLockFromFH(struct KaffeineContext *ctx, void *cpu)
     BPTR fh;
     if (!Kaffeine_FileResolve(ctx, THUNK_D(1), &fh)) return 20;
     if (!fh) return Kaffeine_MessageFailure(ctx, "DupLockFromFH NULL handle");
-    return (IPTR)DupLockFromFH(fh);
+    return Kaffeine_LockAdopt(ctx, DupLockFromFH(fh));
 }
 
 IPTR kaffeine_dos_ParentOfFH(struct KaffeineContext *ctx, void *cpu)
@@ -570,7 +571,7 @@ IPTR kaffeine_dos_ParentOfFH(struct KaffeineContext *ctx, void *cpu)
     BPTR fh;
     if (!Kaffeine_FileResolve(ctx, THUNK_D(1), &fh)) return 20;
     if (!fh) return Kaffeine_MessageFailure(ctx, "ParentOfFH NULL handle");
-    return (IPTR)ParentOfFH(fh);
+    return Kaffeine_LockAdopt(ctx, ParentOfFH(fh));
 }
 
 IPTR kaffeine_dos_SetMode(struct KaffeineContext *ctx, void *cpu)
@@ -667,7 +668,13 @@ IPTR kaffeine_dos_Seek(struct KaffeineContext *ctx, void *cpu)
 }
 IPTR kaffeine_dos_OpenFromLock(struct KaffeineContext *ctx, void *cpu)
 {
-    ULONG token = Kaffeine_FileImport(ctx, OpenFromLock((BPTR)(IPTR)THUNK_D(1)), TRUE);
+    struct KaffeineLockTransfer lease;
+    BPTR native;
+    ULONG token;
+    if (!Kaffeine_LockTransferBegin(ctx, THUNK_D(1), &lease)) return 20;
+    native = OpenFromLock(lease.native);
+    Kaffeine_LockTransferEnd(ctx, &lease, native != 0);
+    token = Kaffeine_FileImport(ctx, native, TRUE);
     return !ctx->running && ctx->exit_code == 20 ? 20 : token;
 }
 
@@ -717,9 +724,15 @@ IPTR kaffeine_dos_ChangeMode(struct KaffeineContext *ctx, void *cpu)
         if (!Kaffeine_FileResolve(ctx, THUNK_D(2), &object)) return 20;
         if (!object) return Kaffeine_MessageFailure(ctx, "ChangeMode NULL handle");
     }
-    else if (type == 0) object = (BPTR)(IPTR)THUNK_D(2);
+    else if (type == 0)
+    {
+        if (!Kaffeine_LockResolve(ctx, THUNK_D(2), &object)) return 20;
+        if (!object) return Kaffeine_MessageFailure(ctx, "ChangeMode NULL lock");
+    }
     else return Kaffeine_MessageFailure(ctx, "ChangeMode type");
-    return (IPTR)ChangeMode(type, object, (LONG)THUNK_D(3));
+    LONG result = ChangeMode(type, object, (LONG)THUNK_D(3));
+    if (result && type == 0 && !Kaffeine_LockRefreshAccess(ctx, THUNK_D(2))) return 20;
+    return result;
 }
 
 BOOL Kaffeine_FileStreamPrepare(struct KaffeineContext *ctx, BOOL input, ULONG *token)

@@ -219,7 +219,7 @@ static void set_pc(void *s, ULONG v) { static_cast<CPUState *>(s)->pc = v; }
 static const KaffeineCPUOps ops = {get_d,get_a,set_d,set_a,get_sr,set_sr,get_pc,set_pc,nullptr,nullptr};
 static IPTR poison(KaffeineContext *, void *) { ++poisoned; std::abort(); }
 static const M68KThunkEntry graphics[] = {KAFFEINE_GRAPHICS_COMPAT_THUNKS, KAFFEINE_GRAPHICS_RASTPORT_THUNKS};
-static const M68KThunkEntry disk_poison[] = {{30,poison}};
+static const M68KThunkEntry disk_poison[] = {{30,poison},{42,poison}};
 static const M68KThunkEntry gfx_poison[] = {{66,poison},{72,poison},{78,poison}};
 
 struct Fixture
@@ -243,7 +243,7 @@ struct Fixture
         std::strcpy(ctx.libs[0].name, "diskfont.library");
         ctx.libs[0].thunks = kaffeine_thunks_diskfont_manual;
         ctx.libs[0].num_thunks = kaffeine_thunks_diskfont_manual_count;
-        ctx.libs[0].gen_thunks = disk_poison; ctx.libs[0].num_gen_thunks = 1;
+        ctx.libs[0].gen_thunks = disk_poison; ctx.libs[0].num_gen_thunks = std::size(disk_poison);
         ctx.libs[1].m68k_addr = gfxbase; ctx.libs[1].jt_start = gfxbase - 512 * 6;
         std::strcpy(ctx.libs[1].name, "graphics.library");
         ctx.libs[1].thunks = graphics; ctx.libs[1].num_thunks = std::size(graphics);
@@ -707,10 +707,27 @@ static void test_table_exhaustion_and_cycles()
     assert(blocks.empty());
 }
 
+static void test_font_contents_refusal()
+{
+    Fonts fonts;reset(fonts);
+    {
+        Fixture f;
+        active=&f.ctx;f.ctx.running=TRUE;
+        f.state.a[0]=0xDEADBEEF;f.state.a[1]=0xFFFFFFFF;f.state.a[7]=Fixture::stack;
+        const auto before=f.bytes();const auto allocs=allocation_calls;
+        KaffeineDispatchResult result{};
+        assert(Kaffeine_DispatchLibraryCall(&f.ctx,&f.cpu,Fixture::diskbase-42,&result));
+        assert(!f.ctx.running&&f.ctx.exit_code==20&&f.state.d[0]==20);
+        assert(f.bytes()==before&&requests.empty()&&!poisoned&&allocation_calls==allocs);
+    }
+    assert(blocks.empty());
+}
+
 int main()
 {
     static_assert(sizeof(void *)==8 && sizeof(IPTR)==8 && sizeof(ULONG)==4 && sizeof(WORD)==2);
     const std::pair<const char *, void(*)()> tests[] = {
+        {"native FontContents is refused before pointer conversion or fallback",test_font_contents_refusal},
         {"exact monochrome TextFont, data and shared OpenFont identity",test_bitmap_identity},
         {"native extension marker stays private and intrinsic styles survive",test_native_extension_marker},
         {"native tagged copies, scalar DPI and all tag controls",test_tags},

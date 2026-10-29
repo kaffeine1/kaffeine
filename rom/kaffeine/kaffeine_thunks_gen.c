@@ -920,14 +920,6 @@ static IPTR thunk_diskfont_AvailFonts(struct KaffeineContext *ctx, void *cpu)
     return (IPTR)AvailFonts(arg_buffer, arg_bufBytes, arg_flags);
 }
 
-/* -42: NewFontContents(fontsLock=a0, fontName=a1) */
-static IPTR thunk_diskfont_NewFontContents(struct KaffeineContext *ctx, void *cpu)
-{
-    BPTR arg_fontsLock = (BPTR)THUNK_A(0);
-    CONST_STRPTR arg_fontName = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(1));
-    return (IPTR)NewFontContents(arg_fontsLock, arg_fontName);
-}
-
 /* -48: DisposeFontContents(fontContentsHeader=a1) */
 static IPTR thunk_diskfont_DisposeFontContents(struct KaffeineContext *ctx, void *cpu)
 {
@@ -937,13 +929,6 @@ static IPTR thunk_diskfont_DisposeFontContents(struct KaffeineContext *ctx, void
 }
 
 /* ── dos.library (112 thunks) ── */
-
-/* -96: DupLock(lock=d1) */
-static IPTR thunk_dos_DupLock(struct KaffeineContext *ctx, void *cpu)
-{
-    BPTR arg_lock = (BPTR)THUNK_D(1);
-    return (IPTR)DupLock(arg_lock);
-}
 
 /* -114: Info(lock=d1, parameterBlock=d2) */
 static IPTR thunk_dos_Info(struct KaffeineContext *ctx, void *cpu)
@@ -1006,13 +991,6 @@ static IPTR thunk_dos_WaitForChar(struct KaffeineContext *ctx, void *cpu)
     BPTR arg_file = (BPTR)THUNK_D(1);
     ULONG arg_timeout = THUNK_D(2);
     return (IPTR)WaitForChar(arg_file, arg_timeout);
-}
-
-/* -210: ParentDir(lock=d1) */
-static IPTR thunk_dos_ParentDir(struct KaffeineContext *ctx, void *cpu)
-{
-    BPTR arg_lock = (BPTR)THUNK_D(1);
-    return (IPTR)ParentDir(arg_lock);
 }
 
 /* -216: IsInteractive(file=d1) */
@@ -1215,40 +1193,12 @@ static IPTR thunk_dos_SplitName(struct KaffeineContext *ctx, void *cpu)
     return (IPTR)SplitName(arg_name, arg_separator, arg_buf, arg_oldpos, arg_size);
 }
 
-/* -420: SameLock(lock1=d1, lock2=d2) */
-static IPTR thunk_dos_SameLock(struct KaffeineContext *ctx, void *cpu)
-{
-    BPTR arg_lock1 = (BPTR)THUNK_D(1);
-    BPTR arg_lock2 = (BPTR)THUNK_D(2);
-    return (IPTR)SameLock(arg_lock1, arg_lock2);
-}
-
 /* -426: SetMode(fh=d1, mode=d2) */
 static IPTR thunk_dos_SetMode(struct KaffeineContext *ctx, void *cpu)
 {
     BPTR arg_fh = (BPTR)THUNK_D(1);
     ULONG arg_mode = THUNK_D(2);
     return (IPTR)SetMode(arg_fh, arg_mode);
-}
-
-/* -438: ReadLink(port=d1, lock=d2, path=d3, buffer=d4, size=d5) */
-static IPTR thunk_dos_ReadLink(struct KaffeineContext *ctx, void *cpu)
-{
-    struct MsgPort *arg_port = (struct MsgPort *)m68k_to_host_or_shadow(ctx, THUNK_D(1));
-    BPTR arg_lock = (BPTR)THUNK_D(2);
-    CONST_STRPTR arg_path = (CONST_STRPTR)m68k_to_host(ctx, THUNK_D(3));
-    CONST_STRPTR arg_buffer = (CONST_STRPTR)m68k_to_host(ctx, THUNK_D(4));
-    ULONG arg_size = THUNK_D(5);
-    return (IPTR)ReadLink(arg_port, arg_lock, arg_path, arg_buffer, arg_size);
-}
-
-/* -444: MakeLink(name=d1, dest=d2, soft=d3) */
-static IPTR thunk_dos_MakeLink(struct KaffeineContext *ctx, void *cpu)
-{
-    CONST_STRPTR arg_name = (CONST_STRPTR)m68k_to_host(ctx, THUNK_D(1));
-    ULONG arg_dest = THUNK_D(2);
-    ULONG arg_soft = THUNK_D(3);
-    return (IPTR)MakeLink(arg_name, arg_dest, arg_soft);
 }
 
 /* -450: ChangeMode(type=d1, object=d2, newmode=d3) */
@@ -1285,16 +1235,6 @@ static IPTR thunk_dos_PrintFault(struct KaffeineContext *ctx, void *cpu)
     ULONG arg_code = THUNK_D(1);
     CONST_STRPTR arg_header = (CONST_STRPTR)m68k_to_host(ctx, THUNK_D(2));
     return (IPTR)PrintFault(arg_code, arg_header);
-}
-
-/* -480: ErrorReport(code=d1, type=d2, arg1=d3, device=d4) */
-static IPTR thunk_dos_ErrorReport(struct KaffeineContext *ctx, void *cpu)
-{
-    ULONG arg_code = THUNK_D(1);
-    ULONG arg_type = THUNK_D(2);
-    ULONG arg_arg1 = THUNK_D(3);
-    struct MsgPort *arg_device = (struct MsgPort *)m68k_to_host_or_shadow(ctx, THUNK_D(4));
-    return (IPTR)ErrorReport(arg_code, arg_type, arg_arg1, arg_device);
 }
 
 /* -486: DisplayError(formatStr=a0, flags=d0, args=a1) */
@@ -1411,19 +1351,6 @@ static IPTR thunk_dos_GetPrompt(struct KaffeineContext *ctx, void *cpu)
     return (IPTR)GetPrompt(arg_buf, arg_len);
 }
 
-/* -594: SetProgramDir(lock=d1) */
-static IPTR thunk_dos_SetProgramDir(struct KaffeineContext *ctx, void *cpu)
-{
-    BPTR arg_lock = (BPTR)THUNK_D(1);
-    return (IPTR)SetProgramDir(arg_lock);
-}
-
-/* -600: GetProgramDir() */
-static IPTR thunk_dos_GetProgramDir(struct KaffeineContext *ctx, void *cpu)
-{
-    return (IPTR)GetProgramDir();
-}
-
 /* -612: AssignLock(name=d1, lock=d2) */
 static IPTR thunk_dos_AssignLock(struct KaffeineContext *ctx, void *cpu)
 {
@@ -1479,75 +1406,6 @@ static IPTR thunk_dos_FreeDeviceProc(struct KaffeineContext *ctx, void *cpu)
 {
     APTR arg_dp = THUNK_DPTR(1);
     FreeDeviceProc(arg_dp);
-    return 0;
-}
-
-/* -654: LockDosList(flags=d1) */
-static IPTR thunk_dos_LockDosList(struct KaffeineContext *ctx, void *cpu)
-{
-    ULONG arg_flags = THUNK_D(1);
-    return (IPTR)LockDosList(arg_flags);
-}
-
-/* -660: UnLockDosList(flags=d1) */
-static IPTR thunk_dos_UnLockDosList(struct KaffeineContext *ctx, void *cpu)
-{
-    ULONG arg_flags = THUNK_D(1);
-    UnLockDosList(arg_flags);
-    return 0;
-}
-
-/* -666: AttemptLockDosList(flags=d1) */
-static IPTR thunk_dos_AttemptLockDosList(struct KaffeineContext *ctx, void *cpu)
-{
-    ULONG arg_flags = THUNK_D(1);
-    return (IPTR)AttemptLockDosList(arg_flags);
-}
-
-/* -672: RemDosEntry(dlist=d1) */
-static IPTR thunk_dos_RemDosEntry(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_dlist = THUNK_DPTR(1);
-    return (IPTR)RemDosEntry(arg_dlist);
-}
-
-/* -678: AddDosEntry(dlist=d1) */
-static IPTR thunk_dos_AddDosEntry(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_dlist = THUNK_DPTR(1);
-    return (IPTR)AddDosEntry(arg_dlist);
-}
-
-/* -684: FindDosEntry(dlist=d1, name=d2, flags=d3) */
-static IPTR thunk_dos_FindDosEntry(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_dlist = THUNK_DPTR(1);
-    CONST_STRPTR arg_name = (CONST_STRPTR)m68k_to_host(ctx, THUNK_D(2));
-    ULONG arg_flags = THUNK_D(3);
-    return (IPTR)FindDosEntry(arg_dlist, arg_name, arg_flags);
-}
-
-/* -690: NextDosEntry(dlist=d1, flags=d2) */
-static IPTR thunk_dos_NextDosEntry(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_dlist = THUNK_DPTR(1);
-    ULONG arg_flags = THUNK_D(2);
-    return (IPTR)NextDosEntry(arg_dlist, arg_flags);
-}
-
-/* -696: MakeDosEntry(name=d1, type=d2) */
-static IPTR thunk_dos_MakeDosEntry(struct KaffeineContext *ctx, void *cpu)
-{
-    CONST_STRPTR arg_name = (CONST_STRPTR)m68k_to_host(ctx, THUNK_D(1));
-    ULONG arg_type = THUNK_D(2);
-    return (IPTR)MakeDosEntry(arg_name, arg_type);
-}
-
-/* -702: FreeDosEntry(dlist=d1) */
-static IPTR thunk_dos_FreeDosEntry(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_dlist = THUNK_DPTR(1);
-    FreeDosEntry(arg_dlist);
     return 0;
 }
 
@@ -1800,14 +1658,6 @@ static IPTR thunk_dos_DosGetString(struct KaffeineContext *ctx, void *cpu)
     return (IPTR)DosGetString(arg_stringNum);
 }
 
-/* -984: SameDevice(lock1=d1, lock2=d2) */
-static IPTR thunk_dos_SameDevice(struct KaffeineContext *ctx, void *cpu)
-{
-    BPTR arg_lock1 = (BPTR)THUNK_D(1);
-    BPTR arg_lock2 = (BPTR)THUNK_D(2);
-    return (IPTR)SameDevice(arg_lock1, arg_lock2);
-}
-
 /* -996: SetOwner(name=d1, owner_info=d2) */
 static IPTR thunk_dos_SetOwner(struct KaffeineContext *ctx, void *cpu)
 {
@@ -1833,15 +1683,6 @@ static IPTR thunk_dos_GetSegListInfo(struct KaffeineContext *ctx, void *cpu)
     IPTR _ret = (IPTR)GetSegListInfo(arg_seglist, arg_taglist);
     if (arg_taglist) FreeVec(arg_taglist);
     return _ret;
-}
-
-/* -1356: AssignAddToList(name=d1, lock=d2, position=d3) */
-static IPTR thunk_dos_AssignAddToList(struct KaffeineContext *ctx, void *cpu)
-{
-    APTR arg_name = THUNK_DPTR(1);
-    BPTR arg_lock = (BPTR)THUNK_D(2);
-    ULONG arg_position = THUNK_D(3);
-    return (IPTR)AssignAddToList(arg_name, arg_lock, arg_position);
 }
 
 /* ── exec.library (79 thunks) ── */
@@ -7197,14 +7038,12 @@ const ULONG kaffeine_thunks_datatypes_gen_count = 30;
 
 const struct M68KThunkEntry kaffeine_thunks_diskfont_gen[] = {
     { 36, thunk_diskfont_AvailFonts },
-    { 42, thunk_diskfont_NewFontContents },
     { 48, thunk_diskfont_DisposeFontContents },
     { 0, NULL }
 };
-const ULONG kaffeine_thunks_diskfont_gen_count = 3;
+const ULONG kaffeine_thunks_diskfont_gen_count = 2;
 
 const struct M68KThunkEntry kaffeine_thunks_dos_gen[] = {
-    { 96, thunk_dos_DupLock },
     { 114, thunk_dos_Info },
     { 120, thunk_dos_CreateDir },
     { 144, thunk_dos_Exit },
@@ -7213,7 +7052,6 @@ const struct M68KThunkEntry kaffeine_thunks_dos_gen[] = {
     { 186, thunk_dos_SetProtection },
     { 192, thunk_dos_DateStamp },
     { 204, thunk_dos_WaitForChar },
-    { 210, thunk_dos_ParentDir },
     { 216, thunk_dos_IsInteractive },
     { 264, thunk_dos_AbortPkt },
     { 270, thunk_dos_LockRecord },
@@ -7238,15 +7076,11 @@ const struct M68KThunkEntry kaffeine_thunks_dos_gen[] = {
     { 402, thunk_dos_NameFromLock },
     { 408, thunk_dos_NameFromFH },
     { 414, thunk_dos_SplitName },
-    { 420, thunk_dos_SameLock },
     { 426, thunk_dos_SetMode },
-    { 438, thunk_dos_ReadLink },
-    { 444, thunk_dos_MakeLink },
     { 450, thunk_dos_ChangeMode },
     { 456, thunk_dos_SetFileSize },
     { 468, thunk_dos_Fault },
     { 474, thunk_dos_PrintFault },
-    { 480, thunk_dos_ErrorReport },
     { 486, thunk_dos_DisplayError },
     { 492, thunk_dos_Cli },
     { 510, thunk_dos_GetConsoleTask },
@@ -7262,8 +7096,6 @@ const struct M68KThunkEntry kaffeine_thunks_dos_gen[] = {
     { 570, thunk_dos_SetProgramName },
     { 582, thunk_dos_SetPrompt },
     { 588, thunk_dos_GetPrompt },
-    { 594, thunk_dos_SetProgramDir },
-    { 600, thunk_dos_GetProgramDir },
     { 612, thunk_dos_AssignLock },
     { 618, thunk_dos_AssignLate },
     { 624, thunk_dos_AssignPath },
@@ -7271,15 +7103,6 @@ const struct M68KThunkEntry kaffeine_thunks_dos_gen[] = {
     { 636, thunk_dos_RemAssignList },
     { 642, thunk_dos_GetDeviceProc },
     { 648, thunk_dos_FreeDeviceProc },
-    { 654, thunk_dos_LockDosList },
-    { 660, thunk_dos_UnLockDosList },
-    { 666, thunk_dos_AttemptLockDosList },
-    { 672, thunk_dos_RemDosEntry },
-    { 678, thunk_dos_AddDosEntry },
-    { 684, thunk_dos_FindDosEntry },
-    { 690, thunk_dos_NextDosEntry },
-    { 696, thunk_dos_MakeDosEntry },
-    { 702, thunk_dos_FreeDosEntry },
     { 708, thunk_dos_IsFileSystem },
     { 714, thunk_dos_Format },
     { 720, thunk_dos_Relabel },
@@ -7311,14 +7134,12 @@ const struct M68KThunkEntry kaffeine_thunks_dos_gen[] = {
     { 966, thunk_dos_ParsePatternNoCase },
     { 972, thunk_dos_MatchPatternNoCase },
     { 978, thunk_dos_DosGetString },
-    { 984, thunk_dos_SameDevice },
     { 996, thunk_dos_SetOwner },
     { 1014, thunk_dos_ScanVars },
     { 1176, thunk_dos_GetSegListInfo },
-    { 1356, thunk_dos_AssignAddToList },
     { 0, NULL }
 };
-const ULONG kaffeine_thunks_dos_gen_count = 112;
+const ULONG kaffeine_thunks_dos_gen_count = 93;
 
 const struct M68KThunkEntry kaffeine_thunks_exec_gen[] = {
     { 96, thunk_exec_FindResident },

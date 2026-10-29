@@ -2633,6 +2633,8 @@ static void test_system_taglist_invalid()
     /* Unsupported tags must fail with -1 and ERROR_NOT_IMPLEMENTED without
        calling native SystemTagList. */
     for (ULONG bad_tag : { static_cast<ULONG>(NP_Entry),
+                           static_cast<ULONG>(NP_CurrentDir),
+                           static_cast<ULONG>(NP_HomeDir),
                            static_cast<ULONG>(SYS_Dummy + 11),
                            0x80009999U })
     {

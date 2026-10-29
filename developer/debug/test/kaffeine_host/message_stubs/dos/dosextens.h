@@ -8,7 +8,24 @@
 #define NT_PROCESS 13
 struct MsgPort;
 struct Process { struct Task pr_Task; BPTR pr_CES; struct MsgPort *pr_ConsoleTask, *pr_FileSystemTask; };
-struct DosList;
+/* Only fields read by the production DevProc lifetime guard. */
+struct AssignList { struct AssignList *al_Next; BPTR al_Lock; };
+struct DosList
+{
+    LONG dol_Type;
+    BPTR dol_Lock;
+    union { struct { struct AssignList *dol_List; } dol_assign; } dol_misc;
+};
+#define DLT_DEVICE 0
+#define DLT_DIRECTORY 1
+#define DLT_VOLUME 2
+#define DLT_NONBINDING 4
+#define LDF_READ 1
+#define LDF_ALL 28
+#define DVPF_UNLOCK 1
+#ifndef ERROR_OBJECT_IN_USE
+#define ERROR_OBJECT_IN_USE 202
+#endif
 struct DevProc { struct MsgPort *dvp_Port; BPTR dvp_Lock; ULONG dvp_Flags; struct DosList *dvp_DevNode; };
 #define DVPF_ASSIGN 2
 struct FileHandle

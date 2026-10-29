@@ -91,6 +91,7 @@ ICON_OBJS := $(MESSAGE_OBJS) $(BUILD_DIR)/icon_boundary_icon.o
 
 TESTS = test_kaffeine test_moira_exec test_hello_thunks test_dispatch test_hunk_loading
 TESTS += test_exec_lists
+TESTS += test_locks
 TESTS += test_dos_thunks test_exec_messages test_dos_packets
 TESTS += test_dos_packet_thunks test_dos_handlers
 TESTS += test_icon test_display test_fbgfx_refresh
@@ -421,6 +422,7 @@ diagnose-seglist: $(BUILD_DIR)/test_hunk_loading
 	$(RUNNER) $< --diagnose-seglist
 
 clean:
+	rm -f $(LOCK_OBJS) $(LOCK_OBJS:.o=.d)
 	rm -f $(MESSAGE_OBJS) $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_entries.c $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_messages.d $(BUILD_DIR)/message_native_unused.o $(BUILD_DIR)/message_native_unused.d $(BUILD_DIR)/file_boundary_unit.o $(BUILD_DIR)/file_boundary_unit.d
 	rm -f $(DISKFONT_OBJS) $(DISKFONT_OBJS:.o=.d)
 	rm -f $(LIBRARY_PATHS_OBJS) $(LIBRARY_PATHS_OBJS:.o=.d) $(BUILD_DIR)/library_paths_lookup.c
@@ -494,3 +496,12 @@ $(BUILD_DIR)/test_display: $(TEST_DIR)/test_display.cpp $(DISPLAY_OBJS) | $(BUIL
 
 $(BUILD_DIR)/test_fbgfx_refresh: CPPFLAGS += -I$(TEST_DIR)/../../../../arch/aarch64-raspi/hidd/fbgfx
 $(BUILD_DIR)/test_fbgfx_refresh: $(TEST_DIR)/../../../../arch/aarch64-raspi/hidd/fbgfx/fbgfx_refresh.h
+
+# Production FileLock metadata, native-reference oracles and the real heap.
+LOCK_CPPFLAGS := -DAROS_FAST_BSTR=1 -I$(TEST_DIR)/locks_stubs $(TEST_CPPFLAGS)
+LOCK_OBJS := $(addprefix $(BUILD_DIR)/locks_,cpu.o dispatch.o memory.o locks.o)
+$(BUILD_DIR)/locks_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(LOCK_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
+$(BUILD_DIR)/test_locks: $(TEST_DIR)/test_locks.cpp $(LOCK_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(LOCK_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(LOCK_OBJS) $(LDLIBS)
+-include $(LOCK_OBJS:.o=.d)

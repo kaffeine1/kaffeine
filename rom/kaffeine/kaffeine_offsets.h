@@ -38,6 +38,7 @@
 #define M68K_PR_STACKSIZE           132
 #define M68K_PR_STACKBASE           144
 #define M68K_PR_CURRENTDIR          152
+#define M68K_PR_HOMEDIR             188
 #define M68K_PR_CIS                 156
 #define M68K_PR_COS                 160
 #define M68K_PR_CONSOLETASK         164

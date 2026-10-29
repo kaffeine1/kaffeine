@@ -203,9 +203,9 @@ static void reuse(const char *name, const Manual *manual, const M68KLibThunkSet 
 static void registrations_and_reuse()
 {
     const auto *diskfont = generated("diskfont.library");
-    CHECK(diskfont && diskfont->count == 3);
+    CHECK(diskfont && diskfont->count == 2);
     if (diskfont) {
-        CHECK(diskfont->thunks[0].lvo == 36 && diskfont->thunks[1].lvo == 42 && diskfont->thunks[2].lvo == 48);
+        CHECK(diskfont->thunks[0].lvo == 36 && diskfont->thunks[1].lvo == 48);
     }
     for (ULONG i = 0; i < kaffeine_all_gen_libs_count; ++i) {
         const auto &gen = kaffeine_all_gen_libs[i];

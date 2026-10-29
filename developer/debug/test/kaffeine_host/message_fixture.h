@@ -26,6 +26,10 @@
 #include "kaffeine_filehandle.h"
 #include "kaffeine_handlers.h"
 #include "kaffeine_messages.h"
+#include "kaffeine_locks.h"
+#define KAFFEINE_LOCK_UNIT_RECORD_PUBLICATION
+#include "lock_boundary_unit.h"
+#undef KAFFEINE_LOCK_UNIT_RECORD_PUBLICATION
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_window.h"
@@ -101,39 +105,104 @@ extern "C" MsgPort *GetConsoleTask(void) { return console_task; }
 extern "C" MsgPort *SetConsoleTask(MsgPort *p) { MsgPort *o = console_task; console_task = p; return o; }
 extern "C" MsgPort *GetFileSysTask(void) { return filesys_task; }
 extern "C" MsgPort *SetFileSysTask(MsgPort *p) { MsgPort *o = filesys_task; filesys_task = p; return o; }
-/* RAM: is a device, WORK: an assign on it with the lock 0x1234560 in IoErr(),
-   and PORTn: the handler native_ports[n]. */
-extern "C" MsgPort *DeviceProc(CONST_STRPTR name)
+/* Real native list nodes let the production guard establish membership
+   without dereferencing expired DevProc pointers. Lock values remain
+   numeric collaborators here; test_locks covers the production mapping. */
+static DosList dos_list_head;
+static std::array<DosList, 5> named_nodes;
+static std::array<DosList, 40> port_nodes;
+static AssignList multi_tail;
+static std::vector<DosList *> live_dos_nodes;
+static unsigned dos_list_depth, dos_list_locks, dos_list_unlocks, deviceproc_advances;
+static unsigned duplicate_locks, duplicate_depth, lock_releases;
+static ULONG released_token, adopted_token_override, borrowed_token_override;
+static BPTR adopted_lock, borrowed_lock;
+static bool duplicate_failure, returned_dead_node, returned_removed_lock;
+static void reset_dos_nodes()
 {
-    ++deviceprocs;
-    if (name && !std::strcmp(name, "RAM:")) { ioerr = 0; return ram_port(); }
-    if (name && !std::strcmp(name, "WORK:")) { ioerr = 0x1234560; return ram_port(); }
-    if (name && !std::strncmp(name, "PORT", 4)) { ioerr = 0; return &native_ports.at(std::atoi(name + 4)); }
-    ioerr = ERROR_DEVICE_NOT_MOUNTED;
-    return nullptr;
+    dos_list_head={}; named_nodes={}; port_nodes={}; multi_tail={}; live_dos_nodes.clear();
+    named_nodes[0].dol_Type=DLT_DEVICE; // RAM:
+    named_nodes[1].dol_Type=DLT_DIRECTORY; // WORK:
+    named_nodes[1].dol_Lock=reinterpret_cast<BPTR>(0x1234560);
+    named_nodes[2].dol_Type=DLT_DIRECTORY; // MULTI:
+    named_nodes[2].dol_Lock=reinterpret_cast<BPTR>(0x1000);
+    multi_tail.al_Lock=reinterpret_cast<BPTR>(0x2000);
+    named_nodes[2].dol_misc.dol_assign.dol_List=&multi_tail;
+    named_nodes[3].dol_Type=DLT_DIRECTORY; // BIG: native-width lock
+    named_nodes[3].dol_Lock=reinterpret_cast<BPTR>(0x100000000ULL);
+    named_nodes[4].dol_Type=DLT_NONBINDING; // owns its temporary lock
+    for(auto &n:named_nodes) live_dos_nodes.push_back(&n);
+    for(auto &n:port_nodes) { n.dol_Type=DLT_DEVICE;live_dos_nodes.push_back(&n); }
+    dos_list_depth=dos_list_locks=dos_list_unlocks=deviceproc_advances=0;
+    duplicate_locks=duplicate_depth=lock_releases=0;duplicate_failure=returned_dead_node=returned_removed_lock=false;
+    released_token=adopted_token_override=borrowed_token_override=0;
+    adopted_lock=borrowed_lock=nullptr;
 }
-/* RAM: has no lock, MULTI: two drawers (locks 0x1000 and 0x2000) after
-   which the DevProc is freed, BIG: a lock past 32 bits. */
-extern "C" DevProc *GetDeviceProc(CONST_STRPTR name, DevProc *dp)
+extern "C" DosList *LockDosList(ULONG flags)
+{
+    assert(flags==(LDF_ALL|LDF_READ));++dos_list_locks;++dos_list_depth;
+    return &dos_list_head;
+}
+extern "C" void UnLockDosList(ULONG flags)
+{ assert(flags==(LDF_ALL|LDF_READ)&&dos_list_depth);++dos_list_unlocks;--dos_list_depth; }
+extern "C" DosList *NextDosEntry(DosList *node,ULONG flags)
+{
+    assert(dos_list_depth&&flags==LDF_ALL);
+    if(node==&dos_list_head)return live_dos_nodes.empty()?nullptr:live_dos_nodes.front();
+    auto pos=std::find(live_dos_nodes.begin(),live_dos_nodes.end(),node);
+    assert(pos!=live_dos_nodes.end());
+    return ++pos==live_dos_nodes.end()?nullptr:*pos;
+}
+extern "C" BPTR DupLock(BPTR lock)
+{
+    ++duplicate_locks;duplicate_depth=dos_list_depth;
+    if(duplicate_failure) { ioerr=ERROR_OBJECT_IN_USE;return nullptr; }
+    return lock;
+}
+extern "C" ULONG Kaffeine_LockAdopt(KaffeineContext *,BPTR lock)
+{ adopted_lock=lock;return lock?(adopted_token_override?adopted_token_override:static_cast<ULONG>(reinterpret_cast<IPTR>(lock))):0; }
+extern "C" ULONG Kaffeine_LockBorrow(KaffeineContext *,BPTR lock,KaffeineLockScope,ULONG)
+{ borrowed_lock=lock;return lock?(borrowed_token_override?borrowed_token_override:static_cast<ULONG>(reinterpret_cast<IPTR>(lock))):0; }
+extern "C" BOOL Kaffeine_LockRelease(KaffeineContext *,ULONG token)
+{ ++lock_releases;released_token=token;return TRUE; }
+/* DeviceProc() is deliberately poisoned: the bridge must retain an assign
+   through GetDeviceProc() and guard its live node before duplication. */
+extern "C" MsgPort *DeviceProc(CONST_STRPTR) { std::abort(); }
+extern "C" DevProc *GetDeviceProc(CONST_STRPTR name,DevProc *dp)
 {
     ++deviceprocs;
-    if (dp)
+    if(dp)
     {
-        if (dp->dvp_Lock == reinterpret_cast<BPTR>(0x1000)) { dp->dvp_Lock = reinterpret_cast<BPTR>(0x2000); return dp; }
-        FreeMem(dp, sizeof(*dp));
-        ioerr = ERROR_NO_MORE_ENTRIES;
-        return nullptr;
+        ++deviceproc_advances;
+        assert(dos_list_depth&&dp->dvp_DevNode==&named_nodes[2]);
+        if(dp->dvp_Lock==reinterpret_cast<BPTR>(0x1000))
+        { dp->dvp_Lock=reinterpret_cast<BPTR>(0x2000);return dp; }
+        FreeMem(dp,sizeof(*dp));ioerr=ERROR_NO_MORE_ENTRIES;return nullptr;
     }
-    if (!name || (std::strcmp(name, "RAM:") && std::strcmp(name, "MULTI:") && std::strcmp(name, "BIG:")))
-    { ioerr = ERROR_DEVICE_NOT_MOUNTED; return nullptr; }
-    dp = static_cast<DevProc *>(AllocMem(sizeof(DevProc), MEMF_CLEAR));
-    dp->dvp_Port = ram_port();
-    dp->dvp_DevNode = reinterpret_cast<DosList *>(0x7777);
-    if (!std::strcmp(name, "MULTI:")) { dp->dvp_Lock = reinterpret_cast<BPTR>(0x1000); dp->dvp_Flags = DVPF_ASSIGN; }
-    if (!std::strcmp(name, "BIG:")) dp->dvp_Lock = reinterpret_cast<BPTR>(0x100000000ULL);
+    DosList *node=nullptr;MsgPort *port=ram_port();
+    if(name&&!std::strcmp(name,"RAM:"))node=&named_nodes[0];
+    if(name&&!std::strcmp(name,"WORK:"))node=&named_nodes[1];
+    if(name&&!std::strcmp(name,"MULTI:"))node=&named_nodes[2];
+    if(name&&!std::strcmp(name,"BIG:"))node=&named_nodes[3];
+    if(name&&!std::strcmp(name,"UNBOUND:"))node=&named_nodes[4];
+    if(name&&!std::strncmp(name,"PORT",4))
+    { unsigned n=static_cast<unsigned>(std::atoi(name+4));node=&port_nodes.at(n);port=&native_ports.at(n); }
+    if(!node) { ioerr=ERROR_DEVICE_NOT_MOUNTED;return nullptr; }
+    dp=static_cast<DevProc *>(AllocMem(sizeof(DevProc),MEMF_CLEAR));
+    if(!dp) { ioerr=ERROR_NO_FREE_STORE;return nullptr; }
+    dp->dvp_Port=port;dp->dvp_DevNode=node;dp->dvp_Lock=node->dol_Lock;
+    if(node==&named_nodes[2])dp->dvp_Flags=DVPF_ASSIGN;
+    if(node==&named_nodes[4]) { dp->dvp_Lock=reinterpret_cast<BPTR>(0x3450);dp->dvp_Flags=DVPF_UNLOCK; }
+    if(returned_dead_node)dp->dvp_DevNode=reinterpret_cast<DosList *>(0x7777);
+    if(returned_removed_lock)dp->dvp_Lock=reinterpret_cast<BPTR>(0xDEAD);
+    ioerr=0;
     return dp;
 }
-extern "C" void FreeDeviceProc(DevProc *dp) { if (dp) { ++devproc_frees; FreeMem(dp, sizeof(*dp)); } }
+extern "C" void FreeDeviceProc(DevProc *dp)
+{
+    if(dp)
+    { ++devproc_frees;if(dp->dvp_Flags&DVPF_UNLOCK)UnLock(dp->dvp_Lock);FreeMem(dp,sizeof(*dp)); }
+}
 static constexpr char contents[] = "ABCDEFGHIJKL";
 extern "C" BYTE AllocSignal(LONG requested)
 {
@@ -380,7 +449,7 @@ struct Fixture
         native_process.pr_ConsoleTask=native_process.pr_FileSystemTask=nullptr;
         native_ports={};console_task=&native_ports[1];filesys_task=&native_ports[2];
         packet_name1.clear();packet_name2.clear();packet_stamp={};packet_fib={};packet_fib_in={};
-        unlocks=devproc_frees=deviceprocs=0;unlocked=nullptr;
+        unlocks=devproc_frees=deviceprocs=0;unlocked=nullptr;reset_dos_nodes();
         for (auto &n:native) { n.fh_Pos=n.fh_End=-1; n.fh_Type=reinterpret_cast<MsgPort *>(0x123456789ABCDEF0ULL); n.fh_Args=0xFEDCBA9876543210ULL+16*(&n-native.data()); }
         fixture_handles=native.data();fixture_handle_count=native.size();
         native_input=MKBADDR(&native[0]);native_output=MKBADDR(&native[1]);open_result=MKBADDR(&native[2]);
@@ -401,6 +470,7 @@ struct Fixture
         allocation_countdown=-1;
         Kaffeine_FileCleanup(&ctx);
         Kaffeine_HandlerCleanup(&ctx);
+        check(!dos_list_depth && dos_list_locks==dos_list_unlocks,"native DosList guards are balanced");
         for (auto &p:ctx.io_ports)
             if(p.guest) { state.a[0]=p.guest;Kaffeine_DeleteMsgPort(&ctx,&cpu); }
         Kaffeine_DestroyContext(&ctx);

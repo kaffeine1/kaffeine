@@ -846,19 +846,19 @@ classic-system observations recorded by `exec_library_paths`.
 | -66 | Seek | Resolves the guest `FileHandle` BPTR and calls native `Seek` (`kaffeine_filehandle.c`) |
 | -72 | DeleteFile | Bounded guest name |
 | -78 | Rename | Two bounded guest names |
-| -84 | Lock | Bounded guest name; native lock with the existing opaque BPTR convention |
-| -90 | UnLock | BPTR pass-through |
+| -84 | Lock | Bounded guest name; owned typed classic FileLock view |
+| -90 | UnLock | Retires one caller-owned typed FileLock reference; borrowed, installed-only and stale identities are refused |
 | -102 | Examine | Checks the whole guest FIB, examines into a native FIB and converts its public fields (`kaffeine_thunks_dos.c`) |
 | -108 | ExNext | As Examine, starting from the key and type in the guest FIB |
 | -114 | Info | Checks the 36-byte guest InfoData; native temporary, BE32 fields, id_VolumeNode is zero until a DosList bridge exists |
-| -120 | CreateDir | Bounded guest name; returns the native lock using the existing opaque BPTR convention |
-| -126 | CurrentDir | BPTR pass-through |
+| -120 | CreateDir | Bounded guest name; adopts the acquired native reference as a typed classic FileLock |
+| -126 | CurrentDir | Checked installed lock swap; returns the displaced caller-owned reference and synchronizes pr_CurrentDir |
 | -132 | IoErr | Pass-through |
 | -138 | CreateProc | Root-only bounded guest Process on the cooperative scheduler: own stack/TCB/name/SegArray in a guest MemList, caller-owned seglist and virtual SIGB_DOS for its embedded MsgPort. Child native DOS calls and file/handler packets stop with rc 20; resource failure returns NULL/IoErr, and no native process runs guest code |
 | -144 | Exit | Root stops via running = FALSE and returns signed D1 through D0; a CreateProc child ends only that child at a slice boundary. Never calls native Exit |
 | -150 | LoadSeg | Bounded guest name; native seglist |
 | -156 | UnLoadSeg | BPTR pass-through, except the guest seglist of a 68k library from disk, which stays until its expunge |
-| -174 | DeviceProc | Bounded or NULL name; the guest port of the native handler, one for each native port; IoErr() as native DOS leaves it, the lock of an assign with the opaque BPTR convention (`kaffeine_handlers.c`, see "DOS handler ports") |
+| -174 | DeviceProc | Bounded or NULL name; the guest port of the native handler, one for each native port; IoErr() contains a typed borrowed assign lock backed by a private duplicate (`kaffeine_handlers.c`, see "DOS handler ports") |
 | -180 | SetComment | Two bounded, NUL-terminated guest strings; native result and `IoErr()` |
 | -186 | SetProtection | Bounded guest name and unchanged scalar protection mask |
 | -192 | DateStamp | Native `DateStamp`, three big-endian longwords, returns the guest pointer |
@@ -921,12 +921,12 @@ classic-system observations recorded by `exec_library_paths`.
 | -582 | SetPrompt | Changes the prompt BSTR in the shared guest CLI only |
 | -588 | GetPrompt | Reads the guest CLI prompt BSTR into a checked buffer |
 | -606 | SystemTagList | Command string validation and tag-aware `TagList` conversion (`kaffeine_thunks_dos.c`) |
-| -612 | AssignLock | Bounded name and opaque lock; native ownership transfer on success, zero removes |
+| -612 | AssignLock | Bounded name and caller-owned lock; native ownership transfer on success, zero removes |
 | -618 | AssignLate | Two bounded strings; padded temporary path for the native strlen(path)+2 read, native DOS copies it |
 | -624 | AssignPath | As AssignLate, preserving native non-binding assign semantics |
-| -630 | AssignAdd | Bounded name and nonzero opaque lock; native ownership transfer on success |
-| -636 | RemAssignList | Bounded name and opaque comparison lock; native DOS releases the matching assign lock |
-| -642 | GetDeviceProc | Bounded or NULL name; a guest DevProc for each native one: `dvp_Port` the guest handler port, `dvp_Lock` with the opaque BPTR convention, `dvp_Flags`, `dvp_DevNode` 0; a DevProc of an earlier call goes to native DOS as its native one and follows it; any other stops with rc 20 |
+| -630 | AssignAdd | Bounded name and nonzero caller-owned lock; native ownership transfer on success |
+| -636 | RemAssignList | Bounded name and caller-owned comparison lock; native DOS releases its matching assign reference |
+| -642 | GetDeviceProc | Bounded or NULL name; a guest DevProc for each native one: `dvp_Port` the guest handler port, `dvp_Lock` as a scoped typed FileLock backed by a private duplicate, `dvp_Flags`, `dvp_DevNode` 0; a DevProc of an earlier call goes to native DOS as its native one and follows it; any other stops with rc 20 |
 | -648 | FreeDeviceProc | Only DevProcs of GetDeviceProc(); anything else does nothing |
 | -708 | IsFileSystem | Bounded name; native result and IoErr |
 | -732 | AddBuffers | Bounded name and signed scalar buffer count; native result and IoErr |
@@ -978,8 +978,7 @@ guest pointers from `kaffeine_thunks.c`. They live in
 unterminated strings, negative lengths and buffers that leave guest memory
 fail before native DOS, with `ERROR_BAD_NUMBER`. `VFPrintf()` and
 `VPrintf()` render their text with the checked RawDoFmt formatter instead
-of the generic format-stream converter. Handles, locks and seglists keep
-the existing opaque BPTR convention. The
+of the generic format-stream converter. FileHandles and FileLocks use separate typed associations; seglists retain their existing convention. The
 [host policy](../../developer/debug/test/kaffeine_host/README.md#dos-base-calls)
 lists every refusal.
 
@@ -2180,8 +2179,7 @@ m68k: DeleteIORequest(ioReq), DeleteMsgPort(port)
 2. `GetMsg()` of the 68k port takes the program's own messages first. With
    an empty list it takes the next carrier and gives a 68k copy of 86
    bytes: every field, its WBArgs and their names in the same guest block,
-   and the duplicated locks as the native BPTRs that the bridge passes for
-   every lock. `WaitPort()` with an empty list waits natively, then puts
+   and the duplicated locks as typed borrowed FileLock views valid until the copy is replied. `WaitPort()` with an empty list waits natively, then puts
    the copy at the tail of the list, where `GetMsg()` takes it. Up to 32
    copies can be out at once; a carrier that finds no entry or no guest
    memory goes, and the program finds its port empty, so that `WaitPort()`
@@ -3292,8 +3290,8 @@ Two generators exist:
 ### Host-Side Tests (no AROS required)
 
 `developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
-plus `test_thunk_registrations.py` (which verifies 339 explicit native-vector
-cases and all 584 manual thunk registrations across the 20 production tables)
+plus `test_thunk_registrations.py` (which verifies 340 explicit native-vector
+cases and all 604 manual thunk registrations across the 20 production tables)
 and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
 [developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
 for coverage details; the host Makefile is the authoritative executable list.
@@ -3471,10 +3469,9 @@ call. There are 32 of them; one more native handler gets no port, 0 with
   as it stands for the native console task, so that it is the `fh_Type`
   given to `SetConsoleTask()`, as on AmigaOS. Any other port stops the
   program with rc 20.
-- `DeviceProc()` leaves IoErr() as native DOS sets it: for an assign the
-  lock of its drawer, with the opaque BPTR convention of the other thunks.
+- `DeviceProc()` publishes a typed borrowed assign lock in IoErr(), backed by a private duplicate until the next DeviceProc call or context cleanup.
 - `GetDeviceProc()` gives a guest DevProc for each native one, 16 at most:
-  `dvp_Port` the guest port, `dvp_Lock` with the opaque BPTR convention,
+  `dvp_Port` the guest port, `dvp_Lock` as a scoped typed FileLock backed by a private duplicate,
   `dvp_Flags`, and `dvp_DevNode` 0, since no DosList node reaches the
   program. Passed back, it goes to native DOS as its native DevProc, which
   moves on to the next drawer of a multi-assign or is freed when there is
@@ -3485,8 +3482,7 @@ Packets put to such a port go to the native handler with `DoPkt()`, from the
 program's process, and are answered at once like those of the FileHandles.
 Every argument of the action is converted: a BSTR name becomes a native
 string of at most 255 characters (a C string where AROS has
-`AROS_FAST_BSTR`), with a BSTR of 0 as the empty name; locks keep the opaque
-BPTR convention; the FileInfoBlock of `ACTION_EXAMINE_OBJECT` and
+`AROS_FAST_BSTR`), with a BSTR of 0 as the empty name; lock arguments resolve through the private FileLock association and must belong to the destination handler; the FileInfoBlock of `ACTION_EXAMINE_OBJECT` and
 `ACTION_EXAMINE_NEXT` and the InfoData of `ACTION_INFO` and
 `ACTION_DISK_INFO` are native temporaries copied back on success, the
 FileInfoBlock of `ACTION_EXAMINE_NEXT` filled first from the program's, whose
@@ -3500,8 +3496,8 @@ names stay BSTRs as the handlers write them; the DateStamp of
 `ACTION_IS_FILESYSTEM`, `ACTION_SCREEN_MODE` and `ACTION_WAIT_CHAR`. Every
 other action gets 0 and `ERROR_ACTION_NOT_KNOWN` without reaching the
 handler, `ACTION_FINDINPUT` and the other actions that make a FileHandle
-among them. A name, buffer or DateStamp outside guest memory, a lock or
-`fib_DiskKey` from the handler that needs more than 32 bits, and a port that
+among them. A name, buffer or DateStamp outside guest memory, an invalid, retired or edited lock view, a native
+`fib_DiskKey` that needs more than 32 bits, and a port that
 the program has changed stop the program with rc 20; a lock that cannot be
 given to the program is given back to the handler first.
 
@@ -3691,3 +3687,51 @@ reused guest storage or waking a replacement task. Idle records are retired
 before signal/stack reuse. The root cannot free another task's pending copy.
 Closed original zero-length timers retain their typed queued reply until it
 is removed; de-queued closed records and freed storage retire that identity.
+
+
+### Typed classic FileLocks
+
+`kaffeine_locks.c` publishes checked 20-byte big-endian FileLock views.
+`fl_Link` is zero, `fl_Key` is an opaque object cookie established with
+native `SameLock()`, `fl_Access` is signed, `fl_Task` is the typed handler
+port, and `fl_Volume` points to a 44-byte classic volume view with a bounded
+BSTR name. Native pointers and filesystem keys never enter these records.
+Directory managers can compare the readable fields without interpreting a
+native BPTR as an address inside the emulated arena.
+
+Private metadata distinguishes caller-owned references, installed process
+references and scoped borrowed views. `UnLock()` and consuming operations
+reject borrow-only references. `AssignLock`, `AssignAdd`, `AssignAddToList`
+and `OpenFromLock` reserve one caller reference, then commit consumption on
+success or restore it on failure. `CurrentDir` and `SetProgramDir` publish
+the displaced identity before changing the native process, synchronize the
+classic Process fields, and duplicate borrowed input rather than consume
+another owner's reference. Successful `ChangeMode(CHANGE_LOCK)` refreshes
+only the trusted access field and its expected snapshot.
+
+DevProc and legacy DeviceProc views retain a private native duplicate.
+Native DosList membership is checked under its read lock before duplicating
+an assign lock or advancing a multi-assign; expired nodes and exhausted
+non-multi iterators close with `ERROR_NO_MORE_ENTRIES`. Match AChain and
+Workbench WBArg views expire with their owning match/message. Packet lock
+arguments must resolve to the destination filesystem handler before any
+native dispatch. Edited snapshots, stale identities and wrong object types
+are rejected; lock/volume storage cannot become ordinary messages or buffers.
+
+The bounds are 64 live lock identities, 32 live volumes, 128 scoped borrow
+associations and 4096 lifetime publications of each view kind. Retired guest
+addresses stay quarantined. Publication failure balances a newly acquired
+native reference; context cleanup releases only caller-owned references.
+
+Generic DosList operations, ErrorReport's polymorphic arguments, ReadLink,
+hard MakeLink, native FontContents results and retained child-process
+current/home directory tags are explicitly refused pending typed adapters.
+ReadLink reports -1 and `ERROR_NOT_IMPLEMENTED`; the DOS object refusals
+report their documented null/false result. Soft MakeLink accepts checked
+strings. FileHandle record locks remain a separate interface.
+
+`test_locks` runs the production module and heap against native reference
+oracles, covering modified/stale views, wrong handlers, access refresh,
+scopes, transfers, installation, cleanup, resource limits and allocation
+rollback. The original `dos_locks` target probe also reads FileLock fields
+and exercises DOS operations; run it on native AROS and both CPU backends.

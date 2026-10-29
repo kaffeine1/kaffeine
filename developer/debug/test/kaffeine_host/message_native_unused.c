@@ -37,3 +37,9 @@ __attribute__((weak)) unsigned int Wait(unsigned int set)
 __attribute__((weak)) void BltTemplate(unsigned char *source, short xs, short mod,
                                       struct RastPort *rp, short xd, short yd, short w, short h)
 { (void)source; (void)xs; (void)mod; (void)rp; (void)xd; (void)yd; (void)w; (void)h; abort(); }
+
+#include "lock_boundary_unit.h"
+
+__attribute__((weak)) BPTR DupLock(BPTR lock) { return lock; }
+__attribute__((weak)) BOOL Kaffeine_LockRelease(struct KaffeineContext *c, ULONG token)
+{ (void)c; (void)token; return TRUE; }

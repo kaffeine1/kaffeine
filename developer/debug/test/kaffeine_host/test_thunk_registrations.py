@@ -9,7 +9,7 @@ mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, keyboard, input,
 diskfont, gadtools, icon, workbench, cybergraphics and layers). Expected
 vector numbers come independently from the native AROS entry points and from
 the NDK 3.2 fd files (or AROS fd / .conf files for
-AROS-only AVL functions). Each manual handler and the helpers it delegates to
+AROS-only AVL functions and explicitly listed extensions). Each manual handler and the helpers it delegates to
 are checked so that every register read matches the fd file and every ignored
 argument is explicitly accounted for.
 """
@@ -68,7 +68,14 @@ WORKBENCH_NDK32 = {
 }
 
 # Public NDK 3.2 diskfont_lib.fd: ##bias 30, OpenDiskFont(textAttr)(a0).
-DISKFONT_NDK32 = {30: ("OpenDiskFont", ("A0",))}
+DISKFONT_NDK32 = {30: ("OpenDiskFont", ("A0",)), 42: ("NewFontContents", ("A0", "A1"))}
+
+# These extensions have no public NDK slot; their register/slot oracle is
+# the checked-in native .conf, even when an external AROS fd is older.
+AROS_ONLY_FUNCTIONS = {
+    ("dos", 1356): "AssignAddToList",
+    ("intuition", 936): "GetDrawInfoAttr",
+}
 
 # Tables of devices, whose bases are named .device.
 DEVICES = ("timer", "console", "keyboard", "input")
@@ -186,6 +193,7 @@ CASES = (
     ("dos", "assignlate.c", "AssignLate", "kaffeine_dos_AssignLate"),
     ("dos", "assignpath.c", "AssignPath", "kaffeine_dos_AssignPath"),
     ("dos", "assignadd.c", "AssignAdd", "kaffeine_dos_AssignAdd"),
+    ("dos", "assignaddtolist.c", "AssignAddToList", "kaffeine_dos_AssignAddToList"),
     ("dos", "remassignlist.c", "RemAssignList", "kaffeine_dos_RemAssignList"),
     ("dos", "isfilesystem.c", "IsFileSystem", "kaffeine_dos_IsFileSystem"),
     ("dos", "addbuffers.c", "AddBuffers", "kaffeine_dos_AddBuffers"),
@@ -479,6 +487,7 @@ CASES = (
 # Explicit table of manual handlers that intentionally ignore one or more
 # fd arguments, with the exact ignored register set and the reason.
 ALLOWED_IGNORED_REGS = {
+    "thunk_diskfont_NewFontContents": (frozenset({"A0", "A1"}), "native FontContents are unsupported"),
     "Kaffeine_VideoControl": (
         frozenset({"A0", "A1"}),
         "returns the documented error without forwarding unconverted pointer-bearing video tags",
@@ -554,8 +563,8 @@ ALLOWED_IGNORED_REGS = {
         "CreateNewProc() refuses with ERROR_NOT_IMPLEMENTED",
     ),
     "kaffeine_dos_ExAllEnd": (
-        frozenset({"D1", "D2", "D3", "D4"}),
-        "ExAllEnd() only needs the control: the emulated scan keeps its state there",
+        frozenset({"D2", "D3", "D4"}),
+        "ExAllEnd validates the lock and resets the bridge-owned control state",
     ),
     "kaffeine_dos_AbortPkt": (
         frozenset({"D1", "D2"}),
@@ -750,6 +759,11 @@ def load_library_specs(root, library, ndk_fd_dir, aros_fd_dir):
     ndk_entries = parse_fd_file(ndk_fd) if ndk_fd and ndk_fd.is_file() else {}
     aros_entries = (parse_fd_file(aros_fd)
                     if aros_fd and aros_fd.is_file() else conf_entries)
+    for (source_library, vector), function in AROS_ONLY_FUNCTIONS.items():
+        if source_library == library:
+            entry = conf_entries.get(vector)
+            if entry and entry[0] == function:
+                aros_entries[vector] = entry
     # The fd file of a device lists only the functions after BeginIO and
     # AbortIO, which the .conf file names.
     if ndk_entries:
@@ -1060,6 +1074,13 @@ def main():
             root, library, args.ndk_fd_dir, args.aros_fd_dir)
         for vector, handler in registrations[library]:
             total_manual += 1
+            if handler in {"kaffeine_dos_UnsupportedLockObject", "kaffeine_dos_ReadLinkUnsupported"}:
+                allowed = ({438} if handler.endswith("ReadLinkUnsupported") else
+                           {480, 654, 660, 666, 672, 678, 684, 690, 696, 702})
+                if library != "dos" or vector not in allowed:
+                    failures += 1
+                    print("FAIL unexpected native DOS object refusal", library, vector)
+                continue
             if handler == "thunk_gfx_GelsUnsupported":
                 if library != "graphics" or vector not in GRAPHICS_GELS_REFUSED:
                     failures += 1
@@ -1122,6 +1143,8 @@ def main():
                 continue
             want_func = expected_function_name(handler)
             entry = ndk_spec.get(vector)
+            if AROS_ONLY_FUNCTIONS.get((library, vector)) == want_func:
+                entry = aros_spec.get(vector)
             # AROS-only AVL functions occupy private slots in the 68k NDK fd.
             if (entry is None or entry[0].startswith("execPrivate")) and (
                 want_func.startswith("AVL_")

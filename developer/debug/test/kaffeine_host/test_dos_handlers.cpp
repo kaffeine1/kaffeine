@@ -30,7 +30,7 @@ static void ports()
     check(f.r(f.task+M68K_PR_CONSOLETASK)==con && f.r(f.task+M68K_PR_FILESYSTEMTASK)==fs,"pr_ConsoleTask and pr_FileSystemTask hold the ports");
     ULONG ram=f.dos(174,name(f,NAME,"RAM:"));
     check(ram && ram!=con && ram!=fs && f.dos(174,NAME)==ram && ioerr==0,"DeviceProc() gives one port for each native handler");
-    check(f.dos(174,name(f,NAME,"WORK:"))==ram && ioerr==0x1234560,"DeviceProc() of an assign leaves the native lock in IoErr()");
+    check(f.dos(174,name(f,NAME,"WORK:"))==ram && ioerr==0x1234560,"DeviceProc() of an assign publishes its retained lock in IoErr()");
     unsigned calls=deviceprocs;
     check(!f.dos(174,name(f,NAME,"NONE:")) && ioerr==ERROR_DEVICE_NOT_MOUNTED && deviceprocs==calls+1,
           "DeviceProc() of no handler is 0 with the IoErr() of native DOS");
@@ -99,7 +99,9 @@ static void packets()
     check(dopkt(f,ram,ACTION_DELETE_OBJECT,0x5550,bstr(f,BSTR1,"old"))==-1 && packet_name1=="old","ACTION_DELETE_OBJECT");
     check(dopkt(f,ram,ACTION_RENAME_OBJECT,0x5550,bstr(f,BSTR1,"a"),0x6660,bstr(f,BSTR2,"b"))==-1 && packet_args[0]==0x5550 &&
           packet_args[2]==0x6660 && packet_name1=="a" && packet_name2=="b","ACTION_RENAME_OBJECT: two locks and two names");
-    check(dopkt(f,ram,ACTION_FREE_LOCK,0x5550)==-1 && packet_args[0]==0x5550,"ACTION_FREE_LOCK");
+    n=native_packets;unsigned released=lock_releases;
+    check(dopkt(f,ram,ACTION_FREE_LOCK,0x5550)==-1 && lock_releases==released+1 &&
+          released_token==0x5550 && native_packets==n,"ACTION_FREE_LOCK releases the typed lock once without a second native packet");
     check(dopkt(f,ram,ACTION_SAME_LOCK,0x5550,0x6660)==-1 && packet_args[0]==0x5550 && packet_args[1]==0x6660,"ACTION_SAME_LOCK");
     check(dopkt(f,ram,ACTION_SET_PROTECT,0x1111,0x5550,bstr(f,BSTR1,"file"),0x30)==-1 && !packet_args[0] &&
           packet_args[1]==0x5550 && packet_name1=="file" && packet_args[3]==0x30,"ACTION_SET_PROTECT: dp_Arg1 is not used");
@@ -169,11 +171,11 @@ static void put_packet()
 }
 static void packet_failures()
 {
-    for(unsigned which=0;which<10;++which)
+    for(unsigned which=0;which<9;++which)
     {
         Fixture f;
         ULONG ram=f.dos(174,name(f,NAME,"RAM:")),res=0,top=f.ctx.mem_size-4;
-        unsigned n=native_packets+(which==9),u=unlocks;
+        unsigned n=native_packets;
         packet_result=-1;
         switch(which)
         {
@@ -186,11 +188,6 @@ static void packet_failures()
             case 6:f.ctx.mem[ram+15]=3;res=f.dos(240,ram,ACTION_IS_FILESYSTEM);break;
             case 7:packet_msg(f,ACTION_IS_FILESYSTEM);f.w(f.exec_base+276,f.task+0x400);res=f.exec(366,ram,f.msg);break;
             case 8:res=f.exec(372,ram);break;
-            case 9:
-                packet_result=static_cast<SIPTR>(0x100000000ULL);
-                res=f.dos(240,ram,ACTION_LOCATE_OBJECT,0,bstr(f,BSTR1,"x"),0);
-                check(unlocks==u+1 && unlocked==reinterpret_cast<BPTR>(0x100000000ULL),"a native lock past 32 bits is given back");
-                break;
         }
         check(res==20 && !f.ctx.running && f.ctx.exit_code==20 && native_packets==n,"an invalid handler packet stops the program before the handler");
     }
@@ -199,28 +196,45 @@ static void packet_failures()
     packet_result=-1;packet_fib={};packet_fib.fib_DiskKey=static_cast<IPTR>(0x100000000ULL);
     check(f.dos(240,ram,ACTION_EXAMINE_OBJECT,0,FIB>>2)==20 && !f.ctx.running,"a native DiskKey past 32 bits stops the program");
 }
+static void native_width_locks()
+{
+    Fixture f;
+    ULONG ram=f.dos(174,name(f,NAME,"RAM:"));
+    adopted_token_override=0xA640;
+    packet_result=static_cast<SIPTR>(0x100000000ULL);
+    check(dopkt(f,ram,ACTION_LOCATE_OBJECT,0,bstr(f,BSTR1,"x"),0)==0xA640 &&
+          adopted_lock==reinterpret_cast<BPTR>(0x100000000ULL) && !unlocks && f.ctx.running,
+          "a native-width packet lock is adopted and only its chosen guest token is returned");
+    borrowed_token_override=0xB640;
+    ULONG dp=f.dos(642,name(f,NAME,"BIG:"),0);
+    check(dp && f.r(dp+4)==0xB640 && borrowed_lock==reinterpret_cast<BPTR>(0x100000000ULL) &&
+          duplicate_depth && f.ctx.running,"a native-width DevProc lock is duplicated under the guard and published through its guest token");
+    f.dos(648,dp);
+    check(unlocked==reinterpret_cast<BPTR>(0x100000000ULL),"FreeDeviceProc releases its private full-width duplicate");
+}
 static void devprocs()
 {
     Fixture f;
     ULONG ram=f.dos(174,name(f,NAME,"RAM:"));
+    unsigned frees=devproc_frees;
     ULONG dp=f.dos(642,name(f,NAME,"RAM:"),0);
     check(dp && f.r(dp)==ram && !f.r(dp+4) && !f.r(dp+8) && !f.r(dp+12),
           "GetDeviceProc(RAM:): the handler port, no lock, no flags and no DosList node");
     f.dos(648,dp);
-    check(devproc_frees==1,"FreeDeviceProc() frees the native DevProc");
+    check(devproc_frees==frees+1,"FreeDeviceProc() frees the native DevProc");
     f.dos(648,dp);f.dos(648,f.port);f.dos(648,0);
-    check(devproc_frees==1 && f.ctx.running,"FreeDeviceProc() of anything else does nothing");
+    check(devproc_frees==frees+1 && f.ctx.running,"FreeDeviceProc() of anything else does nothing");
     dp=f.dos(642,name(f,NAME,"MULTI:"),0);
-    check(dp && f.r(dp)==ram && f.r(dp+4)==0x1000 && f.r(dp+8)==DVPF_ASSIGN,"the first drawer of a multi-assign");
-    check(f.dos(642,NAME,dp)==dp && f.r(dp+4)==0x2000,"GetDeviceProc() with the DevProc moves on to the next drawer");
+    check(dp && f.r(dp)==ram && f.r(dp+4)==0x1000 && f.r(dp+8)==DVPF_ASSIGN && duplicate_depth,
+          "the first drawer of a multi-assign is duplicated under the live-node guard");
+    check(f.dos(642,NAME,dp)==dp && f.r(dp+4)==0x2000 && deviceproc_advances==1 && duplicate_depth,
+          "GetDeviceProc() advances and publishes the next drawer while holding the native list");
     ioerr=137;
-    check(!f.dos(642,NAME,dp) && ioerr==ERROR_NO_MORE_ENTRIES,"after the last drawer native DOS frees the DevProc, with its IoErr()");
+    check(!f.dos(642,NAME,dp) && ioerr==ERROR_NO_MORE_ENTRIES && deviceproc_advances==2,
+          "after the last drawer native DOS frees the DevProc, with its IoErr()");
     f.dos(648,dp);
-    check(devproc_frees==1 && f.ctx.running,"and the guest DevProc went with it");
+    check(devproc_frees==frees+1 && f.ctx.running,"and the guest DevProc went with it");
     check(f.dos(642,NAME,f.port)==20 && !f.ctx.running,"GetDeviceProc() with a DevProc that is not one stops the program");
-    unsigned frees=devproc_frees;
-    check(!f.dos(642,name(f,NAME,"BIG:"),0) && ioerr==ERROR_NO_FREE_STORE && devproc_frees==frees+1,
-          "a lock past 32 bits: the native DevProc is freed, 0 and ERROR_NO_FREE_STORE");
     check(!f.dos(642,name(f,NAME,"NONE:"),0) && ioerr==ERROR_DEVICE_NOT_MOUNTED,"GetDeviceProc() of no device");
     for(unsigned i=0;i<KAFFEINE_MAX_DEVPROCS;++i)check(f.dos(642,name(f,NAME,"RAM:"),0)!=0,"one more DevProc");
     check(!f.dos(642,NAME,0) && ioerr==ERROR_NO_FREE_STORE,"one DevProc too many fails");
@@ -228,9 +242,69 @@ static void devprocs()
     Kaffeine_HandlerCleanup(&f.ctx);
     check(devproc_frees==frees+KAFFEINE_MAX_DEVPROCS,"cleanup frees the native DevProcs left");
 }
+static void devproc_lifetimes()
+{
+    for(unsigned which=0;which<5;++which)
+    {
+        Fixture f;
+        ULONG dp=f.dos(642,name(f,NAME,"MULTI:"),0);
+        check(dp && duplicate_locks==1 && duplicate_depth,"guarded multi-assign starts with a retained view");
+        if(which==2)check(f.dos(642,NAME,dp)==dp && f.r(dp+4)==0x2000,"reach the list entry before removing it");
+        unsigned calls=deviceprocs,advances=deviceproc_advances,frees=devproc_frees,prior_unlocks=unlocks;
+        switch(which)
+        {
+            case 0:live_dos_nodes.erase(std::find(live_dos_nodes.begin(),live_dos_nodes.end(),&named_nodes[2]));break;
+            case 1:named_nodes[2].dol_Lock=reinterpret_cast<BPTR>(0x3000);named_nodes[2].dol_misc.dol_assign.dol_List=nullptr;break;
+            case 2:named_nodes[2].dol_misc.dol_assign.dol_List=nullptr;break;
+            case 3:
+                for(auto &entry:f.ctx.devprocs)if(entry.guest==dp)entry.native->dvp_DevNode=reinterpret_cast<DosList *>(0x7777);
+                break;
+            case 4:named_nodes[2].dol_Type=DLT_DEVICE;break;
+        }
+        check(!f.dos(642,NAME,dp) && ioerr==ERROR_NO_MORE_ENTRIES && f.ctx.running &&
+              deviceprocs==calls && deviceproc_advances==advances,
+              "an expired node or removed assign lock never reaches native DevProc advancement");
+        check(devproc_frees==frees+1 && unlocks==prior_unlocks+1,
+              "expired iteration releases both native DevProc and its private view");
+        f.dos(648,dp);
+        check(devproc_frees==frees+1 && !dos_list_depth,"expired guest DevProc no longer owns native state");
+    }
+    {
+        Fixture f;
+        ULONG dp=f.dos(642,name(f,NAME,"WORK:"),0);
+        unsigned calls=deviceprocs,frees=devproc_frees;
+        check(!f.dos(642,NAME,dp) && ioerr==ERROR_NO_MORE_ENTRIES && deviceprocs==calls &&
+              devproc_frees==frees+1,"a single assign ends without calling native advancement");
+    }
+    {
+        Fixture f;
+        unsigned freed=devproc_frees;
+        check(!f.dos(174,name(f,NAME,"UNBOUND:")) && ioerr==ERROR_DEVICE_NOT_MOUNTED &&
+              devproc_frees==freed+1 && !duplicate_locks && unlocks==1,
+              "legacy DeviceProc rejects a temporary nonbinding assign and releases its owned lock");
+    }
+    for(unsigned which=0;which<4;++which)
+    {
+        Fixture f;
+        bool legacy=which<2;
+        returned_dead_node=(which%2)==0;returned_removed_lock=!returned_dead_node;
+        check(!f.dos(legacy?174:642,name(f,NAME,"WORK:"),0) && f.ctx.running &&
+              ioerr==(legacy?ERROR_DEVICE_NOT_MOUNTED:ERROR_NO_MORE_ENTRIES) &&
+              devproc_frees==1 && !duplicate_locks && !unlocks && !dos_list_depth,
+              "a node or assign reference expired before initial publication is rejected before duplication");
+    }
+    {
+        Fixture f;
+        duplicate_failure=true;
+        check(!f.dos(642,name(f,NAME,"WORK:"),0) && ioerr==ERROR_OBJECT_IN_USE &&
+              devproc_frees==1 && !unlocks && !dos_list_depth,
+              "native duplicate failure preserves its error, frees DevProc and releases its guard");
+    }
+}
+
 int main()
 {
-    ports();set_tasks();process_fields();packets();put_packet();packet_failures();devprocs();
+    ports();set_tasks();process_fields();packets();put_packet();packet_failures();native_width_locks();devprocs();devproc_lifetimes();
     check(native_blocks.empty(),"all native DevProcs, FileInfoBlocks and packet temporaries are released");
     std::printf("Guest DOS handler ports: %u/%u checks passed\n",checks-failures,checks);
     return failures?1:0;

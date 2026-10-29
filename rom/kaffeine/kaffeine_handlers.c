@@ -15,6 +15,7 @@
 #include <string.h>
 #include "kaffeine_handlers.h"
 #include "kaffeine_filehandle.h"
+#include "kaffeine_locks.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_thunks.h"
@@ -95,7 +96,14 @@ void Kaffeine_HandlerCleanup(struct KaffeineContext *ctx)
 
     for (i = 0; i < KAFFEINE_MAX_DEVPROCS; ++i)
         if (ctx->devprocs[i].native)
+        {
+            Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_DEVPROC, ctx->devprocs[i].guest);
+            if (ctx->devprocs[i].view_lock) UnLock(ctx->devprocs[i].view_lock);
             FreeDeviceProc(ctx->devprocs[i].native);
+        }
+    Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_LEGACY, 1);
+    if (ctx->legacy_device_lock) UnLock(ctx->legacy_device_lock);
+    ctx->legacy_device_lock = 0;
     memset(ctx->devprocs, 0, sizeof(ctx->devprocs));
     memset(ctx->handlers, 0, sizeof(ctx->handlers));
     ctx->handler_packet = NULL;
@@ -193,21 +201,55 @@ IPTR kaffeine_dos_SetFileSysTask(struct KaffeineContext *ctx, void *cpu)
     return set_task(ctx, M68K_PR_FILESYSTEMTASK, THUNK_D(1), FALSE);
 }
 
-/* -174: DeviceProc(D1=name) -> D0=port. For an assign, native DOS leaves
-   the lock of its drawer in IoErr(), which the program gets with the
-   opaque BPTR convention of the other thunks. */
+static BOOL devproc_guard(struct DevProc *, BOOL *);
+
+/* -174: DeviceProc(D1=name): legacy assign locks need a retained typed
+   view too. Use the native DevProc form to validate its live node before
+   duplicating a borrowed assign reference under the DosList read lock. */
 IPTR kaffeine_dos_DeviceProc(struct KaffeineContext *ctx, void *cpu)
 {
     const char *name;
-    struct MsgPort *native;
-
+    struct DevProc *dp;
+    ULONG port = 0, token = 0;
+    BOOL held = FALSE;
+    SIPTR error;
     if (!guest_name(ctx, THUNK_D(1), &name))
     {
         SetIoErr(ERROR_BAD_NUMBER);
         return 0;
     }
-    native = DeviceProc((CONST_STRPTR)name);
-    return native ? Kaffeine_HandlerPort(ctx, native) : 0;
+    Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_LEGACY, 1);
+    if (ctx->legacy_device_lock) UnLock(ctx->legacy_device_lock);
+    ctx->legacy_device_lock = 0;
+    dp = GetDeviceProc((CONST_STRPTR)name, NULL);
+    if (!dp) return 0;
+    if ((dp->dvp_Flags & DVPF_UNLOCK) || !devproc_guard(dp, &held))
+    {
+        if (held) UnLockDosList(LDF_ALL | LDF_READ);
+        FreeDeviceProc(dp);
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
+        return 0;
+    }
+    port = Kaffeine_HandlerPort(ctx, dp->dvp_Port);
+    if (port && dp->dvp_Lock)
+    {
+        ctx->legacy_device_lock = DupLock(dp->dvp_Lock);
+        if (ctx->legacy_device_lock)
+            token = Kaffeine_LockBorrow(ctx, ctx->legacy_device_lock, KAFFEINE_LOCK_LEGACY, 1);
+        if (!token)
+        {
+            error = IoErr();
+            if (ctx->legacy_device_lock) UnLock(ctx->legacy_device_lock);
+            ctx->legacy_device_lock = 0;
+            port = 0;
+            SetIoErr(error);
+        }
+    }
+    error = port ? (SIPTR)token : IoErr();
+    if (held) UnLockDosList(LDF_ALL | LDF_READ);
+    FreeDeviceProc(dp);
+    SetIoErr(error);
+    return port;
 }
 
 static int devproc_entry(struct KaffeineContext *ctx, ULONG guest)
@@ -221,18 +263,61 @@ static int devproc_entry(struct KaffeineContext *ctx, ULONG guest)
 }
 
 /* The guest DevProc of a native one: the guest port of its handler, the
-   lock with the opaque BPTR convention, the flags, and no DosList node */
-static BOOL devproc_fill(struct KaffeineContext *ctx, ULONG guest, struct DevProc *dp)
+   borrowed FileLock view, the flags, and no DosList node */
+static BOOL devproc_fill(struct KaffeineContext *ctx, ULONG guest, struct DevProc *dp, BPTR *view)
 {
-    ULONG port = Kaffeine_HandlerPort(ctx, dp->dvp_Port);
-
-    if ((dp->dvp_Port && !port) || !fits((IPTR)dp->dvp_Lock))
-        return FALSE;
+    SIPTR error = IoErr();
+    ULONG port = Kaffeine_HandlerPort(ctx, dp->dvp_Port), lock = 0;
+    *view = 0;
+    if (dp->dvp_Port && !port) return FALSE;
+    /* Native DevProc does not retain normal assign/current-directory locks.
+       The guest view needs its own reference until advance or release. */
+    if (dp->dvp_Lock)
+    {
+        *view = DupLock(dp->dvp_Lock);
+        if (!*view) return FALSE;
+        lock = Kaffeine_LockBorrow(ctx, *view, KAFFEINE_LOCK_DEVPROC, guest);
+        if (!lock)
+        {
+            SIPTR failed = IoErr();
+            UnLock(*view); *view = 0;
+            SetIoErr(failed);
+            return FALSE;
+        }
+    }
     m68k_write32(ctx, guest, port);
-    m68k_write32(ctx, guest + 4, (ULONG)(IPTR)dp->dvp_Lock);
+    m68k_write32(ctx, guest + 4, lock);
     m68k_write32(ctx, guest + 8, dp->dvp_Flags);
     m68k_write32(ctx, guest + 12, 0);
+    SetIoErr(error);
     return TRUE;
+}
+
+/* DevProc does not retain its DosList node. Hold the native list while
+   validating a returned assign lock, and while advancing a multi-assign.
+   Compare potentially expired pointers only; never dereference them until
+   the live list has supplied the same node/reference under its read lock. */
+static BOOL devproc_guard(struct DevProc *dp, BOOL *held)
+{
+    struct DosList *node;
+    struct AssignList *assign;
+    unsigned count = 0;
+    *held = FALSE;
+    if (!dp->dvp_DevNode) return TRUE; /* current directory / PROGDIR */
+    node = LockDosList(LDF_ALL | LDF_READ);
+    *held = TRUE;
+    while ((node = NextDosEntry(node, LDF_ALL)) && ++count <= 65536)
+        if (node == dp->dvp_DevNode)
+        {
+            if (!dp->dvp_Lock || (dp->dvp_Flags & DVPF_UNLOCK)) return TRUE;
+            if (node->dol_Type != DLT_DIRECTORY) return FALSE;
+            if (node->dol_Lock == dp->dvp_Lock) return TRUE;
+            for (assign = node->dol_misc.dol_assign.dol_List;
+                 assign && ++count <= 65536; assign = assign->al_Next)
+                if (assign->al_Lock == dp->dvp_Lock) return TRUE;
+            return FALSE;
+        }
+    return FALSE;
 }
 
 /* -642: GetDeviceProc(D1=name, D2=dp) -> D0=dp. A DevProc of an earlier
@@ -244,6 +329,7 @@ IPTR kaffeine_dos_GetDeviceProc(struct KaffeineContext *ctx, void *cpu)
     ULONG guest = THUNK_D(2);
     struct DevProc *old = NULL, *dp;
     const char *name;
+    BOOL held = FALSE, valid;
     int i;
 
     if (!guest_name(ctx, THUNK_D(1), &name))
@@ -269,18 +355,49 @@ IPTR kaffeine_dos_GetDeviceProc(struct KaffeineContext *ctx, void *cpu)
             return 0;
         }
     }
-    dp = GetDeviceProc((CONST_STRPTR)name, old);
-    if (dp && devproc_fill(ctx, guest, dp))
+    if (old)
     {
-        ctx->devprocs[i].guest = guest;
-        ctx->devprocs[i].native = dp;
-        return guest;
+        Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_DEVPROC, guest);
+        if (ctx->devprocs[i].view_lock) UnLock(ctx->devprocs[i].view_lock);
+        ctx->devprocs[i].view_lock = 0;
     }
+    if (old)
+    {
+        valid = (old->dvp_Flags & DVPF_ASSIGN) && old->dvp_DevNode && devproc_guard(old, &held);
+        if (valid && old->dvp_DevNode->dol_Type != DLT_DIRECTORY) valid = FALSE;
+        if (!valid)
+        {
+            if (held) UnLockDosList(LDF_ALL | LDF_READ);
+            held = FALSE;
+            FreeDeviceProc(old);
+            old = NULL;
+            dp = NULL;
+            SetIoErr(ERROR_NO_MORE_ENTRIES);
+        }
+        else dp = GetDeviceProc((CONST_STRPTR)name, old);
+    }
+    else dp = GetDeviceProc((CONST_STRPTR)name, NULL);
     if (dp)
     {
+        SIPTR error;
+        valid = held || devproc_guard(dp, &held);
+        if (!valid) SetIoErr(ERROR_NO_MORE_ENTRIES);
+        else valid = devproc_fill(ctx, guest, dp, &ctx->devprocs[i].view_lock);
+        error = IoErr();
+        if (held) UnLockDosList(LDF_ALL | LDF_READ);
+        held = FALSE;
+        if (valid)
+        {
+            ctx->devprocs[i].guest = guest;
+            ctx->devprocs[i].native = dp;
+            SetIoErr(error);
+            return guest;
+        }
+        Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_DEVPROC, guest);
         FreeDeviceProc(dp);
-        SetIoErr(ERROR_NO_FREE_STORE);
+        SetIoErr(error);
     }
+    else if (held) UnLockDosList(LDF_ALL | LDF_READ);
     ctx->devprocs[i].guest = 0;
     ctx->devprocs[i].native = NULL;
     Kaffeine_MirrorRelease(ctx, guest);
@@ -295,6 +412,9 @@ IPTR kaffeine_dos_FreeDeviceProc(struct KaffeineContext *ctx, void *cpu)
 
     if (i >= 0)
     {
+        Kaffeine_LockScopeDrop(ctx, KAFFEINE_LOCK_DEVPROC, ctx->devprocs[i].guest);
+        if (ctx->devprocs[i].view_lock) UnLock(ctx->devprocs[i].view_lock);
+        ctx->devprocs[i].view_lock = 0;
         FreeDeviceProc(ctx->devprocs[i].native);
         Kaffeine_MirrorRelease(ctx, ctx->devprocs[i].guest);
         ctx->devprocs[i].guest = 0;
@@ -363,6 +483,17 @@ static void fib_from_guest(struct KaffeineContext *ctx, ULONG guest, struct File
    fills, and the DateStamp of ACTION_SET_DATE. An action that the bridge
    does not convert gets 0 and ERROR_ACTION_NOT_KNOWN, as a handler answers
    one it does not know, and never reaches the native handler. */
+/* A live token is still specific to its filesystem handler. Never feed a
+   foreign native filesystem key to a different packet implementation. */
+static BOOL packet_lock(struct KaffeineContext *ctx, ULONG token,
+                         struct MsgPort *handler, SIPTR *out)
+{
+    BPTR lock;
+    if (!Kaffeine_LockForHandler(ctx, token, handler, &lock)) return FALSE;
+    *out = (SIPTR)lock;
+    return TRUE;
+}
+
 IPTR Kaffeine_HandlerPacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
 {
     struct KaffeineQueue reply;
@@ -408,7 +539,7 @@ IPTR Kaffeine_HandlerPacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
         case ACTION_INFO:
             out = a[1] << 2;
             ok = !(a[1] >> 30) && Kaffeine_PacketRange(ctx, msg, &reply, out, INFO_SIZE);
-            arg[0] = (SIPTR)(IPTR)a[0];
+            if (!packet_lock(ctx, a[0], native, &arg[0])) return 20;
             arg[1] = (SIPTR)MKBADDR(&info);
             break;
         case ACTION_LOCATE_OBJECT:
@@ -418,23 +549,26 @@ IPTR Kaffeine_HandlerPacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
             lock_result = TRUE;
             /* fall through */
         case ACTION_DELETE_OBJECT:
-            arg[0] = (SIPTR)(IPTR)a[0];
+            if (!packet_lock(ctx, a[0], native, &arg[0])) return 20;
             ok = packet_name(ctx, a[1], &name, &arg[1]);
+            break;
+        case ACTION_FREE_LOCK:
+            if (!Kaffeine_LockRelease(ctx, a[0])) return 20;
+            call = FALSE;
+            res1 = DOSTRUE;
             break;
         case ACTION_COPY_DIR:
         case ACTION_PARENT:
             lock_result = TRUE;
-            /* fall through */
-        case ACTION_FREE_LOCK:
-            arg[0] = (SIPTR)(IPTR)a[0];
+            if (!packet_lock(ctx, a[0], native, &arg[0])) return 20;
             break;
         case ACTION_SAME_LOCK:
-            arg[0] = (SIPTR)(IPTR)a[0];
-            arg[1] = (SIPTR)(IPTR)a[1];
+            if (!packet_lock(ctx, a[0], native, &arg[0])) return 20;
+            if (!packet_lock(ctx, a[1], native, &arg[1])) return 20;
             break;
         case ACTION_RENAME_OBJECT:
-            arg[0] = (SIPTR)(IPTR)a[0];
-            arg[2] = (SIPTR)(IPTR)a[2];
+            if (!packet_lock(ctx, a[0], native, &arg[0])) return 20;
+            if (!packet_lock(ctx, a[2], native, &arg[2])) return 20;
             ok = packet_name(ctx, a[1], &name, &arg[1]) && packet_name(ctx, a[3], &name2, &arg[3]);
             break;
         case ACTION_EXAMINE_OBJECT:
@@ -443,6 +577,7 @@ IPTR Kaffeine_HandlerPacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
             ok = !(a[1] >> 30) && Kaffeine_PacketRange(ctx, msg, &reply, out, M68K_SIZEOF_FILEINFOBLK);
             if (!ok)
                 break;
+            if (!packet_lock(ctx, a[0], native, &arg[0])) return 20;
             fib = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
             if (!fib)
             {
@@ -452,21 +587,20 @@ IPTR Kaffeine_HandlerPacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
             }
             if (action == ACTION_EXAMINE_NEXT)
                 fib_from_guest(ctx, out, fib);
-            arg[0] = (SIPTR)(IPTR)a[0];
             arg[1] = (SIPTR)MKBADDR(fib);
             break;
         /* dp_Arg1 of the three is not used */
         case ACTION_SET_PROTECT:
-            arg[1] = (SIPTR)(IPTR)a[1];
+            if (!packet_lock(ctx, a[1], native, &arg[1])) return 20;
             arg[3] = (SIPTR)(LONG)a[3];
             ok = packet_name(ctx, a[2], &name, &arg[2]);
             break;
         case ACTION_SET_COMMENT:
-            arg[1] = (SIPTR)(IPTR)a[1];
+            if (!packet_lock(ctx, a[1], native, &arg[1])) return 20;
             ok = packet_name(ctx, a[2], &name, &arg[2]) && packet_name(ctx, a[3], &name2, &arg[3]);
             break;
         case ACTION_SET_DATE:
-            arg[1] = (SIPTR)(IPTR)a[1];
+            if (!packet_lock(ctx, a[1], native, &arg[1])) return 20;
             ok = packet_name(ctx, a[2], &name, &arg[2]) && Kaffeine_GuestBytes(ctx, a[3], DATESTAMP_SIZE);
             if (!ok)
                 break;
@@ -487,11 +621,11 @@ IPTR Kaffeine_HandlerPacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
         caller_error = IoErr();
         result = DoPkt(native, action, arg[0], arg[1], arg[2], arg[3], 0);
         res2 = (LONG)IoErr();
-        SetIoErr(caller_error);
-        if (lock_result && !fits((IPTR)result))
+        if (lock_result)
         {
-            UnLock((BPTR)result);
-            ok = FALSE;
+            BPTR acquired = (BPTR)result;
+            result = Kaffeine_LockAdopt(ctx, acquired);
+            if (acquired && !result) res2 = (LONG)IoErr();
         }
         else if (fib && result && !fits(fib->fib_DiskKey))
             ok = FALSE;
@@ -500,6 +634,7 @@ IPTR Kaffeine_HandlerPacket(struct KaffeineContext *ctx, ULONG port, ULONG msg)
         else if (result && (action == ACTION_INFO || action == ACTION_DISK_INFO))
             Kaffeine_InfoToGuest(ctx, out, &info);
         res1 = (LONG)result;
+        SetIoErr(caller_error);
     }
     if (fib)
         FreeDosObject(DOS_FIB, fib);

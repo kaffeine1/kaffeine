@@ -22,3 +22,5 @@ BOOL Kaffeine_FileAllPrepare(struct KaffeineContext *ctx) { (void)ctx; return TR
 BOOL Kaffeine_FileAllFinish(struct KaffeineContext *ctx) { (void)ctx; return TRUE; }
 ULONG Kaffeine_HandlerPort(struct KaffeineContext *ctx, struct MsgPort *native)
 { (void)ctx; return (ULONG)(IPTR)native; }
+
+#include "lock_boundary_unit.h"

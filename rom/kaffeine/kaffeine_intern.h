@@ -65,6 +65,7 @@ struct KaffeineWindowGadgets;
 struct KaffeineClassic;
 struct KaffeineScreenKeep;
 struct KaffeineLayers;
+struct KaffeineLocks;
 struct KaffeineLayerOps;
 
 /* Completed slices of the outermost Kaffeine_RunCPU() between two calls of
@@ -330,6 +331,8 @@ struct KaffeineContext
        what the window and screen bridges tell them; both NULL without the
        module. */
     struct KaffeineLayers *layers;
+    struct KaffeineLocks *locks;
+    BPTR legacy_device_lock; /* private duplicate backing DeviceProc IoErr */
     const struct KaffeineLayerOps *layer_ops;
     /* BltBitMap() calls of the program in progress (kaffeine_layers.c),
        also without the layer bridge: while any runs, no LayerInfo of the
@@ -441,7 +444,7 @@ struct KaffeineContext
     #define KAFFEINE_MAX_HANDLERS 32
     struct { ULONG guest; struct MsgPort *native; } handlers[KAFFEINE_MAX_HANDLERS];
     #define KAFFEINE_MAX_DEVPROCS 16
-    struct { ULONG guest; struct DevProc *native; } devprocs[KAFFEINE_MAX_DEVPROCS];
+    struct { ULONG guest; struct DevProc *native; BPTR view_lock; } devprocs[KAFFEINE_MAX_DEVPROCS];
     IPTR (*handler_packet)(struct KaffeineContext *, ULONG, ULONG);
     ULONG message_ports[KAFFEINE_MAX_MESSAGE_PORTS];
     struct KaffeineIcon icons[KAFFEINE_MAX_ICONS];

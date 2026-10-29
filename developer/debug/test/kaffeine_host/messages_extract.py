@@ -30,6 +30,7 @@ text = '''/* Generated from production. Native IDCMP and App paths are poisoned.
 #include "kaffeine_readargs.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_filehandle.h"
+#include "kaffeine_locks.h"
 #include "kaffeine_format.h"
 #include "kaffeine_shadow.h"
 #include "kaffeine_offsets.h"
