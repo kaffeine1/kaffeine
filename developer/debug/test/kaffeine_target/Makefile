@@ -4,7 +4,12 @@ BUILD_DIR ?= $(TEST_DIR)/build
 # m68k-amigaos-gcc with libnix (-noixemul), and vasm for the assembler test
 M68K_PREFIX ?= m68k-amigaos-
 M68K_CC ?= $(M68K_PREFIX)gcc
-M68K_CFLAGS ?= -O2 -Wall -Wno-pointer-sign
+# Every 68k program is built without peephole2: in m68k-amigaos-gcc 6.5.0b
+# that pass turns the clearing of an unsigned short and of the int right
+# after it into one clr.l of four bytes, and the low half of the int keeps
+# what was in memory ("p->a = 0; p->b = 0;" on
+# "struct s { char p[6]; unsigned short a; int b; }" gives clr.l (6,a0)).
+M68K_CFLAGS ?= -O2 -fno-peephole2 -Wall -Wno-pointer-sign
 M68K_LDFLAGS ?= -noixemul
 VASM ?= vasmm68k_mot
 PYTHON ?= python3
@@ -70,11 +75,10 @@ endif
 # canonical zlib (USE_ZLIB_RABIN_KARP_ROLLING_HASH), so their output is the
 # one of canonical zlib; the hash of Chromium reads four bytes as a word and
 # is validated for little endian processors only.
-# They are built without peephole2: in m68k-amigaos-gcc 6.5.0b that pass
-# turns "s->bi_buf = 0; s->bi_valid = 0;", an unsigned short and the int
-# right after it, into one clr.l of four bytes, and the low half of
-# bi_valid keeps what was there. malloc() memory is not cleared on AmigaOS,
-# so every compressed stream then starts or ends with stray bits.
+# Deflate shows the peephole2 bug above in "s->bi_buf = 0; s->bi_valid = 0;":
+# malloc() memory is not cleared on AmigaOS, so with peephole2 every
+# compressed stream started or ended with stray bits. The zlib programs keep
+# -fno-peephole2 also when M68K_CFLAGS is given by hand.
 # The battery compresses and decompresses zlib.h with them and compares the
 # outputs with the references that "make zlib-refs" writes to $(ZLIB_REFS).
 ZLIB_SRC ?=
