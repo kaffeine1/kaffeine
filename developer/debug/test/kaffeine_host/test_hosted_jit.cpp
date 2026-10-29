@@ -1,7 +1,7 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    The hosted AArch64 translation probe (hosted_jit.c) with the production
+    The hosted AArch64 translation probe (kaffeine_jit.c) with the production
     run loop, dispatcher, callback primitive and thunks. The production
     Moira adapter runs the same programs as the reference.
 */
@@ -21,7 +21,8 @@
 #include "kaffeine_exec_compat.h"
 #include "kaffeine_format.h"
 #include <utility/date.h>
-#include "hosted_jit.h"
+#include "kaffeine_jit.h"
+#include "kaffeine_sched.h"
 
 extern "C" APTR AllocMem(ULONG size, ULONG) { return std::calloc(1, size); }
 extern "C" void FreeMem(APTR ptr, ULONG) { std::free(ptr); }
@@ -40,7 +41,7 @@ static unsigned failures, checks;
     std::printf("FAIL %s:%d: %s\n", __func__, __LINE__, #c); failures++; return; \
 } } while (0)
 
-enum Backend { MOIRA, JIT };
+enum Backend { MOIRA, JIT, JIT_LIBRARY };
 
 /* Thunks of a probe library: what they saw, through the accessors. */
 struct Seen
@@ -165,7 +166,7 @@ struct Machine
         if (which == MOIRA)
             return Kaffeine_Execute(&ctx);
         if (!jit)
-            jit = HJ_Create(&ctx);
+            jit = which == JIT_LIBRARY ? HJ_CreateLibrary(&ctx) : HJ_Create(&ctx);
         return jit ? HJ_Execute(jit) : -999;
     }
     void code(ULONG at, std::initializer_list<UWORD> words)
@@ -193,6 +194,91 @@ struct Machine
 };
 
 using Build = std::function<void(Machine &)>;
+
+static bool library_factory_ok;
+
+/* A second CPU over the same arena: first retranslate its code after the
+   parent's flush, then invalidate already cached code in the parent. */
+static IPTR library_factory_probe(KaffeineContext *ctx, void *cpu)
+{
+    const auto *factory = ctx->cpu_factory;
+    library_factory_ok = false;
+    if (!factory) return 0;
+    auto *child = factory->create(ctx);
+    if (!child) return 0;
+    Kaffeine_SetD(child, 2, 0x87654321);
+    Kaffeine_SetA(child, 7, Layout::stack - 0x100);
+    Kaffeine_SetPC(child, Layout::hook_code);
+    child->ops->execute(child->backend_state);
+    ULONG first = Kaffeine_GetD(child, 0);
+    m68k_write16(ctx, Layout::hook_code, 0x7002); /* MOVEQ #2,D0 */
+    Kaffeine_FlushCode(cpu, Layout::hook_code, 2);
+    Kaffeine_SetPC(child, Layout::hook_code);
+    child->ops->execute(child->backend_state);
+    const auto *stats = HJ_GetStats(static_cast<HJBackend *>(child->backend_state));
+    library_factory_ok = first == 1 && Kaffeine_GetD(child, 0) == 2 &&
+        Kaffeine_GetD(child, 2) == 0x87654321 && Kaffeine_GetD(cpu, 2) == 0x12345678 &&
+        stats->blocks == 2 && stats->enters == 2 && stats->flushes == 1;
+    m68k_write16(ctx, Layout::hook_code + 0x100, 0x7004); /* MOVEQ #4,D0 */
+    Kaffeine_FlushCode(child, Layout::hook_code + 0x100, 2);
+    factory->destroy(ctx, child);
+    return 0;
+}
+
+static IPTR library_bad_sr(KaffeineContext *, void *cpu)
+{
+    Kaffeine_SetSR(cpu, 0); /* would require a different stack bank */
+    return 99;
+}
+
+static void library_backend()
+{
+    const M68KThunkEntry entries[] = { {30, library_factory_probe}, {36, library_bad_sr} };
+    Machine m;
+    m.library(0, Layout::probe, "probe.library", entries, 2, nullptr, 0);
+    m.code(Layout::hook_code, {0x7001, 0x60FC}); /* MOVEQ #1,D0; BRA.S self */
+    m.code(Layout::hook_code + 0x100, {0x7003, 0x4E75});
+    m.d(2, 0x12345678);
+    m.word(0x4EB9); m.longword(Layout::hook_code + 0x100);
+    m.word(0x23C0); m.longword(Layout::data);
+    m.jsr(Layout::probe, 30);
+    m.word(0x4EB9); m.longword(Layout::hook_code + 0x100);
+    m.rts();
+    CHECK(m.run(JIT_LIBRARY) == 4);
+    CHECK(m.read(Layout::data) == 3 && library_factory_ok);
+    CHECK(!m.ctx.cpu && !m.ctx.cpu_factory && !m.ctx.sched);
+    CHECK(m.ctx.jit_generation == 2 && HJ_GetStats(m.jit)->flushes == 2);
+    CHECK(HJ_GetStats(m.jit)->exits[HJ_EXIT_BUDGET] > 0);
+
+    Machine callback;
+    callback.code(Layout::hook_code, {0x702A, 0x4E75});
+    callback.hook_at(Layout::hook, Layout::hook_code);
+    callback.hook_call(); callback.rts();
+    CHECK(callback.run(JIT_LIBRARY) == 42);
+    CHECK(HJ_GetStats(callback.jit)->max_depth == 2);
+    CHECK(!callback.ctx.cpu_factory && !callback.ctx.callback_depth);
+
+    for (UWORD opcode : {0x46FCu, 0x007Cu}) /* MOVE to SR / ORI to SR */
+    {
+        Machine refused;
+        refused.word(0x33FC); refused.word(0x1234); refused.longword(Layout::data);
+        refused.word(opcode); refused.word(0x2000);
+        refused.word(0x33FC); refused.word(0xFFFF); refused.longword(Layout::data + 2);
+        refused.rts();
+        CHECK(refused.run(JIT_LIBRARY) == 20);
+        CHECK(refused.read(Layout::data) == 0x1234A5A5);
+        CHECK(std::strstr(HJ_LastFault(refused.jit), "full SR write"));
+        CHECK(!refused.ctx.cpu_factory);
+    }
+    Machine native_sr;
+    native_sr.library(0, Layout::probe, "probe.library", entries, 2, nullptr, 0);
+    native_sr.jsr(Layout::probe, 36);
+    native_sr.word(0x33FC); native_sr.word(0xFFFF); native_sr.longword(Layout::data);
+    native_sr.rts();
+    CHECK(native_sr.run(JIT_LIBRARY) == 20);
+    CHECK(native_sr.read(Layout::data) == 0xA5A5A5A5);
+    CHECK(std::strstr(HJ_LastFault(native_sr.jit), "SR mode/trace change"));
+}
 
 /* Moira plants its RTE and trampoline in the vector page and leaves the
    frame of a Line-A exception in the 8 bytes below the stack pointer of
@@ -2045,6 +2131,7 @@ int main(int argc, char **argv)
         {"callback-faults", callback_faults, true}, {"bitfield-boundaries", bitfield_boundaries, true},
         {"code-changes", code_changes, true},
         {"faults", faults, true}, {"extended-insns", extended_insns, true},
+        {"library-backend", library_backend, true},
         {"random-programs", random_programs, true}
     };
     unsigned skipped = 0;

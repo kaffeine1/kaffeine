@@ -1,12 +1,10 @@
 # CPU backend boundary
 
-This experimental change prepares `kaffeine.library` for a second CPU backend.
-Moira remains the only implemented backend, and the public `RunFile` and
-`RunHunk` API does not change. The second backend will be the kaffeine
-JIT, a translator of 68k code to AArch64 written for this hosted case, which grows
-from the probe of the host suite with Moira running for one step what it
-does not translate yet; Emu68 is the reference that the requirements below
-come from, and no Emu68 code is imported.
+`kaffeine.library` uses Moira by default and offers an experimental
+AArch64 JIT selected with `KAFFEINE_CPU=jit`. The public `RunFile` and
+`RunHunk` API is unchanged. The JIT grows from the hosted translation
+experiment; no Emu68 code is imported. See the
+[library JIT contract and target results](../../docs/kaffeine/jit-backend.md).
 
 ## Responsibilities
 
@@ -15,6 +13,7 @@ come from, and no Emu68 code is imported.
 | `kaffeine_cpu.h` and `.c` | Backend handle, register access and execution loop |
 | `kaffeine_dispatch.h` and `.c` | Library/LVO lookup and invocation of native thunks |
 | `kaffeine_moira.cpp` | Moira instance, guest memory callbacks, reset, exception frames and return sequence |
+| `kaffeine_jit.c` | AArch64 translation, code publication/invalidation, bounded slices and a per-task CPU factory |
 | Existing thunk and shadow files | Native API adaptation and guest/native data conversion |
 | Existing memory and loader files | Guest arena, heap and HUNK loading |
 
@@ -58,11 +57,12 @@ The cooperative scheduler uses a separate `KaffeineCPUFactory` in
 `kaffeine_sched.h`, referenced by `ctx->cpu_factory`; these operations are
 outside `KaffeineCPUOps`. Its `create(ctx)` returns a complete reset CPU
 sharing the context's 32 MB arena. The scheduler then initializes the child's
-registers, user SR, stack pointer and initial PC. `RemTask()`, child return
+registers, initial SR, stack pointer and initial PC. `RemTask()`, child return
 and context teardown release it through `destroy(ctx, cpu)`, after that CPU
-has stopped executing. The Moira adapter installs this factory while
-`Kaffeine_Execute()` runs. A backend without a factory cannot run `AddTask()`
-children; the standalone JIT probe does not provide one yet.
+has stopped executing. Both library backends install their own factory for the duration of the
+root CPU run. A backend without a factory cannot run `AddTask()` children.
+JIT CPUs share an arena generation to observe code invalidation by another
+CPU before their next slice.
 
 This interface is deliberately not a complete serialized CPU state. It does
 not support switching backends during an execution, transferring FPU state,
@@ -112,7 +112,7 @@ The Emu68 source reviewed for this work was commit
 `2fb0e320f30cf9c47fa250cd84d2bcfff97d40fc` in
 [michalsc/Emu68](https://github.com/michalsc/Emu68).
 
-A standalone AArch64 translation probe in the host suite (`hosted_jit.c`) and
+A standalone AArch64 translation probe in the host suite (`kaffeine_jit.c`) and
 its native AROS counterpart ([`developer/debug/test/kaffeine_native`](../../developer/debug/test/kaffeine_native/README.md)),
 written for this purpose and not derived from Emu68, meet these requirements
 on macOS, Linux and standalone AROS AArch64 (`AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)`

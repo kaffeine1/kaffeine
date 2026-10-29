@@ -62,8 +62,8 @@ has 47 test executables and a thunk-registration audit.
 | DOS | Handle identities and lifetimes, buffers, packet thunks and FileHandle actions, handler ports (`DeviceProc`/`GetDeviceProc`), formatting, CLI state, argument parsing, data structures and directory traversal (`ExAll`/`ExAllEnd`) |
 | Graphics, Layers and Intuition | RastPorts, fonts, display and monitor metadata, owned and public screens, `DrawInfo`, live and offscreen planar layers and backfill hooks, clip regions, bitmaps (`InitBitMap`/`BltBitMap`/`GetBitMapAttr`), windows, IDCMP, requests, menus, gadgets and Workbench objects |
 | Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, `icon.library` metadata snapshots, no-window console calls and diskfont snapshots |
-| CPU backend extension | Hosted AArch64 translation probe behind the same CPU interface |
-| Guest scheduling | Separate complete Moira CPUs, task identity/priority, deferred Wait/WaitPort, Forbid/Disable, message exchange, native signal routing, removal, bounds, allocation rollback and cleanup |
+| CPU backend extension | Production AArch64 translator, hosted differential tests and library mode contracts |
+| Guest scheduling | Separate Moira and JIT CPUs, task identity/priority, deferred Wait/WaitPort, Forbid/Disable, message exchange, native signal routing, removal, bounds, allocation rollback and cleanup |
 
 Tests compile production adapters as C and use recording native API
 collaborators. Literal LVO dispatch, big-endian layouts, bounds, aliases,

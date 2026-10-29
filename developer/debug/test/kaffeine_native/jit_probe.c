@@ -19,7 +19,7 @@
 #include "kaffeine_callback.h"
 #include "kaffeine_cpu.h"
 #include "kaffeine_thunks.h"
-#include "hosted_jit.h"
+#include "kaffeine_jit.h"
 
 enum { ENTRY = 0x2000, HOOK = 0x3000, DATA = 0x4000, SYSBASE = 0x1000 };
 static unsigned checks, failures, echo_calls;

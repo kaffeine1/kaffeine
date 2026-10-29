@@ -53,6 +53,7 @@ WORKBENCH_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_un
 TASK_OBJS := $(BUILD_DIR)/file_boundary_unit.o $(addprefix $(BUILD_DIR)/task_,cpu.o dispatch.o shadow.o)
 SCHED_CPPFLAGS := -I$(TEST_DIR)/sched_stubs $(TEST_CPPFLAGS)
 SCHED_OBJS := $(addprefix $(BUILD_DIR)/sched_,cpu.o dispatch.o sched.o messages.o)
+SCHED_OBJS += $(BUILD_DIR)/sched_jit.o
 SCALING_OBJS := $(filter-out $(BUILD_DIR)/memory_memory.o,$(MEMORY_OBJS)) $(BUILD_DIR)/heap_scaling_memory.o
 BENCH_OBJS := $(addprefix $(BUILD_DIR)/heap_bench_,memory.o cpu.o)
 GFX_CPPFLAGS := -I$(TEST_DIR)/gfx_stubs $(TEST_CPPFLAGS)
@@ -314,7 +315,7 @@ bench_exec_memory: $(BUILD_DIR)/bench_exec_memory
 # with the production loop, dispatcher, callback primitive and thunks, and
 # Moira as the reference. Translated code runs on AArch64 Darwin or Linux;
 # elsewhere only the encoder and translation checks run.
-$(BUILD_DIR)/hosted_jit.o: $(TEST_DIR)/hosted_jit.c | $(BUILD_DIR)
+$(BUILD_DIR)/hosted_jit.o: $(KAFFEINE_DIR)/kaffeine_jit.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
 
 $(BUILD_DIR)/test_hosted_jit: $(TEST_DIR)/test_hosted_jit.cpp $(HOSTED_JIT_OBJS) | $(BUILD_DIR)

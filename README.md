@@ -15,7 +15,10 @@ architectural boundaries and observable milestones.
 
 ## Current implementation
 
-The current bridge runs 68k HUNK programs inside AROS AArch64 using Moira
+An [experimental Kaffeine JIT backend](docs/kaffeine/jit-backend.md) is now
+selectable on standalone AROS AArch64 with `Set KAFFEINE_CPU jit`.
+
+The current bridge runs 68k HUNK programs inside AROS AArch64 using Moira by default
 as the CPU interpreter. Supported library calls reach native AROS services;
 targeted graphics and system tests cover AROS windows, owned and public
 screens (including 8-bit `LUT8` indexed screens on the Raspberry Pi

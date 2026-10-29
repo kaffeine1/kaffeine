@@ -1,9 +1,8 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    A hosted AArch64 translation probe behind struct KaffeineCPUOps. See
-    docs/kaffeine/hosted-jit-probe.md. It is not Emu68 and not a backend of
-    kaffeine.library: it checks the hosting mechanics such a backend needs.
+    Experimental AArch64 block translator behind struct KaffeineCPUOps.
+    The HJ prefix is retained from the original hosted translation probe.
 */
 #ifndef HOSTED_JIT_H
 #define HOSTED_JIT_H
@@ -35,7 +34,7 @@ struct HJStats
     unsigned long enters;        /* calls from C into translated code */
     unsigned long exits[HJ_EXIT_COUNT];
     unsigned long slow_accesses; /* guest accesses through the C slow path */
-    unsigned long flushes;       /* flush_code() calls (CacheClearU/E, loaders) */
+    unsigned long flushes;       /* local and shared-arena cache invalidations */
     unsigned long revalidated;   /* blocks kept after a flush, code unchanged */
     unsigned long resets;        /* code memory emptied */
     unsigned long max_depth;     /* deepest nesting of execute() */
@@ -55,9 +54,14 @@ int HJ_EncoderSelfTest(char *message, unsigned long size);
 /* A backend for one context, with its own code memory. NULL without an
    AArch64 host or memory. */
 struct HJBackend *HJ_Create(struct KaffeineContext *ctx);
+/* Library mode: one translated block per scheduler slice, independent
+   child CPUs, and explicit refusal of unsupported full-SR operations. */
+struct HJBackend *HJ_CreateLibrary(struct KaffeineContext *ctx);
 void HJ_Destroy(struct HJBackend *b);
 /* As Kaffeine_Execute(): entry registers, sentinel, Kaffeine_RunCPU(). */
 LONG HJ_Execute(struct HJBackend *b);
+/* Own the root CPU, its guest-task factory and all translator resources. */
+LONG Kaffeine_ExecuteJIT(struct KaffeineContext *ctx);
 const struct HJStats *HJ_GetStats(const struct HJBackend *b);
 /* The last fault, "" if none. */
 const char *HJ_LastFault(const struct HJBackend *b);

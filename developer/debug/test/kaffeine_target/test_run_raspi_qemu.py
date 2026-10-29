@@ -185,6 +185,14 @@ class CompletionTests(unittest.TestCase):
                          'Copy RAM:sample-run-err.txt SYS:EMU68/sample-run-err.txt')
         self.assertEqual(lines[-1], 'Echo "done" >SYS:EMU68/sample-run-done.txt')
 
+    def test_cpu_backend_is_selected_before_both_launch_modes(self):
+        shell = runner.user_startup(['sample'], {}, {}, 15, cpu='jit')
+        child = runner.run_script('sample', {}, {}, cpu='jit')
+        for script in (shell, child):
+            self.assertLess(script.index('Set KAFFEINE_CPU jit\n'),
+                            script.index('SYS:EMU68/sample >'))
+        self.assertNotIn('Set KAFFEINE_CPU', runner.run_script('sample', {}, {}))
+
     def test_shell_execution_saves_the_error_stream(self):
         script = runner.user_startup(['sample'], {'sample': 'one'}, {'sample': 'in'}, 15)
         self.assertIn('SYS:EMU68/sample >SYS:EMU68/sample-shell.txt '

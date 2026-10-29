@@ -1,7 +1,8 @@
 # A hosted AArch64 translation probe
 
-The probe is the first step of the kaffeine JIT, the translator that will
-be the second CPU backend of the project.
+This note records the original hosted experiment. Its translator now lives
+in `rom/kaffeine/kaffeine_jit.c` and also powers the opt-in
+[experimental library backend](jit-backend.md).
 
 This note records point 4 of the plan of 20 October 2026: a minimal
 experiment of a "hosted" Emu68, first on the Mac (macOS on AArch64) and
@@ -11,10 +12,10 @@ process, behind the backend interface that Moira uses today, before
 deciding how to bring Emu68 itself in.
 
 The probe is a small 68k to AArch64 block translator that I wrote for this
-experiment: `developer/debug/test/kaffeine_host/hosted_jit.c`, with its
-driver `test_hosted_jit.cpp`. **It contains no Emu68 code** and it is not a
-backend of `kaffeine.library`: it covers a subset of the 68k instruction set
-and is built by the host suite and a focused native AROS probe. It implements `struct KaffeineCPUOps`,
+experiment: `rom/kaffeine/kaffeine_jit.c`, with its
+driver `test_hosted_jit.cpp`. **It contains no Emu68 code**. The original probe covers a subset of the
+68k instruction set and is built by the host suite and a focused native
+AROS probe; library mode adds bounded slices and a guest-task factory. It implements `struct KaffeineCPUOps`,
 `flush_code()` included, and runs through the production
 `Kaffeine_RunCPU()`, `Kaffeine_DispatchLibraryCall()` and
 `Kaffeine_CallGuest()`, with the production `CallHookPkt()`, `RawDoFmt()`,
@@ -237,7 +238,7 @@ copy taken at translation; the others are translated again.
   and with UBSan in trap mode (Homebrew's GCC has no sanitizer runtimes
   there); GCC 14.4 with ASan and UBSan on Linux AArch64 in Docker, where
   the code memory goes through `mprotect()`. Neither compiler warns
-  (`hosted_jit.c` builds with `-Wall -Wextra -Werror`). On x86_64 Linux, as
+  (`kaffeine_jit.c` builds with `-Wall -Wextra -Werror`). On x86_64 Linux, as
   in the CI, the encoder and translation checks pass and the rest is
   skipped.
 
@@ -261,15 +262,16 @@ copy taken at translation; the others are translated again.
   Everything else, `ILLEGAL` and Line-F stop with 20 and a message.
 - No exception frames at all: no `TRAP`, `CHK`, address error, privilege
   violation or trace, and no `Supervisor()`, which stops with 20.
-- One A7: changing the S or M bit does not switch stacks.
+- Probe mode has one A7: changing S or M does not switch stacks. Library
+  mode refuses full SR writes and native mode/trace changes explicitly.
 - The sentinel stops the program when the PC reaches it, not when data is
   read there, and the stack pointer of a callback is checked between
   blocks rather than between instructions.
 - One thread, one code memory per backend, emptied when it fills up; no
   patching of block exits; one probe of the lookup table.
 - No FPU and no MMU instructions.
-- The native standalone AROS AArch64 probe has focused VM coverage; it is
-  still not a kaffeine.library application backend.
+- The standalone probe and the library backend have separate target tests.
+  See the [library mode contract and results](jit-backend.md).
 
 ## What a translating backend needs from the bridge
 
@@ -291,11 +293,10 @@ copy taken at translation; the others are translated again.
 
 ## Possible next steps
 
-- Growing the probe into a backend: the rest of the instruction set, block
-  linking by patching, and an instruction outside the subset run by Moira
-  for one step instead of stopping, since the accessors of
-  `struct KaffeineCPUOps` already move the whole register state. Moira
-  would remain the reference, as it is here.
+- Extend the instruction subset and measure library execution. Any future
+  interpreter fallback needs an explicit complete CPU-state contract,
+  including stack banks, exceptions, prefetch, control registers and the
+  relevant FPU state. `KaffeineCPUOps` alone does not provide that transfer.
 - Porting Emu68's translator instead, for its coverage and its FPU: the
   memory accesses, the register convention, the exits and the exceptions
   of the hosted side would follow this probe, in MPL files kept apart.
@@ -331,9 +332,8 @@ passed 304 boundary checks, 164 extended-instruction checks and 256
 randomized programs.
 
 These are separate results from the host timings above. No native speedup
-or physical-target cache result is claimed. The library application backend
-remains Moira; full instruction coverage and guest-task integration still
-need work. See the [native probe instructions](../../developer/debug/test/kaffeine_native/README.md).
+or physical-target cache result is claimed. Moira remains the default library backend. The opt-in JIT library mode
+adds guest-task integration; full instruction coverage still needs work. See the [native probe instructions](../../developer/debug/test/kaffeine_native/README.md).
 
 ## Reproducing
 

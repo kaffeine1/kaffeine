@@ -361,7 +361,7 @@ def program_tail(name, arguments, inputs):
     return tail + ((' ' + arguments[name]) if arguments.get(name) else '')
 
 
-def run_script(name, arguments, inputs):
+def run_script(name, arguments, inputs, cpu=None):
     """Executed by the new CLI started by Run. Capture RC on the very next
     line: Copy and Echo would otherwise replace the program's return code.
     Redirect the program itself so the Shell closes its RAM: output before
@@ -377,13 +377,15 @@ def run_script(name, arguments, inputs):
              'Copy RAM:%s-run.txt SYS:EMU68/%s-run.txt' % (name, name),
              'Copy RAM:%s-run-err.txt SYS:EMU68/%s-run-err.txt' % (name, name),
              'Echo "done" >SYS:EMU68/%s-run-done.txt' % name]
+    if cpu:
+        lines.insert(2, 'Set KAFFEINE_CPU %s' % cpu)
     return '\n'.join(lines) + '\n'
 
 
 WANDERER_WAIT = 10              # seconds for Wanderer to open its desktop
 
 
-def user_startup(programs, arguments, inputs, run_wait, waited=(), wanderer=False):
+def user_startup(programs, arguments, inputs, run_wait, waited=(), wanderer=False, cpu=None):
     """S:User-Startup for the programs. For each program in waited, those
     that take keys or the mouse, it goes on only once their Run execution
     has ended: Wanderer starts after S:User-Startup and takes the active
@@ -393,6 +395,8 @@ def user_startup(programs, arguments, inputs, run_wait, waited=(), wanderer=Fals
     lines = ['FailAt 21',
              'Stack 1048576',
              'Echo "started" >SYS:EMU68/started.txt']
+    if cpu:
+        lines.insert(2, 'Set KAFFEINE_CPU %s' % cpu)
     if wanderer:
         lines += ['Run >NIL: <NIL: WANDERER:Wanderer',
                   'Wait %d SECS' % WANDERER_WAIT]
@@ -421,7 +425,8 @@ def startup_script(args, names):
     """S:User-Startup for these programs with the options given: it waits
     for the Run execution of each program that takes keys or the mouse."""
     return user_startup(names, args.arguments, args.inputs, args.run_wait,
-                        set(args.keys) | set(args.mouse), args.wanderer)
+                        set(args.keys) | set(args.mouse), args.wanderer,
+                        getattr(args, 'cpu', None))
 
 
 def guest_file(args, name):
@@ -659,7 +664,7 @@ def run_guest(args, run, programs, names):
                 mtool(args, 'mcopy', '-s', '-o', str(entry), '::EMU68/' + entry.name)
         mtool(args, 'mcopy', '-o', prog, '::EMU68/' + name)
         script = run / ('%s-run.script' % name)
-        script.write_text(run_script(name, args.arguments, args.inputs))
+        script.write_text(run_script(name, args.arguments, args.inputs, args.cpu))
         mtool(args, 'mcopy', '-o', str(script), '::EMU68/' + script.name)
         if name in args.inputs:
             mtool(args, 'mcopy', '-o', args.inputs[name], '::EMU68/%s.in' % name)
@@ -813,6 +818,8 @@ def main():
                         'AppIcons, AppWindows, AppMenuItems and their AppMessages')
     p.add_argument('--separate', action='store_true',
                    help='boot once for each program, in a subdirectory of the run directory')
+    p.add_argument('--cpu', choices=('moira', 'jit'),
+                   help='select KAFFEINE_CPU in both the Shell and Run test scripts')
     p.add_argument('--run-wait', type=int, default=5,
                    help='pause after launching each Run (default 5 seconds); completion '
                         'is checked with per-program markers until --timeout')

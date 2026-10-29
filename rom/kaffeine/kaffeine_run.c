@@ -30,6 +30,7 @@
 #include "kaffeine_layers.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_regions.h"
+#include "kaffeine_jit.h"
 
 /* The signals, ports and open devices of the guest belong to the native
    task that runs it, as does a lock of the list of public screens, an Exec
@@ -37,9 +38,25 @@
 static LONG execute_owned(struct KaffeineContext *ctx)
 {
     LONG result;
+    char backend[16];
+    LONG length;
 
     ctx->exec_task = FindTask(NULL);
-    result = Kaffeine_Execute(ctx);
+    length = GetVar((CONST_STRPTR)"KAFFEINE_CPU", (STRPTR)backend,
+                    sizeof(backend), 0);
+    if (length <= 0 || (length < (LONG)sizeof(backend) && !strcmp(backend, "moira")))
+    {
+        bug("[kaffeine] CPU backend: Moira\n");
+        result = Kaffeine_Execute(ctx);
+    }
+    else if (length < (LONG)sizeof(backend) && !strcmp(backend, "jit"))
+        result = Kaffeine_ExecuteJIT(ctx);
+    else
+    {
+        bug("[kaffeine] KAFFEINE_CPU must be moira or jit\n");
+        ctx->running = FALSE;
+        result = ctx->exit_code = RETURN_FAIL;
+    }
     Kaffeine_WindowsCleanup(ctx);
     Kaffeine_MenusCleanup(ctx);
     Kaffeine_GadgetsCleanup(ctx);

@@ -1,7 +1,7 @@
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
 #
 # kaffeine.library — Transparent M68K emulation for AmigaOS hunk binaries
-# Uses Moira (MIT license) as the CPU core
+# Moira by default, with an opt-in experimental AArch64 JIT
 #
 # Skip on m68k targets — no need to emulate m68k on m68k
 #
@@ -26,6 +26,7 @@ KAFFEINE_FILES := \
     kaffeine_init \
     kaffeine_run \
     kaffeine_cpu \
+    kaffeine_jit \
     kaffeine_sched \
     kaffeine_hook \
     kaffeine_format \
