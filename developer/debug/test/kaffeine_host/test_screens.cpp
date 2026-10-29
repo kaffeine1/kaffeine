@@ -69,7 +69,7 @@ struct NativeScreen
     std::array<UWORD, 80> pens{};
 };
 enum Kind { LOCK, UNLOCK, LIST_LOCK, LIST_UNLOCK, DEFAULT, NEXT, FONT_OPEN, FONT_CLOSE, OPEN, CLOSE,
-            DRI_GET, DRI_FREE };
+            DRI_GET, DRI_FREE, PEN_GET, PEN_FREE };
 struct Call
 {
     Kind kind;
@@ -188,6 +188,34 @@ struct NativeIntuition
 };
 static NativeIntuition *native;
 
+/* graphics' ObtainBestPenA() and ReleasePen() (below), as rom/graphics
+   counts pens: each result >= 0 is one more reference of that pen. held
+   counts only the references that the bridge got and has not given back,
+   so a ReleasePen() of anything else, another client's pen or a second
+   release, fails at once; no screen may close or lose its last visitor
+   while the bridge holds a pen of its ColorMap. */
+struct PenObtain
+{
+    ColorMap *cm;
+    ULONG r, g, b;
+    bool had_tags;
+    std::vector<TagItem> items;
+};
+static struct NativePens
+{
+    std::vector<PenObtain> obtains;
+    std::vector<std::pair<const ColorMap *, ULONG>> releases;
+    std::map<std::pair<const ColorMap *, ULONG>, unsigned> held;
+    std::deque<LONG> results; // the next results of ObtainBestPenA(), else 7
+} pens;
+static unsigned pens_held(const ColorMap *cm)
+{
+    unsigned n = 0;
+    for (const auto &h : pens.held)
+        if (h.first.first == cm) n += h.second;
+    return n;
+}
+
 /* Configurable OpenFont result, with AROS's accessor accounting. The call
    records both the native TextAttr pointer and its values at that time,
    and the tags of a TTextAttr, read as FSF_TAGGED says (ASan sees a plain
@@ -262,6 +290,8 @@ extern "C" void UnlockPubScreen(UBYTE *name, struct Screen *screen)
     {
         auto *n = native->node(screen);
         n->psn_VisitorCount = (WORD)((UWORD)n->psn_VisitorCount - 1u);
+        // the last visitor never goes while the bridge holds a pen there
+        assert(n->psn_VisitorCount || !pens_held(&native->find(screen)->colormap));
     }
     UnlockPubScreenList();
 }
@@ -421,6 +451,8 @@ extern "C" BOOL CloseScreen(struct Screen *screen)
     // the bridge never lets a screen with DrawInfo gets of the program close
     auto *ns = native->find(screen);
     assert(ns && !native->dri_out.count(&ns->dinfo) && !native->dri_out.count(&ns->alt));
+    // nor one with a pen of the program in its ColorMap, which goes with it
+    assert(!pens_held(&ns->colormap));
     if (screen->FirstWindow || native->close_refuse) return FALSE;
     auto *n = native->node(screen);
     if (n->psn_Node.ln_Succ)
@@ -566,6 +598,7 @@ struct Fixture
         native = &intuition_native;
         Kaffeine_ScreensCleanup(&ctx);
         assert(native->list_depth == 0 && native->font_opens.empty() && native->dri_out.empty());
+        assert(!ctx.pen_leases && pens.held.empty());
         native = previous;
     }
     ULONG avail() { return Kaffeine_HeapAvail(&ctx, 0); }
@@ -3041,6 +3074,557 @@ static void test_drawinfo_consumer_refusals()
     assert(f.free_dri(screen, dri) == 0 && f.close(screen) == 1);
 }
 
+/* ── Pens ────────────────────────────────────────────────────────── */
+
+static NativeScreen *pen_screen(const ColorMap *cm)
+{
+    for (auto &s : native->screens)
+        if (&s.colormap == cm) return &s;
+    return nullptr;
+}
+/* An opened screen until it has closed, any other while it has a visitor */
+static bool pen_screen_alive(NativeScreen *n)
+{
+    for (const auto &o : native->opened)
+        if (o.result == &n->screen) return !o.closed;
+    return n->node.psn_VisitorCount > 0;
+}
+/* graphics reads cm->PalExtra and the tags with GetTagData(): only the
+   native ColorMap of a live screen and a flat native list of OBP_ tags */
+extern "C" LONG ObtainBestPenA(ColorMap *cm, ULONG r, ULONG g, ULONG b, TagItem *tags)
+{
+    NativeScreen *n = pen_screen(cm);
+    assert(n && pen_screen_alive(n) && !in_guest(tags));
+    native->calls.push_back({ PEN_GET, cm, &n->screen });
+    PenObtain o{ cm, r, g, b, tags != nullptr, {} };
+    for (const TagItem *t = tags; t && t->ti_Tag != TAG_DONE; ++t)
+    {
+        assert((t->ti_Tag == OBP_Precision || t->ti_Tag == OBP_FailIfBad) && o.items.size() < 2);
+        o.items.push_back(*t);
+    }
+    pens.obtains.push_back(o);
+    LONG pen = 7;
+    if (!pens.results.empty()) { pen = pens.results.front(); pens.results.pop_front(); }
+    if (pen >= 0) ++pens.held[{ cm, (ULONG)pen }];
+    return pen;
+}
+extern "C" void ReleasePen(ColorMap *cm, ULONG n)
+{
+    NativeScreen *s = pen_screen(cm);
+    assert(s && pen_screen_alive(s));
+    native->calls.push_back({ PEN_FREE, cm, &s->screen });
+    pens.releases.push_back({ cm, n });
+    auto at = pens.held.find({ cm, n });
+    assert(at != pens.held.end() && at->second); // only a reference that the bridge got
+    if (!--at->second) pens.held.erase(at);
+}
+
+static const M68KThunkEntry palette_manual[] = { KAFFEINE_GRAPHICS_PALETTE_THUNKS };
+static const M68KThunkEntry pen_generated[] = { { 840, poison }, { 948, poison } };
+/* One call through a literal graphics LVO: the production palette table
+   over poisoned generated fallbacks, or the fallbacks alone. Every register
+   but D0 survives. */
+static ULONG pen_call(Fixture &f, ULONG lvo, ULONG a0, ULONG a1, ULONG d0, ULONG d1, ULONG d2, ULONG d3,
+                      bool manual = true)
+{
+    auto saved = f.ctx.libs[0]; auto &lib = f.ctx.libs[0];
+    lib.thunks = palette_manual; lib.num_thunks = manual ? std::size(palette_manual) : 0;
+    lib.gen_thunks = pen_generated; lib.num_gen_thunks = std::size(pen_generated);
+    for (unsigned i = 0; i < 8; ++i) { f.state.d[i] = 0xD0000000 + i; f.state.a[i] = 0xA0000000 + i; }
+    f.state.a[0] = a0; f.state.a[1] = a1; f.state.a[7] = f.stack;
+    f.state.d[0] = d0; f.state.d[1] = d1; f.state.d[2] = d2; f.state.d[3] = d3;
+    const auto before = f.state;
+    f.ctx.running = TRUE; f.ctx.exit_code = 0; generated_calls = 0;
+    KaffeineDispatchResult result{};
+    assert(Kaffeine_DispatchLibraryCall(&f.ctx, &f.cpu, f.intuition - lvo, &result));
+    assert(result.return_pc == 0x76543210 && !result.supervisor && f.state.a[7] == f.stack + 4);
+    for (unsigned i = 1; i < 8; ++i) assert(f.state.d[i] == before.d[i]);
+    for (unsigned i = 0; i < 7; ++i) assert(f.state.a[i] == before.a[i]);
+    assert(f.state.sr == before.sr && f.state.pc == before.pc && generated_calls == (manual ? 0u : 1u));
+    f.ctx.libs[0] = saved;
+    return f.state.d[0];
+}
+static ULONG obtain_pen(Fixture &f, ULONG cm, ULONG tags = 0, ULONG r = 0x11111111, ULONG g = 0x22222222,
+                        ULONG b = 0x33333333)
+{
+    return pen_call(f, 840, cm, tags, 0xD0000000, r, g, b);
+}
+static ULONG release_pen(Fixture &f, ULONG cm, ULONG n)
+{
+    return pen_call(f, 948, cm, 0xA0000001, n, 0xD0000001, 0xD0000002, 0xD0000003);
+}
+/* A public screen with a ColorMap, which the 68k Screen shows */
+static NativeScreen &pen_public(Fixture &f, const std::string &name = "Workbench")
+{
+    auto &n = f.add(name);
+    n.colormap.Count = 256; n.colormap.Type = 2;
+    n.screen.ViewPort.ColorMap = &n.colormap;
+    return n;
+}
+using PenRelease = std::pair<const ColorMap *, ULONG>;
+static size_t pen_frees(const ColorMap *cm, ULONG n)
+{
+    return std::count(pens.releases.begin(), pens.releases.end(), PenRelease(cm, n));
+}
+
+/* -840 and -948 are the production handlers, which give graphics A0, D1,
+   D2, D3 and A1, and A0 and D0, as they are; without them the poisoned
+   generated fallbacks run and nothing native does. */
+static void test_pen_registrations()
+{
+    const M68KThunkEntry *get = nullptr, *put = nullptr;
+    for (const auto &e : palette_manual)
+    {
+        if (e.lvo == 840) { assert(!get); get = &e; }
+        if (e.lvo == 948) { assert(!put); put = &e; }
+    }
+    assert(get && get->thunk == Kaffeine_ObtainBestPenA && put && put->thunk == Kaffeine_ReleasePen);
+    Fixture f; pens = {};
+    const ULONG g = f.open(0, 0); assert(g);
+    ColorMap *ncm = native->opened.back().result->ViewPort.ColorMap;
+    const ULONG cm = f.lng(g + VP + 4); assert(cm);
+    pens.results = { 12 };
+    assert(pen_call(f, 840, cm, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0x80000000, 1) == 12 && !f.stopped());
+    assert(pens.obtains.size() == 1 && pens.obtains[0].cm == ncm && !pens.obtains[0].had_tags);
+    assert(pens.obtains[0].r == 0xFFFFFFFF && pens.obtains[0].g == 0x80000000 && pens.obtains[0].b == 1);
+    assert(pen_call(f, 948, cm, 0xFFFFFFFF, 12, 0, 0, 0) == 0 && !f.stopped());
+    assert((pens.releases == std::vector<PenRelease>{ { ncm, 12 } }) && pens.held.empty());
+    const auto calls = native->calls.size();
+    assert(pen_call(f, 840, cm, 0, 0, 1, 2, 3, false) == 0xBAD0F00D);
+    assert(pen_call(f, 948, cm, 0, 12, 0, 0, 0, false) == 0xBAD0F00D);
+    assert(native->calls.size() == calls && pens.obtains.size() == 1 && pens.releases.size() == 1);
+    assert(!f.ctx.pen_leases && f.close(g) == 1);
+}
+
+/* The guest tags as GetTagData() would find them, in one flat native list:
+   control tags walked, unknown user tags dropped, the first of each OBP_
+   tag; OBP_Precision a LONG at native width, so that PRECISION_EXACT is
+   still -1; OBP_FailIfBad and the colors 32-bit ULONGs. */
+static void test_pen_tags()
+{
+    Fixture f; pens = {};
+    const ULONG g = f.open(0, 0); assert(g);
+    const ULONG cm = f.lng(g + VP + 4);
+    const int k = f.entry(g);
+    static_assert(OBP_Precision == 0x84000000 && OBP_FailIfBad == 0x84000001 && PRECISION_EXACT == -1);
+    const IPTR exact = static_cast<IPTR>(static_cast<LONG>(PRECISION_EXACT));
+    assert(exact == ~static_cast<IPTR>(0));
+    f.put_tags(f.more_at, { { OBP_FailIfBad, 0 }, { OBP_Precision, 16 } });
+    f.put_tags(f.tags_at, {
+        { TAG_IGNORE, OBP_Precision }, { 0x80001234, 0xDEADBEEF }, { TAG_SKIP, 2 },
+        { OBP_Precision, 32 }, { OBP_FailIfBad, 0 },
+        { OBP_Precision, 0xFFFFFFFF }, { 0x84000002, 5 }, { OBP_FailIfBad, 0x01020304 },
+        { OBP_Precision, 0 }, { TAG_MORE, f.more_at } }, false);
+    const auto before = f.memory;
+    assert(obtain_pen(f, cm, f.tags_at) == 7 && !f.stopped() && f.memory == before);
+    {
+        const auto &o = pens.obtains.back();
+        assert(o.had_tags && o.items.size() == 2);
+        assert(o.items[0].ti_Tag == OBP_Precision && o.items[0].ti_Data == exact);
+        assert(o.items[1].ti_Tag == OBP_FailIfBad && o.items[1].ti_Data == 0x01020304);
+    }
+    // the first of each, also when it comes behind TAG_MORE
+    f.put_tags(f.tags_at, { { OBP_FailIfBad, 1 }, { TAG_MORE, f.more_at } }, false);
+    assert(obtain_pen(f, cm, f.tags_at) == 7);
+    assert(pens.obtains.back().items.size() == 2 && pens.obtains.back().items[0].ti_Data == 1);
+    assert(pens.obtains.back().items[1].ti_Tag == OBP_Precision && pens.obtains.back().items[1].ti_Data == 16);
+    for (ULONG precision : { 32u, 0u, 0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFEu })
+    {
+        f.put_tags(f.tags_at, { { OBP_FailIfBad, 0xFFFFFFFF }, { OBP_Precision, precision } });
+        assert(obtain_pen(f, cm, f.tags_at, 0xFFFFFFFF, 0, 0x80000000) == 7 && !f.stopped());
+        const auto &p = pens.obtains.back();
+        assert(p.items.size() == 2 && p.items[0].ti_Tag == OBP_FailIfBad && p.items[0].ti_Data == 0xFFFFFFFFu);
+        assert(p.items[1].ti_Data == static_cast<IPTR>(static_cast<LONG>(precision)));
+        assert(p.r == 0xFFFFFFFF && p.g == 0 && p.b == 0x80000000);
+    }
+    // only unknown and control tags: an empty native list; no list: NULL
+    f.put_tags(f.tags_at, { { 0x80000001, 1 }, { TAG_IGNORE, 0 } });
+    assert(obtain_pen(f, cm, f.tags_at) == 7 && pens.obtains.back().had_tags && pens.obtains.back().items.empty());
+    assert(obtain_pen(f, cm) == 7 && !pens.obtains.back().had_tags);
+    // TAG_MORE with NULL ends the list
+    f.put_tags(f.tags_at, { { OBP_Precision, 16 }, { TAG_MORE, 0 }, { OBP_FailIfBad, 1 } });
+    assert(obtain_pen(f, cm, f.tags_at) == 7 && pens.obtains.back().items.size() == 1);
+    // 500 control tags before the one that counts
+    const ULONG count = 500, list = Kaffeine_HeapAlloc(&f.ctx, (count + 2) * 8, MEMF_ANY);
+    assert(list);
+    for (ULONG i = 0; i < count; ++i) { m68k_write32(&f.ctx, list + 8 * i, TAG_IGNORE); m68k_write32(&f.ctx, list + 8 * i + 4, i); }
+    f.put_tags(list + 8 * count, { { OBP_Precision, PRECISION_GUI } });
+    assert(obtain_pen(f, cm, list) == 7 && !f.stopped() && pens.obtains.back().items.size() == 1);
+    assert(pens.obtains.back().items[0].ti_Data == PRECISION_GUI);
+    Kaffeine_HeapFree(&f.ctx, list, (count + 2) * 8);
+    // every call was one lease of pen 7, given back one by one
+    const ULONG leases = pens.obtains.size();
+    assert(f.ctx.pubscreens[k].pen_refs[7] == leases && f.ctx.pen_leases == leases);
+    while (f.ctx.pubscreens[k].pens) assert(release_pen(f, cm, 7) == 0);
+    assert(pens.releases.size() == leases && pens.held.empty() && f.close(g) == 1);
+}
+
+/* An unknown, forged, misaligned or stale ColorMap, NULL for
+   ObtainBestPenA() and a bad tag list stop the program before anything
+   native, also a visitor lock, changing no lease and no guest memory.
+   ReleasePen() of NULL, of a pen past the table or of one that the program
+   holds no lease of changes nothing and reaches nothing native. */
+static void test_pen_refusals()
+{
+    Fixture f; pens = {};
+    auto &wb = pen_public(f);
+    auto &other = pen_public(f, "Other");
+    const ULONG pub = f.lock(); assert(pub);
+    const ULONG pub2 = f.lock(f.name("Other")); assert(pub2);
+    const ULONG cm = f.lng(pub + VP + 4), cm2 = f.lng(pub2 + VP + 4);
+    assert(cm && cm2 && f.word(cm + 2) == 256);
+    const ULONG g = f.open(0, 0); assert(g);
+    const ULONG owned_cm = f.lng(g + VP + 4);
+    assert(obtain_pen(f, cm) == 7 && wb.node.psn_VisitorCount == 2);
+    const int k = f.entry(pub);
+    const ULONG forged = 0x1100;
+    std::copy_n(f.memory.begin() + cm, 52, f.memory.begin() + forged);
+    // bad lists: outside, partly outside, cycles, a skip and a TAG_MORE out, too long
+    f.put_tags(f.tags_at, { { OBP_Precision, 0 }, { TAG_MORE, f.tags_at } }, false);
+    f.put_tags(f.ftags_at, { { TAG_MORE, f.ftags_at } }, false);
+    f.put_tags(f.long_at, { { TAG_SKIP, 0x7FFFFFFF } });
+    f.put_tags(f.long_at + 0x20, { { OBP_FailIfBad, 1 }, { TAG_MORE, 0xFFFFFFF0 } }, false);
+    const ULONG count = 2000, list = Kaffeine_HeapAlloc(&f.ctx, (count + 1) * 8, MEMF_ANY);
+    assert(list);
+    for (ULONG i = 0; i < count; ++i) { m68k_write32(&f.ctx, list + 8 * i, TAG_IGNORE); m68k_write32(&f.ctx, list + 8 * i + 4, 0); }
+    f.put_tags(list + 8 * count, {});
+    const auto calls = native->calls.size();
+    auto unchanged = [&](const std::array<UBYTE, 0x10000> &before)
+    {
+        assert(f.stopped() && native->calls.size() == calls && f.memory == before);
+        assert(f.ctx.pen_leases == 1 && f.ctx.pubscreens[k].pens == 1 && f.ctx.pubscreens[k].pen_refs[7] == 1);
+        assert(f.ctx.pubscreens[k].pen_lock && !f.ctx.pubscreens[f.entry(pub2)].pens && pens.held.size() == 1);
+        assert(wb.node.psn_VisitorCount == 2 && other.node.psn_VisitorCount == 1);
+    };
+    for (ULONG bad : { 0u, forged, cm + 2, cm - 2, pub, pub + VP, pub + RP, f.text, 0xFFFFFFF0u })
+    {
+        for (ULONG tags : { 0u, f.more_at })
+        {
+            const auto before = f.memory;
+            assert(obtain_pen(f, bad, tags) == 20); unchanged(before);
+        }
+        if (bad)
+        {
+            const auto before = f.memory;
+            assert(release_pen(f, bad, 7) == 20); unchanged(before);
+        }
+    }
+    for (ULONG known : { cm, cm2, owned_cm })
+        for (ULONG tags : { 0xFFFFFFF8u, ULONG(f.memory.size() - 4), ULONG(f.tags_at), ULONG(f.ftags_at),
+                            ULONG(f.long_at), ULONG(f.long_at + 0x20), list })
+        {
+            const auto before = f.memory;
+            assert(obtain_pen(f, known, tags) == 20); unchanged(before);
+        }
+    Kaffeine_HeapFree(&f.ctx, list, (count + 1) * 8);
+    // releases that give graphics nothing
+    for (const auto &[cmap, pen] : std::initializer_list<std::pair<ULONG, ULONG>>{
+             { 0, 7 }, { 0, 0xFFFFFFFF }, { cm, 256 }, { cm, 300 }, { cm, 0xFFFFFFFF }, { cm, 0x10007 },
+             { cm, 9 }, { cm, 0 }, { cm2, 7 }, { owned_cm, 7 } })
+    {
+        const auto before = f.memory;
+        assert(release_pen(f, cmap, pen) == 0 && !f.stopped());
+        assert(native->calls.size() == calls && f.memory == before && f.ctx.pen_leases == 1);
+    }
+    // what the program writes into its snapshot changes no identity
+    m68k_write16(&f.ctx, cm + 2, 0); m68k_write32(&f.ctx, cm + 4, 0xDEADBEEF);
+    assert(release_pen(f, cm, 7) == 0 && !f.stopped() && pens.held.empty() && wb.node.psn_VisitorCount == 1);
+    assert(pens.releases.back() == PenRelease(&wb.colormap, 7) && !f.ctx.pubscreens[k].pen_lock);
+    // released already: nothing more
+    const auto frees = native->count(PEN_FREE);
+    assert(release_pen(f, cm, 7) == 0 && !f.stopped() && native->count(PEN_FREE) == frees);
+    f.unlock(pub); f.unlock(pub2);
+    assert(f.close(g) == 1);
+}
+
+/* Each success is one lease of that pen, counted natively, also many of
+   one shared pen; nothing goes into guest memory or the heap. CloseScreen()
+   refuses an opened screen with any before Intuition, and closes it once
+   the program has released them; a refusal of Intuition keeps it. */
+static void test_pen_owned()
+{
+    Fixture f; pens = {};
+    const ULONG g = f.open(0, 0); assert(g);
+    Screen *s = native->opened.back().result;
+    ColorMap *ncm = s->ViewPort.ColorMap;
+    const ULONG cm = f.lng(g + VP + 4);
+    const int k = f.entry(g);
+    const ULONG heap = f.avail();
+    const UWORD shadows = f.ctx.num_shadows;
+    const auto before = f.memory;
+    pens.results = { 7, 7, 9, 7 };
+    assert(obtain_pen(f, cm) == 7 && obtain_pen(f, cm) == 7 && obtain_pen(f, cm) == 9 && obtain_pen(f, cm) == 7);
+    assert(!f.stopped() && f.memory == before && f.avail() == heap && f.ctx.num_shadows == shadows);
+    assert(f.ctx.pubscreens[k].pen_refs[7] == 3 && f.ctx.pubscreens[k].pen_refs[9] == 1);
+    assert(f.ctx.pubscreens[k].pens == 4 && f.ctx.pen_leases == 4 && !f.ctx.pubscreens[k].pen_lock);
+    assert((pens.held[{ ncm, 7 }] == 3) && !native->count(LOCK));
+    const auto closes = native->count(CLOSE);
+    assert(f.close(g) == 0 && !f.stopped() && native->count(CLOSE) == closes && f.memory == before);
+    assert(Kaffeine_ScreenNative(&f.ctx, g) == s && f.ctx.pubscreens[k].pens == 4 && f.owned() == 1);
+    assert(release_pen(f, cm, 9) == 0 && pens.releases.back() == PenRelease(ncm, 9));
+    const auto frees = native->count(PEN_FREE);
+    assert(release_pen(f, cm, 9) == 0 && release_pen(f, cm, 8) == 0 && native->count(PEN_FREE) == frees);
+    assert(release_pen(f, cm, 7) == 0 && release_pen(f, cm, 7) == 0);
+    assert(f.close(g) == 0 && native->count(CLOSE) == closes && f.ctx.pubscreens[k].pens == 1);
+    assert(release_pen(f, cm, 7) == 0 && pens.held.empty() && !f.ctx.pen_leases && !f.ctx.pubscreens[k].pens);
+    assert(pen_frees(ncm, 7) == 3 && pen_frees(ncm, 9) == 1);
+    assert(f.memory == before && f.avail() == heap && Kaffeine_ScreenNative(&f.ctx, g) == s);
+    native->close_refuse = true;
+    assert(f.close(g) == 0 && native->count(CLOSE) == closes + 1 && Kaffeine_ScreenNative(&f.ctx, g) == s);
+    native->close_refuse = false;
+    assert(obtain_pen(f, cm) == 7 && f.ctx.pubscreens[k].pens == 1 && f.close(g) == 0);
+    assert(native->count(CLOSE) == closes + 1);
+    assert(release_pen(f, cm, 7) == 0 && f.close(g) == 1 && native->count(CLOSE) == closes + 2);
+    f.absent(g, s);
+    const auto calls = native->calls.size();
+    assert(obtain_pen(f, cm) == 20 && f.stopped() && release_pen(f, cm, 7) == 20 && f.stopped());
+    assert(native->calls.size() == calls);
+}
+
+/* Graphics finds no pen, or one that the bridge cannot count, a screen
+   cannot be held, or the program holds 4096 leases: -1, and nothing is
+   kept, also no visitor lock; a pen that graphics gave goes back. */
+static void test_pen_failures()
+{
+    Fixture f; pens = {};
+    auto &wb = pen_public(f);
+    const ULONG pub = f.lock(); assert(pub);
+    ColorMap *ncm = &wb.colormap;
+    const ULONG cm = f.lng(pub + VP + 4);
+    const int k = f.entry(pub);
+    const ULONG heap = f.avail();
+    auto nothing_kept = [&]()
+    {
+        assert(!f.stopped() && !f.ctx.pen_leases && !f.ctx.pubscreens[k].pens && !f.ctx.pubscreens[k].pen_lock);
+        for (UWORD r : f.ctx.pubscreens[k].pen_refs) assert(!r);
+        assert(pens.held.empty() && wb.node.psn_VisitorCount == 1 && f.avail() == heap);
+        assert(Kaffeine_ScreenNative(&f.ctx, pub) == &wb.screen);
+    };
+    auto order = [&](size_t mark, bool freed)
+    {
+        size_t lock_at = SIZE_MAX, get_at = SIZE_MAX, free_at = SIZE_MAX, unlock_at = SIZE_MAX;
+        for (size_t i = mark; i < native->calls.size(); ++i)
+        {
+            const auto kind = native->calls[i].kind;
+            if (kind == LOCK) lock_at = std::min(lock_at, i);
+            if (kind == PEN_GET) { assert(get_at == SIZE_MAX); get_at = i; }
+            if (kind == PEN_FREE) { assert(free_at == SIZE_MAX); free_at = i; }
+            if (kind == UNLOCK) { assert(unlock_at == SIZE_MAX); unlock_at = i; }
+        }
+        assert(lock_at < get_at && get_at < unlock_at && unlock_at != SIZE_MAX);
+        assert(freed ? get_at < free_at && free_at < unlock_at : free_at == SIZE_MAX);
+    };
+    for (LONG result : { -1, -5 })
+    {
+        pens.results = { result };
+        const size_t mark = native->calls.size();
+        assert(obtain_pen(f, cm) == 0xFFFFFFFF); nothing_kept(); order(mark, false);
+    }
+    for (LONG result : { 256, 0x7FFFFFFF })
+    {
+        pens.results = { result };
+        const size_t mark = native->calls.size();
+        assert(obtain_pen(f, cm) == 0xFFFFFFFF); nothing_kept(); order(mark, true);
+        assert(pens.releases.back() == PenRelease(ncm, ULONG(result)));
+    }
+    // a screen that the bridge cannot hold: graphics is not asked
+    auto gets = native->count(PEN_GET), locks = native->count(LOCK);
+    wb.node.psn_VisitorCount = 0x7FFF;
+    assert(obtain_pen(f, cm) == 0xFFFFFFFF && native->count(LOCK) == locks && wb.node.psn_VisitorCount == 0x7FFF);
+    wb.node.psn_VisitorCount = 1;
+    native->remove(&wb.node.psn_Node);
+    assert(obtain_pen(f, cm) == 0xFFFFFFFF && native->count(LOCK) == locks);
+    native->append(&wb.node.psn_Node);
+    assert(native->count(PEN_GET) == gets); nothing_kept();
+    // nor a private one, which LockPubScreen() refuses (not named Workbench,
+    // which the fake Intuition would open again)
+    auto &priv = pen_public(f, "Private");
+    const ULONG gp = f.lock(f.name("Private")); assert(gp);
+    priv.node.psn_Flags |= PSNF_PRIVATE;
+    locks = native->count(LOCK);
+    assert(obtain_pen(f, f.lng(gp + VP + 4)) == 0xFFFFFFFF && !f.stopped() && native->count(LOCK) == locks + 1);
+    assert(priv.node.psn_VisitorCount == 1 && native->count(PEN_GET) == gets && !f.ctx.pen_leases);
+    priv.node.psn_Flags &= ~PSNF_PRIVATE;
+    f.unlock(gp);
+    // 4096 leases over two screens fill the context
+    auto &spare = pen_public(f, "Spare");
+    const ULONG pub2 = f.lock(f.name("Spare")); assert(pub2);
+    const ULONG cm2 = f.lng(pub2 + VP + 4);
+    const ULONG g = f.open(0, 0); assert(g);
+    const ULONG ocm = f.lng(g + VP + 4);
+    assert(obtain_pen(f, cm) == 7 && wb.node.psn_VisitorCount == 2);
+    for (unsigned i = 1; i < KAFFEINE_MAX_PEN_LEASES; ++i) assert(obtain_pen(f, ocm) == 7);
+    assert(f.ctx.pen_leases == 4096 && f.ctx.pubscreens[f.entry(g)].pen_refs[7] == 4095);
+    const auto calls = native->calls.size();
+    for (ULONG map : { cm, cm2, ocm })
+        assert(obtain_pen(f, map) == 0xFFFFFFFF && !f.stopped());
+    assert(native->calls.size() == calls && f.ctx.pen_leases == 4096 && spare.node.psn_VisitorCount == 1);
+    // the input is checked first: a bad list still stops
+    assert(obtain_pen(f, ocm, 0xFFFFFFF8) == 20 && f.stopped() && native->calls.size() == calls);
+    assert(release_pen(f, ocm, 7) == 0 && obtain_pen(f, ocm) == 7 && f.ctx.pen_leases == 4096);
+    // the end of the program gives back each of the 4096 once
+    const auto frees = native->count(PEN_FREE);
+    Kaffeine_ScreensCleanup(&f.ctx);
+    assert(native->count(PEN_FREE) == frees + 4096 && pens.held.empty() && !f.ctx.pen_leases);
+    assert(wb.node.psn_VisitorCount == 0 && spare.node.psn_VisitorCount == 0);
+}
+
+/* A lease keeps a screen that the program did not open, its 68k Screen and
+   ColorMap snapshot, after the program's lock and window have gone, with
+   one visitor lock of the bridge for all its pens. The last release gives
+   back the pen, then the 68k Screen goes, then that visitor lock. */
+static void test_pen_borrowed_lifetime()
+{
+    Fixture f; pens = {};
+    f.ctx.layer_ops = &recording_layer_ops;
+    layer_op_calls.clear();
+    auto &wb = pen_public(f);
+    Screen *s = &wb.screen;
+    const ULONG g = f.lock(); assert(g);
+    const ULONG cm = f.lng(g + VP + 4);
+    const std::vector<UBYTE> snapshot(f.memory.begin() + cm, f.memory.begin() + cm + 52);
+    const auto locks = native->count(LOCK);
+    assert(obtain_pen(f, cm) == 7 && native->count(LOCK) == locks + 1 && wb.node.psn_VisitorCount == 2);
+    pens.results = { 7, 4 };
+    assert(obtain_pen(f, cm) == 7 && obtain_pen(f, cm) == 4 && native->count(LOCK) == locks + 1);
+    assert(wb.node.psn_VisitorCount == 2 && f.ctx.pubscreens[f.entry(g)].pen_lock);
+    Window w{}; w.WScreen = s;
+    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &w, KAFFEINE_SHADOW_WINDOW));
+    f.unlock(g);
+    Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
+    f.ctx.screen_release(&f.ctx, s);
+    // only the leases keep it now
+    assert(wb.node.psn_VisitorCount == 1 && Kaffeine_ScreenNative(&f.ctx, g) == s && f.entries() == 1);
+    assert(f.lng(g + VP + 4) == cm && std::equal(snapshot.begin(), snapshot.end(), f.memory.begin() + cm));
+    assert(Kaffeine_ShadowNative(&f.ctx, g + VP, KAFFEINE_SHADOW_VIEWPORT) == &s->ViewPort);
+    assert(std::none_of(layer_op_calls.begin(), layer_op_calls.end(),
+                        [](const LayerOpCall &c) { return c.name == "closing"; }));
+    // its ColorMap still takes and gives pens, without another visitor lock
+    assert(obtain_pen(f, cm) == 7 && native->count(LOCK) == locks + 1);
+    assert(release_pen(f, cm, 7) == 0 && release_pen(f, cm, 7) == 0 && release_pen(f, cm, 4) == 0);
+    assert(Kaffeine_ScreenNative(&f.ctx, g) == s && wb.node.psn_VisitorCount == 1);
+    const size_t mark = native->calls.size();
+    assert(release_pen(f, cm, 7) == 0 && !f.stopped());
+    assert(native->calls[mark].kind == PEN_FREE && native->calls[mark].screen == s);
+    size_t unlock_at = SIZE_MAX;
+    for (size_t i = mark; i < native->calls.size(); ++i)
+        if (native->calls[i].kind == UNLOCK && native->calls[i].screen == s) unlock_at = std::min(unlock_at, i);
+    assert(unlock_at != SIZE_MAX);
+    const auto closing = std::find_if(layer_op_calls.begin(), layer_op_calls.end(),
+                                      [s](const LayerOpCall &c) { return c.name == "closing" && c.screen == s; });
+    assert(closing != layer_op_calls.end() && closing->guest == g);
+    assert(closing->native_calls > mark && closing->native_calls <= unlock_at);
+    f.absent(g, s);
+    assert(wb.node.psn_VisitorCount == 0 && !f.entries() && f.ctx.num_shadows == 0 && f.avail() == f.initial_heap);
+    assert(pens.held.empty() && pen_frees(&wb.colormap, 7) == 3 && pen_frees(&wb.colormap, 4) == 1);
+    f.native_unlocks(s, 2);
+    // the stale ColorMap stops the program before graphics
+    const auto calls = native->calls.size();
+    assert(obtain_pen(f, cm) == 20 && f.stopped() && release_pen(f, cm, 7) == 20 && f.stopped());
+    assert(native->calls.size() == calls);
+    f.ctx.layer_ops = nullptr;
+}
+
+/* Leases, a DrawInfo copy and a VisualInfo each hold a borrowed screen on
+   their own, in either order of release; an opened screen with a DrawInfo
+   copy and a pen closes only after both. */
+static void test_pen_mixed_holds()
+{
+    for (bool pens_first : { false, true })
+    {
+        Fixture f; pens = {};
+        auto &wb = pen_public(f);
+        Screen *s = &wb.screen;
+        const ULONG g = f.lock(); assert(g);
+        const ULONG cm = f.lng(g + VP + 4);
+        const ULONG d = f.get_dri(g); assert(d && wb.node.psn_VisitorCount == 2);
+        assert(obtain_pen(f, cm) == 7 && wb.node.psn_VisitorCount == 3);
+        // a VisualInfo with its own visitor lock, as kaffeine_menus.c keeps one
+        assert(LockPubScreen(reinterpret_cast<CONST_STRPTR>("Workbench")) == s);
+        f.ctx.visualinfos[0].native = reinterpret_cast<APTR>(0x12345678);
+        f.ctx.visualinfos[0].screen = s; f.ctx.visualinfos[0].public_lock = TRUE;
+        f.unlock(g);
+        assert(wb.node.psn_VisitorCount == 3 && Kaffeine_ScreenNative(&f.ctx, g) == s);
+        if (pens_first)
+        {
+            assert(release_pen(f, cm, 7) == 0 && wb.node.psn_VisitorCount == 2);
+            assert(Kaffeine_ScreenNative(&f.ctx, g) == s && f.get_dri(g) == d && f.free_dri(g, d) == 0);
+        }
+        assert(f.free_dri(g, d) == 0 && !f.stopped() && !f.drawinfos());
+        assert(Kaffeine_ScreenNative(&f.ctx, g) == s);
+        if (!pens_first)
+        {
+            assert(wb.node.psn_VisitorCount == 2 && f.ctx.pubscreens[f.entry(g)].pen_lock);
+            assert(obtain_pen(f, cm) == 7 && release_pen(f, cm, 7) == 0 && wb.node.psn_VisitorCount == 2);
+            assert(release_pen(f, cm, 7) == 0);
+        }
+        assert(wb.node.psn_VisitorCount == 1 && Kaffeine_ScreenNative(&f.ctx, g) == s);
+        assert(!f.ctx.pen_leases && pens.held.empty() && native->dri_out.empty());
+        // the VisualInfo goes as visual_release() does: its entry, the 68k Screen, then its lock
+        f.ctx.visualinfos[0] = {};
+        f.ctx.screen_release(&f.ctx, s);
+        UnlockPubScreen(nullptr, s);
+        f.absent(g, s);
+        assert(wb.node.psn_VisitorCount == 0 && !f.entries());
+        f.native_unlocks(s, 4);
+    }
+    Fixture f; pens = {};
+    const ULONG g = f.open(0, 0); assert(g);
+    const ULONG cm = f.lng(g + VP + 4);
+    const ULONG d = f.get_dri(g); assert(d);
+    assert(obtain_pen(f, cm) == 7 && f.close(g) == 0);
+    assert(f.free_dri(g, d) == 0 && f.close(g) == 0 && !native->count(CLOSE));
+    assert(release_pen(f, cm, 7) == 0 && f.close(g) == 1 && native->count(CLOSE) == 1);
+}
+
+/* The end of the program, also after it stopped: every pen goes back to
+   graphics once, before any lock goes back, any DrawInfo is freed, any
+   screen closes or any font goes; an opened screen that keeps its window
+   stays open without them. A second cleanup does nothing. */
+static void test_pen_cleanup()
+{
+    Window w{};
+    Fixture f; pens = {};
+    auto &wb = pen_public(f);
+    const ULONG pub = f.lock(); assert(pub);
+    const ULONG pcm = f.lng(pub + VP + 4);
+    const ULONG g = f.open(0, 0); assert(g);
+    Screen *s = native->opened.back().result;
+    const ColorMap *ncm = s->ViewPort.ColorMap; // CloseScreen() overwrites the Screen
+    const ULONG cm = f.lng(g + VP + 4);
+    const ULONG busy = f.open(0, 0); assert(busy);
+    Screen *sb = native->opened.back().result;
+    const ULONG bcm = f.lng(busy + VP + 4);
+    w.WScreen = sb; sb->FirstWindow = &w;
+    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &w, KAFFEINE_SHADOW_WINDOW));
+    pens.results = { 7, 7, 9, 3, 5 };
+    assert(obtain_pen(f, cm) == 7 && obtain_pen(f, cm) == 7 && obtain_pen(f, cm) == 9);
+    assert(obtain_pen(f, pcm) == 3 && obtain_pen(f, bcm) == 5 && wb.node.psn_VisitorCount == 2);
+    assert(f.get_dri(pub) && f.get_dri(g) && f.locklist());
+    assert(obtain_pen(f, 0) == 20 && f.stopped());
+    const size_t mark = native->calls.size();
+    Kaffeine_ScreensCleanup(&f.ctx);
+    size_t frees = 0, last_free = 0, first_other = SIZE_MAX;
+    for (size_t i = mark; i < native->calls.size(); ++i)
+    {
+        const auto kind = native->calls[i].kind;
+        assert(kind != PEN_GET);
+        if (kind == PEN_FREE) { ++frees; last_free = i; }
+        if (kind == UNLOCK || kind == CLOSE || kind == DRI_FREE || kind == FONT_CLOSE)
+            first_other = std::min(first_other, i);
+    }
+    assert(frees == 5 && first_other != SIZE_MAX && last_free < first_other);
+    assert(pen_frees(ncm, 7) == 2 && pen_frees(ncm, 9) == 1 && pen_frees(&wb.colormap, 3) == 1);
+    assert(pens.held.empty() && !f.ctx.pen_leases && wb.node.psn_VisitorCount == 0 && native->list_depth == 0);
+    f.absent(g, s);
+    for (const auto &e : f.ctx.pubscreens) assert(!e.pens && !e.pen_lock);
+    assert(native->opened[0].closed && !native->opened[1].closed && Kaffeine_ScreenNative(&f.ctx, busy) == sb);
+    assert(!f.ctx.pubscreens[f.entry(busy)].pens && f.owned() == 1);
+    const auto calls = native->calls.size();
+    Kaffeine_ScreensCleanup(&f.ctx); assert(native->calls.size() == calls);
+    sb->FirstWindow = nullptr; Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
+}
+
 int main()
 {
     const struct Test { const char *name; void (*run)(); } tests[] =
@@ -3092,7 +3676,15 @@ int main()
         { "A copy keeps a locked screen after its locks, windows and VisualInfos; unholdable screens get none", test_drawinfo_borrowed_lifetime },
         { "CloseScreen refuses an opened screen while a get of its copy is left", test_drawinfo_owned_lifetime },
         { "Cleanup frees every left get before unlocks, closes and fonts, once", test_drawinfo_cleanup },
-        { "DrawImageState and GetDrawInfoAttr stop before generated consumers or native pointer reads", test_drawinfo_consumer_refusals }
+        { "DrawImageState and GetDrawInfoAttr stop before generated consumers or native pointer reads", test_drawinfo_consumer_refusals },
+        { "ObtainBestPenA -840 and ReleasePen -948 override poisoned fallbacks with every fd register", test_pen_registrations },
+        { "OBP_ tags flattened, first of each wins, PRECISION_EXACT sign-extended, other scalars 32-bit", test_pen_tags },
+        { "Unknown, forged or stale ColorMaps and bad tag lists stop before graphics; unleased releases reach nothing", test_pen_refusals },
+        { "Shared pens counted natively; CloseScreen refuses an opened screen with pens until released", test_pen_owned },
+        { "Native failure, untrackable pens, unholdable screens and the 4096 cap keep nothing; cleanup frees 4096 once", test_pen_failures },
+        { "A lease keeps a borrowed screen after unlock and window; the last release retires before its visitor lock", test_pen_borrowed_lifetime },
+        { "Pen leases mix with DrawInfo copies and VisualInfos in either order", test_pen_mixed_holds },
+        { "Cleanup gives back every pen once before any unlock, DrawInfo free, close or font, also after a stop", test_pen_cleanup }
     };
     for (const auto &test : tests)
     {
