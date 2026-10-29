@@ -1,8 +1,8 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    A hosted AArch64 translation probe for kaffeine, behind struct
-    KaffeineCPUOps (docs/kaffeine/hosted-jit-probe.md). It translates a small
+    Experimental AArch64 translation backend for kaffeine, behind struct
+    KaffeineCPUOps (docs/kaffeine/hosted-jit-probe.md). It translates a
     subset of 68k instructions into AArch64 blocks and runs them through the
     production run loop, library dispatcher and callback primitive. It was
     written for this experiment and contains no Emu68 code.
@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <aros/debug.h>
 
 #include <dos/dos.h>
 #include "kaffeine_intern.h"
@@ -27,7 +28,8 @@
 #include "kaffeine_cpu.h"
 #include "kaffeine_callback.h"
 #include "kaffeine_dispatch.h"
-#include "hosted_jit.h"
+#include "kaffeine_sched.h"
+#include "kaffeine_jit.h"
 
 #if defined(__AROS__)
 #include <aros/config.h>
@@ -407,7 +409,7 @@ struct HJState
     uint32_t sr_high;           /*  72: SR bits 15..8 */
     uint32_t abort;             /*  76 */
     uint32_t limit;             /*  80 */
-    uint32_t spare;             /*  84 */
+    uint32_t slice_budget;      /*  84 */
     UBYTE *mem;                 /*  88 */
     void *fast;                 /*  96 */
     void *slow;                 /* 104 */
@@ -419,6 +421,7 @@ struct HJState
 #define ST_SRHI   72
 #define ST_ABORT  76
 #define ST_LIMIT  80
+#define ST_BUDGET 84
 #define ST_MEM    88
 #define ST_FAST   96
 #define ST_SLOW  104
@@ -429,6 +432,7 @@ _Static_assert(offsetof(struct HJState, flags) == ST_FLAGS, "state layout");
 _Static_assert(offsetof(struct HJState, sr_high) == ST_SRHI, "state layout");
 _Static_assert(offsetof(struct HJState, abort) == ST_ABORT, "state layout");
 _Static_assert(offsetof(struct HJState, limit) == ST_LIMIT, "state layout");
+_Static_assert(offsetof(struct HJState, slice_budget) == ST_BUDGET, "state layout");
 _Static_assert(offsetof(struct HJState, mem) == ST_MEM, "state layout");
 _Static_assert(offsetof(struct HJState, fast) == ST_FAST, "state layout");
 _Static_assert(offsetof(struct HJState, slow) == ST_SLOW, "state layout");
@@ -481,9 +485,11 @@ struct HJBackend
     UBYTE *guest_bytes;
     size_t guest_used;
     uint32_t epoch;
+    unsigned long long generation;
     uint32_t *scratch;
     struct HJTrans *trans;
     int faulted;
+    int library_mode;
     unsigned depth;
     char fault[192];
     struct HJStats stats;
@@ -1118,6 +1124,18 @@ static int decode_insn(struct KaffeineContext *ctx, uint32_t pc, struct HJInsn *
     return ok;
 }
 
+/* Library execution cannot silently discard a stack-bank switch, trace
+   or privilege exception. Keep full SR writes outside this first model;
+   CCR-only instructions and native flag updates remain supported. */
+static void decode_backend(struct KaffeineContext *ctx, uint32_t pc,
+                           struct HJInsn *in, int library_mode)
+{
+    decode_insn(ctx, pc, in);
+    if (library_mode && (in->kind == K_MOVETOSR ||
+        (in->kind == K_LOGICSR && in->size == 2)))
+        fault_insn(in, "full SR write is outside the library JIT model");
+}
+
 static int is_terminator(int kind)
 {
     return kind == K_BCC || kind == K_BSR || kind == K_DBCC || kind == K_JSR ||
@@ -1157,6 +1175,7 @@ struct HJTrans
     const struct HJInsn *in;
     struct HJStub stub[HJ_MAX_STUBS];
     unsigned nstub;
+    int library_mode;
 };
 
 static int step_of(int size, int reg) { return size == 1 && reg == 7 ? 2 : size; }
@@ -2698,7 +2717,7 @@ static unsigned translate_into(struct KaffeineContext *ctx, struct HJTrans *t, u
 
     while (n < max)
     {
-        decode_insn(ctx, at, &insns[n]);
+        decode_backend(ctx, at, &insns[n], t->library_mode);
         at = insns[n].next;
         if (is_terminator(insns[n++].kind))
             break;
@@ -2835,7 +2854,7 @@ static void emit_glue(struct HJBackend *b, struct HJEmit *e)
     put(e, a64_ldst_uimm(3, 1, R_MEM, R_STATE, ST_MEM));
     put(e, a64_ldst_uimm(2, 1, R_FLAGS, R_STATE, ST_FLAGS));
     put(e, a64_ldst_uimm(2, 1, R_LIMIT, R_STATE, ST_LIMIT));
-    emit_mov32(e, R_BUDGET, HJ_BUDGET);
+    put(e, a64_ldst_uimm(2, 1, R_BUDGET, R_STATE, ST_BUDGET));
     glue_regs(e, 1);
     put(e, a64_br(R_VAL));
 
@@ -2919,6 +2938,8 @@ static void stop_fault(struct HJBackend *b, const char *kind, uint32_t pc)
         ctx->callback_failed = TRUE;
     b->st.abort = 1;
     snprintf(b->fault, sizeof(b->fault), "%s at PC=0x%08lx", kind, (unsigned long)pc);
+    if (b->library_mode)
+        bug("[kaffeine] JIT stopped: %s\n", b->fault);
 }
 
 /* The custom chip registers as AROSMoira emulates them. */
@@ -3076,6 +3097,7 @@ static struct HJBlock *translate(struct HJBackend *b, uint32_t pc)
             t->e.cap = HJ_SCRATCH_WORDS;
             t->e.origin = (uintptr_t)(b->code + b->code_used);
             t->g_exit = b->g_exit; t->g_lookup = b->g_lookup; t->g_budget = b->g_budget;
+            t->library_mode = b->library_mode;
             memcpy(t->g_slow, b->g_slow, sizeof(t->g_slow));
             n = translate_into(b->ctx, t, pc, max, &end);
             if (!t->e.bad || max == 1)
@@ -3165,6 +3187,11 @@ static void hj_set_sr(void *s, UWORD v)
 {
     struct HJBackend *b = s;
 
+    if (b->library_mode && (v & 0xF000u) != 0x2000u)
+    {
+        stop_fault(b, "SR mode/trace change is outside the library JIT model", b->st.pc);
+        return;
+    }
     b->st.sr_high = (v >> 8) & 0xF7u;
     b->st.flags = swap_cv(v & 0x1Fu);
 }
@@ -3195,6 +3222,15 @@ static void dispatch_linea(struct HJBackend *b, uint32_t pc)
     b->st.pc = result.return_pc;
 }
 
+static void hj_invalidate(struct HJBackend *b)
+{
+    if (++b->epoch == 0)
+        reset_code(b);
+    b->generation = b->ctx->jit_generation;
+    b->stats.flushes++;
+    fast_clear(b);
+}
+
 static void hj_execute(void *state)
 {
     struct HJBackend *b = state;
@@ -3202,6 +3238,15 @@ static void hj_execute(void *state)
     uint32_t pc = b->st.pc, reason;
     struct HJBlock *blk;
 
+    if (b->generation != ctx->jit_generation)
+        hj_invalidate(b);
+    if (b->library_mode && pc == KAFFEINE_TASK_EXIT_ADDR)
+    {
+        if (!ctx->sched || ctx->callback_depth)
+            stop_fault(b, "invalid guest task return", pc);
+        /* The outer run loop lets the scheduler retire this child. */
+        return;
+    }
     if (Kaffeine_IsCallbackReturn(pc) ||
         (ctx->callback_depth && ((pc & 1) || pc >= ctx->mem_size || ctx->mem_size - pc < 2)))
     {
@@ -3245,7 +3290,7 @@ static void hj_execute(void *state)
         {
             struct HJInsn in;
 
-            decode_insn(ctx, b->st.pc, &in);
+            decode_backend(ctx, b->st.pc, &in, b->library_mode);
             stop_fault(b, in.why ? in.why : "unexpected fault exit", b->st.pc);
         }
     }
@@ -3263,9 +3308,8 @@ static void hj_flush_code(void *state, ULONG addr, ULONG size)
 
     (void)addr;
     (void)size;
-    b->epoch++;
-    b->stats.flushes++;
-    fast_clear(b);
+    ++b->ctx->jit_generation;
+    hj_invalidate(b);
 }
 
 static const struct KaffeineCPUOps hj_ops =
@@ -3497,6 +3541,8 @@ struct HJBackend *HJ_Create(struct KaffeineContext *ctx)
     b->st.fast = b->fast;
     b->st.slow = (void *)(uintptr_t)slow_access;
     b->st.backend = b;
+    b->st.slice_budget = HJ_BUDGET;
+    b->generation = ctx->jit_generation;
     fast_clear(b);
 
     memset(&e, 0, sizeof(e));
@@ -3505,7 +3551,10 @@ struct HJBackend *HJ_Create(struct KaffeineContext *ctx)
     e.origin = (uintptr_t)b->code;
     emit_glue(b, &e);
     if (e.bad)
-        abort();
+    {
+        HJ_Destroy(b);
+        return NULL;
+    }
     code_write_begin(b);
     memcpy(b->code, b->scratch, 4u * e.n);
     code_write_end(b, b->code, e.n);
@@ -3540,6 +3589,39 @@ void HJ_Destroy(struct HJBackend *b)
     free(b);
 }
 
+struct HJBackend *HJ_CreateLibrary(struct KaffeineContext *ctx)
+{
+    struct HJBackend *b = HJ_Create(ctx);
+
+    if (b)
+    {
+        b->library_mode = 1;
+        b->st.sr_high = 0x27;
+        /* The bridge polls its GUI and schedules tasks between CPU slices.
+           Return after one block/back edge, including busy guest loops. */
+        b->st.slice_budget = 1;
+    }
+    return b;
+}
+
+static struct KaffeineCPU *jit_task_create(struct KaffeineContext *ctx)
+{
+    struct HJBackend *b = HJ_CreateLibrary(ctx);
+
+    return b ? &b->handle : NULL;
+}
+
+static void jit_task_destroy(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
+{
+    (void)ctx;
+    HJ_Destroy(cpu->backend_state);
+}
+
+static const struct KaffeineCPUFactory jit_cpu_factory =
+{
+    jit_task_create, jit_task_destroy
+};
+
 LONG HJ_Execute(struct HJBackend *b)
 {
     struct KaffeineContext *ctx = b->ctx;
@@ -3561,9 +3643,32 @@ LONG HJ_Execute(struct HJBackend *b)
     b->st.d[0] = ctx->m68k_argsize;
     b->st.a[6] = ctx->m68k_sysbase;
     b->st.pc = ctx->entry_point;
+    if (b->library_mode)
+        ctx->cpu_factory = &jit_cpu_factory;
     result = Kaffeine_RunCPU(ctx, &b->handle);
+    if (b->library_mode)
+        ctx->cpu_factory = NULL;
     ctx->exit_code = b->faulted ? RETURN_FAIL : result;
     return ctx->exit_code;
+}
+
+LONG Kaffeine_ExecuteJIT(struct KaffeineContext *ctx)
+{
+    struct HJBackend *b = HJ_CreateLibrary(ctx);
+    LONG result;
+
+    if (!b)
+    {
+        bug("[kaffeine] JIT unavailable on this host or CPU allocation failed\n");
+        ctx->running = FALSE;
+        return ctx->exit_code = RETURN_FAIL;
+    }
+    bug("[kaffeine] CPU backend: Kaffeine JIT (experimental)\n");
+    result = HJ_Execute(b);
+    bug("[kaffeine] JIT: %lu blocks, %lu translated instructions, %lu entries\n",
+        b->stats.blocks, b->stats.guest_insns, b->stats.enters);
+    HJ_Destroy(b);
+    return result;
 }
 
 const struct HJStats *HJ_GetStats(const struct HJBackend *b)

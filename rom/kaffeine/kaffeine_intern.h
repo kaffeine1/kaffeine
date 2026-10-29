@@ -218,6 +218,9 @@ struct KaffeineContext
     /* The CPU in Kaffeine_RunCPU(), NULL outside it: the loaders of 68k
        code have no CPU handle to tell its backend that code changed. */
     struct KaffeineCPU *cpu;
+    /* JIT CPUs share the arena, but own separate translation caches.
+       A flush by one CPU invalidates the others at their next slice. */
+    unsigned long long jit_generation;
     /* Guest tasks (kaffeine_sched.c): the scheduler while the program has
        AddTask() children, else NULL; its entry points, without which
        AddTask() stops the program; and the backend's CPU factory while its

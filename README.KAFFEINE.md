@@ -32,8 +32,8 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   `ExAll()` match hooks, layer backfill hooks and the output routines of
   `RawDoFmt()`, nested up to 16 deep.
 - Cooperative guest child tasks created with `AddTask()` and removed with
-  `RemTask()` run inside Moira in the same 32 MB guest arena, each with its
-  own Moira CPU and checked stack, scheduled by priority and round-robin
+  `RemTask()` run in the same 32 MB guest arena, each with its own CPU for
+  the selected backend and a checked stack, scheduled by priority and round-robin
   slices across `Forbid()`/`Permit()`, `Disable()`/`Enable()`, `Wait()`,
   `WaitPort()`, `Signal()` and guest message queues.
 - A 68k library that AROS does not have, such as the `bullet.library` of
@@ -81,17 +81,23 @@ Exec lists retain empty guest headers with valid sentinels and native
 identities for intercepted lookups. Public guest ports and semaphores have
 their own guest nodes.
 
-The production AROS path still uses the Moira interpreter. Complete
+The default AROS path uses the Moira interpreter; standalone AArch64 can
+also select the experimental JIT. Complete
 application operation, an FPU, new guest DOS processes (`CreateProc`,
 `CreateNewProc`), general asynchronous device I/O, communication between
 separate guest contexts and physical hardware remain unverified or
 unsupported within the current contracts.
 
-## The CPU: Moira now, the kaffeine JIT next
+## The CPU: Moira and the experimental Kaffeine JIT
 
 `kaffeine.library` uses `struct KaffeineCPUOps`
 ([BACKENDS.md](rom/kaffeine/BACKENDS.md)). Moira is the operational 68k
 interpreter and the reference for extending the execution engine.
+
+The [experimental library backend](docs/kaffeine/jit-backend.md) is
+selected with `Set KAFFEINE_CPU jit`. It uses independent guest-task CPUs,
+bounded translated slices and shared-arena code invalidation. Unsupported
+operations stop explicitly, without switching interpreters.
 
 A [standalone AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md)
 executes a growing 68k instruction subset through the same interface and
@@ -100,8 +106,7 @@ the JIT using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE`;
 the instruction corpus carries expected results computed with Moira on
 the host, without linking Moira into the native executable. See
 the [native probe](developer/debug/test/kaffeine_native/README.md). Its
-microbenchmarks do not establish application speed inside AROS. A production
-JIT or hybrid backend needs explicit state and transition contracts covering
+microbenchmarks do not establish application speed inside AROS. A hybrid backend would need explicit state and transition contracts covering
 the relevant exception, stack, prefetch, control-register, per-task CPU and
 FPU state, beyond D0-D7, A0-A7, PC and SR alone.
 
@@ -148,8 +153,9 @@ The current test and target baseline includes:
 
 | Environment | Result |
 | --- | --- |
-| macOS arm64 and Linux CI | All 47 host executables pass; the macOS JIT run passes 3,778 checks. The registration audit checks 319 native-vector cases and 544 manual thunks across 18 tables |
+| macOS arm64 and Linux CI | All 47 host executables pass; the macOS JIT run passes 3,797 checks. The registration audit checks 319 native-vector cases and 544 manual thunks across 18 tables |
 | Focused ASan/UBSan JIT build | 304 bitfield boundary checks, 164 extended-instruction checks and 256 randomized programs pass |
+| Library JIT on AROS AArch64/QEMU | Relocated HUNK, 17 hook checks, 12 guest-task checks, 120 window checks, 7 child-window checks and the 12-check native API client pass in Shell and `Run`; the default remains Moira |
 | Standalone AROS AArch64 JIT probe in QEMU | `jit_probe` passes 38 checks in Shell and `Run`; a separate instruction corpus passes 490 checks covering 432 programs and eight callback boundary cases in each mode |
 | AROS AArch64 in QEMU | Synthetic CLI/GUI probes, the 6-step `bzip2 1.0.8` self-test and the 7-step IJG JPEG `9f` self-test pass in both Shell and `Run` modes |
 | Personal Paint 7.2.1.0 on AROS AArch64 in QEMU | Original 68k executable opens from a desktop icon through the `CLI` route, draws, saves a 1024×768 ILBM image and returns to the desktop; [video, screenshots and output](docs/kaffeine/personal-paint-demo.md) are available |

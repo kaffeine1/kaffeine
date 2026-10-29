@@ -5,8 +5,8 @@
     scheduler, run loop and dispatcher compiled as C. Part one runs mock
     CPUs from a mock backend factory, whose instructions are literal
     register and memory effects, over a recording native Exec. Part two
-    runs an original 68k parent and child (guest_tasks_68k.s) on real
-    Moira CPUs, instruction by instruction.
+    runs an original 68k parent and child (guest_tasks_68k.s) on Moira and
+    JIT CPUs, and checks explicit JIT faults in a child.
 */
 #ifdef NDEBUG
 #undef NDEBUG
@@ -28,6 +28,7 @@
 #include "kaffeine_callback.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_messages.h"
+#include "kaffeine_jit.h"
 
 #include "Moira/Moira.cpp"
 #include "Moira/MoiraDebugger.cpp"
@@ -1138,7 +1139,7 @@ static const UWORD moira_child[] =
     0x4E75                          /* RTS                      */
 };
 
-static void test_moira_parent_and_child()
+static void test_backend_parent_and_child(bool jit)
 {
     World w;
     w.child(0, 0, "moira child");
@@ -1147,15 +1148,38 @@ static void test_moira_parent_and_child()
     at = CODE;
     for (UWORD word : moira_child) { m68k_write16(&w.ctx, at, word); at += 2; }
     w.ctx.entry_point = ROOT_CODE;
-    LONG result = Kaffeine_Execute(&w.ctx);
-    check(result == 42, "Moira: the parent returns the value that the child stored");
+    LONG result = jit ? Kaffeine_ExecuteJIT(&w.ctx) : Kaffeine_Execute(&w.ctx);
+    check(result == 42, "backend: the parent returns the value that the child stored");
     check(w.at(0xA000) == TCB(0) && w.at(0xA010) == ROOT && w.at(0xA014) == TCB(0),
-          "Moira: AddTask() returns the Task, FindTask(NULL) is each task's own");
+          "backend: AddTask() returns the Task, FindTask(NULL) is each task's own");
     check(w.at(0xA004) == 0x8000 && w.at(0xA008) == 0x8000 && w.at(0xA018) == 0x4000,
-          "Moira: parent and child each resume from Wait() with the other's signal");
+          "backend: parent and child each resume from Wait() with the other's signal");
     check(!w.ctx.sched && !w.ctx.cpu_factory && allocmems == freemems && !native_recvd &&
           w.at(SYSBASE + 276) == ROOT && w.mem[TCB(0) + 15] == 6 && !native_waits,
-          "Moira: the child ended and the program is the root alone again");
+          "backend: the child ended and the program is the root alone again");
+}
+
+static void test_jit_child_faults()
+{
+    for (bool full_sr : { false, true })
+    {
+        World w;
+        w.child(0, 0, "faulting JIT child");
+        ULONG at = ROOT_CODE;
+        for (UWORD word : moira_parent) { m68k_write16(&w.ctx, at, word); at += 2; }
+        m68k_write16(&w.ctx, CODE, full_sr ? 0x46FC : 0x4AFC);
+        m68k_write16(&w.ctx, CODE + 2, 0); /* MOVE #0,SR or unreachable data */
+        m68k_write16(&w.ctx, CODE + 4, 0x23FC); /* unreachable MOVE.L #0,$A00C */
+        w.put(CODE + 6, 0); w.put(CODE + 10, 0xA00C);
+        w.put(0xA00C, 0x12345678);
+        w.ctx.entry_point = ROOT_CODE;
+        check(Kaffeine_ExecuteJIT(&w.ctx) == 20,
+              "a JIT fault in a child ends the whole program with RETURN_FAIL");
+        check(w.at(0xA00C) == 0x12345678,
+              "the child never resumes after an unsupported opcode or full SR write");
+        check(!w.ctx.cpu && !w.ctx.cpu_factory && !w.ctx.sched && allocmems == freemems,
+              "a child's JIT fault releases the scheduler and every CPU");
+    }
 }
 
 int main()
@@ -1179,7 +1203,14 @@ int main()
     test_unroutable_native_port();
     test_end_cleanup();
     test_native_routing();
-    test_moira_parent_and_child();
+    test_backend_parent_and_child(false);
+    if (HJ_Available())
+    {
+        test_backend_parent_and_child(true);
+        test_jit_child_faults();
+    }
+    else
+        std::printf("SKIP: JIT parent/child execution needs an AArch64 JIT host\n");
     std::printf("Guest task scheduler: %u/%u checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }
