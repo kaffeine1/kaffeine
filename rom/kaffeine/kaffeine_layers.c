@@ -29,10 +29,20 @@
     native layer, before or after it is gone.
 
     A 68k Layer is owned when it is the WLayer of a window of the program;
-    every other layer of the topology, such as the screen bar, the border
-    layer of a GZZ window, requester layers and the windows of other
-    programs, is borrowed: the program can read it, but no call of the
-    bridge changes or locks it. The bar of a screen the program opened
+    the layer of an active requester of Request() on such a window is a
+    requester layer, of its own kind, never the window's WLayer; every
+    other layer of the topology, such as the screen bar, the border layer
+    of a GZZ window, requester layers of other windows and the windows of
+    other programs, is borrowed: the program can read it, but no call of
+    the bridge changes or locks it. A requester layer supports typed
+    RastPort drawing and owned clip Regions, but no direct layer locks or
+    depth changes. It stays the same 68k Layer while its requester is
+    active, also when a snapshot misses it or goes, and has a typed 68k
+    RastPort of its own as rp, which shares the typed BitMap of its
+    window's RastPort when both draw into the same native BitMap; the
+    requester bridge (kaffeine_requester.c) makes both after native
+    Request() and lets them go before native EndRequest(), through
+    ctx->layer_ops. The bar of a screen the program opened
     additionally exposes its typed RastPort, so drawing through BarLayer.rp
     works; this mirror retires before the screen closes. A borrowed public
     screen never acquires this drawing access. A screen has a snapshot while the program
@@ -139,15 +149,22 @@
     LayerInfos are disposed of; a LayerInfo that still has a layer then is
     never disposed of, and keeps its common BitMap.
 
-    InstallClipRegion() takes such a layer and NULL or a Region of
+    InstallClipRegion() takes such a layer, the layer of a window of the
+    program or of an active requester on one, and NULL or a Region of
     NewRegion() of the program (kaffeine_regions.c), whose real native
-    Region it installs; Layer.ClipRegion shows the 68k Region, and the
-    previous one comes back to the program as it gave it. A Region may
-    clip several private layers; each of them leases it, so that it can
-    neither change nor be disposed of while a native layer uses it. The
-    clip Region leaves the native layer before DeleteLayer(), also before
-    a deletion of the bridge, and comes back when layers keeps the layer;
-    the Regions themselves go only after every layer, at the end.
+    Region it installs; Layer.ClipRegion shows the 68k Region, also in
+    later snapshots, and the previous one comes back to the program as it
+    gave it. A Region may clip several layers; each of them leases it, so
+    that it can neither change nor be disposed of while a native layer uses
+    it. The clip Region leaves the native layer before DeleteLayer(), also
+    before a deletion of the bridge, and comes back when layers keeps the
+    layer; it leaves a window or requester layer before the window closes
+    or the requester ends, and at the end. A window or requester layer
+    takes one only with a sentinel BackFill, which it keeps until then, so
+    that no clip change calls a hook that may be a guest address, and
+    never over a native clip Region that the bridge did not install;
+    borrowed layers take none. The Regions themselves go only after every
+    layer, at the end.
 
     BltBitMap() of graphics takes three kinds of 68k BitMap, as source and
     as destination. A common BitMap: the 68k BitMap that the first layer
@@ -207,12 +224,12 @@
 #include <proto/layers.h>
 #include <string.h>
 
-enum { LR_FREE = 0, LR_OWNED = 1, LR_BORROWED = 2, LR_PRIVATE = 3 };
+enum { LR_FREE = 0, LR_OWNED = 1, LR_BORROWED = 2, LR_PRIVATE = 3, LR_REQUESTER = 4 };
 
 struct LayerPrivate;
 
 /* One 68k Layer. graph is the screen whose snapshot holds it, -1 for an
-   owned one between snapshots and for a private one. lflags_pub and
+   owned or requester one between snapshots and for a private one. lflags_pub and
    wflags_pub are the LAYERBACKDROP and WFLG_BACKDROP bits that the bridge
    wrote last: a different bit in guest memory is the program's, not yet
    used. A private one, of CreateUpfrontHookLayer(), has no native layer
@@ -221,8 +238,9 @@ struct LayerRecord
 {
     ULONG guest;
     struct Layer *native;
-    struct Window *window;      /* owned: the window of the program */
-    ULONG window_guest;         /* owned: its 68k Window */
+    struct Window *window;      /* owned: the window of the program; requester: its window */
+    ULONG window_guest;         /* owned, requester: that 68k Window */
+    ULONG rp;                   /* requester: its typed 68k RastPort, the record's own */
     WORD graph;
     UBYTE kind;
     UBYTE seen;
@@ -231,6 +249,8 @@ struct LayerRecord
     ULONG lock_task;            /* guest owner, distinct from the native task */
     ULONG wflags_pub;
     struct LayerPrivate *priv;  /* private: what it keeps natively */
+    ULONG clip_guest;           /* owned, requester: its clip Region of the program, leased */
+    struct Region *clip_native; /* the native one, installed in the layer */
 };
 
 /* The common BitMap of a LayerInfo of NewLayerInfo(), in native memory of
@@ -397,14 +417,16 @@ static int layers_record_guest(struct KaffeineLayers *st, ULONG guest)
     return -1;
 }
 
-/* The record of a native layer in snapshot g, or an owned one anywhere */
+/* The record of a native layer in snapshot g, or an owned or requester one
+   anywhere */
 static int layers_record_native(struct KaffeineLayers *st, const struct Layer *l, int g)
 {
     int i;
 
     for (i = 0; l && i < KAFFEINE_LAYER_MAX_RECORDS; i++)
         if (st->records[i].kind != LR_FREE && st->records[i].native == l &&
-            (st->records[i].kind == LR_OWNED || st->records[i].graph == g))
+            (st->records[i].kind == LR_OWNED || st->records[i].kind == LR_REQUESTER ||
+             st->records[i].graph == g))
             return i;
     return -1;
 }
@@ -457,7 +479,9 @@ static void layers_hook_free(struct KaffeineContext *ctx, struct LayerHook *h)
     h->owner = -1;
 }
 
-/* The 68k Layer goes, with the hook handles of its layer */
+/* The 68k Layer goes, with the hook handles of its layer and the typed
+   68k RastPort of a requester layer, which goes first, once. Touches
+   nothing native. */
 static void layers_record_free(struct KaffeineContext *ctx, struct KaffeineLayers *st, int ri)
 {
     struct LayerRecord *r = &st->records[ri];
@@ -466,6 +490,11 @@ static void layers_record_free(struct KaffeineContext *ctx, struct KaffeineLayer
     for (i = 0; i < KAFFEINE_LAYER_MAX_HOOKS; i++)
         if (st->hooks[i].guest && st->hooks[i].owner == ri)
             layers_hook_free(ctx, &st->hooks[i]);
+    if (r->rp)
+    {
+        Kaffeine_RastPortDelete(ctx, r->rp);
+        r->rp = 0;
+    }
     if (ctx->mem && r->guest)
         memset(ctx->mem + r->guest, 0, M68K_SIZEOF_LAYER);
     Kaffeine_MirrorRelease(ctx, r->guest);
@@ -575,8 +604,8 @@ static void layers_record_detach(struct KaffeineContext *ctx, struct LayerRecord
 }
 
 /* The snapshot of a screen goes, before the screen may close or its 68k
-   Screen goes: borrowed 68k Layers go, owned ones stay with their windows.
-   Touches nothing native. */
+   Screen goes: borrowed 68k Layers go, owned and requester ones stay with
+   their windows and requesters. Touches nothing native. */
 static void layers_bar_rp_free(struct KaffeineContext *ctx, ULONG guest)
 {
     Kaffeine_RastPortDetach(ctx, guest);
@@ -595,7 +624,7 @@ static void layers_graph_retire(struct KaffeineContext *ctx, struct KaffeineLaye
     {
         if (st->records[i].kind == LR_FREE || st->records[i].graph != g)
             continue;
-        if (st->records[i].kind == LR_OWNED)
+        if (st->records[i].kind == LR_OWNED || st->records[i].kind == LR_REQUESTER)
             layers_record_detach(ctx, &st->records[i]);
         else
             layers_record_free(ctx, st, i);
@@ -775,7 +804,8 @@ static void layers_publish(struct KaffeineContext *ctx, struct KaffeineLayers *s
     m68k_write32(ctx, a + M68K_LAYER_BACKFILL, layers_hook_guest(ctx, st, ri, s->backfill, TRUE));
     m68k_write32(ctx, a + M68K_LAYER_RESERVED1, 0);
     m68k_write32(ctx, a + M68K_LAYER_CLIPREGION,
-                 r->kind == LR_PRIVATE && r->priv ? r->priv->clip_guest : 0);
+                 r->kind == LR_PRIVATE ? (r->priv ? r->priv->clip_guest : 0) :
+                 r->kind == LR_OWNED || r->kind == LR_REQUESTER ? r->clip_guest : 0);
     m68k_write32(ctx, a + M68K_LAYER_SAVECLIPRECTS, 0);
     m68k_write16(ctx, a + M68K_LAYER_WIDTH, (UWORD)s->width);
     m68k_write16(ctx, a + M68K_LAYER_HEIGHT, (UWORD)s->height);
@@ -836,9 +866,10 @@ static BOOL layers_graph_publish(struct KaffeineContext *ctx, struct KaffeineLay
 
         if (r->kind == LR_FREE || r->graph != g || r->seen)
             continue;
-        if (r->kind == LR_OWNED)
+        if (r->kind == LR_OWNED || r->kind == LR_REQUESTER)
         {
-            /* a window of the program whose layer is not in the list */
+            /* a window or requester of the program whose layer is not in
+               the list */
             m68k_write32(ctx, r->guest + M68K_LAYER_FRONT, 0);
             m68k_write32(ctx, r->guest + M68K_LAYER_BACK, 0);
             m68k_write32(ctx, r->guest + M68K_LAYER_LAYERINFO, info);
@@ -886,9 +917,11 @@ void Kaffeine_LayersRefresh(struct KaffeineContext *ctx)
     for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
         if (ctx->pubscreens[i].guest && ctx->pubscreens[i].native)
             layers_graph_ensure(st, ctx->pubscreens[i].native);
-    /* owned 68k Layers whose snapshot went while their window stayed */
+    /* owned and requester 68k Layers whose snapshot went while their
+       window stayed */
     for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; i++)
-        if (st->records[i].kind == LR_OWNED && st->records[i].graph < 0)
+        if ((st->records[i].kind == LR_OWNED || st->records[i].kind == LR_REQUESTER) &&
+            st->records[i].graph < 0)
             st->records[i].graph = (WORD)layers_graph_ensure(st, st->records[i].window->WScreen);
     for (i = 0; i < KAFFEINE_LAYER_MAX_GRAPHS; i++)
     {
@@ -952,11 +985,71 @@ static BOOL layers_window_opened(struct KaffeineContext *ctx, ULONG mw, struct W
     return TRUE;
 }
 
+/* The 68k Layer of record ri leaves the 68k list of its snapshot, as
+   DeleteLayer() takes its layer out of the native one. Touches nothing
+   native. */
+static void layers_record_unlink(struct KaffeineContext *ctx, struct KaffeineLayers *st, int ri)
+{
+    ULONG guest = st->records[ri].guest, front, back, info;
+    int g = st->records[ri].graph;
+
+    front = m68k_read32(ctx, guest + M68K_LAYER_FRONT);
+    back = m68k_read32(ctx, guest + M68K_LAYER_BACK);
+    if (layers_record_guest(st, front) >= 0 && m68k_read32(ctx, front + M68K_LAYER_BACK) == guest)
+        m68k_write32(ctx, front + M68K_LAYER_BACK, back);
+    if (layers_record_guest(st, back) >= 0 && m68k_read32(ctx, back + M68K_LAYER_FRONT) == guest)
+        m68k_write32(ctx, back + M68K_LAYER_FRONT, front);
+    if (g >= 0 && (info = st->graphs[g].info) &&
+        m68k_read32(ctx, info + M68K_LI_TOP_LAYER) == guest)
+        m68k_write32(ctx, info + M68K_LI_TOP_LAYER, back);
+}
+
+/* Whether a native BackFill runs nothing but layers' own code: the two
+   sentinels. Any other hook of a window or requester layer may have come
+   from the program through WA_BackFill, so it may be a guest address that
+   native code would call. */
+static BOOL layers_backfill_sentinel(const struct Hook *h)
+{
+    return h == LAYERS_BACKFILL || h == LAYERS_NOBACKFILL;
+}
+
+/* The clip Region that the bridge installed in the layer of owned or
+   requester record ri leaves it, and its lease goes. Only while the native
+   layer still exists: before the window closes, before EndRequest(), or at
+   the end for a window or requester that is still open. Under the layer
+   lock, which the native call nests on, and only when the layer still
+   clips with that Region; a BackFill that is no sentinel is replaced by
+   LAYERS_NOBACKFILL first, so the backfill of the uninstall runs no guest
+   address. Nothing for a record without a clip Region. */
+static void layers_clip_release(struct KaffeineContext *ctx, struct KaffeineLayers *st, int ri)
+{
+    struct LayerRecord *r = &st->records[ri];
+    struct Layer *l = r->native;
+
+    if (!r->clip_guest && !r->clip_native)
+        return;
+    if (l && r->clip_native)
+    {
+        LockLayer(0, l);
+        if (l->ClipRegion == r->clip_native)
+        {
+            if (!layers_backfill_sentinel(l->BackFill))
+                InstallLayerHook(l, LAYERS_NOBACKFILL);
+            InstallClipRegion(l, NULL);
+        }
+        UnlockLayer(l);
+    }
+    Kaffeine_RegionUnlease(ctx, r->clip_guest);
+    r->clip_guest = 0;
+    r->clip_native = NULL;
+    m68k_write32(ctx, r->guest + M68K_LAYER_CLIPREGION, 0);
+}
+
 static void layers_window_closing(struct KaffeineContext *ctx, ULONG mw, struct Window *w)
 {
     struct KaffeineLayers *st = ctx->layers;
     struct LayerRecord *r;
-    ULONG guest, front, back, rp, info;
+    ULONG guest, rp;
     int ri, g, i;
 
     (void)w;
@@ -968,16 +1061,10 @@ static void layers_window_closing(struct KaffeineContext *ctx, ULONG mw, struct 
     /* the program's locks go back before Intuition deletes the layer */
     for (; r->locks; r->locks--, st->locks--)
         UnlockLayer(r->native);
+    /* and its clip Region, which Intuition would not take out */
+    layers_clip_release(ctx, st, ri);
     /* the layer leaves the list as DeleteLayer() takes it out */
-    front = m68k_read32(ctx, guest + M68K_LAYER_FRONT);
-    back = m68k_read32(ctx, guest + M68K_LAYER_BACK);
-    if (layers_record_guest(st, front) >= 0 && m68k_read32(ctx, front + M68K_LAYER_BACK) == guest)
-        m68k_write32(ctx, front + M68K_LAYER_BACK, back);
-    if (layers_record_guest(st, back) >= 0 && m68k_read32(ctx, back + M68K_LAYER_FRONT) == guest)
-        m68k_write32(ctx, back + M68K_LAYER_FRONT, front);
-    if (g >= 0 && (info = st->graphs[g].info) &&
-        m68k_read32(ctx, info + M68K_LI_TOP_LAYER) == guest)
-        m68k_write32(ctx, info + M68K_LI_TOP_LAYER, back);
+    layers_record_unlink(ctx, st, ri);
     /* borrowed layers that belong to the window, such as its GZZ border */
     for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; i++)
         if (st->records[i].kind == LR_BORROWED &&
@@ -1041,6 +1128,155 @@ static void layers_screen_closing(struct KaffeineContext *ctx, struct Screen *sc
             layers_graph_retire(ctx, st, g);
 }
 
+/* Window and screen layer locks only: Intuition never takes the layers of
+   a private LayerInfo */
+static BOOL layers_has_locks(struct KaffeineContext *ctx)
+{
+    struct KaffeineLayers *st = ctx->layers;
+
+    return st && st->locks;
+}
+
+static void layers_release_locks(struct KaffeineContext *ctx)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    int i;
+    if (!st)
+        return;
+    for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; ++i)
+    {
+        struct LayerRecord *r = &st->records[i];
+        if (r->kind != LR_OWNED)
+            continue;
+        for (; r->locks; --r->locks, --st->locks)
+            UnlockLayer(r->native);
+        r->lock_task = 0;
+    }
+}
+
+/* The owned record of a native window of the program, or -1 */
+static int layers_record_owner(struct KaffeineLayers *st, const struct Window *w)
+{
+    int i;
+
+    for (i = 0; w && i < KAFFEINE_LAYER_MAX_RECORDS; i++)
+        if (st->records[i].kind == LR_OWNED && st->records[i].window == w)
+            return i;
+    return -1;
+}
+
+/* The typed 68k BitMap of the RastPort of 68k Window mw, for the RastPort
+   rp of a requester layer of its native window w: only while both draw
+   into the same native BitMap, that of the live owned screen of w whose
+   68k BitMap it is; else 0. Only the tables of the bridges name native
+   BitMaps; the handle is checked, never taken for one on trust. */
+static ULONG layers_request_bitmap(struct KaffeineContext *ctx, ULONG mw, struct Window *w,
+                                   struct RastPort *rp)
+{
+    ULONG wrp = m68k_read32(ctx, mw + M68K_WIN_RPORT), bm;
+    struct Screen *scr = NULL;
+
+    if (!wrp || !w->RPort || !rp->BitMap || w->RPort->BitMap != rp->BitMap ||
+        Kaffeine_ShadowNative(ctx, wrp, KAFFEINE_SHADOW_RASTPORT) != w->RPort)
+        return 0;
+    bm = m68k_read32(ctx, wrp + M68K_RP_BITMAP);
+    if (!bm || Kaffeine_ScreenBitMapOf(ctx, bm, &scr) != KAFFEINE_SCREEN_BITMAP_OWNED ||
+        !scr || scr != w->WScreen || scr->RastPort.BitMap != rp->BitMap)
+        return 0;
+    return bm;
+}
+
+/* Native Request() has just made layer l for a requester on w. Only the
+   layer of a regular window of the program, whose WLayer is owned here,
+   in the same LayerInfo of the same screen, with its own RastPort, and no
+   layer that already is a window, requester or private one of the
+   program. A borrowed 68k Layer that a snapshot had for the same native
+   layer becomes the requester layer, so no native layer ever has two. The
+   68k Layer gets its scalars and links from a complete snapshot under the
+   LayerInfo lock, attempted without waiting. 0, with nothing new left,
+   when the snapshot is busy, too large, or without room or guest memory. */
+static ULONG layers_request_opened(struct KaffeineContext *ctx, struct Window *w, struct Layer *l)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    struct LayerRecord *r;
+    ULONG rp;
+    int owner, g, ri, i;
+
+    if (!st || !w || !l || !w->WScreen || l == w->WLayer || !l->rp || l->rp->Layer != l ||
+        l->rp == w->RPort || l->LayerInfo != &w->WScreen->LayerInfo ||
+        (l->Window && l->Window != (APTR)w))
+        return 0;
+    if ((owner = layers_record_owner(st, w)) < 0 || !st->records[owner].native ||
+        st->records[owner].native->LayerInfo != l->LayerInfo)
+        return 0;
+    for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; i++)
+        if (st->records[i].kind != LR_FREE && st->records[i].kind != LR_BORROWED &&
+            st->records[i].native == l)
+            return 0;
+    if (Kaffeine_ShadowGuest(ctx, l->rp, KAFFEINE_SHADOW_RASTPORT))
+        return 0;
+    if ((g = st->records[owner].graph) < 0)
+    {
+        if ((g = layers_graph_ensure(st, w->WScreen)) < 0)
+            return 0;
+        st->records[owner].graph = (WORD)g;
+    }
+    if (!(rp = Kaffeine_RastPortCreate(ctx, l->rp)))
+    {
+        bug("[kaffeine] no room for the 68k RastPort of requester layer %p\n", l);
+        return 0;
+    }
+    ri = layers_record_native(st, l, g);
+    if (ri < 0 && ((ri = layers_record_slot(st)) < 0 ||
+                   !layers_record_make(ctx, st, ri, l, g, LR_REQUESTER)))
+    {
+        bug("[kaffeine] no room for the 68k Layer of requester layer %p\n", l);
+        Kaffeine_RastPortDelete(ctx, rp);
+        return 0;
+    }
+    r = &st->records[ri];
+    /* As for a window that reuses the address of a vanished borrowed
+       layer: its old guest flag counts as published, never pending. */
+    r->lflags_pub = m68k_read16(ctx, r->guest + M68K_LAYER_FLAGS) & LAYERBACKDROP;
+    r->kind = LR_REQUESTER;
+    r->native = l;
+    r->window = w;
+    r->window_guest = st->records[owner].window_guest;
+    r->graph = (WORD)g;
+    r->rp = rp;
+    m68k_write32(ctx, rp + M68K_RP_LAYER, r->guest);
+    m68k_write32(ctx, rp + M68K_RP_BITMAP, layers_request_bitmap(ctx, r->window_guest, w, l->rp));
+    /* Publish only a complete locked snapshot containing this layer.
+       If it is busy or cannot be mirrored, the caller rolls back Request. */
+    if (!layers_graph_refresh(ctx, st, g) || !r->seen)
+    {
+        layers_record_unlink(ctx, st, ri);
+        layers_record_free(ctx, st, ri);
+        return 0;
+    }
+    return r->guest;
+}
+
+/* Before native EndRequest() deletes requester layer l: its clip Region
+   leaves the native layer and its lease goes, then its 68k Layer leaves
+   the 68k list and goes, with its typed 68k RastPort, touching nothing
+   native; the next snapshot shows the native list without l. Nothing for
+   a layer without a requester record. */
+static void layers_request_closing(struct KaffeineContext *ctx, struct Layer *l)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    int ri;
+
+    for (ri = 0; st && l && ri < KAFFEINE_LAYER_MAX_RECORDS; ri++)
+        if (st->records[ri].kind == LR_REQUESTER && st->records[ri].native == l)
+        {
+            layers_clip_release(ctx, st, ri);
+            layers_record_unlink(ctx, st, ri);
+            layers_record_free(ctx, st, ri);
+            return;
+        }
+}
+
 static const struct KaffeineLayerOps layer_ops =
 {
     layers_window_opened,
@@ -1048,7 +1284,11 @@ static const struct KaffeineLayerOps layer_ops =
     layers_window_flags,
     layers_window_synced,
     layers_screen_mirrored,
-    layers_screen_closing
+    layers_screen_closing,
+    layers_has_locks,
+    layers_release_locks,
+    layers_request_opened,
+    layers_request_closing
 };
 
 /* ── Depth calls ─────────────────────────────────────────────────── */
@@ -1294,6 +1534,11 @@ IPTR Kaffeine_InstallLayerHook(struct KaffeineContext *ctx, void *cpu)
         native = st->hooks[h].native;
     else
         return layers_refuse(ctx, "InstallLayerHook(): a 68k Hook cannot be a native backfill hook");
+    /* A window layer with a clip Region of the bridge keeps a sentinel
+       BackFill, so that changing or removing the clip backfills nothing
+       but layers' own code (Kaffeine_InstallClipRegion()). */
+    if (r->kind == LR_OWNED && r->clip_native && !layers_backfill_sentinel(native))
+        return layers_refuse(ctx, "InstallLayerHook(): a backfill hook on a layer with a clip Region");
     /* the handle of the previous hook before anything native changes */
     LockLayer(0, r->native);
     old = r->native->BackFill;
@@ -2023,18 +2268,74 @@ IPTR Kaffeine_DeleteLayer(struct KaffeineContext *ctx, void *cpu)
     return ctx->running ? (IPTR)result : (IPTR)ctx->exit_code;
 }
 
+/* InstallClipRegion() on the layer of a window of the program or of an
+   active requester on one, owned or requester record ri. The native layer
+   is Intuition's and lives in the LayerInfo of its screen, so the call
+   checks it under its layer lock, which native InstallClipRegion() takes
+   again, nested: a clip Region that the bridge did not install, and a
+   BackFill that is no sentinel, which may be a guest address from
+   WA_BackFill that the clip change would call as native code, stop the
+   program before the Region is leased or passed. Otherwise as for a
+   private layer: the record leases the Region, Layer.ClipRegion shows it,
+   in every later snapshot too, and the previous 68k Region comes back. */
+static IPTR layers_clip_window(struct KaffeineContext *ctx, struct KaffeineLayers *st, int ri,
+                               ULONG region, void *cpu)
+{
+    struct LayerRecord *r = &st->records[ri];
+    struct Layer *l = r->native;
+    struct Region *native = NULL, *old, *old_native;
+    ULONG old_guest;
+
+    if (!l)
+        return layers_refuse(ctx, "InstallClipRegion(): a window layer without its native layer");
+    LockLayer(0, l);
+    if (l->ClipRegion != r->clip_native)
+    {
+        UnlockLayer(l);
+        return layers_refuse(ctx, "InstallClipRegion(): a native clip Region cannot reach the guest");
+    }
+    if (!layers_backfill_sentinel(l->BackFill))
+    {
+        UnlockLayer(l);
+        return layers_refuse(ctx, "InstallClipRegion(): a window layer with a backfill hook");
+    }
+    if (region && !(native = Kaffeine_RegionLease(ctx, region)))
+    {
+        UnlockLayer(l);
+        return ctx->exit_code;
+    }
+    old_guest = r->clip_guest;
+    old_native = r->clip_native;
+    layers_gate_open(st, cpu);
+    old = InstallClipRegion(l, native);
+    layers_gate_close(st);
+    UnlockLayer(l);
+    /* The native layer clips with the new one now: the lease follows it,
+       and the old one is free to change or go. */
+    r->clip_guest = region;
+    r->clip_native = native;
+    m68k_write32(ctx, r->guest + M68K_LAYER_CLIPREGION, region);
+    Kaffeine_RegionUnlease(ctx, old_guest);
+    if (old != old_native)
+        return layers_refuse(ctx, "InstallClipRegion(): unexpected previous native Region");
+    return ctx->running ? old_guest : (IPTR)ctx->exit_code;
+}
+
 /* layers -174: InstallClipRegion(A0=layer, A1=region) -> D0=old region. A
-   current layer of CreateUpfrontHookLayer() of the program, and NULL or a
-   live Region of NewRegion() of the program (kaffeine_regions.c), which may
-   be the clip Region of other private layers too; the previous one comes
-   back as the program gave it, NULL included. Each private layer leases
-   its clip Region, which then can neither change nor go until the layer
-   lets go of it: by another call, or before the layer itself goes. The
-   native call runs with the gate open, so a backfill that it causes runs
-   on this thunk's CPU and cannot change layers or Regions. Window and
-   borrowed layers, any other Region, a call from a backfill hook or with
-   a layer lock of the program, and a native clip Region that the bridge
-   did not install stop the program before the native call. */
+   current layer of CreateUpfrontHookLayer() of the program, the layer of a
+   window of the program or that of an active requester on one, and NULL or
+   a live Region of NewRegion() of the program (kaffeine_regions.c), which
+   may be the clip Region of other layers too; the previous one comes back
+   as the program gave it, NULL included. Each layer leases its clip
+   Region, which then can neither change nor go until the layer lets go of
+   it: by another call, or before the layer itself goes, also before
+   Intuition closes the window or ends the requester. The native call runs
+   with the gate open, so a backfill that it causes runs on this thunk's
+   CPU and cannot change layers or Regions. Borrowed layers, any other
+   Region, a call from a backfill hook or with a layer lock of the program,
+   and a native clip Region that the bridge did not install stop the
+   program before the native call; see layers_clip_window() for windows and
+   requesters. */
 IPTR Kaffeine_InstallClipRegion(struct KaffeineContext *ctx, void *cpu)
 {
     struct KaffeineLayers *st = ctx->layers;
@@ -2044,8 +2345,14 @@ IPTR Kaffeine_InstallClipRegion(struct KaffeineContext *ctx, void *cpu)
     struct LayerPrivate *p;
     struct LayerRecord *r;
 
+    if (ri >= 0 && (st->records[ri].kind == LR_OWNED || st->records[ri].kind == LR_REQUESTER))
+    {
+        if (st->gate || st->callbacks || st->locks || st->private_locks)
+            return layers_refuse(ctx, "InstallClipRegion(): during a backfill or with a layer lock");
+        return layers_clip_window(ctx, st, ri, region, cpu);
+    }
     if (ri < 0 || !layers_private_live(st, ri))
-        return layers_refuse(ctx, "InstallClipRegion(): not a private layer of the program");
+        return layers_refuse(ctx, "InstallClipRegion(): not a window, requester or private layer of the program");
     if (st->gate || st->callbacks || st->locks || st->private_locks)
         return layers_refuse(ctx, "InstallClipRegion(): during a backfill or with a layer lock");
     r = &st->records[ri];
@@ -2391,11 +2698,16 @@ void Kaffeine_LayersCleanup(struct KaffeineContext *ctx)
     for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; i++)
     {
         r = &st->records[i];
-        if (r->kind != LR_OWNED)
+        if (r->kind != LR_OWNED && r->kind != LR_REQUESTER)
             continue;
-        /* a window still open: its locks go back, and it names no 68k Layer */
+        /* a window or requester still open: its locks go back, then its
+           clip Region, while its native layer is there */
         for (; r->locks; r->locks--)
             UnlockLayer(r->native);
+        layers_clip_release(ctx, st, i);
+        if (r->kind != LR_OWNED)
+            continue;
+        /* and the window names no 68k Layer */
         m68k_write32(ctx, r->window_guest + M68K_WIN_WLAYER, 0);
         rp = m68k_read32(ctx, r->window_guest + M68K_WIN_RPORT);
         if (rp && m68k_read32(ctx, rp + M68K_RP_LAYER) == r->guest)

@@ -55,8 +55,8 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w);
    screen that the program no longer holds goes after. Call it while the
    native window is still open. */
 void Kaffeine_WindowDelete(struct KaffeineContext *ctx, ULONG guest);
-/* CloseWindow and FreeSysRequest release layer locks before menu/gadget
-   teardown, then delete without repeating the layer callback. */
+/* CloseWindow and FreeSysRequest release layer locks before requester and
+   menu/gadget teardown, then delete without repeating the layer callback. */
 void Kaffeine_WindowPrepareClose(struct KaffeineContext *ctx, ULONG guest);
 void Kaffeine_WindowDeletePrepared(struct KaffeineContext *ctx, ULONG guest);
 
@@ -81,7 +81,12 @@ IPTR Kaffeine_GT_ReplyIMsg(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_GT_FilterIMsg(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_GT_PostFilterIMsg(struct KaffeineContext *ctx, void *cpu);
 
-/* EasyRequests of 68k code (kaffeine_requester.c) */
+/* Requesters and EasyRequests of 68k code (kaffeine_requester.c) */
+IPTR Kaffeine_ClearDMRequest(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_InitRequester(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_Request(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_EndRequest(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_SetDMRequest(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_EasyRequestArgs(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_BuildEasyRequestArgs(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_SysReqHandler(struct KaffeineContext *ctx, void *cpu);
@@ -104,6 +109,11 @@ IPTR Kaffeine_FreeSysRequest(struct KaffeineContext *ctx, void *cpu);
     { 606, Kaffeine_OpenWindowTagList }
 
 #define KAFFEINE_INTUITION_REQUEST_THUNKS \
+    { 48,  Kaffeine_ClearDMRequest }, \
+    { 120, Kaffeine_EndRequest }, \
+    { 138, Kaffeine_InitRequester }, \
+    { 240, Kaffeine_Request }, \
+    { 258, Kaffeine_SetDMRequest }, \
     { 372, Kaffeine_FreeSysRequest }, \
     { 588, Kaffeine_EasyRequestArgs }, \
     { 594, Kaffeine_BuildEasyRequestArgs }, \

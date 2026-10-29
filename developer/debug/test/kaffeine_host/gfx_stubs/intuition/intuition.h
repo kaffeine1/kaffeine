@@ -8,11 +8,37 @@ struct RastPort;
 struct Menu;
 struct Gadget;
 struct Layer;
+struct BitMap;
+struct Border;
+struct IntuiText;
+struct Image;
+struct Window;
 struct Requester
 {
     struct Requester *OlderRequest;
+    WORD LeftEdge, TopEdge, Width, Height, RelLeft, RelTop;
     struct Gadget *ReqGadget;
+    struct Border *ReqBorder;
+    struct IntuiText *ReqText;
+    UWORD Flags;
+    UBYTE BackFill;
+    struct Layer *ReqLayer;
+    UBYTE ReqPad1[32];
+    struct BitMap *ImageBMap;
+    struct Window *RWindow;
+    struct Image *ReqImage;
+    UBYTE ReqPad2[32];
 };
+#define POINTREL (1U << 0)
+#define PREDRAWN (1U << 1)
+#define NOISYREQ (1U << 2)
+#define SIMPLEREQ (1U << 4)
+#define USEREQIMAGE (1U << 5)
+#define NOREQBACKFILL (1U << 6)
+#define REQOFFWINDOW (1U << 12)
+#define REQACTIVE (1U << 13)
+#define SYSREQUEST (1U << 14)
+#define DEFERREFRESH (1U << 15)
 struct Window
 {
     WORD LeftEdge, TopEdge, Width, Height, MouseY, MouseX;
@@ -32,6 +58,8 @@ struct Window
     struct Requester *FirstRequest;
     /* last, so that positional initializers of the other tests stay valid */
     struct Layer *WLayer;
+    struct Requester *DMRequest;
+    UWORD ReqCount;
 };
 #define WFLG_BACKDROP 0x00000100
 #ifndef __typedef_RAWARG

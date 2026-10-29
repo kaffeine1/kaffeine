@@ -30,7 +30,7 @@
     goes, the Region stays as it was, native and guest, and the call gives
     FALSE, as graphics does without memory.
 
-    The layer bridge leases a Region for each private layer whose clip
+    The layer bridge leases a Region for each owned window, requester or private layer whose clip
     Region it is (Kaffeine_RegionLease()); a leased Region cannot be
     changed or disposed of. Neither can any Region while native layers
     code runs on behalf of the program, such as from a 68k backfill hook:
@@ -58,7 +58,7 @@ struct RegionRecord
     ULONG list;
     struct Region *native;
     UWORD count;
-    UWORD leases;              /* private layers whose clip Region it is */
+    UWORD leases;              /* layers whose clip Region it is */
 };
 
 struct KaffeineRegions

@@ -13,6 +13,7 @@
 
 struct Window;
 struct Screen;
+struct Layer;
 
 /* Classic big-endian offsets of the NDK structures (graphics/clip.h,
    graphics/layers.h, utility/hooks.h, intuition/intuition.h and
@@ -141,6 +142,25 @@ struct KaffeineLayerOps
     /* Before scr may close or its 68k Screen goes; NULL for every screen,
        at the end of the program. Touches nothing native. */
     void  (*screen_closing)(struct KaffeineContext *ctx, struct Screen *scr);
+    /* Optional, NULL in older tables: whether the program holds a native
+       lock of a window or screen layer, which Intuition's input handler
+       would wait for in a call that it runs synchronously, such as
+       Request() and EndRequest(). Locks of private layers do not count. */
+    BOOL  (*has_locks)(struct KaffeineContext *ctx);
+    /* Program teardown only: return every owned window layer lock before
+       Intuition starts closing windows or ending their requesters. */
+    void  (*release_locks)(struct KaffeineContext *ctx);
+    /* Optional, NULL in older tables: native Request() has just made layer
+       for a requester on w, a regular window of the program whose WLayer
+       has its 68k Layer. Gives the 68k Layer for ReqLayer, of its own kind
+       and never w's, whose rp is a typed 68k RastPort of its own; both stay
+       until request_closing. 0 when they cannot be made, and then nothing
+       stays. */
+    ULONG (*request_opened)(struct KaffeineContext *ctx, struct Window *w, struct Layer *layer);
+    /* Before native EndRequest() deletes layer, while it and its RastPort
+       still exist: its 68k Layer and RastPort go. Nothing for a layer
+       without them, also once the bridge retired them at the end. */
+    void  (*request_closing)(struct KaffeineContext *ctx, struct Layer *layer);
 };
 
 #ifdef __cplusplus
@@ -267,7 +287,7 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     { 156, kaffeine_layers_Unsupported },     /* FattenLayerInfo */ \
     { 162, kaffeine_layers_Unsupported },     /* ThinLayerInfo */ \
     { 168, kaffeine_layers_Unsupported },     /* MoveLayerInFrontOf */ \
-    { 174, Kaffeine_InstallClipRegion },      /* private layers, owned Regions */ \
+    { 174, Kaffeine_InstallClipRegion },      /* owned window/requester/private layers, owned Regions */ \
     { 180, kaffeine_layers_Unsupported },     /* MoveSizeLayer */ \
     { 186, Kaffeine_CreateUpfrontHookLayer }, \
     { 192, kaffeine_layers_Unsupported },     /* CreateBehindHookLayer */ \

@@ -911,6 +911,16 @@ static void close_window(struct KaffeineContext *ctx, ULONG mw)
     /* Menu and gadget removal may wait on Intuition. Release the guest's
        native layer locks before any of those native teardown calls. */
     Kaffeine_WindowPrepareClose(ctx, mw);
+    if (ctx->layer_ops && ctx->layer_ops->has_locks && ctx->layer_ops->has_locks(ctx))
+    {
+        bug("[kaffeine] CloseWindow(): another window layer is locked, stopping (20)\n");
+        ctx->running = FALSE;
+        ctx->exit_code = 20;
+        return;
+    }
+    /* the program's requesters end while the native window is still open */
+    if (ctx->requests_closing)
+        ctx->requests_closing(ctx, mw, w);
     if (ctx->menu_closing)
         ctx->menu_closing(ctx, w);
     if (ctx->window_gadgets)
@@ -925,12 +935,15 @@ static void close_window(struct KaffeineContext *ctx, ULONG mw)
 IPTR Kaffeine_CloseWindow(struct KaffeineContext *ctx, void *cpu)
 {
     close_window(ctx, THUNK_A(0));
-    return 0;
+    return !ctx->running && ctx->exit_code == 20 ? 20 : 0;
 }
 
 void Kaffeine_WindowsCleanup(struct KaffeineContext *ctx)
 {
     UWORD i = 0;
+
+    if (ctx->layer_ops && ctx->layer_ops->release_locks)
+        ctx->layer_ops->release_locks(ctx);
 
     /* Removing a shadow moves another entry into its slot. Restart after
        each close because messages, ports and RastPorts are removed too. */

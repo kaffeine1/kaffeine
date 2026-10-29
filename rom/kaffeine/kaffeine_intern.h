@@ -54,6 +54,8 @@ struct Device;
 struct TextFont;
 struct DiskObject;
 struct Window;
+struct Requester;
+struct Layer;
 struct IntuiMessage;
 struct Screen;
 struct DrawInfo;
@@ -273,6 +275,26 @@ struct KaffeineContext
     struct KaffeineGadgetBatch *gadgets;
     const struct KaffeineWindowGadgets *window_gadgets;
     struct KaffeineClassic *classic;
+
+    /* Active requesters of Request() of the program (kaffeine_requester.c):
+       the 68k Requester and 68k Window of each, the older 68k Requester of
+       the same window as the bridge linked it, and the bridge's native
+       copy that Intuition has instead, with the block of the copies of its
+       texts, borders and image, and the native layer of the requester
+       with the 68k Layer that the layer bridge gave for it (ReqLayer); a
+       free slot has no guest. requests_closing, set with the first one,
+       ends those of a window natively after its layer locks went back and
+       before its menus and gadgets go, never touching the 68k Requesters,
+       which may be gone by then. */
+    #define KAFFEINE_MAX_REQUESTS 32
+    struct {
+        ULONG guest, window, older, layer;
+        struct Window *native_window;
+        struct Requester *native;
+        struct Layer *native_layer;
+        APTR block;
+    } requests[KAFFEINE_MAX_REQUESTS];
+    void (*requests_closing)(struct KaffeineContext *ctx, ULONG window, struct Window *w);
 
     /* Layers (kaffeine_layers.c): the 68k snapshots of native layers, and
        what the window and screen bridges tell them; both NULL without the

@@ -2996,6 +2996,10 @@ static void test_layerinfo_backfill_mode()
     f.close_screen(borrowed, bg);
 }
 
+extern "C" BOOL Request(struct Requester *,struct Window *) { assert(false); return FALSE; }
+extern "C" void EndRequest(struct Requester *,struct Window *) { assert(false); }
+extern "C" BOOL SetDMRequest(struct Window *,struct Requester *) { assert(false); return FALSE; }
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };

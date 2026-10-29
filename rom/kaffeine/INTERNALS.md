@@ -1044,10 +1044,15 @@ guest callbacks must preserve this stop state and exit code when returning
 to their caller. Callback integration and target execution remain separate
 validation work.
 
-**intuition.library (49 manual thunks):**
+**intuition.library (54 manual thunks):**
 
 | LVO | Function | Handling |
 |-----|----------|----------|
+| -48 | ClearDMRequest | TRUE for an owned regular Window with no native double-menu requester; an unmanaged requester stops with 20 |
+| -120 | EndRequest | Ends only a matching owned classic requester, unlinks the guest stack and retires Layer/RastPort mirrors before native deletion |
+| -138 | InitRequester | Clears exactly 112 checked guest bytes, preserves adjacent storage, NULL is a no-op; active storage stops with 20 |
+| -240 | Request | Copies supported classic fields, text/border/image descriptors into retained native storage, exposes a typed Layer/RastPort and maintains Window stack/count; rolls back on allocation or snapshot failure |
+| -258 | SetDMRequest | NULL requester aliases the supported already-clear operation; non-NULL requester stops with 20 |
 | -66 | CloseScreen | Accepts only an owned screen, preserves all mirrors on native refusal, releases the protected Screen/ViewPort/RastPort snapshot and native retained inputs after successful close |
 | -72 | CloseWindow | Takes the window's menu strip off it, takes the gadgets of the program off it, GadTools ones and those that it built itself, whose copies go, gives Intuition and GadTools back the messages of the window that the program has not replied, frees its 68k Window, RastPort, IDCMP port and messages, then closes the native window (`kaffeine_window.c`) |
 | -198 | OpenScreen | Bounded NewScreen/ExtNewScreen conversion with owned native inputs and protected classic screen snapshots (`kaffeine_screens.c`) |
@@ -1646,7 +1651,7 @@ library returns 0.
 | -102 | UnlockLayer | Releases a lock acquired by `LockLayer` (`kaffeine_layers.c`) |
 | -144 | NewLayerInfo | Allocates and registers an owned 102-byte 68k `Layer_Info` (`kaffeine_layers.c`) |
 | -150 | DisposeLayerInfo | Frees an owned `Layer_Info` with no remaining layers (`kaffeine_layers.c`) |
-| -174 | InstallClipRegion | Installs or removes an owned 68k `Region` as the clip region of a registered window layer or owned offscreen layer and returns the previous guest `Region` (`kaffeine_regions.c`, `kaffeine_layers.c`) |
+| -174 | InstallClipRegion | Installs or removes an owned 68k `Region` as the clip region of a registered window/requester layer or owned offscreen layer and returns the previous guest `Region` (`kaffeine_regions.c`, `kaffeine_layers.c`) |
 | -186 | CreateUpfrontHookLayer | Creates a private offscreen planar layer on an owned `Layer_Info` with a checked classic planar `BitMap`, an owned 68k `RastPort` and an optional synchronous 68k backfill hook (`LAYERS_BACKFILL`, `LAYERS_NOBACKFILL` or a checked classic `Hook` invoked with A0 hook, A2 RastPort and A1 `LayerHookMsg`) (`kaffeine_layers.c`) |
 | -198 | InstallLayerHook | Installs `LAYERS_BACKFILL`, `LAYERS_NOBACKFILL` or a checked 68k `Hook` on a registered window/screen layer or owned offscreen layer and returns the previous hook (`kaffeine_layers.c`) |
 | -204 | InstallLayerInfoHook | Accepts the `LAYERS_BACKFILL` and `LAYERS_NOBACKFILL` sentinel modes on an owned LayerInfo, returns the previous mode, and applies it to subsequent private layers; other hooks stop with rc 20 (`kaffeine_layers.c`) |
@@ -3131,7 +3136,7 @@ Screen of.
    clones the native Region, applies the union and prepares a complete new
    snapshot before publishing. Native failure, missing guest memory or excess
    rectangles leaves both previous states intact. `InstallClipRegion()` (-174)
-   accepts a private layer and NULL or an owned Region, returns the previous
+   accepts an owned window, active requester or private layer and NULL or an owned Region, returns the previous
    guest identity and publishes `Layer.ClipRegion`. Each installed Region is
    leased; mutation or disposal while leased is refused. `DisposeRegion()`
    (-534) accepts only a live unleased Region. Other Region-taking graphics
@@ -3235,8 +3240,8 @@ Two generators exist:
 ### Host-Side Tests (no AROS required)
 
 `developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
-plus `test_thunk_registrations.py` (which verifies 319 explicit native-vector
-cases and all 544 manual thunk registrations across the 18 production tables)
+plus `test_thunk_registrations.py` (which verifies 324 explicit native-vector
+cases and all 549 manual thunk registrations across the 18 production tables)
 and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
 [developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
 for coverage details; the host Makefile is the authoritative executable list.

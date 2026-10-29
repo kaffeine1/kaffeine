@@ -38,7 +38,7 @@ all AmigaOS library calls to forward them to the native AROS implementations.
                   │  exec.library    dos.library      │
                   │  intuition.library  graphics.lib  │
                   │  ... 22 libs + 2 devs (789 auto,  │
-                  │      544 manual registrations)    │
+                  │      549 manual registrations)    │
                   └───────────────────────────────────┘
 ```
 
@@ -174,7 +174,7 @@ and native AROS C functions. There are two kinds:
     `DeviceProc`/`GetDeviceProc`/`FreeDeviceProc`/`GetConsoleTask`/`SetConsoleTask`/`GetFileSysTask`/`SetFileSysTask` (`kaffeine_handlers.c`),
     `Execute`/`SystemTagList`/`RunCommand`, `VPrintf`/`VFPrintf`/`VFWritef`/`PutStr`/`WriteChars`,
     `GetProgramName`/`GetArgStr`/`SetArgStr`, `MatchFirst`/`MatchNext`/`MatchEnd`, pattern/path/date/variable/assign helpers and `Exit`
-  - **intuition** (49): `OpenScreen`/`OpenScreenTagList`/`CloseScreen` (bounded inputs and owned screen snapshots),
+  - **intuition** (54): `OpenScreen`/`OpenScreenTagList`/`CloseScreen` (bounded inputs and owned screen snapshots),
     `GetScreenDrawInfo`/`FreeScreenDrawInfo` (version-1 `DrawInfo` snapshots with copied pens and retained `TextFont`),
     `OpenWindow`/`OpenWindowTagList`/`CloseWindow`/`WindowToFront`/`WindowToBack` (`NewWindow` defaults and tag translation, a
     68k Window with its fields, a 68k RastPort, a 68k Layer and a 68k IDCMP port, the
@@ -189,6 +189,9 @@ and native AROS C functions. There are two kinds:
     (IntuiText chain translation), `EasyRequestArgs`/
     `BuildEasyRequestArgs`/`SysReqHandler`/`FreeSysRequest` (text and gadgets
     formatted by the bridge, the requester as a 68k Window),
+    `InitRequester`/`Request`/`EndRequest` (bounded classic storage, owned native copies,
+    requester stack and typed Layer/RastPort), `ClearDMRequest`/`SetDMRequest`
+    (already-clear double-menu requester only),
     `SetMenuStrip`/`ResetMenuStrip`/`ClearMenuStrip`/`ItemAddress`/
     `OffMenu`/`OnMenu` (on the 68k mirror of a GadTools menu strip or a native copy of a program-built strip),
     `AddGList`/`AddGadget`/`RemoveGList`/`RemoveGadget`/`RefreshGList`/
@@ -460,7 +463,7 @@ The bridge provides generated or manual thunks for the following libraries and d
 |---------|------|--------|-------|-------------|
 | exec.library | 79 | 84 | 112 | Memory, pools, cooperative guest tasks, signals, semaphores, messages, devices, libraries, AVL |
 | dos.library | 112 | 122 | 158 | File I/O, locks, CLI, pattern matching, ReadArgs, ExAll/ExAllEnd, DOS packets, handler ports |
-| intuition.library | 127 | 49 | 137 | Windows, owned and public screens, DrawInfo, gadgets, menus, IDCMP, requesters |
+| intuition.library | 127 | 54 | 137 | Windows, owned and public screens, DrawInfo, gadgets, menus, IDCMP, requesters |
 | graphics.library | 167 | 80 | 179 | Rendering, text, planar/screen blitting, layer locks, clip regions, fonts, colors, display metadata |
 | layers.library | 40 | 40 | 40 | Live Layer snapshots, owned screen-bar drawing, layer locks/hooks, owned LayerInfos, private offscreen layers and clip Regions; remaining slots stop with 20 |
 | utility.library | 41 | 23 | 42 | TagItem processing, hooks, date functions, 32/64-bit integer math, case-insensitive string comparisons, VSNPrintf |
@@ -501,7 +504,7 @@ within the emulator.
 | olha | 291 KB | SFX archiver (6 hunks, relocations) | ✅ LH5 decompression, CreateDir |
 | ROLEX | 13 KB | Clock (custom screen, GUI loop) | ✅ Opens screen, event loop works |
 | SysInfo 4.4 | 62 KB | System info (7 hunks, custom screen) | ✅ Renders full UI (title, menus, buttons, text) |
-| Personal Paint 7.2.1.0 | 777,824 bytes | 68k paint / image editor | 🟡 Moira on AROS AArch64/QEMU: native Shell launch, 24-bit Workbench, 1024×768/256-color canvas, rectangles/circles/text, pixel-verified IFF/ILBM save and exit code zero. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; full Workbench startup, other operations and JIT execution remain open |
+| Personal Paint 7.2.1.0 | 777,824 bytes | 68k paint / image editor | 🟡 Moira on AROS AArch64/QEMU: native Shell launch, 24-bit Workbench, 1024×768/256-color canvas, rectangles/circles/text, pixel-verified IFF/ILBM save and exit code zero. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; full Workbench startup and other operations remain open. The opt-in JIT also passes startup/exit, drawing, saving and a 320×200/256-color save/modify/reload cycle; see [JIT validation](../../docs/kaffeine/jit-backend.md#validation) |
 | Directory Opus 4.12 | 328 KB | File manager (GUI, m68k libraries) | ✅ Loads dopus.library, shows AutoRequest dialog, responds to button click |
 | AmigaTerm 1.0 | 82 KB | Terminal emulator (GUI) | ✅ Opens window, clean exit |
 | Textcraft Plus | 208 KB | Word processor (GUI, custom screen) | ✅ Opens screen/window, sets colors, clean exit |
@@ -542,7 +545,7 @@ message handling remains separate.
   asynchronous device I/O and other device adapters remain unsupported
 - Ordinary guest FIFO messages (`PutMsg`/`GetMsg`/`ReplyMsg`/`WaitPort`) work across registered guest tasks in the same context; cross-context messaging is unsupported
 - DOS packets (`DoPkt`/`SendPkt`/`WaitPkt`/`ReplyPkt`) are supported on FileHandle packet ports and on registered guest ports for native DOS handlers (`DeviceProc`, `GetDeviceProc`, `GetConsoleTask`, `GetFileSysTask`) for the documented action set; `AbortPkt` is a no-op
-- Personal Paint has verified editor use, rectangles/circles/text, pixel-checked IFF/ILBM saving and return to the native Shell with exit code zero under Moira in QEMU. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; other tools, full image loading, full Workbench startup and JIT execution remain open
+- Personal Paint has verified editor use, rectangles/circles/text, pixel-checked IFF/ILBM saving and return to the native Shell with exit code zero under Moira in QEMU. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; the opt-in JIT additionally passes a 320×200/256-color save/modify/reload cycle. Other tools, larger-image loading and full Workbench startup remain open
 - `Signal()` reaches any registered guest task or the main process in the context; unknown tasks stop with rc 20
 
 ### Graphics
@@ -752,7 +755,7 @@ message handling remains separate.
 | `kaffeine_classic.c` | Gadgets that the program built itself on its windows, as native copies: runs, the Flags passed by bit, links and messages |
 | `kaffeine_mirror.c` | 68k mirrors of native objects of GadTools: the tables of a strip or a list, strings, TextAttrs, IntuiTexts and images |
 | `kaffeine_copy.c` | Native copies of 68k structures that Intuition reads, checked against guest memory: IntuiText chains with their strings and TextAttrs, Image and Border chains, and gadgets |
-| `kaffeine_requester.c` | EasyRequests: 68k EasyStructs formatted by the bridge, requester windows as 68k Windows |
+| `kaffeine_requester.c` | Classic Requesters with owned native storage and typed layers; EasyStruct formatting and typed requester windows |
 | `kaffeine_icon.c` | Owned `icon.library` `DiskObject` metadata snapshots, `FindToolType` and `MatchToolValue` |
 | `kaffeine_workbench.c` | Workbench `AddAppWindowA`, `AddAppIconA`, `AddAppMenuItemA`, `WBInfo` and `AppMessage` delivery |
 | `kaffeine_thunks_timer.c` | timer.device functions behind the guest TimerBase |
@@ -818,7 +821,7 @@ grep -oP '(OFF|SIZ)\|[^"]*' m68k.s | sed 's/#//g' > m68k_offsets.txt
 
 | Path | Description |
 |------|-------------|
-| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (319 native-vector cases and 544 manual thunks across 18 tables) and `run_sanitizers.sh` |
+| [`developer/debug/test/kaffeine_host/`](../../developer/debug/test/kaffeine_host/README.md) | 47 host-side C/C++ test executables plus `test_thunk_registrations.py` (324 native-vector cases and 549 manual thunks across 18 tables) and `run_sanitizers.sh` |
 | [`developer/debug/test/kaffeine_native/`](../../developer/debug/test/kaffeine_native/README.md) | Standalone native AROS AArch64 translation probe (`jit_probe`) using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE` |
 | [`developer/debug/test/kaffeine_target/`](../../developer/debug/test/kaffeine_target/README.md) | Classic 68k HUNK target probes, bzip2 1.0.8 and IJG JPEG 9f self-tests, and QEMU AROS AArch64 runner (`run_qemu.py`) |
 | `developer/debug/test/kaffeine/test_kaffeine.c` | AROS-side smoke test that opens `kaffeine.library` |
@@ -974,3 +977,39 @@ FALSE while a VisualInfo remains live. Teardown closes windows, frees menus
 and gadgets, then VisualInfos, then screen locks/screens and retained fonts.
 Requester-only operations accept only requester handles, so an ordinary
 window cannot reach native FreeSysRequest or SysReqHandler.
+
+
+### Classic requester storage
+
+`InitRequester()` clears exactly the 112 bytes of the classic structure.
+`Request()` retains separate native storage until `EndRequest()` or window
+teardown, including converted text, border and image descriptors. Image
+plane bytes retain their normal caller-owned lifetime. At most 32 classic
+requesters may be active in one context. The bridge updates `OlderRequest`,
+`REQACTIVE`, `ReqLayer`, `RWindow`, `Window.FirstRequest` and `ReqCount`;
+ending an older requester preserves the remaining stack.
+
+Each active requester exposes a typed Layer and RastPort for graphics
+calls. A complete LayerInfo snapshot is attempted without waiting; if it
+cannot be published, the native request is ended and the call returns
+FALSE. Native REQSET/REQCLEAR messages may already have been generated by
+that rollback. The guest mirrors retire before native layer deletion.
+Closing a window or terminating the program does not write to the caller's
+possibly released Requester storage.
+
+`ReqGadget`, `PREDRAWN`, and installing a double-menu requester remain
+unsupported and stop with return code 20. `ClearDMRequest()` and
+`SetDMRequest(window, NULL)` support an already-clear regular window only.
+Classic and EasyRequest creation/removal refuse outstanding owned window
+or screen layer locks before synchronous Intuition calls. Program teardown
+releases all such locks before closing its first window.
+
+
+`InstallClipRegion()` accepts owned window layers, their active requester
+layers and owned offscreen layers. It retains a lease on each installed
+Region, returns the old guest identity, preserves that identity through
+snapshots and detaches the Region before the layer is deleted. Mutation or
+disposal of a leased Region stops with 20. Window/requester clipping accepts
+only the standard backfill sentinels; foreign native clips, borrowed layers,
+nonstandard hooks, reentrant backfills and outstanding guest layer locks
+are refused before the native clip change.
