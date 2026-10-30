@@ -29,6 +29,9 @@
 
 static unsigned checks, failures;
 #define CHECK(x) do { ++checks; if (!(x)) { ++failures; std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); } } while (0)
+/* Private native Flags, defined in rom/graphics/gfxfuncsupport.h. */
+static constexpr UWORD native_no_pens = 1u << 14;
+static constexpr UWORD native_remap_colorfonts = 1u << 13;
 static Task *const driver = reinterpret_cast<Task *>(0x100000UL);
 static Task *const foreign = reinterpret_cast<Task *>(0x200000UL);
 /* Keep TLS constant-initialized; each simulated native entry sets its Task. */
@@ -141,10 +144,24 @@ extern "C" Hook *InstallLayerHook(Layer *l, Hook *h)
 extern "C" void SetAPen(RastPort *rp, ULONG pen)
 {
     assert(!forbidden && !rp->Layer); ++graphics_calls;
-    rp->FgPen=static_cast<BYTE>(pen); rp->linpatcnt=15; rp->Flags |= FRST_DOT;
+    // rom/graphics/setapen.c deliberately leaves GenMinterms disabled.
+    rp->FgPen=static_cast<BYTE>(pen); rp->linpatcnt=15; rp->Flags &= ~native_no_pens;
 }
 extern "C" void SetDrMd(RastPort *rp, ULONG mode)
-{ assert(!forbidden && !rp->Layer); ++graphics_calls; rp->DrawMode=static_cast<BYTE>(mode); }
+{
+    assert(!forbidden && !rp->Layer); ++graphics_calls;
+    rp->DrawMode=static_cast<BYTE>(mode); rp->linpatcnt=15;
+    // Native SetDrMd calls GenMinterms (rom/graphics/gfxfuncsupport.c).
+    for (unsigned i=0;i<8;++i) {
+        if (rp->DrawMode&COMPLEMENT) rp->minterms[i]=(rp->DrawMode&INVERSVID)?0x6a:0x9a;
+        else {
+            UBYTE a=((static_cast<UBYTE>(rp->FgPen)>>i)&1u)*3;
+            UBYTE b=(rp->DrawMode&JAM2)?((static_cast<UBYTE>(rp->BgPen)>>i)&1u)*3:2;
+            a=(rp->DrawMode&INVERSVID)?((b<<2)|a):((a<<2)|b);
+            rp->minterms[i]=static_cast<UBYTE>((a<<4)|0x0a);
+        }
+    }
+}
 static IPTR invoke(Hook *h, RastPort *rp, BackFillMessage *m)
 {
     using Entry = IPTR (*)(Hook *,RastPort *,BackFillMessage *);
@@ -205,7 +222,8 @@ struct Fixture {
         layer_ops.poll=[](KaffeineContext *c) { return Kaffeine_PaintHookPoll(c,*registered_state); };
         ctx.layer_ops=&layer_ops;
         bitmap.pad=HIDD_BM_PAD_MAGIC; rp.Layer=&layer; rp.BitMap=&bitmap; rp.Mask=0x7f;
-        rp.Font=reinterpret_cast<TextFont *>(0x55550000); rp.cp_x=13; rp.Flags=0x6000;
+        rp.Font=reinterpret_cast<TextFont *>(0x55550000); rp.cp_x=13;
+        rp.Flags=native_no_pens|native_remap_colorfonts;
         message.Layer=&layer; message.Bounds={-7,-4,18,23}; message.OffsetX=3; message.OffsetY=-2;
         put32(4,EXEC); put32(HOOK+8,CODE); put32(HOOK+16,DATA);
         put32(DATA,0x11223307); put32(DATA+4,OWNER);
@@ -225,12 +243,14 @@ struct Fixture {
     void movea(unsigned sr,unsigned dr) { move(4,1,sr,1,dr); }
     void constant(ULONG value,unsigned mode,unsigned reg) { move(4,7,4,mode,reg); l(value); }
     void call(unsigned lvo) { w(0x4eae); w(-static_cast<int>(lvo)); }
-    void program(bool signal=true) {
+    void program(bool signal=true, bool set_pen=true, int draw_mode=JAM2) {
         pc=code_base; w(0x48e7); w(0xfffe); movea(1,5); w(0x4fef); w(-100);
         movea(2,3); movea(7,4); w(0x7e18); ULONG loop=pc;
         move(4,3,3,3,4); ULONG db=pc; w(0x51cf); w(loop-(db+2));
         movea(7,4); w(0x4294); constant(GFX,1,6); movea(4,1);
-        move(4,7,1,0,0); l(data_base); call(342); w(0x7001); call(354); w(0x50ec); w(24);
+        if (set_pen) { move(4,7,1,0,0); l(data_base); call(342); }
+        if (draw_mode>=0) { w(0x7000|static_cast<UBYTE>(draw_mode)); call(354); }
+        w(0x50ec); w(24);
         for (unsigned i=0;i<4;++i) { move(2,5,5,0,i); w(4+2*i); }
         call(306);
         if (signal) {
@@ -278,7 +298,7 @@ static void positive_and_replacement() {
     RastPort original=f.rp; f.callback(); CHECK(paints==1 && graphics_calls==3);
     CHECK(painted[0].rp.Font==original.Font && painted[0].rp.BitMap==original.BitMap);
     CHECK(painted[0].rp.Layer==nullptr && painted[0].rp.FgPen==7 && painted[0].rp.Mask==255);
-    CHECK(painted[0].rp.linpatcnt==15 && (painted[0].rp.Flags&FRST_DOT));
+    CHECK(painted[0].rp.linpatcnt==15 && painted[0].rp.Flags==(original.Flags&~native_no_pens));
     CHECK(painted[0].x0==-7 && painted[0].y0==-4 && painted[0].x1==18 && painted[0].y1==23);
     CHECK(!std::memcmp(&f.rp,&original,sizeof(original)));
     CHECK((native_signals.load()&wake) && !(native_signals.load()&(1u<<13)));
@@ -292,6 +312,68 @@ static void positive_and_replacement() {
     CHECK(f.install(HOOK,&old)); CHECK(old==1);
     CHECK(Kaffeine_PaintHookRetireLayer(&f.ctx,f.state,&f.layer));
     CHECK(f.layer.BackFill==reinterpret_cast<Hook *>(1)); // baseline restored exactly
+}
+
+/* Truth tables are independent of the collaborator's GenMinterms algorithm.
+ * Entries are indexed by (foreground bit << 1) | background bit. */
+static UBYTE expected_minterm(UBYTE pen,UBYTE background,UBYTE mode,unsigned plane) {
+    static const UBYTE jam1[4]={0x2a,0x2a,0xea,0xea};
+    static const UBYTE inverse_jam1[4]={0x8a,0x8a,0xba,0xba};
+    static const UBYTE jam2[4]={0x0a,0x3a,0xca,0xfa};
+    static const UBYTE inverse_jam2[4]={0x0a,0xca,0x3a,0xfa};
+    if (mode&COMPLEMENT) return (mode&INVERSVID)?0x6a:0x9a;
+    unsigned at=(((pen>>plane)&1u)<<1)|((background>>plane)&1u);
+    if (mode&JAM2) return (mode&INVERSVID)?inverse_jam2[at]:jam2[at];
+    return (mode&INVERSVID)?inverse_jam1[at]:jam1[at];
+}
+
+static void native_setter_replay() {
+    // APen alone clears NO_PENS, preserves FRST_DOT, and leaves minterms alone.
+    for (unsigned first_dot=0;first_dot<2;++first_dot) {
+        Fixture f; f.program(false,true,-1);
+        f.rp.Flags|=ONE_DOT|(first_dot?FRST_DOT:0);
+        f.rp.linpatcnt=3; f.rp.DrawMode=JAM2|INVERSVID;
+        for (unsigned i=0;i<8;++i) f.rp.minterms[i]=static_cast<UBYTE>(0xd0+i);
+        f.put32(DATA,0x112233a5);
+        RastPort original=f.rp;
+        BOOL installed=f.install(); CHECK(installed); if (!installed) continue;
+        f.callback(); CHECK(paints==1 && graphics_calls==2);
+        const RastPort &result=painted[0].rp;
+        CHECK(static_cast<UBYTE>(result.FgPen)==0xa5 && result.linpatcnt==15);
+        CHECK(result.Flags==(original.Flags&~native_no_pens));
+        CHECK(result.DrawMode==original.DrawMode && result.BgPen==original.BgPen);
+        CHECK(!std::memcmp(result.minterms,original.minterms,sizeof(result.minterms)));
+        CHECK(!std::memcmp(&f.rp,&original,sizeof(original)));
+    }
+    // Mixed pen bits expose APen/DrMd ordering in all non-complement modes.
+    const UBYTE modes[]={JAM1,JAM2,COMPLEMENT,JAM1|INVERSVID,JAM2|INVERSVID,COMPLEMENT|INVERSVID};
+    for (UBYTE mode:modes) {
+        Fixture f; f.program(false,true,mode); f.put32(DATA,0x112233a5);
+        f.rp.FgPen=0x5a; f.rp.BgPen=0x3c; f.rp.linpatcnt=3;
+        f.rp.Flags|=ONE_DOT; std::memset(f.rp.minterms,0xd0,sizeof(f.rp.minterms));
+        RastPort original=f.rp;
+        BOOL installed=f.install(); CHECK(installed); if (!installed) continue;
+        f.callback(); CHECK(paints==1 && graphics_calls==3);
+        const RastPort &result=painted[0].rp;
+        CHECK(static_cast<UBYTE>(result.FgPen)==0xa5 && result.DrawMode==mode);
+        CHECK(result.linpatcnt==15 && result.Flags==(original.Flags&~native_no_pens));
+        for (unsigned i=0;i<8;++i) CHECK(result.minterms[i]==expected_minterm(0xa5,0x3c,mode,i));
+        CHECK(!std::memcmp(&f.rp,&original,sizeof(original)));
+    }
+    // DrMd must itself reset the pattern counter, even without preceding APen.
+    Fixture f; f.program(false,false,COMPLEMENT|INVERSVID);
+    f.rp.linpatcnt=3; f.rp.Flags|=FRST_DOT;
+    std::memset(f.rp.minterms,0xd0,sizeof(f.rp.minterms));
+    RastPort original=f.rp;
+    BOOL installed=f.install(); CHECK(installed);
+    if (installed) {
+        f.callback(); CHECK(paints==1 && graphics_calls==2);
+        const RastPort &result=painted[0].rp;
+        CHECK(result.DrawMode==(COMPLEMENT|INVERSVID) && result.linpatcnt==15);
+        CHECK(result.FgPen==original.FgPen && result.BgPen==original.BgPen && result.Flags==original.Flags);
+        for (unsigned i=0;i<8;++i) CHECK(result.minterms[i]==0x6a);
+        CHECK(!std::memcmp(&f.rp,&original,sizeof(original)));
+    }
 }
 
 static void rejected_snapshots() {
@@ -611,7 +693,7 @@ static void library_close_before_guest_code() {
 }
 
 int main() {
-    positive_and_replacement(); rejected_snapshots(); fail_before_swap();
+    positive_and_replacement(); native_setter_replay(); rejected_snapshots(); fail_before_swap();
     task_retirement_and_signal_lease(); scheduled_paint_without_signal(); scheduler_to_root_transition(); wrong_owner_and_recursion(); native_quiescence();
     unlocked_entry_retirement(); independent_layers_and_capacity();
     heap_and_multi_object_leases(); signal_and_port_atomicity(); library_close_before_guest_code();
