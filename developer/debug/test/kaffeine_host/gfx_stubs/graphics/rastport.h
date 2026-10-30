@@ -2,6 +2,12 @@
 #include <exec/types.h>
 /* The native RastPort of AROS, without its private space */
 struct TextFont;
+/* Native AROS layout: pointer plus LONG, naturally padded on 64-bit. */
+struct TmpRas
+{
+    UBYTE *RasPtr;
+    LONG Size;
+};
 struct RastPort
 {
     struct Layer *Layer;

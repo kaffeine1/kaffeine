@@ -8,6 +8,27 @@
 #include <proto/graphics.h>
 #include <proto/layers.h>
 
+/* The native recipe entry is linked with the layer bridge. These older
+   fixtures never replay a paint recipe; its focused suite supplies strong
+   recording graphics functions instead. Unexpected replay must fail. */
+__attribute__((weak)) void SetAPen(struct RastPort *rp, ULONG pen)
+{
+    (void)rp; (void)pen;
+    abort();
+}
+
+__attribute__((weak)) void SetDrMd(struct RastPort *rp, ULONG mode)
+{
+    (void)rp; (void)mode;
+    abort();
+}
+
+__attribute__((weak)) void RectFill(struct RastPort *rp, WORD x0, WORD y0, WORD x1, WORD y1)
+{
+    (void)rp; (void)x0; (void)y0; (void)x1; (void)y1;
+    abort();
+}
+
 __attribute__((weak)) struct Hook *InstallLayerInfoHook(struct Layer_Info *li, struct Hook *hook)
 {
     (void)li; (void)hook;

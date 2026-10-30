@@ -17,10 +17,11 @@
     clips as for the window's own RastPort. Only the changed scalars come
     back; the program's pointers, font, RP_User and reserved bytes stay,
     and so does the RastPort that it copied. Other guest-built RastPorts,
-    area patterns, TmpRas, AreaInfo and the other drawing calls
-    on a caller-owned one stop with return code 20 instead of reaching
-    native graphics.library. AllocRaster() planes are ordinary guest heap
-    allocations.
+    area patterns and other drawing calls on a caller-owned one stop with
+    return code 20 instead of reaching native graphics.library. RectFill
+    ignores unused TmpRas/AreaInfo. Text accepts a bounded classic TmpRas
+    through a per-call native descriptor; AreaInfo remains unsupported.
+    AllocRaster() planes are ordinary guest heap allocations.
 */
 
 #include <aros/debug.h>
@@ -28,6 +29,7 @@
 #include <proto/exec.h>
 #include <graphics/rastport.h>
 #include <graphics/text.h>
+#include <hidd/gfx.h>
 #include <proto/graphics.h>
 #include <proto/intuition.h>
 #include <string.h>
@@ -251,6 +253,7 @@ struct DrawTemporary
 {
     struct RastPort rp, before;
     struct BitMap adapter;
+    struct TmpRas tmpras;
     ULONG bitmap, planes[8], plane_size, width, height;
     UBYTE depth;
 };
@@ -262,10 +265,21 @@ static BOOL draw_refuse(struct KaffeineContext *ctx, ULONG guest, const char *ca
     return FALSE;
 }
 
+enum DrawPolicy
+{
+    DRAW_REQUIRE_AREA_STATE_NULL,
+    DRAW_RECTFILL_UNUSED_AREA_STATE,
+    DRAW_TEXT_TYPED_TMPRAS
+};
+
 /* The temporary of a drawing call (Draw() ... BltTemplate()) for the
    caller-owned classic RastPort at guest, checked whole before any native
-   call: the storage of a state call; no AreaPtrn, TmpRas or AreaInfo,
-   which native graphics would follow. These calls never read GelsInfo;
+   call: the storage of a state call; no AreaPtrn. Only RectFill permits
+   guest TmpRas/AreaInfo values: neither its solid nor patterned native path
+   uses them. StateIn leaves both native pointers NULL and StateOut leaves
+   all guest pointer bytes untouched. Text may adapt TmpRas separately,
+   after its complete target and source validation; it still refuses
+   AreaInfo. Other operations retain their checks. These calls never read GelsInfo;
    its guest value stays untouched and the native temporary keeps NULL.
    For text, a Font that is a
    68k TextFont of graphics, whose native font it gets (other calls get it
@@ -275,16 +289,18 @@ static BOOL draw_refuse(struct KaffeineContext *ctx, ULONG guest, const char *ca
    68k pointer is taken for a native one. FALSE after stopping the program
    (20). */
 static BOOL draw_rastport(struct KaffeineContext *ctx, ULONG guest, BOOL text,
-                          struct DrawTemporary *t, const char *call)
+                          enum DrawPolicy policy, struct DrawTemporary *t, const char *call)
 {
     const struct KaffeineLayerOps *ops = ctx->layer_ops;
     ULONG i, j;
 
     if (!state_storage(ctx, guest))
         return draw_refuse(ctx, guest, call, "not a RastPort of the program");
-    if (m68k_read32(ctx, guest + G_RP_AREAPTRN) || m68k_read32(ctx, guest + G_RP_TMPRAS) ||
-        m68k_read32(ctx, guest + G_RP_AREAINFO))
-        return draw_refuse(ctx, guest, call, "AreaPtrn, TmpRas and AreaInfo are unsupported");
+    if (m68k_read32(ctx, guest + G_RP_AREAPTRN) ||
+        (policy != DRAW_RECTFILL_UNUSED_AREA_STATE && m68k_read32(ctx, guest + G_RP_AREAINFO)) ||
+        (policy != DRAW_RECTFILL_UNUSED_AREA_STATE && policy != DRAW_TEXT_TYPED_TMPRAS &&
+         m68k_read32(ctx, guest + G_RP_TMPRAS)))
+        return draw_refuse(ctx, guest, call, "unsupported area state in a caller-owned RastPort");
     Kaffeine_RastPortStateIn(ctx, guest, &t->rp);
     t->rp.Font = Kaffeine_FontNative(ctx, m68k_read32(ctx, guest + G_RP_FONT));
     if (text && !t->rp.Font)
@@ -350,6 +366,41 @@ static BOOL draw_source(const struct DrawTemporary *t, ULONG guest, ULONG addr, 
     return TRUE;
 }
 
+/* Text's monochrome renderer uses TmpRas only when it fits its own
+   computed raster; a smaller positive descriptor legitimately falls back
+   to native AllocRaster. Never duplicate font geometry here. The signed
+   native Size is compared with ULONG rassize, so reject negative bits
+   rather than let their unsigned promotion claim a huge writable buffer.
+   NULL/zero buffers and capacities above this bounded profile are refused. */
+#define TEXT_TMPRAS_MAX_SIZE (16UL * 1024 * 1024)
+static BOOL text_tmpras(struct KaffeineContext *ctx, ULONG guest, ULONG string, ULONG count,
+                        struct DrawTemporary *t)
+{
+    ULONG descriptor = m68k_read32(ctx, guest + G_RP_TMPRAS), buffer, size;
+    if (!descriptor)
+        return TRUE;
+    if ((descriptor & 1) || !program_memory(ctx, descriptor, 8) ||
+        !draw_source(t, guest, descriptor, 8) || (count && overlaps(descriptor, 8, string, count)) ||
+        overlaps(descriptor, 8, t->bitmap, M68K_SIZEOF_BITMAP))
+        return draw_refuse(ctx, guest, "Text", "not an ordinary disjoint classic TmpRas");
+    buffer = m68k_read32(ctx, descriptor);
+    size = m68k_read32(ctx, descriptor + 4);
+    if (!buffer || (buffer & 1) || !size || size > TEXT_TMPRAS_MAX_SIZE ||
+        !program_memory(ctx, buffer, size) || !draw_source(t, guest, buffer, size) ||
+        overlaps(buffer, size, descriptor, 8) || (count && overlaps(buffer, size, string, count)) ||
+        overlaps(buffer, size, t->bitmap, M68K_SIZEOF_BITMAP))
+        return draw_refuse(ctx, guest, "Text", "not a positive bounded disjoint TmpRas buffer");
+    /* A private layer may draw into guest planes even with a non-NULL
+       Layer. Until that provenance is described here, admit only managed
+       native bitmaps for this case; unlayered planes were checked above. */
+    if (t->rp.Layer && (!t->rp.BitMap || !IS_HIDD_BM(t->rp.BitMap)))
+        return draw_refuse(ctx, guest, "Text", "TmpRas needs a managed native layered target");
+    t->tmpras.RasPtr = ctx->mem + buffer;
+    t->tmpras.Size = (LONG)size;
+    t->rp.TmpRas = &t->tmpras;
+    return TRUE;
+}
+
 /* Around the native call on a temporary: no LayerInfo of the program is
    disposed of and no screen of it closes until the blitter has finished
    with the call's BitMap; then exactly the changed scalars go back. */
@@ -392,6 +443,19 @@ IPTR thunk_gfx_InitRastPort(struct KaffeineContext *ctx, void *cpu)
     memset(ctx->mem + guest, 0, M68K_SIZEOF_RASTPORT);
     Kaffeine_RastPortOut(ctx, guest, &rp);
     return 0;
+}
+
+/* graphics -468: classic TmpRas is exactly two LONGs. This initializer
+   only stores opaque guest bits; a drawing consumer must validate any
+   buffer it actually uses. Never pass either guest address to native code. */
+IPTR thunk_gfx_InitTmpRas(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG guest = THUNK_A(0);
+    if ((guest & 1) || !program_memory(ctx, guest, 8))
+        return refuse(ctx, "InitTmpRas(): not caller-owned classic TmpRas storage");
+    m68k_write32(ctx, guest, THUNK_A(1));
+    m68k_write32(ctx, guest + 4, THUNK_D(0));
+    return guest;
 }
 
 /* The count of Text(), TextLength() and TextExtent() is a WORD, and their
@@ -603,10 +667,12 @@ IPTR thunk_gfx_Text(struct KaffeineContext *ctx, void *cpu)
         Text(rp, text, THUNK_D(0));
         return 0;
     }
-    if (!draw_rastport(ctx, guest, TRUE, &t, "Text"))
+    if (!draw_rastport(ctx, guest, TRUE, DRAW_TEXT_TYPED_TMPRAS, &t, "Text"))
         return ctx->exit_code;
     if (count && !draw_source(&t, guest, string, count))
         return refuse(ctx, "Text(): the text shares bytes with the RastPort or its BitMap");
+    if (!text_tmpras(ctx, guest, string, count, &t))
+        return ctx->exit_code;
     draw_begin(ctx);
     Text(&t.rp, text, THUNK_D(0));
     draw_end(ctx, guest, &t);
@@ -705,7 +771,7 @@ IPTR thunk_gfx_Draw(struct KaffeineContext *ctx, void *cpu)
         Draw(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
         return 0;
     }
-    if (!draw_rastport(ctx, guest, FALSE, &t, "Draw"))
+    if (!draw_rastport(ctx, guest, FALSE, DRAW_REQUIRE_AREA_STATE_NULL, &t, "Draw"))
         return ctx->exit_code;
     draw_begin(ctx);
     Draw(&t.rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
@@ -729,7 +795,7 @@ IPTR thunk_gfx_RectFill(struct KaffeineContext *ctx, void *cpu)
         RectFill(rp, (WORD)x0, (WORD)y0, (WORD)x1, (WORD)y1);
         return 0;
     }
-    if (!draw_rastport(ctx, guest, FALSE, &t, "RectFill"))
+    if (!draw_rastport(ctx, guest, FALSE, DRAW_RECTFILL_UNUSED_AREA_STATE, &t, "RectFill"))
         return ctx->exit_code;
     if (!t.rp.Layer && !draw_clip(&t, &x0, &y0, &x1, &y1))
         return 0;
@@ -795,7 +861,7 @@ IPTR thunk_gfx_ReadPixel(struct KaffeineContext *ctx, void *cpu)
     if (!(guest & 1) && guest_range(ctx, guest, M68K_SIZEOF_RASTPORT) &&
         m68k_read32(ctx, guest + G_RP_LAYER))
     {
-        if (!draw_rastport(ctx, guest, FALSE, &t, "ReadPixel"))
+        if (!draw_rastport(ctx, guest, FALSE, DRAW_REQUIRE_AREA_STATE_NULL, &t, "ReadPixel"))
             return ctx->exit_code;
         draw_begin(ctx);
         pen = ReadPixel(&t.rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
@@ -817,7 +883,7 @@ IPTR thunk_gfx_WritePixel(struct KaffeineContext *ctx, void *cpu)
 
     if (rp)
         return (IPTR)WritePixel(rp, (WORD)x, (WORD)y);
-    if (!draw_rastport(ctx, guest, FALSE, &t, "WritePixel"))
+    if (!draw_rastport(ctx, guest, FALSE, DRAW_REQUIRE_AREA_STATE_NULL, &t, "WritePixel"))
         return ctx->exit_code;
     if (!t.rp.Layer && (x < 0 || y < 0 || x >= (LONG)t.width || y >= (LONG)t.height))
         return (IPTR)(LONG)-1;
@@ -847,7 +913,7 @@ IPTR thunk_gfx_BltTemplate(struct KaffeineContext *ctx, void *cpu)
     struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
     struct DrawTemporary t;
 
-    if (!rp && !draw_rastport(ctx, guest, FALSE, &t, "BltTemplate"))
+    if (!rp && !draw_rastport(ctx, guest, FALSE, DRAW_REQUIRE_AREA_STATE_NULL, &t, "BltTemplate"))
         return ctx->exit_code;
     if (xs < 0 || mod < 0)
         return refuse(ctx, "BltTemplate(): a negative source offset or modulo");

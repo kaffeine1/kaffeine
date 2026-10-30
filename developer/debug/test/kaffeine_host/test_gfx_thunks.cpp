@@ -34,6 +34,7 @@
 
 #include <graphics/rastport.h>
 #include <graphics/text.h>
+#include <hidd/gfx.h>
 #include <proto/graphics.h>
 #include "kaffeine_intern.h"
 #include "kaffeine_offsets.h"
@@ -78,6 +79,13 @@ struct GfxCalls
     BitMap drawn_bm = {};
     UWORD drawn_blits = 0;
     bool paint = false;         /* WritePixel() sets the pixel in a real BitMap */
+    /* Text's native scratch collaborator copies the descriptor while its
+       per-call lifetime is active, and writes only an explicitly requested
+       capacity. A smaller positive capacity exercises native fallback. */
+    struct TmpRas text_tmp = {};
+    const struct TmpRas *text_tmp_descriptor = nullptr;
+    ULONG text_tmp_required = 0;
+    unsigned text_tmp_writes = 0, text_tmp_fallbacks = 0;
     UWORD draw_flags = 0;       /* Draw() toggles these Flags */
     const UBYTE *tmpl = nullptr;
     WORD tmpl_args[6] = {};     /* xSrc, srcMod, xDest, yDest, xSize, ySize */
@@ -231,6 +239,20 @@ static void draw_call(struct RastPort *rp)
 extern "C" void Text(struct RastPort *rp, CONST_STRPTR string, ULONG count)
 {
     draw_call(rp);
+    if (gfx.text_tmp_required)
+    {
+        assert(rp->TmpRas);
+        gfx.text_tmp_descriptor = rp->TmpRas;
+        gfx.text_tmp = *rp->TmpRas;
+        if (rp->TmpRas->RasPtr && ULONG(rp->TmpRas->Size) >= gfx.text_tmp_required)
+        {
+            std::memset(rp->TmpRas->RasPtr, 0x5C, gfx.text_tmp_required);
+            ++gfx.text_tmp_writes;
+        }
+        else ++gfx.text_tmp_fallbacks;
+        rp->linpatcnt = 15;
+        rp->Flags |= FRST_DOT;
+    }
     rp->cp_x += read_text(string, count) * rp->TxWidth;
 }
 
@@ -514,7 +536,7 @@ static const M68KThunkEntry graphics_generated[] =
     { 198, poison }, { 234, gfx_generated_SetRast }, { 240, poison }, { 246, poison }, { 306, poison },
     { 318, poison }, { 324, poison },
     { 336, gfx_generated_PolyDraw }, { 342, poison }, { 348, poison }, { 354, poison },
-    { 396, poison }, { 474, poison }, { 492, poison }, { 498, poison }, { 552, gfx_generated_ClipBlit },
+    { 396, poison }, { 468, poison }, { 474, poison }, { 492, poison }, { 498, poison }, { 552, gfx_generated_ClipBlit },
     { 690, poison }, { 696, poison }, { 858, poison }, { 864, poison },
     { 870, poison }, { 876, poison }, { 894, poison }
 };
@@ -624,6 +646,53 @@ static ULONG guest_font(Fixture &f, TextFont *font)
     return Kaffeine_FontFind(&f.ctx, font);
 }
 
+/* Classic TmpRas is 8 bytes on every guest ABI, independently of the
+   native pointer size. Neither token nor size is a native address/extent. */
+static void test_classic_tmpras_init()
+{
+    for (unsigned where = 0; where < 4; ++where)
+    {
+        Fixture f;
+        const ULONG address = where == 0 ? Fixture::raw : where == 1
+            ? Kaffeine_HeapAlloc(&f.ctx, 8, 0) : where == 2
+            ? Kaffeine_HeapAlloc(&f.ctx, 32, 0) + 2 : f.ctx.mem_size - 8;
+        assert(address && !(address & 1));
+        const unsigned native = gfx.any;
+        for (ULONG buffer : { 0U, 0xFFFFFFFFU, Fixture::raw + 1, f.ctx.mem_size })
+            for (ULONG size : { 0U, 1U, 0x7FFFFFFFU, 0x80000000U, 0xFFFFFFFFU })
+            {
+                auto want = f.memory;
+                for (unsigned i = 0; i < 4; ++i)
+                {
+                    want[address + i] = UBYTE(buffer >> (24 - 8 * i));
+                    want[address + 4 + i] = UBYTE(size >> (24 - 8 * i));
+                }
+                assert(f.call(468, { address, buffer }, { size }) == address && !f.stopped());
+                assert(f.memory == want && gfx.any == native && !generated_calls);
+            }
+    }
+    Fixture f;
+    const ULONG owned = f.rastport(), font = guest_font(f, &topaz);
+    const ULONG mirror = Kaffeine_MirrorAlloc(&f.ctx, 16);
+    const ULONG block = Kaffeine_HeapAlloc(&f.ctx, 8, 0);
+    int native_window;
+    f.ctx.shadow_map[f.ctx.num_shadows++] = { 0x2600, &native_window, KAFFEINE_SHADOW_WINDOW, 0 };
+    f.ctx.memory_info = 0x3000;
+    f.ctx.io_requests[0].guest = 0x3400; f.ctx.io_requests[0].capacity = 48;
+    const ULONG freed = Kaffeine_HeapAlloc(&f.ctx, 8, 0);
+    assert(freed && owned && font && mirror && block);
+    assert(Kaffeine_HeapFreeExact(&f.ctx, freed, 8));
+    const unsigned native = gfx.any;
+    for (ULONG bad : { 0U, Fixture::raw + 1, f.ctx.mem_size - 6, f.ctx.mem_size - 2,
+                       0xFFFFFFFCU, owned, owned + 2, font, font + 4, mirror, block - 2,
+                       freed, 0x2600U, 0x3000U, 0x3400U + 46, f.ctx.libs[0].jt_start + 6 })
+    {
+        const auto before = f.memory;
+        assert(f.call(468, { bad, 0xFFFFFFFFU }, { 0xFFFFFFFFU }) == 20 && f.stopped());
+        assert(f.memory == before && gfx.any == native && !generated_calls);
+    }
+}
+
 static void test_registration()
 {
     /* AddGList() and AddGadget() are in the gadget table of
@@ -661,7 +730,7 @@ static void test_registration()
         { 198, thunk_gfx_InitRastPort }, { 240, thunk_gfx_Move }, { 246, thunk_gfx_Draw },
         { 306, thunk_gfx_RectFill }, { 318, thunk_gfx_ReadPixel }, { 324, thunk_gfx_WritePixel },
         { 342, thunk_gfx_SetAPen }, { 348, thunk_gfx_SetBPen }, { 354, thunk_gfx_SetDrMd },
-        { 474, thunk_gfx_AskFont }, { 492, thunk_gfx_AllocRaster }, { 498, thunk_gfx_FreeRaster },
+        { 468, thunk_gfx_InitTmpRas }, { 474, thunk_gfx_AskFont }, { 492, thunk_gfx_AllocRaster }, { 498, thunk_gfx_FreeRaster },
         { 690, thunk_gfx_TextExtent }, { 696, thunk_gfx_TextFit }, { 858, thunk_gfx_GetAPen },
         { 864, thunk_gfx_GetBPen }, { 870, thunk_gfx_GetDrMd }, { 876, thunk_gfx_GetOutlinePen }
     };
@@ -2108,7 +2177,10 @@ static void test_draw_refusals()
         f.put(Fixture::text + 0x80, "Hi");
         const Memory with_text = f.memory;
         assert(f.call(246, { 0, rp }, { 1, 1 }) == 20 && f.stopped());
-        assert(f.call(306, { 0, rp }, { 0, 0, 5, 5 }) == 20 && f.stopped());
+        /* RectFill never reads TmpRas/AreaInfo; its positive policy is
+           checked separately. Every other operation still refuses them. */
+        if (c != 1 && c != 2)
+            assert(f.call(306, { 0, rp }, { 0, 0, 5, 5 }) == 20 && f.stopped());
         assert(f.call(324, { 0, rp }, { 1, 1 }) == 20 && f.stopped());
         assert(f.call(60, { Fixture::text + 0x80, rp }, { 2 }) == 20 && f.stopped());
         assert(f.call(36, { Fixture::text, rp }, { 0, 2, 0, 0, 8, 2 }) == 20 && f.stopped());
@@ -2155,6 +2227,181 @@ static void test_draw_refusals()
         /* exactly the bytes graphics may read: one word for 16 pixels */
         assert(f.call(36, { end - 2, p.rp }, { 0, 2, 0, 0, 16, 1 }) == 0 && gfx.draws == 1 &&
                gfx.tmpl == f.ctx.mem + end - 2);
+    }
+}
+
+/* RectFill alone ignores these guest fields. Poisoned tokens may point
+   outside the arena, at odd addresses or into private metadata: no pointed
+   storage is inspected or forwarded, and the full 100-byte RP remains intact. */
+static void test_rectfill_unused_area_state()
+{
+    for (bool layered : { false, true })
+        for (unsigned which = 0; which < 4; ++which)
+        {
+            Fixture f;
+            ULONG rp;
+            if (layered)
+            {
+                const ULONG original = f.rastport(), layer = Fixture::raw + 0x200;
+                bridge_ops.draw_target = fake_draw_target; f.ctx.layer_ops = &bridge_ops;
+                m68k_write32(&f.ctx, original + RP_LAYER, layer);
+                bridge = { layer, 0, 0 };
+                rp = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_RASTPORT, 0);
+                assert(rp);
+                std::memcpy(f.memory.data() + rp, f.memory.data() + original, M68K_SIZEOF_RASTPORT);
+            }
+            else rp = planar(f).rp;
+            const ULONG tmpras = which == 0 || which == 3 ? 0xFFFFFFF1U : which == 2 ? rp + 1 : 0;
+            const ULONG area = which == 1 ? f.ctx.mem_size : which == 2 ? f.ctx.heap_start : which == 3 ? 0xFFFFFFFFU : 0;
+            m68k_write32(&f.ctx, rp + 12, tmpras);m68k_write32(&f.ctx, rp + 16, area);
+            const Memory before = f.memory;
+            std::array<UBYTE, sizeof(RastPort)> native_before;
+            std::memcpy(native_before.data(), &native_rp, sizeof(RastPort));
+            gfx.draws = gfx.waits = 0;
+            assert(f.call(306, { 0, rp }, { 0xFFFD, 0xFFFE, 40, 20 }) == 0 && !f.stopped());
+            assert(gfx.draws == 1 && gfx.waits == 1 && bridge.calls == 1 && !f.ctx.bitmap_blits);
+            assert(outside(f, gfx.draw_rp) && gfx.draw_rp != &native_rp);
+            assert(!gfx.drawn.AreaPtrn && !gfx.drawn.TmpRas && !gfx.drawn.AreaInfo);
+            assert(gfx.drawn.Layer == (layered ? window_layer : nullptr));
+            assert(gfx.fill[0] == (layered ? -3 : 0) && gfx.fill[1] == (layered ? -2 : 0) &&
+                   gfx.fill[2] == (layered ? 40 : 31) && gfx.fill[3] == (layered ? 20 : 15));
+            assert(f.memory == before && f.lng(rp + 12) == tmpras && f.lng(rp + 16) == area);
+            assert(!std::memcmp(native_before.data(), &native_rp, sizeof(RastPort)));
+            /* AreaPtrn remains a real consumed pointer and must still fail. */
+            m68k_write32(&f.ctx, rp + 8, 0xFFFFFFF1U);
+            const Memory patterned = f.memory;
+            assert(f.call(306, { 0, rp }, { 0, 0, 1, 1 }) == 20 && f.stopped());
+            assert(f.memory == patterned && gfx.draws == 1 && gfx.waits == 1);
+        }
+}
+
+/* A native HIDD target identity, not the fake pointer of native_rp:
+   the same complete BitMap is returned by the typed layer collaborator. */
+static Planar text_target(Fixture &f, bool layered)
+{
+    if (!layered) return planar(f);
+    Planar p = {};
+    const ULONG original = f.rastport(), layer = Fixture::raw + 0x200;
+    p.rp = Kaffeine_HeapAlloc(&f.ctx, 100, 0);
+    p.bm = Kaffeine_MirrorAlloc(&f.ctx, M68K_SIZEOF_BITMAP);
+    assert(p.rp && p.bm);
+    m68k_write32(&f.ctx, original + RP_LAYER, layer);
+    std::memcpy(f.memory.data() + p.rp, f.memory.data() + original, 100);
+    m68k_write32(&f.ctx, p.rp + RP_BITMAP, p.bm);
+    window_bm = {};
+    window_bm.pad = HIDD_BM_PAD_MAGIC;
+    bridge_ops.draw_target = fake_draw_target; f.ctx.layer_ops = &bridge_ops;
+    bridge = { layer, p.bm, 0 };
+    gfx.draws = gfx.waits = 0;
+    return p;
+}
+
+static void test_text_classic_tmpras()
+{
+    for (bool layered : { false, true })
+        for (ULONG capacity : { 2U, 64U })
+        {
+            Fixture f;const Planar p = text_target(f, layered);
+            const ULONG descriptor = Kaffeine_HeapAlloc(&f.ctx, 24, 0) + 8;
+            const ULONG buffer = Kaffeine_HeapAlloc(&f.ctx, 80, 0) + 8;
+            assert(descriptor > 8 && buffer > 8);
+            std::memset(f.ctx.mem + descriptor - 8, 0xA6, 24);
+            std::memset(f.ctx.mem + buffer - 8, 0xD3, 80);
+            assert(f.call(468, { descriptor, buffer }, { capacity }) == descriptor);
+            m68k_write32(&f.ctx, p.rp + 12, descriptor);
+            m68k_write16(&f.ctx, p.rp + RP_CP_X, 6);m68k_write16(&f.ctx, p.rp + RP_CP_Y, 7);
+            f.put(Fixture::text + 0x80, "Hi");
+            const ULONG font = f.lng(p.rp + RP_FONT);
+            Memory want = f.memory;
+            std::array<UBYTE, sizeof(RastPort)> native_before;
+            std::memcpy(native_before.data(), &native_rp, sizeof(RastPort));
+            gfx.text_tmp_required = 32;gfx.text_tmp_writes = gfx.text_tmp_fallbacks = 0;
+            const bool fits = capacity >= gfx.text_tmp_required;
+            if (fits) std::memset(want.data() + buffer, 0x5C, 32);
+            want[p.rp + RP_CP_X] = 0;want[p.rp + RP_CP_X + 1] = 22;
+            want[p.rp + RP_LINPATCNT] = 15;
+            const UWORD flags = f.word(p.rp + RP_FLAGS) | FRST_DOT;
+            want[p.rp + RP_FLAGS] = UBYTE(flags >> 8);want[p.rp + RP_FLAGS + 1] = UBYTE(flags);
+            assert(f.call(60, { Fixture::text + 0x80, p.rp }, { 2 }) == 0 && !f.stopped());
+            assert(gfx.draws == 1 && gfx.waits == 1 && !f.ctx.bitmap_blits);
+            assert(gfx.text_tmp_descriptor && outside(f, gfx.text_tmp_descriptor));
+            assert(gfx.text_tmp.RasPtr == f.ctx.mem + buffer && gfx.text_tmp.Size == LONG(capacity));
+            assert(gfx.text_tmp_writes == unsigned(fits) && gfx.text_tmp_fallbacks == unsigned(!fits));
+            assert(f.memory == want && f.lng(p.rp + 12) == descriptor && f.lng(p.rp + RP_FONT) == font);
+            assert(f.lng(descriptor) == buffer && f.lng(descriptor + 4) == capacity);
+            assert(!gfx.drawn.AreaPtrn && !gfx.drawn.AreaInfo && gfx.drawn.Layer == (layered ? window_layer : nullptr));
+            assert(!std::memcmp(native_before.data(), &native_rp, sizeof(RastPort)));
+        }
+}
+
+static void test_text_tmpras_refusals()
+{
+    enum { CASES = 31 };
+    for (unsigned which = 0; which < CASES; ++which)
+    {
+        Fixture f;const bool layered = which == 28 || which == 29;
+        const Planar p = text_target(f, layered);
+        ULONG descriptor = Kaffeine_HeapAlloc(&f.ctx, 24, 0) + 8;
+        ULONG buffer = Kaffeine_HeapAlloc(&f.ctx, 80, 0) + 8;
+        ULONG size = 64;
+        const ULONG font = f.lng(p.rp + RP_FONT), string = Fixture::text + 0x80;
+        assert(descriptor > 8 && buffer > 8 && font);
+        f.put(string, "Hi");
+        switch (which)
+        {
+        case 0: descriptor++;break;
+        case 1: descriptor = f.ctx.mem_size - 6;break;
+        case 2: descriptor = 0xFFFFFFFCU;break;
+        case 3: descriptor = font;break;
+        case 4: descriptor = Kaffeine_MirrorAlloc(&f.ctx, 8);break;
+        case 5: descriptor = p.rp + 2;break;
+        case 6: descriptor = p.bm + 2;break;
+        case 7: descriptor = p.planes[0] + 8;break;
+        case 8: descriptor = string;break;
+        case 9: size = 0;break;
+        case 10: size = 0x80000000U;break;
+        case 11: size = 0xFFFFFFFFU;break;
+        case 12: size = 16U * 1024 * 1024 + 1;break;
+        case 13: buffer = 0;break;
+        case 14: buffer++;break;
+        case 15: buffer = f.ctx.mem_size;break;
+        case 16: size = 80;break; /* whole declared span extends beyond allocation */
+        case 17: buffer = p.rp;size = 16;break;
+        case 18: buffer = descriptor;size = 16;break;
+        case 19: buffer = string;size = 16;break;
+        case 20: buffer = font;size = 16;break;
+        case 21: buffer = p.bm;size = 16;break;
+        case 22: buffer = p.planes[0] + 8;size = 16;break;
+        case 23: buffer = p.planes[1] + 8;size = 16;break;
+        case 24: buffer = Kaffeine_MirrorAlloc(&f.ctx, 64);break;
+        case 25: buffer = f.ctx.heap_start;size = 8;break;
+        case 26: buffer = Kaffeine_HeapAlloc(&f.ctx, 64, 0);assert(Kaffeine_HeapFreeExact(&f.ctx, buffer, 64));break;
+        case 27: buffer = f.ctx.libs[0].jt_start + 6;size = 16;break;
+        case 28: window_bm.pad = 0;break; /* private/non-HIDD layered target */
+        case 29: buffer = p.bm;size = 16;break;
+        case 30: f.ctx.memory_info = buffer;break;
+        }
+        /* Only initialize the ordinary baseline descriptor. Malformed,
+           aliased descriptor cases must fail before its fields are read. */
+        if (which >= 9)
+        {m68k_write32(&f.ctx, descriptor, buffer);m68k_write32(&f.ctx, descriptor + 4, size);}
+        m68k_write32(&f.ctx, p.rp + 12, descriptor);
+        gfx.text_tmp_required = 32;
+        const Memory before = f.memory;const unsigned native = gfx.any;
+        assert(f.call(60, { string, p.rp }, { 2 }) == 20 && f.stopped());
+        assert(f.memory == before && gfx.any == native && !gfx.draws && !gfx.waits &&
+               !gfx.text_tmp_writes && !gfx.text_tmp_fallbacks && !f.ctx.bitmap_blits);
+    }
+    /* Even a valid TmpRas never authorizes AreaPtrn or AreaInfo for Text. */
+    for (ULONG offset : { 8U, 16U })
+    {
+        Fixture f;const Planar p = planar(f);
+        const ULONG descriptor = Kaffeine_HeapAlloc(&f.ctx, 8, 0), buffer = Kaffeine_HeapAlloc(&f.ctx, 64, 0);
+        assert(descriptor && buffer && f.call(468, { descriptor, buffer }, { 64 }) == descriptor);
+        m68k_write32(&f.ctx, p.rp + 12, descriptor);m68k_write32(&f.ctx, p.rp + offset, 0xFFFFFFFFU);
+        f.put(Fixture::text, "Hi");const Memory before = f.memory;const unsigned native = gfx.any;
+        assert(f.call(60, { Fixture::text, p.rp }, { 2 }) == 20 && f.stopped());
+        assert(f.memory == before && gfx.any == native && !gfx.draws && !gfx.waits);
     }
 }
 
@@ -2364,6 +2611,7 @@ int main()
         { "SetFont() takes a 68k TextFont", test_setfont },
         { "Unsupported RastPorts stop before native graphics.library", test_refusals },
         { "InitRastPort initializes exactly classic caller storage and bounds", test_classic_rastport_init },
+        { "InitTmpRas stores exactly two opaque guest LONGs without native pointers", test_classic_tmpras_init },
         { "Caller-owned RastPorts support bounded font operations and copied queries", test_classic_rastport_fonts },
         { "AskFont() fills a classic TextAttr with the font's own attributes", test_askfont },
         { "AskFont() follows the font of the RastPort with stable 68k names", test_askfont_fonts },
@@ -2377,6 +2625,9 @@ int main()
         { "AllocRaster() and FreeRaster() use exact guest heap blocks", test_rasters },
         { "Drawing on a program's planar BitMap goes through the very guest planes, pre-clipped", test_draw_planar },
         { "Drawing stops before native graphics on pointers, aliases, bridge memory and bad templates", test_draw_refusals },
+        { "RectFill ignores only unused TmpRas/AreaInfo and preserves caller bytes", test_rectfill_unused_area_state },
+        { "Text adapts classic TmpRas into validated native per-call scratch", test_text_classic_tmpras },
+        { "Text rejects malformed, protected or aliased TmpRas before native writes", test_text_tmpras_refusals },
         { "A copied window RastPort draws through the real layer and leaves the window's alone", test_draw_copied_window },
         { "Caller-owned metric queries resolve only a live font and signed spacing", test_caller_metrics },
         { "Metric outputs and caller storage reject aliases and protected bytes atomically", test_metric_guards },

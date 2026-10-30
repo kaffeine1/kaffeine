@@ -29,6 +29,7 @@ IPTR thunk_gfx_SetFont(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_InitGels(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_GelsUnsupported(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_InitRastPort(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_InitTmpRas(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_AskFont(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_TextLength(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_Text(struct KaffeineContext *ctx, void *cpu);
@@ -97,6 +98,7 @@ IPTR thunk_gfx_FreeRaster(struct KaffeineContext *ctx, void *cpu);
     { 342, thunk_gfx_SetAPen }, \
     { 348, thunk_gfx_SetBPen }, \
     { 354, thunk_gfx_SetDrMd }, \
+    { 468, thunk_gfx_InitTmpRas }, \
     { 474, thunk_gfx_AskFont }, \
     { 492, thunk_gfx_AllocRaster }, \
     { 498, thunk_gfx_FreeRaster }, \

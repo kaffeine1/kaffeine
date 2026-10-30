@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -342,10 +343,14 @@ static ULONG get_pc(void *s) { return static_cast<TestCPU *>(s)->pc; }
 static void set_pc(void *s, ULONG v) { static_cast<TestCPU *>(s)->pc = v; }
 /* A slice of a program that only polls guest memory; it stops itself. */
 static unsigned slices, slice_limit;
+static std::function<void()> before_completion;
 static void execute(void *)
 {
     if (++slices >= slice_limit)
+    {
+        if (before_completion) before_completion();
         live->running = FALSE;
+    }
 }
 static const KaffeineCPUOps ops =
     { get_d, get_a, set_d, set_a, get_sr, set_sr, get_pc, set_pc, execute, nullptr };
@@ -500,13 +505,16 @@ struct Fixture
     bool stopped() const { return !ctx.running && ctx.exit_code == 20 && state.d[0] == 20; }
 
     /* The outermost run loop, without guest tasks, for n slices */
-    void run(unsigned n)
+    void run(unsigned n, std::function<void()> while_live = {})
     {
         assert(!ctx.sched && !ctx.cpu);
+        assert(!before_completion);
         slices = 0;
         slice_limit = n;
+        before_completion = std::move(while_live);
         state.d[0] = 0;
         Kaffeine_RunCPU(&ctx, &cpu);
+        before_completion = {};
         assert(slices == n && !ctx.cpu);
     }
 
@@ -1042,9 +1050,20 @@ static void test_windows_and_locks()
     unsigned infos = info_calls;
     order(scr, { &bar, &c.layer, &a.layer, &foreign });
     Kaffeine_LayersRefresh(&f.ctx);
-    f.run(KAFFEINE_GUI_POLL_SLICES + 1);
-    assert(f.call(Fixture::intuition_base, 306, { mc }) == 0 && depth_calls.size() == 1);
+    f.run(KAFFEINE_GUI_POLL_SLICES + 1, [&] {
+        /* The periodic poll has run while the root still owns both locks.
+           A depth call in that same live scope must not take LayerInfo. */
+        assert(f.ctx.running && f.ctx.cpu == &f.cpu && held_locks == 2);
+        assert(info_calls == infos && f.L(la + M68K_LAYER_BACK) == lc);
+        assert(f.call(Fixture::intuition_base, 306, { mc }) == 0 && depth_calls.size() == 1);
+        assert(info_calls == infos && f.L(la + M68K_LAYER_BACK) == lc);
+    });
+    /* A completed root retires its scope before its CPU returns. The
+       remaining independent adapter checks need a freshly acquired scope. */
+    assert(!f.ctx.running && held_locks == 0 && layer_locks[&a.layer] == 0);
     assert(info_calls == infos && f.L(la + M68K_LAYER_BACK) == lc);
+    assert(f.call(Fixture::graphics_base, 432, { 0, 0, 0, 0, 0, la }) == 0);
+    assert(f.call(Fixture::layers_base, 96, { 0, la }) == 0 && layer_locks[&a.layer] == 2);
     /* AttemptLockLayerRom(), as the native one answers */
     attempt_fails = true;
     assert(f.call(Fixture::graphics_base, 654, { 0, 0, 0, 0, 0, lc }) == FALSE && layer_locks[&c.layer] == 0);
