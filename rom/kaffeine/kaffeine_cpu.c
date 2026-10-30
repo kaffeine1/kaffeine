@@ -6,6 +6,7 @@
 
 #include "kaffeine_cpu.h"
 #include "kaffeine_intern.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_callback.h"
 #include "kaffeine_sched.h"
 
@@ -76,6 +77,8 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
         current->ops->execute(current->backend_state);
         /* A failed start can retain native work and a staged CPU. Drain on
            the live owner before a scheduler boundary can retire anything. */
+        if (!ctx->running && Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
+            ctx->layer_ops->release_locks(ctx);
         if (!ctx->running && ctx->domain_drain)
             while (!ctx->domain_drain(ctx)) { }
         /* A completed slice of the outermost loop: no thunk or callback is
@@ -90,6 +93,9 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
             ctx->task_ops->boundary(ctx);
     }
 
+    /* Never enter owner/broker cleanup while a native Info scope remains. */
+    if (Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
+        ctx->layer_ops->release_locks(ctx);
     if (ctx->domain_drain)
         while (!ctx->domain_drain(ctx)) { }
     /* A stop in a child ends the whole program with that child's D0. */
@@ -102,6 +108,8 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
         ctx->task_ops->root_result(ctx, &ctx->exit_code);
     if (current != cpu)
         Kaffeine_SetD(cpu, 0, (ULONG)ctx->exit_code);
+    if (!outer && Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
+        ctx->layer_ops->release_locks(ctx);
     if (ctx->sched && !outer)
         ctx->task_ops->end(ctx);
     ctx->cpu = outer;
@@ -124,7 +132,7 @@ BOOL Kaffeine_CallGuest(struct KaffeineContext *ctx, void *cpu, ULONG entry,
     UWORD sr;
     unsigned i;
 
-    if (ctx->broker_call)
+    if (ctx->broker_call || Kaffeine_LayerInfoLocked(ctx))
     {
         Kaffeine_StopGuest(ctx, cpu, 20);
         return FALSE;

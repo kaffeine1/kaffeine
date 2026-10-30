@@ -28,6 +28,7 @@
 #include "kaffeine_workbench.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_messages.h"
+#include "kaffeine_layers.h"
 
 #include <aros/debug.h>
 #include <exec/errors.h>
@@ -582,7 +583,9 @@ static BOOL io_pump(struct KaffeineContext *ctx)
     unsigned i;
     BOOL ok = TRUE;
 
-    if (!ctx->running) return TRUE;
+    /* Orphan settlement can CloseDevice. Keep replies and their signal
+       pending until the explicit native LayerInfo scope has ended. */
+    if (!ctx->running || Kaffeine_LayerInfoLocked(ctx)) return TRUE;
     if (ctx->io_reply_port)
     {
         SetSignal(0, 1UL << ctx->io_reply_port->mp_SigBit);

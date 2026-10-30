@@ -50,6 +50,8 @@
 #include "kaffeine_gadgets.h"
 #include "kaffeine_dispatch.h"
 #include "kaffeine_cpu.h"
+#include "kaffeine_callback.h"
+#include "kaffeine_exec_compat.h"
 
 /* ── The native side ─────────────────────────────────────────────── */
 
@@ -57,6 +59,9 @@ static KaffeineContext *live;
 static std::vector<std::string> events;
 static std::map<const Layer *, int> layer_locks;
 static int held_locks, info_depth, ibase_depth;
+static std::map<Layer_Info *, int> info_locks;
+static Task *native_task = reinterpret_cast<Task *>(static_cast<IPTR>(0x11110000));
+extern "C" Task *FindTask(const char *name) { assert(!name); return native_task; }
 static bool info_busy;
 static unsigned info_calls, ibase_calls, native_installs, attempts;
 static bool attempt_fails;
@@ -113,21 +118,23 @@ static void unlink_native(Layer *l)
 /* The bridge takes a LayerInfo lock alone, never after a layer lock. */
 extern "C" void LockLayerInfo(struct Layer_Info *li)
 {
-    assert(li && info_depth == 0 && held_locks == 0);
+    assert(li && (!held_locks || info_locks[li]));
+    ++info_locks[li];
     ++info_depth;
     ++info_calls;
     events.push_back("LockLayerInfo");
 }
 extern "C" void UnlockLayerInfo(struct Layer_Info *li)
 {
-    assert(li && info_depth == 1);
+    assert(li && info_locks[li] > 0 && info_depth > 0);
+    --info_locks[li];
     --info_depth;
     events.push_back("UnlockLayerInfo");
 }
 extern "C" ULONG AttemptSemaphore(struct SignalSemaphore *lock)
 {
-    if(info_busy) return 0;
     auto *li=reinterpret_cast<Layer_Info *>(reinterpret_cast<char *>(lock)-offsetof(Layer_Info,Lock));
+    if(info_busy && !info_locks[li]) return 0;
     LockLayerInfo(li);
     return 1;
 }
@@ -138,7 +145,7 @@ extern "C" void ReleaseSemaphore(struct SignalSemaphore *lock)
 }
 extern "C" void LockLayer(LONG dummy, struct Layer *l)
 {
-    assert(dummy == 0 && l && info_depth == 0);
+    assert(dummy == 0 && l && (!info_depth || info_locks[l->LayerInfo]));
     ++layer_locks[l];
     ++held_locks;
     events.push_back("LockLayer");
@@ -379,6 +386,8 @@ struct Fixture
     {
         events.clear();
         layer_locks.clear();
+        info_locks.clear();
+        native_task = reinterpret_cast<Task *>(static_cast<IPTR>(0x11110000));
         held_locks = info_depth = ibase_depth = 0;
         info_busy = false;
         info_calls = ibase_calls = native_installs = attempts = 0;
@@ -392,6 +401,7 @@ struct Fixture
         zero_at_close = 0;
         queues.clear();
         replied.clear();
+        ctx.exec_task = native_task;
         ctx.mem = memory.data();
         ctx.mem_size = (ULONG)memory.size();
         ctx.heap_start = heap_start;
@@ -473,9 +483,13 @@ struct Fixture
         const TestCPU before = state;
         ctx.running = TRUE;
         ctx.exit_code = 0;
+        ctx.callback_failed = FALSE;
         generated_calls = 0;
         KaffeineDispatchResult result = {};
+        auto *previous = ctx.cpu;
+        ctx.cpu = &cpu;
         assert(Kaffeine_DispatchLibraryCall(&ctx, &cpu, base - lvo, &result));
+        ctx.cpu = previous;
         assert(result.return_pc == 0x76543210 && !result.supervisor && state.a[7] == stack + 4);
         for (i = 1; i < 8; ++i) assert(state.d[i] == before.d[i]);
         for (i = 0; i < 7; ++i) assert(state.a[i] == before.a[i]);
@@ -641,6 +655,8 @@ static void test_registration()
         else if (e.lvo == 186) assert(e.thunk == Kaffeine_CreateUpfrontHookLayer);
         else if (e.lvo == 96) assert(e.thunk == Kaffeine_LockLayer);
         else if (e.lvo == 102) assert(e.thunk == Kaffeine_UnlockLayer);
+        else if (e.lvo == 120) assert(e.thunk == Kaffeine_LockLayerInfo);
+        else if (e.lvo == 138) assert(e.thunk == Kaffeine_UnlockLayerInfo);
         else if (e.lvo == 144) assert(e.thunk == Kaffeine_NewLayerInfo);
         else if (e.lvo == 150) assert(e.thunk == Kaffeine_DisposeLayerInfo);
         else if (e.lvo == 174) assert(e.thunk == Kaffeine_InstallClipRegion);
@@ -1644,7 +1660,7 @@ static void test_layer_info_refusals()
         assert(counters() == before && f.heap_is(heap));
     }
     /* the other LayerInfo calls still stop, with it in every register */
-    for (ULONG lvo : { 120u, 138u, 156u, 162u, 204u })
+    for (ULONG lvo : { 156u, 162u, 204u })
     {
         assert(f.call(Fixture::layers_base, lvo, { li, li }) == 20 && f.stopped());
         assert(counters() == before && f.heap_is(heap));
@@ -1949,11 +1965,299 @@ static void test_teardown_releases_all_window_locks()
     assert(closed.size()==2 && event_at("UnlockLayer")<event_at("CloseWindow"));
 }
 
+static void test_info_lock_smoke()
+{
+    Fixture f; NativeWindow a;
+    make_window(a,scr,10,20,200,100);
+    order(scr,{&bar,&a.layer,&foreign});
+    ULONG mw=f.open(a), layer=f.L(mw+M68K_WIN_WLAYER), info=f.L(layer+M68K_LAYER_LAYERINFO);
+    assert(info && !info_depth);
+    assert(f.call(Fixture::layers_base,120,{info})==0 && info_depth==1);
+    assert(Kaffeine_LayerInfoLocked(&f.ctx) && f.ctx.layer_ops->has_locks(&f.ctx));
+    assert(f.call(Fixture::layers_base,120,{info})==0 && info_depth==2);
+    assert(f.call(Fixture::layers_base,96,{0,layer})==0 && held_locks==1);
+    assert(f.call(Fixture::layers_base,102,{layer})==0 && held_locks==0);
+    assert(f.call(Fixture::layers_base,138,{info})==0 && info_depth==1);
+    assert(f.call(Fixture::layers_base,138,{info})==0 && info_depth==0 && !Kaffeine_LayerInfoLocked(&f.ctx));
+    ULONG own=f.call(Fixture::layers_base,144);
+    assert(own && f.call(Fixture::layers_base,120,{own})==0 && info_depth==1);
+    assert(f.call(Fixture::layers_base,138,{own})==0 && !info_depth);
+    assert(f.call(Fixture::layers_base,150,{own})==0);
+    f.close(mw);
+}
+
+static void test_info_lock_snapshot_and_nesting()
+{
+    Fixture f; NativeWindow a,b;
+    make_window(a,scr,10,20,200,100); make_window(b,scr,20,30,210,110);
+    order(scr,{&bar,&a.layer,&b.layer,&foreign});
+    ULONG ma=f.open(a),mb=f.open(b),la=f.L(ma+M68K_WIN_WLAYER),lb=f.L(mb+M68K_WIN_WLAYER);
+    ULONG info=f.L(la+M68K_LAYER_LAYERINFO);
+    order(scr,{&b.layer,&bar,&a.layer,&foreign});
+    m68k_write32(&f.ctx,info+M68K_LI_TOP_LAYER,0xdeadbeef);
+    std::memset(f.memory.data()+info+M68K_LI_LOCK,0xfe,46);
+    std::vector<UBYTE> semaphore(f.memory.begin()+info+M68K_LI_LOCK,
+                                 f.memory.begin()+info+M68K_LI_LOCK+46);
+    assert(f.call(Fixture::layers_base,120,{info})==0 && info_depth==1);
+    assert(f.L(info+M68K_LI_TOP_LAYER)==lb && f.L(lb+M68K_LAYER_BACK)==f.L(la+M68K_LAYER_FRONT));
+    assert(!std::memcmp(semaphore.data(),f.memory.data()+info+M68K_LI_LOCK,semaphore.size()));
+    unsigned calls=info_calls;
+    Kaffeine_LayersRefresh(&f.ctx);
+    assert(info_calls==calls && f.L(info+M68K_LI_TOP_LAYER)==lb);
+    for(unsigned n=1;n<255;++n)
+        assert(f.call(Fixture::layers_base,120,{info})==0 && info_depth==static_cast<int>(n+1));
+    calls=info_calls;
+    assert(f.call(Fixture::layers_base,120,{info})==20 && f.stopped() && info_depth==255 && info_calls==calls);
+    for(unsigned n=255;n;--n)
+        assert(f.call(Fixture::layers_base,138,{info})==0 && info_depth==static_cast<int>(n-1));
+    assert(!Kaffeine_LayerInfoLocked(&f.ctx));
+    calls=info_calls;
+    assert(f.call(Fixture::layers_base,138,{info})==20 && f.stopped() && info_calls==calls && !info_depth);
+    f.close(ma);f.close(mb);
+}
+
+static void test_info_lock_refusals()
+{
+    Fixture f; NativeWindow a;
+    make_window(a,scr,10,20,200,100);order(scr,{&bar,&a.layer,&foreign});
+    ULONG mw=f.open(a),layer=f.L(mw+M68K_WIN_WLAYER),info=f.L(layer+M68K_LAYER_LAYERINFO);
+    for(ULONG bad:{0U,info+1,info+M68K_LI_LOCK,layer,mw,0x5555U,0xffffffffU})
+    {
+        unsigned calls=info_calls;
+        assert(f.call(Fixture::layers_base,120,{bad})==20 && f.stopped());
+        assert(f.call(Fixture::layers_base,138,{bad})==20 && f.stopped() && info_calls==calls && !info_depth);
+    }
+    info_busy=true;
+    unsigned calls=info_calls;
+    assert(f.call(Fixture::layers_base,120,{info})==20 && f.stopped() && info_calls==calls && !info_depth);
+    info_busy=false;
+    for(unsigned mode=0;mode<4;++mode)
+    {
+        if(mode==0) f.ctx.callback_depth=1;
+        if(mode==1) f.ctx.broker_call=TRUE;
+        if(mode==2) f.ctx.bitmap_blits=1;
+        if(mode==3) native_task=reinterpret_cast<Task*>(static_cast<IPTR>(0x22220000));
+        assert(f.call(Fixture::layers_base,120,{info})==20 && f.stopped() && info_calls==calls && !info_depth);
+        f.ctx.callback_depth=0;f.ctx.broker_call=FALSE;f.ctx.bitmap_blits=0;native_task=f.ctx.exec_task;
+    }
+    assert(f.call(Fixture::layers_base,120,{info})==0 && info_depth==1);
+    calls=info_calls;
+    m68k_write32(&f.ctx,Fixture::exec_base+M68K_EXECBASE_THISTASK,Fixture::task+4);
+    assert(f.call(Fixture::layers_base,120,{info})==20 && f.stopped());
+    assert(f.call(Fixture::layers_base,138,{info})==20 && f.stopped() && info_depth==1 && info_calls==calls);
+    m68k_write32(&f.ctx,Fixture::exec_base+M68K_EXECBASE_THISTASK,Fixture::task);
+    native_task=reinterpret_cast<Task*>(static_cast<IPTR>(0x22220000));
+    assert(f.call(Fixture::layers_base,138,{info})==20 && f.stopped() && info_depth==1);
+    f.ctx.layer_ops->release_locks(&f.ctx);
+    assert(info_depth==1 && Kaffeine_LayerInfoLocked(&f.ctx));
+    native_task=f.ctx.exec_task;
+    assert(f.call(Fixture::layers_base,138,{info})==0 && !info_depth);
+    ULONG owned=f.call(Fixture::layers_base,144);
+    assert(f.call(Fixture::layers_base,150,{owned})==0);
+    calls=info_calls;
+    assert(f.call(Fixture::layers_base,120,{owned})==20 && f.stopped() && info_calls==calls);
+    f.close(mw);
+    assert(f.call(Fixture::layers_base,120,{info})==20 && f.stopped() && !info_depth);
+}
+
+static void test_info_lock_order()
+{
+    Fixture f; NativeWindow a,b; Screen other={};
+    make_window(a,scr,10,20,200,100);make_window(b,other,20,30,210,110);
+    order(scr,{&bar,&a.layer,&foreign});order(other,{&b.layer});
+    ULONG ma=f.open(a),mb=f.open(b),la=f.L(ma+M68K_WIN_WLAYER),lb=f.L(mb+M68K_WIN_WLAYER);
+    ULONG info=f.L(la+M68K_LAYER_LAYERINFO);
+    assert(f.call(Fixture::layers_base,96,{0,la})==0 && held_locks==1);
+    unsigned calls=info_calls;
+    assert(f.call(Fixture::layers_base,120,{info})==20 && f.stopped() && info_calls==calls && !info_depth);
+    assert(f.call(Fixture::layers_base,102,{la})==0 && !held_locks);
+    assert(f.call(Fixture::layers_base,120,{info})==0 && info_depth==1);
+    assert(f.call(Fixture::layers_base,96,{0,la})==0 && held_locks==1);
+    assert(f.call(Fixture::layers_base,120,{info})==0 && info_depth==2);
+    assert(f.call(Fixture::layers_base,96,{0,lb})==20 && f.stopped() && held_locks==1);
+    assert(f.call(Fixture::graphics_base,654,{0,0,0,0,0,lb})==FALSE && f.ctx.running && held_locks==1);
+    assert(f.call(Fixture::layers_base,102,{la})==0 && !held_locks);
+    assert(f.call(Fixture::layers_base,138,{info})==0 && info_depth==1);
+    assert(f.call(Fixture::layers_base,138,{info})==0 && !info_depth);
+    f.close(ma);f.close(mb);
+}
+
+static void test_info_lock_rollback()
+{
+    for(unsigned mode=0;mode<3;++mode)
+    {
+        Fixture f;NativeWindow a;Layer extra[49]={};
+        make_window(a,scr,10,20,200,100);order(scr,{&bar,&a.layer,&foreign});
+        ULONG mw=f.open(a),layer=f.L(mw+M68K_WIN_WLAYER),info=f.L(layer+M68K_LAYER_LAYERINFO);
+        std::vector<ULONG> fillers;
+        if(mode==0)
+        {
+            for(unsigned n=0;n<49;++n) make_layer(extra[n],n,n,10,10,LAYERSIMPLE);
+            std::vector<Layer*> chain;
+            for(auto &l:extra) chain.push_back(&l);
+            order(scr,chain);
+        }
+        if(mode==1)
+        {
+            make_layer(extra[0],0,0,10,10,LAYERSIMPLE);
+            order(scr,{&bar,&extra[0],&a.layer,&foreign});
+            for(ULONG b;(b=Kaffeine_HeapAlloc(&f.ctx,16,0))!=0;) fillers.push_back(b);
+        }
+        if(mode==2) foreign.back=&bar; // bounded native list cycle
+        const auto before=f.heap();
+        unsigned calls=info_calls;
+        assert(f.call(Fixture::layers_base,120,{info})==20 && f.stopped());
+        assert(!info_depth && !Kaffeine_LayerInfoLocked(&f.ctx) && info_calls==calls+2 && f.heap_is(before));
+        for(ULONG b:fillers) Kaffeine_HeapFree(&f.ctx,b,16);
+        order(scr,{&bar,&a.layer,&foreign});
+        assert(f.call(Fixture::layers_base,120,{info})==0 && info_depth==1);
+        assert(f.call(Fixture::layers_base,138,{info})==0 && !info_depth);
+        f.close(mw);
+    }
+}
+
+static void test_info_lock_lifetime()
+{
+    for(unsigned mode=0;mode<3;++mode)
+    {
+        Fixture f;NativeWindow a;
+        make_window(a,scr,10,20,200,100);order(scr,{&bar,&a.layer,&foreign});
+        ULONG mw=f.open(a),layer=f.L(mw+M68K_WIN_WLAYER),info=f.L(layer+M68K_LAYER_LAYERINFO);
+        assert(f.call(Fixture::layers_base,120,{info})==0);
+        assert(f.call(Fixture::layers_base,120,{info})==0 && info_depth==2);
+        if(mode==0)
+        {
+            assert(f.call(Fixture::layers_base,96,{0,layer})==0);
+            f.ctx.layer_ops->task_removed(&f.ctx,Fixture::task+4);
+            assert(info_depth==2 && held_locks==1);
+            f.ctx.layer_ops->task_removed(&f.ctx,Fixture::task);
+            assert(!info_depth && !held_locks);
+        }
+        if(mode==1) f.ctx.layer_ops->screen_closing(&f.ctx,&scr);
+        if(mode==2) f.ctx.layer_ops->release_locks(&f.ctx);
+        assert(!info_depth && !Kaffeine_LayerInfoLocked(&f.ctx));
+        f.ctx.layer_ops->release_locks(&f.ctx);assert(!info_depth);
+        f.close(mw);
+    }
+    Fixture f;
+    ULONG info=f.call(Fixture::layers_base,144);
+    assert(f.call(Fixture::layers_base,120,{info})==0);
+    assert(f.call(Fixture::layers_base,150,{info})==20 && f.stopped() && info_depth==1 && native_infos.size()==1);
+    Kaffeine_LayersCleanup(&f.ctx);
+    assert(!info_depth && native_infos.empty() && !f.ctx.layers);
+}
+
+static unsigned info_packet_calls;
+static IPTR info_native_packet(KaffeineContext *,ULONG,ULONG) { ++info_packet_calls; return 7; }
+static void test_info_native_packet_guard()
+{
+    Fixture f; NativeWindow a;
+    make_window(a,scr,10,20,200,100);order(scr,{&bar,&a.layer,&foreign});
+    ULONG mw=f.open(a),layer=f.L(mw+M68K_WIN_WLAYER),info=f.L(layer+M68K_LAYER_LAYERINFO);
+    ULONG msg=Kaffeine_HeapAlloc(&f.ctx,68,MEMF_CLEAR);
+    assert(msg);
+    info_packet_calls=0;
+    for(bool handler:{false,true})
+    {
+        ULONG port=0x3520;
+        if(handler) { f.ctx.handlers[0].guest=port;f.ctx.handler_packet=info_native_packet; }
+        else { f.ctx.files[0].guest=0x3500;f.ctx.files[0].handler=port;f.ctx.file_packet=info_native_packet; }
+        assert(f.call(Fixture::layers_base,120,{info})==0);
+        const auto before=f.heap();
+        f.ctx.cpu=&f.cpu;
+        assert(Kaffeine_RoutePutMsg(&f.ctx,port,msg,0x55)==20 && !f.ctx.running && f.ctx.callback_failed);
+        f.ctx.cpu=nullptr;
+        assert(info_packet_calls==0 && f.heap_is(before) && info_depth==1);
+        assert(f.call(Fixture::layers_base,138,{info})==0);
+        f.ctx.running=TRUE;
+        assert(Kaffeine_RoutePutMsg(&f.ctx,port,msg,0x55)==0x55 && info_packet_calls==1);
+        info_packet_calls=0;
+        f.ctx.handlers[0]={};f.ctx.files[0]={};f.ctx.file_packet=nullptr;f.ctx.handler_packet=nullptr;
+    }
+    // Opaque guest IPC remains an ordinary in-arena operation in this scope.
+    ULONG port=Kaffeine_HeapAlloc(&f.ctx,34,MEMF_CLEAR),ordinary=Kaffeine_HeapAlloc(&f.ctx,20,MEMF_CLEAR);
+    assert(port && ordinary);
+    f.memory[port+8]=NT_MSGPORT;f.memory[port+14]=2;
+    m68k_write32(&f.ctx,port+20,port+24);m68k_write32(&f.ctx,port+28,port+20);
+    m68k_write16(&f.ctx,ordinary+18,20);
+    assert(f.call(Fixture::layers_base,120,{info})==0);
+    assert(Kaffeine_RoutePutMsg(&f.ctx,port,ordinary,0x66)==0x66 && f.ctx.running && f.L(port+20)==ordinary);
+    assert(f.call(Fixture::layers_base,138,{info})==0);
+    // Drain before fixture teardown; this is the public classic list unlink.
+    m68k_write32(&f.ctx,port+20,port+24);m68k_write32(&f.ctx,port+28,port+20);
+    Kaffeine_HeapFree(&f.ctx,ordinary,20);Kaffeine_HeapFree(&f.ctx,port,34);Kaffeine_HeapFree(&f.ctx,msg,68);
+    f.close(mw);
+}
+
+static unsigned info_probe_slices;
+static ULONG info_probe_info;
+static void test_info_lock_boundaries()
+{
+    Fixture f;NativeWindow a;
+    make_window(a,scr,10,20,200,100);order(scr,{&bar,&a.layer,&foreign});
+    ULONG mw=f.open(a),layer=f.L(mw+M68K_WIN_WLAYER),info=f.L(layer+M68K_LAYER_LAYERINFO);
+    for(ULONG lvo:{318U,336U,384U,408U,444U,450U,456U,462U,474U,552U,564U,582U,660U,672U,678U})
+    {
+        assert(f.call(Fixture::layers_base,120,{info})==0);
+        assert(f.call(Fixture::exec_base,lvo)==20 && f.stopped() && f.ctx.callback_failed);
+        assert(f.call(Fixture::layers_base,138,{info})==0);
+    }
+    assert(f.call(Fixture::layers_base,120,{info})==0);
+    assert(f.call(Fixture::intuition_base,306,{mw})==20 && f.stopped() && depth_calls.empty());
+    assert(f.call(Fixture::layers_base,138,{info})==0);
+    M68KFakeLibBase saved=f.ctx.libs[3];
+    for(const char *library:{"workbench.library","gadtools.library"})
+    {
+        std::strcpy(f.ctx.libs[3].name,library);
+        for(ULONG lvo:{42U,48U,54U,90U,96U})
+        {
+            if(!std::strcmp(library,"gadtools.library") && lvo!=42 && lvo!=90 && lvo!=96) continue;
+            assert(f.call(Fixture::layers_base,120,{info})==0);
+            assert(f.call(Fixture::graphics_base,lvo)==20 && f.stopped() && generated_calls==0);
+            assert(f.call(Fixture::layers_base,138,{info})==0);
+        }
+    }
+    f.ctx.libs[3].dos=TRUE;std::strcpy(f.ctx.libs[3].name,"dos.library");
+    assert(f.call(Fixture::layers_base,120,{info})==0);
+    assert(f.call(Fixture::graphics_base,150)==20 && f.stopped());
+    assert(f.call(Fixture::layers_base,138,{info})==0);f.ctx.libs[3]=saved;
+    assert(f.call(Fixture::layers_base,120,{info})==0);
+    KaffeineGuestCall call={};
+    f.ctx.cpu=&f.cpu;f.ctx.running=TRUE;
+    assert(!Kaffeine_CallGuest(&f.ctx,&f.cpu,0x5000,&call) && f.stopped() && f.ctx.callback_failed);
+    f.ctx.cpu=nullptr;
+    assert(f.call(Fixture::layers_base,138,{info})==0);
+    // A fault/stop retires the native scope before its CPU can be destroyed.
+    KaffeineCPUOps run_ops=ops;
+    info_probe_slices=0;info_probe_info=info;
+    run_ops.execute=[](void*) {
+        assert(++info_probe_slices==1);
+        Kaffeine_SetA(live->cpu,0,info_probe_info);Kaffeine_SetA(live->cpu,7,Fixture::stack);
+        KaffeineDispatchResult result={};
+        assert(Kaffeine_DispatchLibraryCall(live,live->cpu,Fixture::layers_base-120,&result));
+        assert(Kaffeine_LayerInfoLocked(live) && info_depth==1);
+        Kaffeine_StopGuest(live,live->cpu,20);
+        Kaffeine_SetD(live->cpu,0,0); // enclosing void thunk cannot replace the stop code
+    };
+    f.cpu.ops=&run_ops;
+    assert(Kaffeine_RunCPU(&f.ctx,&f.cpu)==20 && info_probe_slices==1 && !info_depth && !Kaffeine_LayerInfoLocked(&f.ctx));
+    f.cpu.ops=&ops;
+    f.close(mw);
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
     const Test tests[] =
     {
+        { "Info locks refresh real topology, ignore guest semaphore bytes and bound nesting", test_info_lock_snapshot_and_nesting },
+        { "Info locks reject foreign, stale, busy, callback and cross-task owners", test_info_lock_refusals },
+        { "Info before layer order and same-info nested access are enforced", test_info_lock_order },
+        { "Snapshot OOM, cycles and depth limits roll back the acquired native lock", test_info_lock_rollback },
+        { "Info locks balance task, screen, explicit disposal and final cleanup", test_info_lock_lifetime },
+        { "Native packet routes refuse before DOS in an Info scope; opaque guest IPC stays ordinary", test_info_native_packet_guard },
+        { "Info scopes reject DOS, waits, Intuition and callbacks and retire before CPU teardown", test_info_lock_boundaries },
+        { "Typed screen and owned LayerInfo locks nest on the actual native owner", test_info_lock_smoke },
         { "Classic offsets agree with the generated layouts and the NDK packing", test_layout },
         { "Every layers.library slot is manual; depth and graphics layer slots", test_registration },
         { "One coherent snapshot: links, scalars, own objects, no native pointers, stable identities", test_identity },

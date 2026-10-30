@@ -5,9 +5,11 @@
 */
 
 #include <aros/debug.h>
+#include <string.h>
 
 #include "kaffeine_dispatch.h"
 #include "kaffeine_intern.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_callback.h"
 #include "kaffeine_sched.h"
@@ -60,6 +62,24 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
         result->return_pc = m68k_read32(ctx, sp);
         result->supervisor = FALSE;
         Kaffeine_SetA(cpu, 7, sp + 4);
+
+        /* No broker, native wait or synchronous Intuition operation may
+           run while this driver owns an explicit LayerInfo semaphore. */
+        if (Kaffeine_LayerInfoLocked(ctx) &&
+            (lib->dos ||
+             /* Other library classes can load files, open GUI objects or
+                wait internally. This new scope has no safe adapter for them. */
+             (strcmp(lib->name, "layers.library") && strcmp(lib->name, "graphics.library") &&
+              strcmp(lib->name, "exec.library")) ||
+             (!strcmp(lib->name, "graphics.library") && lvo == 270) ||
+             (!strcmp(lib->name, "exec.library") &&
+              (lvo == 318 || lvo == 336 || lvo == 384 || lvo == 408 || lvo == 444 || lvo == 450 ||
+               lvo == 456 || lvo == 462 || lvo == 474 || lvo == 552 || lvo == 564 || lvo == 582 ||
+               lvo == 660 || lvo == 672 || lvo == 678))))
+        {
+            Kaffeine_StopGuest(ctx, cpu, 20);
+            return TRUE;
+        }
 
         /* A CreateProc() child reaches no dos.library thunk, implemented
            or not: native DOS would act for the root's process. */

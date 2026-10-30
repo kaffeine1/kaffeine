@@ -279,13 +279,19 @@ static void all_handle_entry_points()
 
 static void packet_reply_queue_preflight()
 {
+    for(bool app_port:{false,true})
     {
         Fixture f;ULONG t=f.open(),h=f.r(t*4+8),other=f.msg+0x100;
         f.message(other);f.exec(366,f.reply,other);f.packet(t);
-        check(f.exec(366,h,f.msg)==0xD0000000 && f.r(f.reply+20)==other && f.r(other)==f.msg && f.r(f.msg+4)==other,"DOS reply appends behind an existing ordinary message");
+        /* Only the exact registered App port is a queue. Its native peer
+           is opaque here: ordinary replies use the bounded guest FIFO. */
+        if(app_port){f.ctx.app_ports[0].guest=f.reply;f.ctx.app_ports[0].native=reinterpret_cast<MsgPort *>(1);}
+        check(f.exec(366,h,f.msg)==0xD0000000 && f.ctx.running && reads==1 && ioerr==137 &&
+              f.r(f.reply+20)==other && f.r(other)==f.msg && f.r(f.msg+4)==other,
+              "DOS reply appends behind ordinary IPC on a plain or registered App port");
         check(f.exec(372,f.reply)==other && f.exec(372,f.reply)==f.msg,"nonempty packet reply queue retains FIFO order");
     }
-    for(unsigned variant=0;variant<6;++variant)
+    for(unsigned variant=0;variant<9;++variant)
     {
         Fixture f;ULONG t=f.open(),h=f.r(t*4+8),other=f.msg+0x100;
         f.message(other);f.exec(366,f.reply,other);f.packet(t);
@@ -294,9 +300,19 @@ static void packet_reply_queue_preflight()
             case 0:f.w(other,other);break;
             case 1:f.w(other+4,0xFFFFFFFF);break;
             case 2:f.w(f.msg+44,other+20);break;
-            case 3:f.ctx.app_ports[0].guest=f.reply;f.ctx.app_ports[0].native=reinterpret_cast<MsgPort *>(1);break;
+            /* An overlapping/interior App port header is still protected. */
+            case 3:f.ctx.app_ports[0].guest=f.reply+2;f.ctx.app_ports[0].native=reinterpret_cast<MsgPort *>(1);break;
             case 4:f.ctx.io_requests[0].guest=f.msg;f.ctx.io_requests[0].capacity=68;break;
             case 5:f.w(h,other);break;
+            case 6:case 7:case 8:
+                f.ctx.app_ports[0].guest=f.reply;f.ctx.app_ports[0].native=reinterpret_cast<MsgPort *>(1);
+                if(variant==6)f.w(f.reply+16,f.task+4); // PA_IGNORE cannot name a foreign owner.
+                else
+                {
+                    f.ctx.mem[f.reply+14]=0;f.w(f.reply+16,f.task);
+                    f.ctx.mem[f.reply+15]=variant==7?4:32; // unallocated or out of range
+                }
+                break;
         }
         f.rejected(h);
     }

@@ -178,7 +178,19 @@ struct KaffeineLayerOps
        any native call. */
     BOOL  (*draw_target)(struct KaffeineContext *ctx, ULONG layer, ULONG bitmap,
                          struct RastPort *rp, struct BitMap *adapter);
+    /* Optional: an explicit LockLayerInfo scope pins the current guest CPU
+       and forbids native DOS/waits and synchronous guest callbacks. */
+    BOOL  (*info_locked)(struct KaffeineContext *ctx);
+    /* Native owner only, before this guest task's DOS broker, CPU, signals
+       or storage retire. Returns all layer/LayerInfo locks of that task. */
+    void  (*task_removed)(struct KaffeineContext *ctx, ULONG task);
 };
+
+static inline BOOL Kaffeine_LayerInfoLocked(struct KaffeineContext *ctx)
+{
+    return ctx->layer_ops && ctx->layer_ops->info_locked &&
+           ctx->layer_ops->info_locked(ctx);
+}
 
 #ifdef __cplusplus
 extern "C" {
@@ -210,6 +222,10 @@ IPTR Kaffeine_WindowToFront(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_DeleteLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_LockLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_UnlockLayer(struct KaffeineContext *ctx, void *cpu);
+/* layers -120/-138, A0: exact typed live LayerInfo only. A busy native
+   semaphore fails closed rather than waiting behind an Intuition reply. */
+IPTR Kaffeine_LockLayerInfo(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_UnlockLayerInfo(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_NewLayerInfo(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_InstallLayerInfoHook(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_DisposeLayerInfo(struct KaffeineContext *ctx, void *cpu);
@@ -295,10 +311,10 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     { 102, Kaffeine_UnlockLayer }, \
     { 108, kaffeine_layers_Unsupported },     /* LockLayers */ \
     { 114, kaffeine_layers_Unsupported },     /* UnlockLayers */ \
-    { 120, kaffeine_layers_Unsupported },     /* LockLayerInfo */ \
+    { 120, Kaffeine_LockLayerInfo },          /* LockLayerInfo */ \
     { 126, kaffeine_layers_Unsupported },     /* SwapBitsRastPortClipRect */ \
     { 132, kaffeine_layers_Unsupported },     /* WhichLayer */ \
-    { 138, kaffeine_layers_Unsupported },     /* UnlockLayerInfo */ \
+    { 138, Kaffeine_UnlockLayerInfo },        /* UnlockLayerInfo */ \
     { 144, Kaffeine_NewLayerInfo }, \
     { 150, Kaffeine_DisposeLayerInfo }, \
     { 156, kaffeine_layers_Unsupported },     /* FattenLayerInfo */ \

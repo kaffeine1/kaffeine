@@ -57,6 +57,7 @@
 #include <string.h>
 
 #include "kaffeine_intern.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_callback.h"
 #include "kaffeine_sched.h"
@@ -437,6 +438,11 @@ static void wake(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
 
 static void suspend(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struct GuestTask *t)
 {
+    if (Kaffeine_LayerInfoLocked(ctx))
+    {
+        Kaffeine_StopGuest(ctx, t->cpu, 20);
+        return;
+    }
     t->state = SLOT_WAIT;
     t->resume = TRUE;
     s->reschedule = TRUE;
@@ -693,7 +699,10 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
     struct KaffeineCPU *cpu = t->cpu;
     unsigned count, i;
     BOOL listed;
-    BOOL clean = finish_process_wait(ctx, s, t);
+    BOOL clean;
+    if (ctx->layer_ops && ctx->layer_ops->task_removed)
+        ctx->layer_ops->task_removed(ctx, tcb);
+    clean = finish_process_wait(ctx, s, t);
 
     if (t == s->current)
         dos_save(ctx, s, t);
@@ -806,6 +815,11 @@ static void schedule(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
     unsigned i, tries = 0;
     BOOL polled = TRUE;
 
+    /* Self-removal can end an Info scope. Release the current owner before
+       an earlier removed slot can send a broker cleanup RPC. */
+    if (s->current && s->current->state == SLOT_REMOVED && Kaffeine_LayerInfoLocked(ctx) &&
+        ctx->layer_ops->task_removed)
+        ctx->layer_ops->task_removed(ctx, s->current->tcb);
     for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
         if (s->child[i].state == SLOT_REMOVED)
             reap(ctx, s, &s->child[i]);
@@ -902,7 +916,8 @@ static void sched_boundary(struct KaffeineContext *ctx)
             /* initialPC returned to the default finalPC: RemTask(NULL) */
             cur->state = SLOT_REMOVED;
         }
-        else if ((++s->slices < KAFFEINE_TASK_QUANTUM && !s->reschedule) || forbidden(ctx))
+        else if (Kaffeine_LayerInfoLocked(ctx) ||
+                 (++s->slices < KAFFEINE_TASK_QUANTUM && !s->reschedule) || forbidden(ctx))
             return;
     }
     schedule(ctx, s);
@@ -915,6 +930,8 @@ static void sched_end(struct KaffeineContext *ctx)
     struct KaffeineScheduler *s = ctx->sched;
     unsigned i;
 
+    if (ctx->layer_ops && ctx->layer_ops->release_locks)
+        ctx->layer_ops->release_locks(ctx);
     if (s->current != &s->root)
     {
         dos_save(ctx, s, s->current);
@@ -1587,6 +1604,8 @@ IPTR Kaffeine_TaskRemove(struct KaffeineContext *ctx, void *cpu)
         mirror(ctx, s, t);
         return 0;
     }
+    if (Kaffeine_LayerInfoLocked(ctx))
+        return refuse(ctx, "RemTask(): another task cannot retire inside a LayerInfo lock");
     t->state = SLOT_REMOVED;
     reap(ctx, s, t);
     s->reschedule = TRUE;
@@ -1695,6 +1714,8 @@ IPTR Kaffeine_TaskWait(struct KaffeineContext *ctx, void *cpu)
     struct GuestTask *t;
     ULONG mask = THUNK_D(0), got;
 
+    if (Kaffeine_LayerInfoLocked(ctx))
+        return refuse(ctx, "Wait(): while holding a LayerInfo lock");
     if (!s || (struct KaffeineCPU *)cpu != s->current->cpu)
         return refuse(ctx, "Wait(): not the CPU of the current guest task");
     t = s->current;
@@ -1874,6 +1895,8 @@ BOOL Kaffeine_SchedFinishRoot(struct KaffeineContext *ctx, void *cpu, LONG resul
             break;
     if (i == KAFFEINE_MAX_GUEST_TASKS)
         return FALSE;
+    if (ctx->layer_ops && ctx->layer_ops->task_removed)
+        ctx->layer_ops->task_removed(ctx, s->root.tcb);
     dos_save(ctx, s, &s->root);
     s->root_done = TRUE;
     s->root_result = result;
@@ -1913,6 +1936,11 @@ static BOOL sched_process_dos(struct KaffeineContext *ctx, void *cpu, ULONG lvo,
     struct KaffeineScheduler *s = ctx->sched;
     struct GuestTask *t = s->current;
 
+    if (Kaffeine_LayerInfoLocked(ctx))
+    {
+        *result = refuse(ctx, "DOS: while holding a LayerInfo lock");
+        return TRUE;
+    }
     if (lvo == DOS_EXIT_LVO && ctx->callback_depth)
     {
         *result = refuse(ctx, "a callback cannot exit its Process");

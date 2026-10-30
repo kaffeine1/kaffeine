@@ -349,12 +349,24 @@ struct LayerInfoRecord
     BOOL stuck;
 };
 
+/* Explicit program locks, separate from temporary snapshot semaphores.
+   No guest semaphore bytes or native owner pointers determine ownership. */
+struct LayerInfoLock
+{
+    struct Layer_Info *native;
+    struct Task *owner;
+    ULONG guest, task;
+    UWORD depth;
+};
+
 struct KaffeineLayers
 {
     struct LayerRecord records[KAFFEINE_LAYER_MAX_RECORDS];
     struct LayerGraph graphs[KAFFEINE_LAYER_MAX_GRAPHS];
     struct LayerHook hooks[KAFFEINE_LAYER_MAX_HOOKS];
     struct LayerInfoRecord infos[KAFFEINE_LAYER_MAX_INFOS];
+    struct LayerInfoLock info_locks[KAFFEINE_LAYER_MAX_GRAPHS + KAFFEINE_LAYER_MAX_INFOS];
+    ULONG info_lock_count;
     struct LayerSnap snap[KAFFEINE_LAYER_MAX_DEPTH];
     UWORD snap_count;
     struct Layer *snap_bar, *snap_screen_layer;
@@ -405,6 +417,72 @@ static BOOL layers_task_access(struct KaffeineContext *ctx, struct LayerRecord *
         layers_refuse(ctx, "a layer held by another guest task");
         return FALSE;
     }
+    return TRUE;
+}
+
+static IPTR layers_info_refuse(struct KaffeineContext *ctx, const char *why)
+{
+    ctx->callback_failed = TRUE; /* also authoritative from a void cleanup hook */
+    return layers_refuse(ctx, why);
+}
+
+/* Preflight before releasing any inner layer semaphore as well. */
+static BOOL layers_info_owner(struct KaffeineContext *ctx, struct KaffeineLayers *st,
+                              struct Layer_Info *native, ULONG task)
+{
+    unsigned i;
+    struct Task *owner;
+    if (!st->info_lock_count) return TRUE;
+    owner = FindTask(NULL);
+    for (i = 0; i < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++i)
+    {
+        const struct LayerInfoLock *l = &st->info_locks[i];
+        if (l->depth && (!native || l->native == native) && (!task || l->task == task) &&
+            l->owner != owner)
+        {
+            layers_info_refuse(ctx, "LayerInfo cleanup on a different native task");
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+/* Exact native owner required even though every guest CPU shares it. */
+static BOOL layers_info_release_owned(struct KaffeineContext *ctx, struct KaffeineLayers *st,
+                                      struct Layer_Info *native, ULONG task)
+{
+    unsigned i;
+    if (!layers_info_owner(ctx, st, native, task)) return FALSE;
+    for (i = 0; i < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++i)
+    {
+        struct LayerInfoLock *l = &st->info_locks[i];
+        if (!l->depth || (native && l->native != native) || (task && l->task != task)) continue;
+        while (l->depth) { UnlockLayerInfo(l->native); --l->depth; --st->info_lock_count; }
+        memset(l, 0, sizeof(*l));
+    }
+    return TRUE;
+}
+
+static BOOL layers_info_locked(struct KaffeineContext *ctx)
+{
+    return ctx->layers && ctx->layers->info_lock_count;
+}
+
+/* Program layer locks acquired within an Info scope must be for that same
+   native Info, with the same native and guest owners. No native semaphore
+   can mistake a different guest CPU for a recursive caller. */
+static BOOL layers_info_layer_access(struct KaffeineContext *ctx, struct Layer_Info *native)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    unsigned i;
+    ULONG task;
+    struct Task *owner;
+    if (!st->info_lock_count) return TRUE;
+    task = layers_task(ctx); owner = FindTask(NULL);
+    for (i = 0; i < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++i)
+        if (st->info_locks[i].depth &&
+            (st->info_locks[i].native != native || st->info_locks[i].task != task ||
+             st->info_locks[i].owner != owner)) return FALSE;
     return TRUE;
 }
 
@@ -627,6 +705,8 @@ static void layers_graph_retire(struct KaffeineContext *ctx, struct KaffeineLaye
     ULONG sg = gr->screen_guest;
     int i;
 
+    /* The native lock outlives no screen hold or guest Info identity. */
+    if (!layers_info_release_owned(ctx, st, &gr->screen->LayerInfo, 0)) return;
     /* Before the native screen can delete the bar's internal RastPort. */
     layers_bar_rp_free(ctx, gr->bar_rp);
     for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; i++)
@@ -921,7 +1001,7 @@ void Kaffeine_LayersRefresh(struct KaffeineContext *ctx)
     struct KaffeineLayers *st = ctx->layers;
     int i;
 
-    if (!st || st->locks)
+    if (!st || st->locks || st->info_lock_count)
         return;
     for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
         if (ctx->pubscreens[i].guest && ctx->pubscreens[i].native)
@@ -1137,30 +1217,55 @@ static void layers_screen_closing(struct KaffeineContext *ctx, struct Screen *sc
             layers_graph_retire(ctx, st, g);
 }
 
-/* Window and screen layer locks only: Intuition never takes the layers of
-   a private LayerInfo */
+/* Window/screen layer locks and explicit LayerInfo scopes must not cross
+   a synchronous Intuition operation. Ordinary private layer locks do not. */
 static BOOL layers_has_locks(struct KaffeineContext *ctx)
 {
     struct KaffeineLayers *st = ctx->layers;
 
-    return st && st->locks;
+    return st && (st->locks || st->info_lock_count);
 }
 
 static void layers_release_locks(struct KaffeineContext *ctx)
 {
     struct KaffeineLayers *st = ctx->layers;
     int i;
-    if (!st)
+    if (!st || !layers_info_owner(ctx, st, NULL, 0))
         return;
     for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; ++i)
     {
         struct LayerRecord *r = &st->records[i];
-        if (r->kind != LR_OWNED)
+        if (r->kind != LR_OWNED && r->kind != LR_PRIVATE)
             continue;
-        for (; r->locks; --r->locks, --st->locks)
-            UnlockLayer(r->native);
+        while (r->locks)
+        {
+            UnlockLayer(r->native); --r->locks;
+            if (r->kind == LR_PRIVATE) --st->private_locks;
+            else --st->locks;
+        }
         r->lock_task = 0;
     }
+    layers_info_release_owned(ctx, st, NULL, 0);
+}
+
+static void layers_task_removed(struct KaffeineContext *ctx, ULONG task)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    int i;
+    if (!st || !task || !layers_info_owner(ctx, st, NULL, task)) return;
+    for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; ++i)
+    {
+        struct LayerRecord *r = &st->records[i];
+        if (!r->locks || r->lock_task != task) continue;
+        while (r->locks)
+        {
+            UnlockLayer(r->native); --r->locks;
+            if (r->kind == LR_PRIVATE) --st->private_locks;
+            else --st->locks;
+        }
+        r->lock_task = 0;
+    }
+    layers_info_release_owned(ctx, st, NULL, task);
 }
 
 /* The owned record of a native window of the program, or -1 */
@@ -1301,7 +1406,9 @@ static const struct KaffeineLayerOps layer_ops =
     layers_release_locks,
     layers_request_opened,
     layers_request_closing,
-    layers_draw_target
+    layers_draw_target,
+    layers_info_locked,
+    layers_task_removed
 };
 
 /* ── Depth calls ─────────────────────────────────────────────────── */
@@ -1428,6 +1535,8 @@ static IPTR layers_lock(struct KaffeineContext *ctx, ULONG layer, BOOL attempt)
     if (ri < 0)
         return ctx->exit_code;
     r = &ctx->layers->records[ri];
+    if (!layers_info_layer_access(ctx, r->native->LayerInfo))
+        return attempt ? FALSE : layers_refuse(ctx, "a layer lock outside its owned LayerInfo scope");
     /* AttemptLockLayerRom() never blocks: a lock that another guest task
        holds is busy, so the attempt gives FALSE and the program runs on,
        without a native call, which would succeed by recursion on the one
@@ -1726,6 +1835,13 @@ IPTR Kaffeine_DisposeLayerInfo(struct KaffeineContext *ctx, void *cpu)
         return layers_refuse(ctx, "DisposeLayerInfo(): from a backfill hook");
     if (ctx->bitmap_blits)
         return layers_refuse(ctx, "DisposeLayerInfo(): during a blit");
+    if (st->info_lock_count)
+    {
+        unsigned n;
+        for (n = 0; n < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++n)
+            if (st->info_locks[n].depth && st->info_locks[n].native == st->infos[i].native)
+                return layers_refuse(ctx, "DisposeLayerInfo(): the LayerInfo is locked");
+    }
     if (layers_info_kept(st, i))
         return layers_refuse(ctx, "DisposeLayerInfo(): the LayerInfo still has layers");
     /* deletes the internal root, which reads the common BitMap */
@@ -1788,6 +1904,122 @@ static void layers_private_relink(struct KaffeineContext *ctx, struct KaffeineLa
                        i + 1 < n ? st->records[order[i + 1]].guest : 0, guest_info);
     }
     m68k_write32(ctx, guest_info + M68K_LI_TOP_LAYER, n ? st->records[order[0]].guest : 0);
+}
+
+/* One current, exact private provenance: either an owned NewLayerInfo
+   object or the published snapshot of a screen the bridge still holds. */
+static struct Layer_Info *layers_info_native(struct KaffeineContext *ctx,
+                                             ULONG guest, int *graph, int *info)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    int g, i;
+    *graph = *info = -1;
+    if (!st || !guest) return NULL;
+    i = layers_info_owned(st, guest);
+    if (i >= 0) { *info = i; return st->infos[i].native; }
+    for (g = 0; g < KAFFEINE_LAYER_MAX_GRAPHS; ++g)
+    {
+        struct LayerGraph *gr = &st->graphs[g];
+        if (!gr->screen || gr->info != guest || !layers_graph_held(ctx, st, g, -1)) continue;
+        if (gr->screen_guest ?
+            (guest != gr->screen_guest + M68K_SCR_LAYERINFO ||
+             Kaffeine_ScreenNative(ctx, gr->screen_guest) != gr->screen) : guest != gr->own_info)
+            continue;
+        *graph = g;
+        return &gr->screen->LayerInfo;
+    }
+    return NULL;
+}
+
+static BOOL layers_info_caller(struct KaffeineContext *ctx, void *cpu)
+{
+    return ctx->layers && ctx->exec_task && FindTask(NULL) == ctx->exec_task &&
+           ctx->cpu == (struct KaffeineCPU *)cpu && !ctx->broker_call && !ctx->broker_owner &&
+           !ctx->callback_depth && !ctx->layers->gate && !ctx->layers->callbacks && layers_task(ctx);
+}
+
+/* layers -120: native LockLayerInfo is ObtainSemaphore(&li->Lock). Take
+   the same trusted semaphore without waiting for an Intuition VERIFY. A
+   bounded snapshot must publish before a first lock can reach the guest. */
+IPTR Kaffeine_LockLayerInfo(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    struct LayerInfoLock *lock = NULL;
+    struct Layer_Info *native;
+    struct Layer *l;
+    unsigned n, steps = 0;
+    int graph, info;
+    ULONG guest = THUNK_A(0), task = layers_task(ctx);
+    if (!ctx->running || !layers_info_caller(ctx, cpu) || ctx->bitmap_blits)
+        return layers_info_refuse(ctx, "LockLayerInfo(): not the active native/guest owner outside callbacks");
+    native = layers_info_native(ctx, guest, &graph, &info);
+    if (!native) return layers_info_refuse(ctx, "LockLayerInfo(): not a live typed LayerInfo");
+    for (n = 0; n < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++n)
+        if (st->info_locks[n].depth && st->info_locks[n].native == native)
+        { lock = &st->info_locks[n]; break; }
+    if (lock && (lock->guest != guest || lock->task != task || lock->owner != FindTask(NULL)))
+        return layers_info_refuse(ctx, "LockLayerInfo(): held by another guest/native owner");
+    if ((!lock && (st->locks || st->private_locks)) ||
+        (lock && lock->depth == KAFFEINE_LAYER_MAX_LOCKS))
+        return layers_info_refuse(ctx, "LockLayerInfo(): layer-to-info inversion or nesting limit");
+    if (!lock)
+        for (n = 0; n < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++n)
+            if (!st->info_locks[n].depth) { lock = &st->info_locks[n]; break; }
+    if (!lock) return layers_info_refuse(ctx, "LockLayerInfo(): lock table full");
+    if (!AttemptSemaphore(&native->Lock))
+        return layers_info_refuse(ctx, "LockLayerInfo(): native semaphore is busy");
+    if (!lock->depth)
+    {
+        if (graph >= 0)
+        {
+            if (!layers_graph_refresh(ctx, st, graph)) goto failed;
+        }
+        else
+        {
+            /* A private list has no external producer. Validate its full
+               bounded chain before relinking known private layers only. */
+            for (l = native->top_layer; l; l = l->back)
+            {
+                int ri;
+                if (++steps > KAFFEINE_LAYER_MAX_DEPTH || l->LayerInfo != native) goto failed;
+                ri = layers_private_of(st, l);
+                if ((ri < 0 && l != native->check_lp) ||
+                    (ri >= 0 && st->records[ri].priv->info != info)) goto failed;
+            }
+            layers_private_relink(ctx, st, info);
+        }
+        lock->native = native; lock->owner = FindTask(NULL);
+        lock->guest = guest; lock->task = task;
+    }
+    ++lock->depth; ++st->info_lock_count;
+    return 0;
+failed:
+    UnlockLayerInfo(native);
+    return layers_info_refuse(ctx, "LockLayerInfo(): no complete bounded topology snapshot");
+}
+
+/* layers -138: only private ownership, never guest semaphore bytes. */
+IPTR Kaffeine_UnlockLayerInfo(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    struct Layer_Info *native;
+    unsigned n;
+    int graph, info;
+    ULONG guest = THUNK_A(0);
+    if (!layers_info_caller(ctx, cpu))
+        return layers_info_refuse(ctx, "UnlockLayerInfo(): not the active native/guest owner");
+    native = layers_info_native(ctx, guest, &graph, &info);
+    for (n = 0; native && n < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++n)
+    {
+        struct LayerInfoLock *l = &st->info_locks[n];
+        if (!l->depth || l->guest != guest || l->native != native) continue;
+        if (l->task != layers_task(ctx) || l->owner != FindTask(NULL)) break;
+        UnlockLayerInfo(native);
+        --l->depth; --st->info_lock_count;
+        if (!l->depth) memset(l, 0, sizeof(*l));
+        return 0;
+    }
+    return layers_info_refuse(ctx, "UnlockLayerInfo(): no matching owned lock");
 }
 
 /* The 68k Layer and RastPort of private record ri stand for native layer
@@ -2802,6 +3034,8 @@ void Kaffeine_LayersCleanup(struct KaffeineContext *ctx)
 
     if (!st)
         return;
+    layers_release_locks(ctx);
+    if (st->info_lock_count) return; /* a foreign native owner may not release it */
     for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; i++)
     {
         r = &st->records[i];

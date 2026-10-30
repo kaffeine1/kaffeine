@@ -67,7 +67,7 @@ The loader trace records its native BPTR at full width and the delivered
 32-bit D0 without reading segment contents or printing filenames. Logging
 and converted-tag cleanup preserve the loader's IoErr.
 
-Current JIT runs exchange the original 128-byte startup message inside the
+The latest accepted JIT startup runs exchange the original 128-byte message inside the
 shared guest arena and proceed through ViewPortExtra queries, shared IDCMP
 ports and typed graphics default-font initialization. Startup reaches menu
 and drawing calls before the unsupported `LockLayerInfo()` vector at
@@ -75,7 +75,13 @@ and drawing calls before the unsupported `LockLayerInfo()` vector at
 
 This is startup progress, not editor acceptance. No main-editor window has
 been accepted, and editing, saving and reopening a document remain unverified.
-Scoped LayerInfo locking is the next adapter boundary.
+The scoped LayerInfo adapter is implemented and has passed 33 host-test groups,
+including sanitizer checks, and an ARM64 library build. Its application-level
+validation is pending. It accepts only live typed screen or private LayerInfo
+objects, records native and guest owners privately, pins the current guest CPU,
+and balances nested locks before task or screen retirement. Native waits, DOS,
+guest callbacks and other library classes outside the graphics, layers and
+restricted Exec subset are refused while that scope is active.
 
 ### Independent-process prerequisite (2026-10-30)
 

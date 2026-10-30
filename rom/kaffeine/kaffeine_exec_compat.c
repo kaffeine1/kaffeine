@@ -10,6 +10,8 @@
 #include "kaffeine_rastport.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_sched.h"
+#include "kaffeine_layers.h"
+#include "kaffeine_callback.h"
 
 #include <aros/debug.h>
 #include <proto/exec.h>
@@ -512,6 +514,11 @@ IPTR Kaffeine_RoutePutMsg(struct KaffeineContext *ctx, ULONG gp, ULONG gm, ULONG
             if (ctx->files[i].guest && ctx->files[i].handler == gp)
             {
                 IPTR refusal;
+                if (Kaffeine_LayerInfoLocked(ctx))
+                {
+                    Kaffeine_StopGuest(ctx, ctx->cpu, 20);
+                    return 20;
+                }
                 if (ctx->sched && ctx->task_ops->process_dos &&
                     ctx->task_ops->process_dos(ctx, ctx->cpu, 0, &refusal))
                     return refusal;
@@ -523,6 +530,11 @@ IPTR Kaffeine_RoutePutMsg(struct KaffeineContext *ctx, ULONG gp, ULONG gm, ULONG
             if (ctx->handlers[i].guest == gp)
             {
                 IPTR refusal;
+                if (Kaffeine_LayerInfoLocked(ctx))
+                {
+                    Kaffeine_StopGuest(ctx, ctx->cpu, 20);
+                    return 20;
+                }
                 if (ctx->sched && ctx->task_ops->process_dos &&
                     ctx->task_ops->process_dos(ctx, ctx->cpu, 0, &refusal))
                     return refusal;

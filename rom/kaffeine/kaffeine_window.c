@@ -899,6 +899,11 @@ static BOOL shared_release(struct KaffeineContext *ctx, ULONG addr, ULONG size, 
         struct KaffeineIDCMPPort *next = p->next;
         if (Kaffeine_Overlap(addr, size, p->guest, M68K_SIZEOF_MSGPORT))
         {
+            if (Kaffeine_LayerInfoLocked(ctx))
+            {
+                refuse(ctx, "shared IDCMP retirement inside a LayerInfo lock");
+                return FALSE;
+            }
             /* Query first, without changing a multi-block release. Queued
                ordinary IPC must be consumed before its port can be freed. */
             if (ctx->broker_call || FindTask(NULL) != ctx->exec_task ||
