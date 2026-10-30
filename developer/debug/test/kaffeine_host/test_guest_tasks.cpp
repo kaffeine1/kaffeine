@@ -34,6 +34,7 @@
 #include "kaffeine_process.h"
 #include "kaffeine_dos_broker.h"
 #include "kaffeine_domain_modules.h"
+#include "kaffeine_layers.h"
 
 #include "Moira/Moira.cpp"
 #include "Moira/MoiraDebugger.cpp"
@@ -2637,8 +2638,99 @@ static void test_published_finish_recovery()
     }
 }
 
+static bool info_scope_held;
+static ULONG info_scope_owner;
+static unsigned info_scope_releases;
+static KaffeineLayerOps info_scope_ops()
+{
+    KaffeineLayerOps ops = {};
+    ops.info_locked=[](KaffeineContext *) { return info_scope_held ? TRUE : FALSE; };
+    ops.release_locks=[](KaffeineContext *) {
+        if(info_scope_held) { info_scope_held=false;++info_scope_releases;lifetime_order.push_back('L'); }
+    };
+    ops.task_removed=[](KaffeineContext *ctx,ULONG task) {
+        if(info_scope_held && task==info_scope_owner) ctx->layer_ops->release_locks(ctx);
+    };
+    return ops;
+}
+static void test_info_lock_scheduler_lifetime()
+{
+    for(unsigned mode=0;mode<5;++mode)
+    {
+        World w;w.dos();KaffeineDosBroker broker;KaffeineDomainModule module;
+        KaffeineLayerOps layers=info_scope_ops();w.ctx.layer_ops=&layers;
+        info_scope_held=false;info_scope_owner=0;info_scope_releases=0;
+        idle_probe=[](KaffeineDosBroker*) {
+            check(!info_scope_held,"no broker idle/Finish path runs inside the caller's Info scope");
+        };
+        Program root(ROOT_CODE);
+        root.op([&](Mock&m) {
+            m.d[0]=typed_start(m,broker,module,0,mode==2?1:mode==0?0:-1);
+            w.put(SHARED,m.d[0]);
+            check(m.d[0]!=0,"Info-scope fixture starts a real staged scheduler Process");
+            if(mode!=2) { info_scope_held=true;info_scope_owner=ROOT; }
+        });
+        if(mode==0)
+        {
+            root.d(0,0).loop(0,5000).op([&](Mock&) {
+                check(!w.seen[0],"Info owner remains on its CPU beyond the normal round-robin quantum");
+                info_scope_held=false;
+            }).d(1,0).dos(144);
+            Program(CODE).mark(0).d(0,0).rts();
+        }
+        if(mode==1)
+        {
+            root.op([&](Mock&m) {
+                ULONG child=w.at(SHARED);UBYTE state=w.mem[child+15];
+                m.a[1]=child;
+                IPTR result=Kaffeine_TaskRemove(&w.ctx,&m.handle);
+                m.d[0]=(ULONG)result; // the real dispatcher writes the thunk result to D0
+                check(result==20 && !w.ctx.running && !broker.stops && !module.unloads &&
+                      !w.destroyed && w.mem[child+15]==state,
+                      "RemTask(other) refuses before changing its child or submitting Finish inside an Info scope");
+            }).mark(1).rts();
+            Program(CODE).d(0,0).rts();
+        }
+        if(mode==2)
+        {
+            root.d(0,0).rts();
+            Program(CODE).op([&](Mock&) {
+                info_scope_held=true;info_scope_owner=w.ctx.guest_exec_task;
+            }).a(1,0).call(288).mark(1).rts();
+        }
+        if(mode==3)
+        {
+            w.ctx.root_complete=[](KaffeineContext*,LONG result) {
+                check(!info_scope_held && result==77,"root completion releases its Info owner before opening the native return gate");
+            };
+            root.op([&](Mock&m) {
+                check(w.ctx.task_ops->root_exit(&w.ctx,&m.handle,77),"normal root completion is accepted with a typed child");
+            }).mark(1).rts();
+            Program(CODE).d(0,0).rts();
+        }
+        if(mode==4)
+        {
+            root.op([&](Mock&m) {
+                m.d[0]=1;
+                IPTR refused=Kaffeine_TaskWait(&w.ctx,&m.handle);
+                m.d[0]=(ULONG)refused;
+                check(refused==20 && !w.ctx.running && !native_waits,
+                      "direct scheduler Wait refuses without entering native Wait or a blocked slot inside an Info scope");
+            }).mark(1).rts();
+            Program(CODE).d(0,0).rts();
+        }
+        LONG result=w.run();
+        check(result==(mode==1 || mode==4?20:mode==3?77:0) && !info_scope_held &&
+              broker.stops==1 && module.unloads==1 && w.created==w.destroyed && !w.ctx.sched,
+              "Info scope retirement precedes broker ACK, module release and CPU destruction");
+        if(mode) check(!w.seen[1] && info_scope_releases==1,"stopped or retired Info owners execute no following guest instruction and release once");
+        w.ctx.layer_ops=nullptr;
+    }
+}
+
 int main()
 {
+    test_info_lock_scheduler_lifetime();
     test_no_children();
     test_root_priority();
     test_add_wait_return();

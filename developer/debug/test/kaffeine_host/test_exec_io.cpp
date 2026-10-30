@@ -35,6 +35,7 @@
 #include "kaffeine_dispatch.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_sched.h"
+#include "kaffeine_layers.h"
 
 /* ── The native side ─────────────────────────────────────────────── */
 
@@ -2553,6 +2554,21 @@ static void test_shared_last_owner_orphans()
         fail_request = false;
         const auto reused = f.memory;
         native_log.clear();
+        if (!cleanup)
+        {
+            KaffeineLayerOps info_scope = {};
+            info_scope.info_locked = [](KaffeineContext *) { return TRUE; };
+            f.ctx.layer_ops = &info_scope;
+            const auto held_queue = native_queues[shared];
+            const ULONG held_signals = native_signals;
+            unsigned closes = close_calls;
+            for (unsigned n = 0; n < 3; ++n)
+                check(f.ctx.io_poll(&f.ctx) && native_queues[shared] == held_queue &&
+                      native_signals == held_signals && f.ctx.io_reply_port == shared &&
+                      close_calls == closes && native_log.empty() && f.memory == reused,
+                      "an Info scope defers orphan CloseDevice, preserving native replies, signal and guest bytes");
+            f.ctx.layer_ops = nullptr;
+        }
         if (cleanup)
             Kaffeine_IOCleanup(&f.ctx);
         else

@@ -402,6 +402,7 @@ struct Fixture
         queues.clear();
         replied.clear();
         ctx.exec_task = native_task;
+        ctx.guest_exec_task = task;
         ctx.mem = memory.data();
         ctx.mem_size = (ULONG)memory.size();
         ctx.heap_start = heap_start;
@@ -2027,8 +2028,11 @@ static void test_info_lock_refusals()
         assert(f.call(Fixture::layers_base,120,{bad})==20 && f.stopped());
         assert(f.call(Fixture::layers_base,138,{bad})==20 && f.stopped() && info_calls==calls && !info_depth);
     }
-    info_busy=true;
     unsigned calls=info_calls;
+    m68k_write32(&f.ctx,Fixture::exec_base+M68K_EXECBASE_THISTASK,Fixture::task+4);
+    assert(f.call(Fixture::layers_base,120,{info})==20 && f.stopped() && !info_depth && info_calls==calls);
+    m68k_write32(&f.ctx,Fixture::exec_base+M68K_EXECBASE_THISTASK,Fixture::task);
+    info_busy=true;
     assert(f.call(Fixture::layers_base,120,{info})==20 && f.stopped() && info_calls==calls && !info_depth);
     info_busy=false;
     for(unsigned mode=0;mode<4;++mode)
@@ -2205,8 +2209,11 @@ static void test_info_lock_boundaries()
     assert(f.call(Fixture::layers_base,120,{info})==0);
     assert(f.call(Fixture::intuition_base,306,{mw})==20 && f.stopped() && depth_calls.empty());
     assert(f.call(Fixture::layers_base,138,{info})==0);
+    assert(f.call(Fixture::layers_base,120,{info})==0);
+    assert(f.call(Fixture::graphics_base,270)==20 && f.stopped());
+    assert(f.call(Fixture::layers_base,138,{info})==0);
     M68KFakeLibBase saved=f.ctx.libs[3];
-    for(const char *library:{"workbench.library","gadtools.library"})
+    for(const char *library:{"workbench.library","gadtools.library","asl.library","icon.library","diskfont.library","datatypes.library","locale.library","unknown.library"})
     {
         std::strcpy(f.ctx.libs[3].name,library);
         for(ULONG lvo:{42U,48U,54U,90U,96U})
@@ -2239,8 +2246,17 @@ static void test_info_lock_boundaries()
         Kaffeine_StopGuest(live,live->cpu,20);
         Kaffeine_SetD(live->cpu,0,0); // enclosing void thunk cannot replace the stop code
     };
+    unsigned drained=0;
+    f.ctx.root_completion_data=&drained;
+    f.ctx.domain_drain=[](KaffeineContext *ctx)->BOOL {
+        ++*static_cast<unsigned*>(ctx->root_completion_data);
+        assert(!Kaffeine_LayerInfoLocked(ctx) && !info_depth && !ctx->running);
+        return TRUE;
+    };
     f.cpu.ops=&run_ops;
     assert(Kaffeine_RunCPU(&f.ctx,&f.cpu)==20 && info_probe_slices==1 && !info_depth && !Kaffeine_LayerInfoLocked(&f.ctx));
+    assert(drained && !info_depth);
+    f.ctx.domain_drain=nullptr;f.ctx.root_completion_data=nullptr;
     f.cpu.ops=&ops;
     f.close(mw);
 }

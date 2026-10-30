@@ -93,13 +93,14 @@ DEVICE_REFUSED = {
 }
 ICON_REFUSED = frozenset((54, 72, 84, 108, 126, 138, 150, 156, 162, 168, 180, 186, 192, 198))
 # Every generated layers.library slot but DeleteLayer, LockLayer, UnlockLayer,
-# NewLayerInfo, DisposeLayerInfo, CreateUpfrontHookLayer and InstallLayerHook,
+# LockLayerInfo, UnlockLayerInfo, NewLayerInfo, DisposeLayerInfo,
+# CreateUpfrontHookLayer and InstallLayerHook,
 # and the graphics calls SyncSBitMap and CopySBitMap: they stop the guest
 # before any native call (InstallLayerInfoHook, DoHookClipRects,
 # ChangeLayerShape, CollectPixelsLayer and the other hook layer constructors
 # would otherwise run guest Hooks from native code).
-LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114, 120,
-                            126, 132, 138, 156, 162, 168, 180, 192,
+LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114,
+                            126, 132, 156, 162, 168, 180, 192,
                             210, 216, 222, 228, 234, 240, 246, 258, 264, 270))
 GRAPHICS_GELS_REFUSED = frozenset((96, 102, 108, 114, 126, 132, 138, 144, 150, 156, 162, 168, 174, 600))
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
@@ -473,6 +474,8 @@ CASES = (
     ("intuition", "windowtoback.c", "WindowToBack", "Kaffeine_WindowToBack"),
     ("intuition", "windowtofront.c", "WindowToFront", "Kaffeine_WindowToFront"),
     ("layers", "installlayerhook.c", "InstallLayerHook", "Kaffeine_InstallLayerHook"),
+    ("layers", "locklayerinfo.c", "LockLayerInfo", "Kaffeine_LockLayerInfo"),
+    ("layers", "unlocklayerinfo.c", "UnlockLayerInfo", "Kaffeine_UnlockLayerInfo"),
     ("layers", "newlayerinfo.c", "NewLayerInfo", "Kaffeine_NewLayerInfo"),
     ("layers", "disposelayerinfo.c", "DisposeLayerInfo", "Kaffeine_DisposeLayerInfo"),
     ("layers", "createupfronthooklayer.c", "CreateUpfrontHookLayer",

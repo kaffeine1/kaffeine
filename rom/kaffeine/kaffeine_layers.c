@@ -216,6 +216,7 @@
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_regions.h"
+#include "kaffeine_sched.h"
 #include "kaffeine_screens.h"
 
 #include <aros/asmcall.h>
@@ -420,6 +421,19 @@ static BOOL layers_task_access(struct KaffeineContext *ctx, struct LayerRecord *
     return TRUE;
 }
 
+/* The public ThisTask field is writable. Bind a lock to the scheduler's
+   private current task (or the Context's root), and reject a forged mirror. */
+static ULONG layers_info_task(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG task = ctx->guest_exec_task;
+    if (ctx->sched)
+    {
+        if (!ctx->task_ops || !ctx->task_ops->caller_task) return 0;
+        task = ctx->task_ops->caller_task(ctx, cpu);
+    }
+    return task && task == layers_task(ctx) ? task : 0;
+}
+
 static IPTR layers_info_refuse(struct KaffeineContext *ctx, const char *why)
 {
     ctx->callback_failed = TRUE; /* also authoritative from a void cleanup hook */
@@ -478,7 +492,7 @@ static BOOL layers_info_layer_access(struct KaffeineContext *ctx, struct Layer_I
     ULONG task;
     struct Task *owner;
     if (!st->info_lock_count) return TRUE;
-    task = layers_task(ctx); owner = FindTask(NULL);
+    task = layers_info_task(ctx, ctx->cpu); owner = FindTask(NULL);
     for (i = 0; i < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++i)
         if (st->info_locks[i].depth &&
             (st->info_locks[i].native != native || st->info_locks[i].task != task ||
@@ -1935,7 +1949,8 @@ static BOOL layers_info_caller(struct KaffeineContext *ctx, void *cpu)
 {
     return ctx->layers && ctx->exec_task && FindTask(NULL) == ctx->exec_task &&
            ctx->cpu == (struct KaffeineCPU *)cpu && !ctx->broker_call && !ctx->broker_owner &&
-           !ctx->callback_depth && !ctx->layers->gate && !ctx->layers->callbacks && layers_task(ctx);
+           !ctx->callback_depth && !ctx->layers->gate && !ctx->layers->callbacks &&
+           layers_info_task(ctx, cpu);
 }
 
 /* layers -120: native LockLayerInfo is ObtainSemaphore(&li->Lock). Take
@@ -1949,7 +1964,7 @@ IPTR Kaffeine_LockLayerInfo(struct KaffeineContext *ctx, void *cpu)
     struct Layer *l;
     unsigned n, steps = 0;
     int graph, info;
-    ULONG guest = THUNK_A(0), task = layers_task(ctx);
+    ULONG guest = THUNK_A(0), task = layers_info_task(ctx, cpu);
     if (!ctx->running || !layers_info_caller(ctx, cpu) || ctx->bitmap_blits)
         return layers_info_refuse(ctx, "LockLayerInfo(): not the active native/guest owner outside callbacks");
     native = layers_info_native(ctx, guest, &graph, &info);
@@ -2013,7 +2028,7 @@ IPTR Kaffeine_UnlockLayerInfo(struct KaffeineContext *ctx, void *cpu)
     {
         struct LayerInfoLock *l = &st->info_locks[n];
         if (!l->depth || l->guest != guest || l->native != native) continue;
-        if (l->task != layers_task(ctx) || l->owner != FindTask(NULL)) break;
+        if (l->task != layers_info_task(ctx, cpu) || l->owner != FindTask(NULL)) break;
         UnlockLayerInfo(native);
         --l->depth; --st->info_lock_count;
         if (!l->depth) memset(l, 0, sizeof(*l));
