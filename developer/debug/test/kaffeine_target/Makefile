@@ -137,6 +137,41 @@ ifneq ($(ZLIB_SRC),)
 PROGRAMS += pngtest
 endif
 endif
+
+# xmlwf of expat 2.8.2, from the source the AROS build fetches for its
+# Ports: set EXPAT_SRC to its expat directory to build it. xmlwf.c is built
+# with xmlwf_stdout.h in front, so that "-d -" writes what xmlwf parses to
+# stdout. The battery runs it through seven steps on XML documents of this
+# tree, which $(XMLWF_FILES) collects under EMU68/ as $(PNG_FILES) does, and
+# compares its output with the one of the same program built for the host,
+# which "make xmlwf-refs" writes to $(XMLWF_REFS).
+EXPAT_SRC ?=
+EXPAT_BUILD := $(BUILD_DIR)/expat-src
+XMLWF_FILES := $(BUILD_DIR)/xmlwf-files
+XMLWF_REFS := $(BUILD_DIR)/xmlwf-refs
+EXPAT_SOURCES := $(addprefix $(EXPAT_SRC)/,lib/xmlparse.c lib/xmlrole.c lib/xmltok.c \
+                 xmlwf/xmlfile.c xmlwf/codepage.c xmlwf/readfilemap.c)
+EXPAT_FLAGS := -I$(EXPAT_BUILD) -I$(EXPAT_SRC)/lib -include $(TEST_DIR)/xmlwf_stdout.h
+TREE_DIR := $(abspath $(TEST_DIR)/../../../..)
+XMLWF_DOCS := $(addprefix $(TREE_DIR)/,arch/all-pc/udis86/docs/x86/optable.xml \
+              arch/all-pc/udis86/docs/x86/avx.xml \
+              workbench/classes/zune/betterstring/include/xml/muimaster.xml \
+              images/IconSets/Gorilla/Icons/Scalable/AROS/Prefs/Locale.svg \
+              workbench/network/WirelessManager/wpa_supplicant/wpa_gui-qt4/icons/laptop.svg \
+              arch/all-android/bootstrap/app/AndroidManifest.xml)
+# The arguments of the steps. xmlwf_stdin reads AndroidManifest.xml from its
+# input, and xmlwf_errors ends with 2, as xmlwf does when a document is not
+# well formed.
+XMLWF_VERSION := -v
+XMLWF_CANON := -d - EMU68/optable.xml
+XMLWF_NS := -n -d - EMU68/laptop.svg
+XMLWF_META := -m -d - EMU68/muimaster.xml
+XMLWF_COPY := -c -d - EMU68/Locale.svg
+XMLWF_STDIN := -d -
+XMLWF_ERRORS := -k -s EMU68/avx.xml EMU68/Locale.svg EMU68/AndroidManifest.xml
+ifneq ($(EXPAT_SRC),)
+PROGRAMS += xmlwf
+endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
@@ -279,6 +314,48 @@ $(PNG_REFS)/stamp: $(PNG_SRC)/pngtest.c $(PNG_SOURCES) $(ZLIB_SOURCES) $(PNG_BUI
 
 png-refs: $(PNG_REFS)/stamp
 
+# What the configure of expat writes, without the sources of entropy that
+# AmigaOS lacks: with XML_POOR_ENTROPY expat salts its hash tables from the
+# time, which leaves its output as it is. BYTEORDER is left out, so that
+# the host build finds its own; the m68k build gives 4321.
+$(EXPAT_BUILD)/expat_config.h:
+	mkdir -p $(@D)
+	printf '#define XML_DTD 1\n#define XML_NS 1\n#define XML_GE 1\n#define XML_CONTEXT_BYTES 1024\n#define XML_POOR_ENTROPY 1\n' > $@
+
+# The documents of the steps, installed with --files next to each step
+$(XMLWF_FILES).stamp: $(XMLWF_DOCS) | $(BUILD_DIR)
+	rm -rf $(XMLWF_FILES)
+	mkdir -p $(XMLWF_FILES)
+	cp $(XMLWF_DOCS) $(XMLWF_FILES)/
+	touch $@
+
+# -lm brings strtof() and the float helpers of the amplification limits
+$(BUILD_DIR)/xmlwf: $(EXPAT_SRC)/xmlwf/xmlwf.c $(EXPAT_SOURCES) $(EXPAT_BUILD)/expat_config.h \
+                    $(TEST_DIR)/xmlwf_stdout.h | $(BUILD_DIR) $(XMLWF_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) -DBYTEORDER=4321 $(EXPAT_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $< $(EXPAT_SOURCES) -lm
+
+# The xmlwf references: the outputs of the seven steps through xmlwf built
+# for the host, run where EMU68 names $(XMLWF_FILES). -v prints the name
+# that xmlwf runs under, so that step runs as xmlwf_version, as in the
+# guest.
+$(XMLWF_REFS)/stamp: $(EXPAT_SRC)/xmlwf/xmlwf.c $(EXPAT_SOURCES) $(EXPAT_BUILD)/expat_config.h \
+                     $(TEST_DIR)/xmlwf_stdout.h $(XMLWF_FILES).stamp
+	mkdir -p $(@D)
+	$(HOST_CC) -O2 $(EXPAT_FLAGS) -o $(@D)/xmlwf $(EXPAT_SRC)/xmlwf/xmlwf.c $(EXPAT_SOURCES)
+	rm -f $(@D)/EMU68
+	ln -s $(XMLWF_FILES) $(@D)/EMU68
+	cd $(@D) && cp xmlwf xmlwf_version && ./xmlwf_version $(XMLWF_VERSION) > xmlwf_version.out
+	cd $(@D) && ./xmlwf $(XMLWF_CANON) > xmlwf_canon.out
+	cd $(@D) && ./xmlwf $(XMLWF_NS) > xmlwf_ns.out
+	cd $(@D) && ./xmlwf $(XMLWF_META) > xmlwf_meta.out
+	cd $(@D) && ./xmlwf $(XMLWF_COPY) > xmlwf_copy.out
+	cd $(@D) && ./xmlwf $(XMLWF_STDIN) < EMU68/AndroidManifest.xml > xmlwf_stdin.out
+	cd $(@D) && { ./xmlwf $(XMLWF_ERRORS) > xmlwf_errors.out; test $$? = 2; }
+	touch $@
+
+xmlwf-refs: $(XMLWF_REFS)/stamp
+
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
 $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
@@ -294,20 +371,22 @@ $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LI
 $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
-# bzip2, the JPEG programs, the zlib ones and pngtest too, also when they
-# were built with a BZIP2_SRC, JPEG_SRC, ZLIB_SRC or PNG_SRC that this make
-# lacks
+# bzip2, the JPEG programs, the zlib ones, pngtest and xmlwf too, also when
+# they were built with a BZIP2_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC or EXPAT_SRC
+# that this make lacks
 clean:
 	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
 	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
+	rm -f $(BUILD_DIR)/xmlwf $(XMLWF_FILES).stamp
 	rm -rf $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
+	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner zlib-refs png-refs
+.PHONY: all clean check-runner zlib-refs png-refs xmlwf-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)

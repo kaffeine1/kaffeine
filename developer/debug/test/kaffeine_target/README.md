@@ -71,7 +71,7 @@ at the end.
 | `libgcc_ieee_ports.c` | `__floatsisf()` and `__fixsfsi()` on mathieeesingbas.library and `__floatunsidf()` on mathieeedoubbas.library, the conversions that bzip2 1.0.8 and the IJG JPEG library 9f call and the empty libgcc of the toolchain lacks. Linked into `bzip2`, `cjpeg`, `djpeg` and `jpegtran`. |
 | `jpeg_jconfig.h` | The `jconfig.h` of the IJG JPEG library 9f for m68k-amigaos-gcc with libnix, after the `jconfig.sas` of its distribution: Unix command line with standard input and output, everything in memory with `jmemnobs.c`. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, and `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, and `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -172,6 +172,17 @@ The Makefile collects `pngtest.png` and the `png-3`, `crashers` and
 `make png-refs` writes the reference outputs to `build/png-refs`. The host
 build leaves out the SIMD paths that libpng turns on by itself on some
 processors.
+
+Set `EXPAT_SRC` to the expat 2.8.2 tree that the AROS build fetches for its
+Ports to include `xmlwf`. The Makefile writes its `expat_config.h` with the
+features that the configure of expat gives (`XML_DTD`, `XML_NS`, `XML_GE`
+and `XML_CONTEXT_BYTES` 1024) and `XML_POOR_ENTROPY`: AmigaOS has none of
+the sources of entropy that expat looks for, so it salts its hash tables
+from the time, which leaves its output as it is. The m68k build gives the
+byte order, 4321, and links the `libm.a` of libnix for `strtof()` and the
+float helpers of the amplification limits. The Makefile collects the XML
+documents of the steps in `build/xmlwf-files`, and `make xmlwf-refs` writes
+the reference outputs to `build/xmlwf-refs`.
 
 ## Running on AROS AArch64
 
@@ -274,6 +285,7 @@ regression in `developer/debug/test/dos_process_host`.
 | `exec_packets` | `--files exec_packets build/exec_packets-files` |
 | `hunk_process_native` (native parent) | `--files hunk_process_native build-hunk-process` (includes its 68k payload) |
 | each step of `pngtest` | `--files NAME build/pngtest-files` |
+| each step of `xmlwf` | `--files NAME build/xmlwf-files` |
 
 The bitmap font is generated from original fixture data by the Makefile.
 The packet fixture is an original 12-byte file. Requests of 5, 9 and 4 bytes
@@ -374,6 +386,51 @@ writes the copy of each image to `pngout.png` in the current directory,
 same output as the host build, and `png_strict` also with the 4096 bytes
 of stack that the Shell starts with.
 
+## The xmlwf steps
+
+`xmlwf` checks that XML documents are well formed and, with `-d`, writes
+what it parsed. The documents are files of this tree: the x86 opcode table
+of udis86 (`optable.xml`, 486 KB) and its AVX part (`avx.xml`), a
+description of muimaster.library in ISO-8859-1 with a document type
+declaration, a Gorilla SVG icon with entities in its internal subset, an
+Inkscape SVG in UTF-8 with seven namespaces, those of Inkscape, Sodipodi
+and RDF among them, and an Android manifest. Seven programs run `xmlwf` on them, and each
+passes only if its output is byte for byte the one of the same program
+built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `xmlwf_version` | `-v` | the version of expat and the features of the build | 0 |
+| `xmlwf_canon` | `-d - EMU68/optable.xml` | the canonical form of the opcode table | 0 |
+| `xmlwf_ns` | `-n -d - EMU68/laptop.svg` | the Inkscape SVG with its namespaces resolved | 0 |
+| `xmlwf_meta` | `-m -d - EMU68/muimaster.xml` | each event of the parser, with its line, column and byte offset | 0 |
+| `xmlwf_copy` | `-c -d - EMU68/Locale.svg` | the SVG icon again, byte for byte | 0 |
+| `xmlwf_stdin` | `-d -`, with `--input` of `AndroidManifest.xml` | the canonical form of the manifest | 0 |
+| `xmlwf_errors` | `-k -s EMU68/avx.xml EMU68/Locale.svg EMU68/AndroidManifest.xml` | an error for each of the first two | 2 |
+
+With `-d DIRECTORY`, `xmlwf` writes what it parsed to `DIRECTORY/NAME`.
+The Makefile builds expat and `xmlwf` with `xmlwf_stdout.h` in front of
+each file, which sends `-d -` to standard output instead, where the runner
+compares it; nothing else changes. The arguments are in `XMLWF_VERSION`,
+`XMLWF_CANON`, `XMLWF_NS`, `XMLWF_META`, `XMLWF_COPY`, `XMLWF_STDIN` and
+`XMLWF_ERRORS`. As with `pngtest`, `xmlwf` names each file in its errors
+and in the output of `-m`, so `make xmlwf-refs` runs the host build next to
+an `EMU68` that names `build/xmlwf-files`. `-v` prints the name that
+`xmlwf` runs under, so there the version step runs as `xmlwf_version`, the
+name that the runner gives it. For example, the canonical step
+is `--files xmlwf_canon build/xmlwf-files --args xmlwf_canon "-d -
+EMU68/optable.xml" --expect xmlwf_canon build/xmlwf-refs/xmlwf_canon.out
+xmlwf_canon=build/xmlwf`, and the standard input step adds `--input
+xmlwf_stdin build/xmlwf-files/AndroidManifest.xml`.
+
+`xmlwf_errors` ends with 2 on purpose. `avx.xml` holds one `<instruction>`
+after another with no element around them, so `xmlwf` reports junk after
+the document element; with `-s` the SVG icon is not standalone, since it
+names an external DTD; `-k` keeps `xmlwf` going to the manifest, which is
+well formed. On AmigaOS 3.2.3 under FS-UAE the seven steps give the same
+output as the host build, and `xmlwf_canon` also with the 4096 bytes of
+stack that the Shell starts with.
+
 ## Expected containment and exit probes
 
 | Program or alias | Argument | Expected exit |
@@ -387,8 +444,9 @@ of stack that the Shell starts with.
 | `exec_memory_vacate=exec_memory` | `vacate` | 20 |
 | `cpu_faults_mmu=cpu_faults` | `mmu` | 20 |
 | `png_badpal=pngtest` | `-m` and the nine `badpal` images | 1, as `tests/pngtest-all` expects |
+| `xmlwf_errors=xmlwf` | `-k -s` and three of the documents | 2 for the two that are not well formed or not standalone |
 
-These eighteen Shell/Run executions are deliberate nonzero cases. They must
+These twenty Shell/Run executions are deliberate nonzero cases. They must
 be checked against their expected behavior; raw nonzero status alone is
 not a regression verdict. Valid ordinary queues are positive tests in
 `exec_messages`.
