@@ -493,6 +493,14 @@ EMU68/compress_generated_text" --expect xz_p1 build/xz-refs/xz_p1.out
 xz_p1=build/xz`, and `xz_unpack` adds `--input xz_unpack
 build/xz-refs/xz_unpack.in`.
 
+Under QEMU the 25 steps give the output and the error output of the host
+build from the Shell and with Run, in 38 minutes with a boot for each. On
+AmigaOS 3.2.3 under FS-UAE they give them too, run as `SYS:EMU68/NAME`
+after `Assign SYS: SHARED:xz ADD`. There an A1200 with 2 MB of chip and
+8 MB of fast memory has too little for `-1` and `-2`, which stop with `Out
+of memory`; with a 68030 and 64 MB of Zorro III memory they give the same
+output as well.
+
 ## Expected containment and exit probes
 
 | Program or alias | Argument | Expected exit |
