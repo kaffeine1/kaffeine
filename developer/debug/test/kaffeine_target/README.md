@@ -71,8 +71,10 @@ at the end.
 | `bzip2_amiga.c` | What bzip2 1.0.8 needs beyond libnix to run as a target program: `fchmod()` and `fchown()`, which succeed without doing anything. |
 | `libgcc_ieee_ports.c` | `__floatsisf()` and `__fixsfsi()` on mathieeesingbas.library and `__floatunsidf()` on mathieeedoubbas.library, the conversions that bzip2 1.0.8 and the IJG JPEG library 9f call and the empty libgcc of the toolchain lacks. Linked into `bzip2`, `cjpeg`, `djpeg` and `jpegtran`. |
 | `jpeg_jconfig.h` | The `jconfig.h` of the IJG JPEG library 9f for m68k-amigaos-gcc with libnix, after the `jconfig.sas` of its distribution: Unix command line with standard input and output, everything in memory with `jmemnobs.c`. |
+| `xz_config.h` | The `config.h` of XZ Utils 5.8.3, the same for `xz` and for its host build: what the configure of XZ Utils finds on both, without threads, the CRC instructions of some processors and the ways to find the memory and the processors of the machine. |
+| `xz_libnix.c` | What `xz` needs beyond libnix: `sigaction()` on `signal()`, `sigprocmask()` with nothing to block, `fcntl()` that gives no flags and sets none, `poll()` that finds every descriptor ready, and `fchmod()` and `fchown()`, which succeed without doing anything. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, and `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, and `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -173,6 +175,28 @@ The Makefile collects `pngtest.png` and the `png-3`, `crashers` and
 `make png-refs` writes the reference outputs to `build/png-refs`. The host
 build leaves out the SIMD paths that libpng turns on by itself on some
 processors.
+
+Set `EXPAT_SRC` to the expat 2.8.2 tree that the AROS build fetches for its
+Ports to include `xmlwf`. The Makefile writes its `expat_config.h` with the
+features that the configure of expat gives (`XML_DTD`, `XML_NS`, `XML_GE`
+and `XML_CONTEXT_BYTES` 1024) and `XML_POOR_ENTROPY`: AmigaOS has none of
+the sources of entropy that expat looks for, so it salts its hash tables
+from the time, which leaves its output as it is. The m68k build gives the
+byte order, 4321, and links the `libm.a` of libnix for `strtof()` and the
+float helpers of the amplification limits. The Makefile collects the XML
+documents of the steps in `build/xmlwf-files`, and `make xmlwf-refs` writes
+the reference outputs to `build/xmlwf-refs`.
+
+Set `XZ_SRC` to the XZ Utils 5.8.3 tree that the AROS build fetches for its
+Ports to include `xz`, with liblzma built in. The Makefile copies
+`xz_config.h` as its `config.h`, so the m68k and the host build have the same
+encoders, decoders, match finders and integrity checks, run in a single
+thread and take 128 MiB as the memory of the machine. The m68k build gives
+the byte order with `WORDS_BIGENDIAN`, links `xz_libnix.c` for the POSIX
+calls that libnix lacks, and the `libm.a` of libnix for the double helpers of
+the sizes and ratios that `xz` prints. The Makefile collects the files of the
+steps in `build/xz-files`, and `make xz-refs` writes the reference outputs to
+`build/xz-refs`.
 
 ## Running on AROS AArch64
 
@@ -361,6 +385,8 @@ compile and evaluate this emitted Hook; see that directory's README.
 | `exec_packets` | `--files exec_packets build/exec_packets-files` |
 | `hunk_process_native` (native parent) | `--files hunk_process_native build-hunk-process` (includes its 68k payload) |
 | each step of `pngtest` | `--files NAME build/pngtest-files` |
+| each step of `xmlwf` | `--files NAME build/xmlwf-files` |
+| each step of `xz` | `--files NAME build/xz-files` |
 
 The bitmap font is generated from original fixture data by the Makefile.
 The packet fixture is an original 12-byte file. Requests of 5, 9 and 4 bytes
@@ -461,6 +487,107 @@ writes the copy of each image to `pngout.png` in the current directory,
 same output as the host build, and `png_strict` also with the 4096 bytes
 of stack that the Shell starts with.
 
+## The xmlwf steps
+
+`xmlwf` checks that XML documents are well formed and, with `-d`, writes
+what it parsed. The documents are files of this tree: the x86 opcode table
+of udis86 (`optable.xml`, 486 KB) and its AVX part (`avx.xml`), a
+description of muimaster.library in ISO-8859-1 with a document type
+declaration, a Gorilla SVG icon with entities in its internal subset, an
+Inkscape SVG in UTF-8 with seven namespaces, those of Inkscape, Sodipodi
+and RDF among them, and an Android manifest. Seven programs run `xmlwf` on them, and each
+passes only if its output is byte for byte the one of the same program
+built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `xmlwf_version` | `-v` | the version of expat and the features of the build | 0 |
+| `xmlwf_canon` | `-d - EMU68/optable.xml` | the canonical form of the opcode table | 0 |
+| `xmlwf_ns` | `-n -d - EMU68/laptop.svg` | the Inkscape SVG with its namespaces resolved | 0 |
+| `xmlwf_meta` | `-m -d - EMU68/muimaster.xml` | each event of the parser, with its line, column and byte offset | 0 |
+| `xmlwf_copy` | `-c -d - EMU68/Locale.svg` | the SVG icon again, byte for byte | 0 |
+| `xmlwf_stdin` | `-d -`, with `--input` of `AndroidManifest.xml` | the canonical form of the manifest | 0 |
+| `xmlwf_errors` | `-k -s EMU68/avx.xml EMU68/Locale.svg EMU68/AndroidManifest.xml` | an error for each of the first two | 2 |
+
+With `-d DIRECTORY`, `xmlwf` writes what it parsed to `DIRECTORY/NAME`.
+The Makefile builds expat and `xmlwf` with `xmlwf_stdout.h` in front of
+each file, which sends `-d -` to standard output instead, where the runner
+compares it; nothing else changes. The arguments are in `XMLWF_VERSION`,
+`XMLWF_CANON`, `XMLWF_NS`, `XMLWF_META`, `XMLWF_COPY`, `XMLWF_STDIN` and
+`XMLWF_ERRORS`. As with `pngtest`, `xmlwf` names each file in its errors
+and in the output of `-m`, so `make xmlwf-refs` runs the host build next to
+an `EMU68` that names `build/xmlwf-files`. `-v` prints the name that
+`xmlwf` runs under, so there the version step runs as `xmlwf_version`, the
+name that the runner gives it. For example, the canonical step
+is `--files xmlwf_canon build/xmlwf-files --args xmlwf_canon "-d -
+EMU68/optable.xml" --expect xmlwf_canon build/xmlwf-refs/xmlwf_canon.out
+xmlwf_canon=build/xmlwf`, and the standard input step adds `--input
+xmlwf_stdin build/xmlwf-files/AndroidManifest.xml`.
+
+`xmlwf_errors` ends with 2 on purpose. `avx.xml` holds one `<instruction>`
+after another with no element around them, so `xmlwf` reports junk after
+the document element; with `-s` the SVG icon is not standalone, since it
+names an external DTD; `-k` keeps `xmlwf` going to the manifest, which is
+well formed. On AmigaOS 3.2.3 under FS-UAE the seven steps give the same
+output as the host build, and `xmlwf_canon` also with the 4096 bytes of
+stack that the Shell starts with.
+
+## The xz steps
+
+The steps of `xz` follow `tests/test_files.sh` and `tests/test_compress.sh`
+of XZ Utils. The first works on the 95 files of `tests/files`, in the
+`.xz`, `.lzma` and lzip formats: 33 good files, which must decompress, and
+56 bad and 6 unsupported ones, which must fail. The second compresses three
+files that `create_compress_files` of XZ Utils writes, a repeated alphabet,
+pseudo-random bytes and Lorem ipsum text, with presets and with each filter
+in front of LZMA2. Each program passes only if its output is byte for byte
+the one of the same program built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `xz_good1` to `xz_good3` | `-dc` and 11 of the good files each | what the files hold | 0 |
+| `xz_bad1` to `xz_bad6` | `-dc`, 9 to 11 of the bad and unsupported files each and `good-1-check-crc32.xz` | what the files hold up to their errors, then `Hello` and `World!` | 1 |
+| `xz_quiet` | `-dcqQ EMU68/unsupported-check.xz` | the file, without the warning that its check cannot be verified | 0 |
+| `xz_list` | `-lvv` and ten of the good files | their streams, blocks, filters, sizes and checks | 0 |
+| `xz_p1`, `xz_p2` | `-c -1` or `-c -2` and the three inputs | the inputs compressed with that preset | 0 |
+| `xz_delta1`, `xz_delta4`, `xz_delta256` | `-c --filters=delta:dist=N--lzma2:dict=64KiB,nice=32,mode=fast` and the three inputs | the inputs compressed with the delta filter of that distance | 0 |
+| `xz_x86`, `xz_powerpc`, `xz_ia64`, `xz_arm`, `xz_armthumb`, `xz_arm64`, `xz_sparc`, `xz_riscv` | `-c --filters=NAME--lzma2:dict=64KiB,nice=32,mode=fast` and the three inputs | the inputs compressed with that branch filter | 0 |
+| `xz_unpack` | `-dc`, with `--input` of the outputs of the thirteen compression steps | the inputs, thirteen times | 0 |
+
+The compression steps and `xz_unpack` also take the memory options of
+`tests/test_compress.sh`, `--memlimit-compress=48MiB
+--memlimit-decompress=5MiB --no-adjust --threads=1`. The arguments are in
+`XZ_ARGS_` and the step name, `XZ_ARGS_p1` for example. Each bad step ends
+with a good file, which `xz` decompresses after the errors of the others, so
+that no step is without output.
+
+The inputs are the first 16 KiB of each file. `xz` compresses about 1 KB a
+second under kaffeine: with the whole files, 772 KB, a step took 13 to 15
+minutes a run, and `xz_unpack` 90 minutes. `tests/test_compress.sh` also
+compresses with `-3` and `-4`, which are left out: the encoder of `-1` takes
+9 MiB and that of `-2` 17 MiB, but that of `-3` takes 32 MiB, all the memory
+that kaffeine gives the guest, and `-4` stops with `Out of memory`.
+
+`xz` begins its messages with the name it runs under, `SYS:EMU68/NAME` in
+the guest, so `make xz-refs` runs the host build under that name too, next
+to an `EMU68` that names `build/xz-files`, and writes its error output to
+`NAME.err`. The runner keeps the error output of each run in
+`guest/NAME-shell-err.txt` and `guest/NAME-run-err.txt`. For example,
+`xz_p1` is `--files xz_p1 build/xz-files --args xz_p1 "-c -1
+--memlimit-compress=48MiB --memlimit-decompress=5MiB --no-adjust
+--threads=1 EMU68/compress_generated_abc EMU68/compress_generated_random
+EMU68/compress_generated_text" --expect xz_p1 build/xz-refs/xz_p1.out
+xz_p1=build/xz`, and `xz_unpack` adds `--input xz_unpack
+build/xz-refs/xz_unpack.in`.
+
+Under QEMU the 25 steps give the output and the error output of the host
+build from the Shell and with Run, in 38 minutes with a boot for each. On
+AmigaOS 3.2.3 under FS-UAE they give them too, run as `SYS:EMU68/NAME`
+after `Assign SYS: SHARED:xz ADD`. There an A1200 with 2 MB of chip and
+8 MB of fast memory has too little for `-1` and `-2`, which stop with `Out
+of memory`; with a 68030 and 64 MB of Zorro III memory they give the same
+output as well.
+
 ## Expected containment and exit probes
 
 | Program or alias | Argument | Expected exit |
@@ -474,8 +601,10 @@ of stack that the Shell starts with.
 | `exec_memory_vacate=exec_memory` | `vacate` | 20 |
 | `cpu_faults_mmu=cpu_faults` | `mmu` | 20 |
 | `png_badpal=pngtest` | `-m` and the nine `badpal` images | 1, as `tests/pngtest-all` expects |
+| `xmlwf_errors=xmlwf` | `-k -s` and three of the documents | 2 for the two that are not well formed or not standalone |
+| `xz_bad1=xz` to `xz_bad6=xz` | `-dc`, bad and unsupported files and a good one | 1, as `tests/test_files.sh` expects of each bad file |
 
-These eighteen Shell/Run executions are deliberate nonzero cases. They must
+These thirty-two Shell/Run executions are deliberate nonzero cases. They must
 be checked against their expected behavior; raw nonzero status alone is
 not a regression verdict. Valid ordinary queues are positive tests in
 `exec_messages`.

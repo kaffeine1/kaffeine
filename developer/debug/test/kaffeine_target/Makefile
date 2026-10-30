@@ -137,6 +137,100 @@ ifneq ($(ZLIB_SRC),)
 PROGRAMS += pngtest
 endif
 endif
+
+# xmlwf of expat 2.8.2, from the source the AROS build fetches for its
+# Ports: set EXPAT_SRC to its expat directory to build it. xmlwf.c is built
+# with xmlwf_stdout.h in front, so that "-d -" writes what xmlwf parses to
+# stdout. The battery runs it through seven steps on XML documents of this
+# tree, which $(XMLWF_FILES) collects under EMU68/ as $(PNG_FILES) does, and
+# compares its output with the one of the same program built for the host,
+# which "make xmlwf-refs" writes to $(XMLWF_REFS).
+EXPAT_SRC ?=
+EXPAT_BUILD := $(BUILD_DIR)/expat-src
+XMLWF_FILES := $(BUILD_DIR)/xmlwf-files
+XMLWF_REFS := $(BUILD_DIR)/xmlwf-refs
+EXPAT_SOURCES := $(addprefix $(EXPAT_SRC)/,lib/xmlparse.c lib/xmlrole.c lib/xmltok.c \
+                 xmlwf/xmlfile.c xmlwf/codepage.c xmlwf/readfilemap.c)
+EXPAT_FLAGS := -I$(EXPAT_BUILD) -I$(EXPAT_SRC)/lib -include $(TEST_DIR)/xmlwf_stdout.h
+TREE_DIR := $(abspath $(TEST_DIR)/../../../..)
+XMLWF_DOCS := $(addprefix $(TREE_DIR)/,arch/all-pc/udis86/docs/x86/optable.xml \
+              arch/all-pc/udis86/docs/x86/avx.xml \
+              workbench/classes/zune/betterstring/include/xml/muimaster.xml \
+              images/IconSets/Gorilla/Icons/Scalable/AROS/Prefs/Locale.svg \
+              workbench/network/WirelessManager/wpa_supplicant/wpa_gui-qt4/icons/laptop.svg \
+              arch/all-android/bootstrap/app/AndroidManifest.xml)
+# The arguments of the steps. xmlwf_stdin reads AndroidManifest.xml from its
+# input, and xmlwf_errors ends with 2, as xmlwf does when a document is not
+# well formed.
+XMLWF_VERSION := -v
+XMLWF_CANON := -d - EMU68/optable.xml
+XMLWF_NS := -n -d - EMU68/laptop.svg
+XMLWF_META := -m -d - EMU68/muimaster.xml
+XMLWF_COPY := -c -d - EMU68/Locale.svg
+XMLWF_STDIN := -d -
+XMLWF_ERRORS := -k -s EMU68/avx.xml EMU68/Locale.svg EMU68/AndroidManifest.xml
+ifneq ($(EXPAT_SRC),)
+PROGRAMS += xmlwf
+endif
+
+# xz of XZ Utils 5.8.3, from the source the AROS build fetches for its
+# Ports: set XZ_SRC to its xz directory to build it, with xz_config.h as its
+# config.h and, for the m68k, xz_libnix.c for the POSIX calls that libnix
+# lacks. The battery runs it through the steps of tests/test_files.sh and
+# tests/test_compress.sh of XZ Utils, on the files that $(XZ_FILES)
+# collects under EMU68/, and compares its output with the one of the same
+# program built for the host, which "make xz-refs" writes to $(XZ_REFS).
+XZ_SRC ?=
+XZ_BUILD := $(BUILD_DIR)/xz-src
+XZ_FILES := $(BUILD_DIR)/xz-files
+XZ_REFS := $(BUILD_DIR)/xz-refs
+XZ_LIBLZMA := $(filter-out %_small.c %_tablegen.c %/crc_clmul_consts_gen.c %/outqueue.c %_mt.c, \
+              $(wildcard $(patsubst %,$(XZ_SRC)/src/liblzma/%/*.c,check common delta lz lzma \
+              rangecoder simple)))
+XZ_SOURCES := $(XZ_LIBLZMA) $(wildcard $(XZ_SRC)/src/xz/*.c) \
+              $(patsubst %,$(XZ_SRC)/src/common/tuklib_%.c,cpucores physmem exit mbstr_fw \
+              mbstr_nonprint mbstr_width mbstr_wrap open_stdxxx progname)
+XZ_FLAGS := -DHAVE_CONFIG_H -I$(XZ_BUILD) -I$(XZ_SRC)/src/common -I$(XZ_SRC)/src/liblzma/api \
+            $(patsubst %,-I$(XZ_SRC)/src/liblzma/%,common check lz rangecoder lzma delta simple)
+# The steps. The good files must decompress and the bad and unsupported ones
+# must fail, as in tests/test_files.sh; the 512 bytes of a command line take
+# eleven of their names or fewer. Each bad step ends with a good file, which
+# xz decompresses after the errors of the others, so that no step is without
+# output. The steps of tests/test_compress.sh compress the three files that
+# create_compress_files writes, with the presets -1 and -2 and with each
+# filter before LZMA2, and xz_unpack decompresses the references of all
+# thirteen from its input. -1 and -2 take 9 and 17 MiB; -3 takes 32 MiB, all
+# the memory that kaffeine gives the guest.
+xz_files = $(patsubst $(XZ_SRC)/tests/files/%,EMU68/%,$(sort $(wildcard $(XZ_SRC)/tests/files/$(1))))
+XZ_GOOD := $(call xz_files,good-*)
+XZ_BAD := $(call xz_files,bad-*) $(call xz_files,unsupported-*)
+XZ_MEM := --memlimit-compress=48MiB --memlimit-decompress=5MiB --no-adjust --threads=1
+XZ_HELLO := EMU68/good-1-check-crc32.xz
+XZ_INPUTS := $(patsubst %,EMU68/compress_generated_%,abc random text)
+XZ_LZMA2 := lzma2:dict=64KiB,nice=32,mode=fast
+XZ_BCJ := x86 powerpc ia64 arm armthumb arm64 sparc riscv
+XZ_PACK := p1 p2 delta1 delta4 delta256 $(XZ_BCJ)
+XZ_STEPS := good1 good2 good3 bad1 bad2 bad3 bad4 bad5 bad6 quiet list $(XZ_PACK) unpack
+XZ_ARGS_good1 := -dc $(wordlist 1,11,$(XZ_GOOD))
+XZ_ARGS_good2 := -dc $(wordlist 12,22,$(XZ_GOOD))
+XZ_ARGS_good3 := -dc $(wordlist 23,33,$(XZ_GOOD))
+XZ_ARGS_bad1 := -dc $(wordlist 1,11,$(XZ_BAD)) $(XZ_HELLO)
+XZ_ARGS_bad2 := -dc $(wordlist 12,22,$(XZ_BAD)) $(XZ_HELLO)
+XZ_ARGS_bad3 := -dc $(wordlist 23,33,$(XZ_BAD)) $(XZ_HELLO)
+XZ_ARGS_bad4 := -dc $(wordlist 34,43,$(XZ_BAD)) $(XZ_HELLO)
+XZ_ARGS_bad5 := -dc $(wordlist 44,53,$(XZ_BAD)) $(XZ_HELLO)
+XZ_ARGS_bad6 := -dc $(wordlist 54,62,$(XZ_BAD)) $(XZ_HELLO)
+XZ_ARGS_quiet := -dcqQ EMU68/unsupported-check.xz
+XZ_ARGS_list := -lvv $(patsubst %,EMU68/good-%.xz,0cat-empty 0catpad-empty 1-check-none \
+                1-check-crc32 1-check-crc64 1-check-sha256 1-3delta-lzma2 1-arm64-lzma2-1 \
+                1-block_header-1 2-lzma2)
+$(foreach p,1 2,$(eval XZ_ARGS_p$(p) := -c -$(p) $(XZ_MEM) $(XZ_INPUTS)))
+$(foreach d,1 4 256,$(eval XZ_ARGS_delta$(d) := -c $(XZ_MEM) --filters=delta:dist=$(d)--$(XZ_LZMA2) $(XZ_INPUTS)))
+$(foreach f,$(XZ_BCJ),$(eval XZ_ARGS_$(f) := -c $(XZ_MEM) --filters=$(f)--$(XZ_LZMA2) $(XZ_INPUTS)))
+XZ_ARGS_unpack := -dc $(XZ_MEM)
+ifneq ($(XZ_SRC),)
+PROGRAMS += xz
+endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
@@ -291,6 +385,94 @@ $(PNG_REFS)/stamp: $(PNG_SRC)/pngtest.c $(PNG_SOURCES) $(ZLIB_SOURCES) $(PNG_BUI
 
 png-refs: $(PNG_REFS)/stamp
 
+# What the configure of expat writes, without the sources of entropy that
+# AmigaOS lacks: with XML_POOR_ENTROPY expat salts its hash tables from the
+# time, which leaves its output as it is. BYTEORDER is left out, so that
+# the host build finds its own; the m68k build gives 4321.
+$(EXPAT_BUILD)/expat_config.h:
+	mkdir -p $(@D)
+	printf '#define XML_DTD 1\n#define XML_NS 1\n#define XML_GE 1\n#define XML_CONTEXT_BYTES 1024\n#define XML_POOR_ENTROPY 1\n' > $@
+
+# The documents of the steps, installed with --files next to each step
+$(XMLWF_FILES).stamp: $(XMLWF_DOCS) | $(BUILD_DIR)
+	rm -rf $(XMLWF_FILES)
+	mkdir -p $(XMLWF_FILES)
+	cp $(XMLWF_DOCS) $(XMLWF_FILES)/
+	touch $@
+
+# -lm brings strtof() and the float helpers of the amplification limits
+$(BUILD_DIR)/xmlwf: $(EXPAT_SRC)/xmlwf/xmlwf.c $(EXPAT_SOURCES) $(EXPAT_BUILD)/expat_config.h \
+                    $(TEST_DIR)/xmlwf_stdout.h | $(BUILD_DIR) $(XMLWF_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) -DBYTEORDER=4321 $(EXPAT_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $< $(EXPAT_SOURCES) -lm
+
+# The xmlwf references: the outputs of the seven steps through xmlwf built
+# for the host, run where EMU68 names $(XMLWF_FILES). -v prints the name
+# that xmlwf runs under, so that step runs as xmlwf_version, as in the
+# guest.
+$(XMLWF_REFS)/stamp: $(EXPAT_SRC)/xmlwf/xmlwf.c $(EXPAT_SOURCES) $(EXPAT_BUILD)/expat_config.h \
+                     $(TEST_DIR)/xmlwf_stdout.h $(XMLWF_FILES).stamp
+	mkdir -p $(@D)
+	$(HOST_CC) -O2 $(EXPAT_FLAGS) -o $(@D)/xmlwf $(EXPAT_SRC)/xmlwf/xmlwf.c $(EXPAT_SOURCES)
+	rm -f $(@D)/EMU68
+	ln -s $(XMLWF_FILES) $(@D)/EMU68
+	cd $(@D) && cp xmlwf xmlwf_version && ./xmlwf_version $(XMLWF_VERSION) > xmlwf_version.out
+	cd $(@D) && ./xmlwf $(XMLWF_CANON) > xmlwf_canon.out
+	cd $(@D) && ./xmlwf $(XMLWF_NS) > xmlwf_ns.out
+	cd $(@D) && ./xmlwf $(XMLWF_META) > xmlwf_meta.out
+	cd $(@D) && ./xmlwf $(XMLWF_COPY) > xmlwf_copy.out
+	cd $(@D) && ./xmlwf $(XMLWF_STDIN) < EMU68/AndroidManifest.xml > xmlwf_stdin.out
+	cd $(@D) && { ./xmlwf $(XMLWF_ERRORS) > xmlwf_errors.out; test $$? = 2; }
+	touch $@
+
+xmlwf-refs: $(XMLWF_REFS)/stamp
+
+$(XZ_BUILD)/config.h: $(TEST_DIR)/xz_config.h
+	mkdir -p $(@D)
+	cp $< $@
+
+# The files of the steps, installed with --files next to each step: those of
+# tests/files, and the first 16 KiB of the three that create_compress_files,
+# built for the host, writes for tests/test_compress.sh. xz compresses about
+# 1 KB a second under kaffeine: with the whole files, 772 KB, a step took 13
+# to 15 minutes a run.
+$(XZ_FILES).stamp: $(XZ_SRC)/tests/create_compress_files.c $(XZ_BUILD)/config.h | $(BUILD_DIR)
+	rm -rf $(XZ_FILES)
+	mkdir -p $(XZ_FILES)
+	cp $(addprefix $(XZ_SRC)/tests/files/,*.xz *.lzma *.lz) $(XZ_FILES)/
+	$(HOST_CC) -O2 $(XZ_FLAGS) -o $(XZ_BUILD)/create_compress_files $<
+	cd $(XZ_BUILD) && for f in abc random text; do \
+	    ./create_compress_files compress_generated_$$f && \
+	    head -c 16384 compress_generated_$$f > $(XZ_FILES)/compress_generated_$$f || exit 1; done
+	touch $@
+
+# -lm brings the double helpers of the sizes and ratios that xz prints
+$(BUILD_DIR)/xz: $(XZ_SOURCES) $(TEST_DIR)/xz_libnix.c $(XZ_BUILD)/config.h | $(BUILD_DIR) \
+                 $(XZ_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) -DWORDS_BIGENDIAN $(XZ_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $(XZ_SOURCES) $(TEST_DIR)/xz_libnix.c -lm
+
+# The xz references: the outputs of the steps through xz built for the host,
+# run where EMU68 names $(XZ_FILES). xz begins its messages with its name as
+# it was started, SYS:EMU68/NAME in the guest, so each step runs as that here
+# too, and writes its error output to NAME.err. The bad steps end with 1.
+# xz_unpack reads xz_unpack.in, the outputs of the thirteen compression
+# steps one after the other.
+$(XZ_REFS)/stamp: $(XZ_SOURCES) $(XZ_BUILD)/config.h $(XZ_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 $(XZ_FLAGS) -o $(@D)/xz $(XZ_SOURCES)
+	ln -s $(XZ_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(filter-out unpack,$(XZ_STEPS)),cp xz SYS:EMU68/xz_$(s) && \
+	    { SYS:EMU68/xz_$(s) $(XZ_ARGS_$(s)) > xz_$(s).out 2> xz_$(s).err; \
+	    test $$? = $(if $(filter bad%,$(s)),1,0); } &&) true
+	cd $(@D) && cat $(patsubst %,xz_%.out,$(XZ_PACK)) > xz_unpack.in
+	cd $(@D) && cp xz SYS:EMU68/xz_unpack && \
+	    SYS:EMU68/xz_unpack $(XZ_ARGS_unpack) < xz_unpack.in > xz_unpack.out 2> xz_unpack.err
+	touch $@
+
+xz-refs: $(XZ_REFS)/stamp
+
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
 $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
@@ -306,20 +488,22 @@ $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LI
 $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
-# bzip2, the JPEG programs, the zlib ones and pngtest too, also when they
-# were built with a BZIP2_SRC, JPEG_SRC, ZLIB_SRC or PNG_SRC that this make
-# lacks
+# bzip2, the JPEG programs, the zlib ones, pngtest, xmlwf and xz too, also
+# when they were built with a BZIP2_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC,
+# EXPAT_SRC or XZ_SRC that this make lacks
 clean:
 	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
 	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
+	rm -f $(BUILD_DIR)/xmlwf $(XMLWF_FILES).stamp $(BUILD_DIR)/xz $(XZ_FILES).stamp
 	rm -rf $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
+	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS) $(XZ_BUILD) $(XZ_FILES) $(XZ_REFS)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner zlib-refs png-refs
+.PHONY: all clean check-runner zlib-refs png-refs xmlwf-refs xz-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)
