@@ -8,7 +8,7 @@ private test disk images are not distributed here.
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
-| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. Current JIT startup passes typed process creation, shared IPC, ViewPortExtra, shared IDCMP and default-font setup, reaches menu/drawing calls, then stops at `layers.library` `LockLayerInfo()` (LVO -120) | Next: scoped LayerInfo locking. No main-editor window, editing or save/reopen acceptance |
+| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. Current JIT startup passes typed process creation, shared IPC, ViewPortExtra, shared IDCMP, default-font setup and scoped LayerInfo locking, then stops at a guest window-backfill Hook passed to `InstallLayerHook()` (LVO -198) | Next: window-backfill compatibility. No main-editor window, editing or save/reopen acceptance |
 | AmiPixelShop 0.6.1-beta | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; P96 and screen-mode requester requirements are additional source-level gaps |
 
 ## Additional startup checks (2026-10-29)
@@ -70,14 +70,16 @@ and converted-tag cleanup preserve the loader's IoErr.
 The latest accepted JIT startup runs exchange the original 128-byte message inside the
 shared guest arena and proceed through ViewPortExtra queries, shared IDCMP
 ports and typed graphics default-font initialization. Startup reaches menu
-and drawing calls before the unsupported `LockLayerInfo()` vector at
-`layers.library` LVO -120 stops execution with return code 20.
+and drawing calls, successfully locks and unlocks LayerInfo, then passes a guest
+window-backfill Hook to `InstallLayerHook()` at `layers.library` LVO -198.
+That unsupported Hook currently stops execution with return code 20.
 
 This is startup progress, not editor acceptance. No main-editor window has
 been accepted, and editing, saving and reopening a document remain unverified.
-The scoped LayerInfo adapter is implemented and has passed 33 host-test groups,
-including sanitizer checks, and an ARM64 library build. Its application-level
-validation is pending. It accepts only live typed screen or private LayerInfo
+The scoped LayerInfo adapter has passed 33 host-test groups, including sanitizer
+checks, the full 49-executable host suite and Linux CI, and an ARM64 library
+build. The application-level run passes both new vectors; the same native build
+also passes all 148 process-domain checks described below. It accepts only live typed screen or private LayerInfo
 objects, records native and guest owners privately, pins the current guest CPU,
 and balances nested locks before task or screen retirement. Native waits, DOS,
 guest callbacks and other library classes outside the graphics, layers and

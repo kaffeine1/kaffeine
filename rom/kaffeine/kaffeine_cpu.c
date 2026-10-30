@@ -190,8 +190,10 @@ BOOL Kaffeine_CallGuest(struct KaffeineContext *ctx, void *cpu, ULONG entry,
     ctx->callback_depth--;
     if (!ctx->running)
     {
-        /* A thunk may have stopped with its own process return code. */
-        Kaffeine_StopGuest(ctx, cpu, (LONG)Kaffeine_GetD(cpu, 0));
+        /* A refused void thunk may have replaced D0 after StopGuest. Keep
+           its authoritative code; an unmarked process stop still uses D0. */
+        Kaffeine_StopGuest(ctx, cpu, ctx->callback_failed ? ctx->exit_code :
+                           (LONG)Kaffeine_GetD(cpu, 0));
         return FALSE;
     }
 

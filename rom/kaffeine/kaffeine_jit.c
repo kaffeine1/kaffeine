@@ -3289,7 +3289,8 @@ static void dispatch_linea(struct HJBackend *b, uint32_t pc)
     if (!ctx->running)
     {
         if (ctx->callback_depth || ctx->callback_failed)
-            Kaffeine_StopGuest(ctx, &b->handle, (LONG)b->st.d[0]);
+            Kaffeine_StopGuest(ctx, &b->handle, ctx->callback_failed ?
+                               ctx->exit_code : (LONG)b->st.d[0]);
         return;
     }
     if (result.supervisor)

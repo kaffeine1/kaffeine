@@ -308,7 +308,8 @@ public:
             if (!ctx->running)
             {
                 if (ctx->callback_depth || ctx->callback_failed)
-                    Kaffeine_StopGuest(ctx, &cpu_handle, (LONG)getD(0));
+                    Kaffeine_StopGuest(ctx, &cpu_handle, ctx->callback_failed ?
+                                       ctx->exit_code : (LONG)getD(0));
                 return;
             }
             reg.usp = savedReg.usp;

@@ -42,10 +42,16 @@ static IPTR stop_seven(KaffeineContext *ctx, void *)
     ctx->exit_code = 7;
     return 7;
 }
+static IPTR stop_void(KaffeineContext *ctx, void *cpu)
+{
+    Kaffeine_StopGuest(ctx, cpu, 20);
+    return 0;
+}
 const M68KThunkEntry kaffeine_thunks_exec[] = {
-    { 522, thunk_exec_RawDoFmt }, { 564, Kaffeine_ObtainSemaphore }, { 60, stop_seven }
+    { 522, thunk_exec_RawDoFmt }, { 564, Kaffeine_ObtainSemaphore }, { 60, stop_seven },
+    { 54, stop_void }
 };
-const ULONG kaffeine_thunks_exec_count = 3;
+const ULONG kaffeine_thunks_exec_count = 4;
 const M68KThunkEntry kaffeine_thunks_dos[] = { { 0, nullptr } };
 const ULONG kaffeine_thunks_dos_count = 0;
 static const M68KThunkEntry utility_generated[] = { { 102, poison }, { 312, poison } };
@@ -246,6 +252,46 @@ static void callback_stops()
         CHECK(g.run() == (lvo == 564 ? 20 : 7));
         CHECK(g.mem[Guest::buffer] == 0xA5 && g.ctx.callback_failed);
         CHECK(g.ctx.callback_depth == 0 && !generated_calls);
+    }
+}
+
+/* Exercise the common call primitive without a backend's final D0 repair.
+   A nested callback must preserve StopGuest even if a void thunk returns 0. */
+static void execute_callback_stop(void *state)
+{
+    static_cast<AROSMoira *>(state)->execute();
+}
+
+static void callback_stop_codes()
+{
+    for (UWORD lvo : { 54, 60 })
+    {
+        Guest g;
+        ULONG inner = Guest::hook + 32, inner_code = Guest::hook_code + 0x100;
+        m68k_write32(&g.ctx, inner + 8, inner_code);
+        g.pc = inner_code;
+        g.jsr(Guest::exec, lvo); g.word(0x702A); g.word(0x4E75);
+        g.pc = Guest::hook_code;
+        g.a(0, inner); g.jsr(Guest::utility, 102); g.word(0x4E75);
+        g.pc = Guest::entry; g.hook_call();
+        g.word(0x13FC); g.word(0x003C); g.longword(Guest::buffer); g.word(0x4E75);
+
+        AROSMoira cpu(&g.ctx);
+        auto direct_ops = moira_cpu_ops; direct_ops.execute = execute_callback_stop;
+        cpu.cpu_handle.ops = &direct_ops;
+        m68k_write32(&g.ctx, 0, Guest::stack);
+        m68k_write32(&g.ctx, 4, Guest::entry);
+        cpu.reset();
+        m68k_write16(&g.ctx, RTE_ADDR, M68K_OP_RTE);
+        m68k_write32(&g.ctx, M68K_VEC_LINEA, RTE_ADDR);
+        m68k_write32(&g.ctx, Guest::stack - 4, SENTINEL_ADDR);
+        cpu.setA(7, Guest::stack - 4);
+        LONG expected = lvo == 54 ? 20 : 7;
+        CHECK(Kaffeine_RunCPU(&g.ctx, &cpu.cpu_handle) == expected);
+        CHECK(g.ctx.exit_code == expected && cpu.getD(0) == (ULONG)expected);
+        CHECK(g.mem[Guest::buffer] == 0xA5);
+        CHECK(g.ctx.callback_failed && !g.ctx.running && !g.ctx.callback_depth);
+        CHECK(!generated_calls);
     }
 }
 
@@ -479,6 +525,7 @@ int main(int argc, char **argv)
         {"hook", hook_registers}, {"nested", nested_hooks}, {"depth", depth_limit},
         {"vectors", callback_vectors},
         {"invalid-hooks", invalid_hooks}, {"faults", hook_faults}, {"stops", callback_stops},
+        {"stop-codes", callback_stop_codes},
         {"raw", raw_copy}, {"custom", raw_custom}, {"flags", raw_flags},
         {"special", raw_special_and_long}, {"invalid-format", raw_invalid},
         {"vsn", vsnprintf_checks}, {"fallback", fallback_controls}, {"no-unwind", no_unwinding}
