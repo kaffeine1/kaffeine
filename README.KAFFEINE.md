@@ -66,7 +66,8 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   and Run invocation with both Moira and JIT on uniprocessor AROS ARM64.
   See the [process contract](docs/kaffeine/guest-processes.md) and
   [application status](docs/kaffeine/classic-applications.md) for supported
-  tags, ownership rules and the remaining TurboText GUI blocker.
+  tags, ownership rules, the accepted TurboText opening/input check and the
+  remaining native display limits.
 - The original 68k Personal Paint 7.2.1.0 opens from a native desktop icon
   in AROS AArch64/QEMU. The [recorded demonstration](docs/kaffeine/personal-paint-demo.md)
   starts with a 24-bit Workbench, selects a 1024×768 canvas with a 256-entry

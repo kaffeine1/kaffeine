@@ -8,7 +8,7 @@ private test disk images are not distributed here.
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
-| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. Current JIT startup passes typed process creation, shared IPC, ViewPortExtra, shared IDCMP, default-font setup, scoped LayerInfo locking and a bounded window-backfill Hook. The latest run passes copied-port text drawing and integer arithmetic within LayerInfo scopes, then reaches its event wait | Main-editor rendering is still under investigation; no visible editor acceptance. No main-editor window, editing or save/reopen acceptance |
+| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT opens the main editor, loads the sample document and visibly inserts a typed character | Opening, document loading and a single-character input smoke check accepted. Native screen-position and indexed-composition defects remain; save/reopen and broader editing are unverified |
 | AmiPixelShop 0.6.1-beta | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; P96 and screen-mode requester requirements are additional source-level gaps |
 
 ## Additional startup checks (2026-10-29)
@@ -67,28 +67,45 @@ The loader trace records its native BPTR at full width and the delivered
 32-bit D0 without reading segment contents or printing filenames. Logging
 and converted-tag cleanup preserve the loader's IoErr.
 
-The latest accepted JIT startup runs exchange the original 128-byte message inside the
-shared guest arena and proceed through ViewPortExtra queries, shared IDCMP
-ports and typed graphics default-font initialization. Startup reaches menu
-and drawing calls, successfully locks and unlocks LayerInfo, and installs a guest
-window-backfill Hook through the [bounded native adapter](native-backfill.md).
-The latest JIT run also passes copied-RastPort `RectFill()` and `Text()` calls
-with a translated classic TmpRas, and Utility integer arithmetic while holding
-LayerInfo. It reaches the event wait without the earlier bridge refusals. The
-framebuffer remains mostly black, so the main editor has not yet passed visible
-acceptance.
+The accepted 2026-10-30 application run uses the primary Kaffeine JIT on a
+uniprocessor AROS ARM64 kernel in QEMU's Raspberry Pi 3 model. Workbench was
+confirmed through native bitmap attributes as 1024x768, 24-bit. The original
+launcher opens `document.txt`, displays both sample lines, and inserts a
+delivered `j` at the cursor. The modified indicator and cursor column change
+with the visible text. This is an opening/loading/input smoke check; saving,
+reopening and broader editor features have not been accepted.
 
-This is startup progress, not editor acceptance. No main-editor window has
-been accepted, and editing, saving and reopening a document remain unverified.
-The scoped LayerInfo adapter has passed 33 host-test groups, including sanitizer
-checks, the full 49-executable host suite and Linux CI, and an ARM64 library
-build. The application-level run passes both new vectors; the same native build
-also passes all 148 process-domain checks described below. It accepts only live typed screen or private LayerInfo
-objects, records native and guest owners privately, pins the current guest CPU,
-and balances nested locks before task or screen retirement. Native waits, DOS,
-guest callbacks and other library classes outside the graphics, layers and
-restricted Exec and register-only Utility arithmetic subsets are refused while
-that scope is active.
+![Original 68k TurboText displaying the sample document on AROS ARM64](media/turbotext-2026-10-30/document.png)
+
+[The input frame and run scope](media/turbotext-2026-10-30/README.md) record the
+single-character check. Application and support-library binaries remain
+unmodified; after shutdown, the installed application, emulator library and
+native observation helpers matched their original artifacts. The run contains
+no earlier bridge refusal or CPU fault.
+
+The application now passes shared Process/IPC setup, ViewPortExtra and default
+font queries, shared IDCMP ports, copied-RastPort `RectFill()` and `Text()` with
+a translated classic TmpRas, and integer arithmetic inside LayerInfo scopes.
+Its window-backfill Hook uses the [bounded native adapter](native-backfill.md).
+File packets run in the [typed Process's DOS broker](guest-processes.md#typed-dos-packets).
+The [tracked refresh scope](window-refresh.md) balances native window/update
+locks, and [typed keymap conversion](keymap.md) translates classic keyboard
+events before native mapping. Focused layer tests pass 37 groups and private
+layer tests pass 31 groups, both normally and with ASan/UBSan. Native execution,
+host regression and application acceptance remain separate evidence lanes.
+
+Two native AROS display limitations remain. The current
+[`ScreenPosition()` implementation](../../rom/intuition/screenposition.c)
+treats `SPOS_MAKEVISIBLE` rectangle coordinates as a relative move. An already
+visible caret therefore moves Workbench down, repeatedly during input; the
+screenshots retain that behavior. Separately, an original native LUT8-to-truecolor
+blit probe with distinct palettes copies the destination palette's colors
+instead of the source's. The optimized
+[CopyBox conversion](../../rom/hidds/gfx/gfx_hiddclass.c) selects the destination
+bitmap's color map. The compositor uses that conversion for an indexed screen;
+a separate native framebuffer probe observes black pixels after a screen move.
+The 24-bit desktop permits the observed editor
+check; neither native display defect is fixed by this application milestone.
 
 The original foreign-backfill controller passed **20 checks with zero failures**
 through each of Moira and JIT on AROS ARM64. A separate native Process invoked
