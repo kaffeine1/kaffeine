@@ -14,6 +14,7 @@
 #include <stdio.h>
 
 #include "kaffeine_intern.h"
+#include "kaffeine_segments.h"
 #include "kaffeine_locks.h"
 #include "kaffeine_shadow.h"
 #include "kaffeine_thunks.h"
@@ -32,10 +33,30 @@
 #include "kaffeine_sched.h"
 #include "kaffeine_regions.h"
 #include "kaffeine_jit.h"
+#include "kaffeine_domain_run.h"
+#include "kaffeine_offsets.h"
 
 /* The signals, ports and open devices of the guest belong to the native
    task that runs it, as does a lock of the list of public screens, an Exec
    semaphore: release them there, before that task ends. */
+static void cleanup_owned(struct KaffeineContext *ctx)
+{
+    Kaffeine_WindowsCleanup(ctx);
+    Kaffeine_MenusCleanup(ctx);
+    Kaffeine_GadgetsCleanup(ctx);
+    Kaffeine_VisualInfosCleanup(ctx);
+    Kaffeine_FileCleanup(ctx);
+    Kaffeine_HandlerCleanup(ctx);
+    Kaffeine_LockCleanup(ctx);
+    Kaffeine_IOCleanup(ctx);
+    Kaffeine_ScreensCleanup(ctx);
+    /* after the windows and screens, which retire their 68k Layers first */
+    Kaffeine_LayersCleanup(ctx);
+    /* after the layers, whose clip Regions they may be */
+    Kaffeine_RegionsCleanup(ctx);
+    Kaffeine_SegmentsCleanup(ctx);
+}
+
 static LONG execute_owned(struct KaffeineContext *ctx)
 {
     LONG result;
@@ -58,33 +79,42 @@ static LONG execute_owned(struct KaffeineContext *ctx)
         ctx->running = FALSE;
         result = ctx->exit_code = RETURN_FAIL;
     }
-    Kaffeine_WindowsCleanup(ctx);
-    Kaffeine_MenusCleanup(ctx);
-    Kaffeine_GadgetsCleanup(ctx);
-    Kaffeine_VisualInfosCleanup(ctx);
-    Kaffeine_FileCleanup(ctx);
-    Kaffeine_HandlerCleanup(ctx);
-    Kaffeine_LockCleanup(ctx);
-    Kaffeine_IOCleanup(ctx);
-    Kaffeine_ScreensCleanup(ctx);
-    /* after the windows and screens, which retire their 68k Layers first */
-    Kaffeine_LayersCleanup(ctx);
-    /* after the layers, whose clip Regions they may be */
-    Kaffeine_RegionsCleanup(ctx);
+    cleanup_owned(ctx);
     return result;
 }
 
-/* ── Emulator child process entry point ────────────────────────── */
-
-static LONG emu_proc_entry(void)
+/* Initialize native-backed shadows in the task that will execute every
+   guest slice and own the domain's Exec ports and GUI resources. */
+static LONG start_owned(struct KaffeineContext *ctx)
 {
-    struct Process *me = (struct Process *)FindTask(NULL);
-    struct KaffeineContext *ctx = (struct KaffeineContext *)me->pr_Task.tc_UserData;
+    ctx->exec_task = FindTask(NULL);
+    shadow_init_execbase(ctx, ctx->m68k_sysbase, ctx->emuBase->sysBase);
+    if (!ctx->guest_exec_task)
+    {
+        cleanup_owned(ctx);
+        return RETURN_FAIL;
+    }
+    ctx->root_streams[0] = m68k_read32(ctx, ctx->guest_exec_task + M68K_PR_CIS);
+    ctx->root_streams[1] = m68k_read32(ctx, ctx->guest_exec_task + M68K_PR_COS);
+    ctx->root_streams[2] = m68k_read32(ctx, ctx->guest_exec_task + M68K_PR_CES);
+    ctx->task_ops = &Kaffeine_GuestTaskOps;
+    Kaffeine_AutoOpenLibs(ctx);
+    return execute_owned(ctx);
+}
 
-    if (!ctx) return -1;
-
-    ctx->exit_code = execute_owned(ctx);
-    return ctx->exit_code;
+static void dispose_context(struct KaffeineContext *ctx)
+{
+    Kaffeine_ReadArgsCleanup(ctx);
+    Kaffeine_LocaleCleanup(ctx);
+    Kaffeine_MatchCleanup(ctx);
+    Kaffeine_ExAllCleanup(ctx);
+    Kaffeine_MenusCleanup(ctx);
+    Kaffeine_GadgetsCleanup(ctx);
+    Kaffeine_FontsCleanup(ctx);
+    Kaffeine_IconsCleanup(ctx);
+    Kaffeine_LayersCleanup(ctx);
+    Kaffeine_RegionsCleanup(ctx);
+    Kaffeine_DestroyContext(ctx);
 }
 
 /* ── Common setup + execution for both RunHunk and RunFile ─────── */
@@ -92,10 +122,12 @@ static LONG emu_proc_entry(void)
 static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
                               CONST_STRPTR argPtr, ULONG argSize,
                               ULONG stackSize, const char *programName,
-                              struct KaffeineLibBase *KaffeineBase)
+                              BOOL *transferred)
 {
     ULONG m68k_sysbase, m68k_argptr;
     LONG result = -1;
+
+    *transferred = FALSE;
 
     /* Set up fake exec.library base (lib_id=0) */
     m68k_sysbase = Kaffeine_SetupLibBase(ctx, 0, "exec.library",
@@ -118,13 +150,16 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     /* Write SysBase pointer at address 4 (AbsExecBase) */
     m68k_write32(ctx, 4, m68k_sysbase);
 
+    if (argSize && (!argPtr || argSize >= ctx->mem_size)) return -1;
+
     /* Copy argument string into containment space */
     m68k_argptr = 0;
     if (argPtr && argSize > 0)
     {
         m68k_argptr = Kaffeine_HeapAlloc(ctx, argSize + 1, 0);
-        if (m68k_argptr)
-            CopyMem((APTR)argPtr, m68k_to_host(ctx, m68k_argptr), argSize);
+        if (!m68k_argptr) return RETURN_FAIL;
+        CopyMem((APTR)argPtr, m68k_to_host(ctx, m68k_argptr), argSize);
+        ctx->mem[m68k_argptr + argSize] = 0;
     }
 
     if (programName)
@@ -138,53 +173,14 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     ctx->m68k_argsize = argSize;
     ctx->m68k_sysbase = m68k_sysbase;
 
-    /* Init ExecBase shadow data fields */
-    shadow_init_execbase(ctx, m68k_sysbase, SysBase);
-
-    /* AddTask() children run on the guest task scheduler */
-    ctx->task_ops = &Kaffeine_GuestTaskOps;
-
-    /* Auto-open libraries referenced by C startup tables */
-    Kaffeine_AutoOpenLibs(ctx);
-
-    /* If stackSize is 0, run directly (non-threaded) */
     if (stackSize == 0)
-        return execute_owned(ctx);
+        return start_owned(ctx);
 
-    /* Spawn emulator in its own AROS process.
-     * NP_Synchronous=TRUE makes us block until the child exits.
-     */
-    {
-        BPTR curdir = CurrentDir(BNULL);
-        CurrentDir(curdir);  /* restore */
-
-        BPTR dirlock = DupLock(curdir);
-
-        struct TagItem tags[] = {
-            { NP_Entry,       (IPTR)emu_proc_entry },
-            { NP_Name,        (IPTR)"kaffeine" },
-            { NP_Synchronous, TRUE },
-            { NP_UserData,    (IPTR)ctx },
-            { NP_FreeSeglist, FALSE },
-            { NP_Input,       (IPTR)Input() },
-            { NP_CloseInput,  FALSE },
-            { NP_Output,      (IPTR)Output() },
-            { NP_CloseOutput, FALSE },
-            { NP_CurrentDir,  (IPTR)dirlock },
-            { TAG_DONE,       0 }
-        };
-
-        struct Process *proc = CreateNewProc(tags);
-        if (proc)
-        {
-            result = ctx->exit_code;
-        }
-        else
-        {
-            UnLock(dirlock);
-            result = -1;
-        }
-    }
+    /* The ARM driver owns the whole context after successful publication.
+       The root may return to DOS while independently created guest Processes
+       keep the shared arena, code, queues and native resources alive. */
+    *transferred = Kaffeine_RunDomain(ctx, start_owned,
+                                      dispose_context, &result);
 
     return result;
 }
@@ -234,6 +230,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     };
     ULONG entry;
     LONG result = -1;
+    BOOL transferred = FALSE;
     char program[256];
 
     /* LoadSeg() relocated the segments for their native addresses. */
@@ -257,20 +254,10 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
         if (!GetProgramName(program, sizeof(program)))
             program[0] = 0;
         result = setup_and_execute(ctx, entry, argPtr, argSize,
-                                   stackSize, program[0] ? program : NULL, KaffeineBase);
+                                   stackSize, program[0] ? program : NULL, &transferred);
     }
 
-    Kaffeine_ReadArgsCleanup(ctx);
-    Kaffeine_LocaleCleanup(ctx);
-    Kaffeine_MatchCleanup(ctx);
-    Kaffeine_ExAllCleanup(ctx);
-    Kaffeine_MenusCleanup(ctx);
-    Kaffeine_GadgetsCleanup(ctx);
-    Kaffeine_FontsCleanup(ctx);
-    Kaffeine_IconsCleanup(ctx);
-    Kaffeine_LayersCleanup(ctx);
-    Kaffeine_RegionsCleanup(ctx);
-    Kaffeine_DestroyContext(ctx);
+    if (!transferred) dispose_context(ctx);
     return result;
 
     AROS_LIBFUNC_EXIT
@@ -296,6 +283,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     UBYTE *fileData;
     ULONG entry;
     LONG result = -1;
+    BOOL transferred = FALSE;
 
     fh = Open(fileName, MODE_OLDFILE);
     if (!fh) return -1;
@@ -321,19 +309,9 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
 
     if (entry)
         result = setup_and_execute(ctx, entry, argPtr, argSize,
-                                   stackSize, fileName, KaffeineBase);
+                                   stackSize, fileName, &transferred);
 
-    Kaffeine_ReadArgsCleanup(ctx);
-    Kaffeine_LocaleCleanup(ctx);
-    Kaffeine_MatchCleanup(ctx);
-    Kaffeine_ExAllCleanup(ctx);
-    Kaffeine_MenusCleanup(ctx);
-    Kaffeine_GadgetsCleanup(ctx);
-    Kaffeine_FontsCleanup(ctx);
-    Kaffeine_IconsCleanup(ctx);
-    Kaffeine_LayersCleanup(ctx);
-    Kaffeine_RegionsCleanup(ctx);
-    Kaffeine_DestroyContext(ctx);
+    if (!transferred) dispose_context(ctx);
     return result;
 
     AROS_LIBFUNC_EXIT

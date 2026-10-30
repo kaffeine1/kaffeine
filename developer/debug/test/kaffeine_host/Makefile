@@ -17,7 +17,7 @@ DOS_LOADSEG_OBJ := $(BUILD_DIR)/dos_loadseg_aos.o
 EXEC_LISTS_OBJ := $(BUILD_DIR)/kaffeine_lists.o
 DOS_THUNK_CPPFLAGS := -I$(TEST_DIR)/dos_thunk_stubs $(TEST_CPPFLAGS)
 DOS_THUNK_CFLAGS := -std=c99 -Wall -Wextra -Wno-unused-parameter
-DOS_THUNK_OBJS := $(addprefix $(BUILD_DIR)/dos_thunk_,cpu.o dispatch.o thunks_dos.o cli.o format.o taglist.o)
+DOS_THUNK_OBJS := $(addprefix $(BUILD_DIR)/dos_thunk_,cpu.o dispatch.o thunks_dos.o cli.o format.o taglist.o segments.o)
 DOS_THUNK_OBJS += $(BUILD_DIR)/dos_buffers_native.o $(BUILD_DIR)/file_boundary_unit.o
 DOS_THUNK_OBJS += $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o
 MEMHEADER_OBJS := $(addprefix $(BUILD_DIR)/memheader_,cpu.o dispatch.o memheader.o)
@@ -42,7 +42,7 @@ MEMORY_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unuse
 # Allows mutation tests to compile disposable copies, leaving rom/ untouched.
 M68KLIB_SOURCE_DIR ?= $(KAFFEINE_DIR)
 M68KLIB_CPPFLAGS := -I$(TEST_DIR)/m68klib_stubs -I$(M68KLIB_SOURCE_DIR) $(MEMORY_CPPFLAGS)
-M68KLIB_OBJS := $(BUILD_DIR)/file_boundary_unit.o $(addprefix $(BUILD_DIR)/m68klib_,cpu.o dispatch.o thunks_memory.o memory.o m68klib.o moira.o library_thunks.o)
+M68KLIB_OBJS := $(BUILD_DIR)/file_boundary_unit.o $(addprefix $(BUILD_DIR)/m68klib_,cpu.o dispatch.o thunks_memory.o memory.o m68klib.o moira.o library_thunks.o segments.o)
 TASK_CPPFLAGS := -I$(TEST_DIR)/task_stubs $(TEST_CPPFLAGS)
 IO_CPPFLAGS := -I$(TEST_DIR)/io_stubs $(TEST_CPPFLAGS)
 IO_OBJS := $(addprefix $(BUILD_DIR)/io_,cpu.o dispatch.o exec_io.o thunks_timer.o thunks_console.o memory.o)
@@ -64,7 +64,8 @@ GFX_THUNK_OBJS := $(BUILD_DIR)/gfx_generated_rp.o $(BUILD_DIR)/gfx_thunk_copy.o 
 DISKFONT_CPPFLAGS := -I$(TEST_DIR)/memory_stubs $(GFX_CPPFLAGS)
 DISKFONT_OBJS := $(BUILD_DIR)/gfx_thunk_copy.o $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/diskfont_,cpu.o dispatch.o thunks_diskfont.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
 WINDOW_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o copy.o format.o rastport.o memory.o taglist.o)
-SCREEN_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o palette.o rastport.o memory.o taglist.o fontattr.o)
+WINDOW_OBJS += $(BUILD_DIR)/gfx_thunk_thunks_memory.o
+SCREEN_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o palette.o videocontrol.o rastport.o memory.o taglist.o fontattr.o)
 # The layer bridge with the production run loop, window bridge and heap,
 # the native hook entry of its private layers and the Region bridge of
 # their clip Regions.
@@ -119,6 +120,7 @@ TESTS += test_layers_private
 TESTS += test_regions
 TESTS += test_m68klib
 TESTS += test_hosted_jit
+TESTS += test_process_tags
 TESTS += test_guest_tasks
 TEST_BINS := $(addprefix $(BUILD_DIR)/,$(TESTS))
 
@@ -147,6 +149,14 @@ $(BUILD_DIR)/test_exec_lists: $(EXEC_LISTS_OBJ)
 $(BUILD_DIR)/test_exec_lists: EXTRA_OBJS = $(EXEC_LISTS_OBJ)
 
 # Compile the production DOS thunks and dispatcher as C, then link the C++ test.
+PROCESS_TAG_OBJS := $(addprefix $(BUILD_DIR)/process_tags_,cpu.o dispatch.o taglist.o process_tags.o)
+$(BUILD_DIR)/process_tags_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) -I$(TEST_DIR)/process_tags_stubs $(DOS_THUNK_CPPFLAGS) $(CFLAGS) $(DOS_THUNK_CFLAGS) -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_process_tags: $(TEST_DIR)/test_process_tags.cpp $(PROCESS_TAG_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) -I$(TEST_DIR)/process_tags_stubs $(DOS_THUNK_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(PROCESS_TAG_OBJS) $(LDLIBS)
+-include $(PROCESS_TAG_OBJS:.o=.d)
+
 $(BUILD_DIR)/dos_thunk_thunks_dos.o: DOS_THUNK_TRACE_CPPFLAGS := -I$(TEST_DIR)/dos_trace_stubs
 $(BUILD_DIR)/dos_thunk_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 	$(CC) $(DOS_THUNK_TRACE_CPPFLAGS) $(CPPFLAGS) $(DOS_THUNK_CPPFLAGS) $(CFLAGS) $(DOS_THUNK_CFLAGS) -MMD -MP -c -o $@ $<
@@ -423,6 +433,7 @@ diagnose-seglist: $(BUILD_DIR)/test_hunk_loading
 	$(RUNNER) $< --diagnose-seglist
 
 clean:
+	rm -f $(PROCESS_TAG_OBJS) $(PROCESS_TAG_OBJS:.o=.d)
 	rm -f $(LOCK_OBJS) $(LOCK_OBJS:.o=.d)
 	rm -f $(MESSAGE_OBJS) $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_entries.c $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_messages.d $(BUILD_DIR)/message_native_unused.o $(BUILD_DIR)/message_native_unused.d $(BUILD_DIR)/file_boundary_unit.o $(BUILD_DIR)/file_boundary_unit.d
 	rm -f $(DISKFONT_OBJS) $(DISKFONT_OBJS:.o=.d)

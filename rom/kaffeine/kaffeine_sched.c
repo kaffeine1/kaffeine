@@ -38,6 +38,13 @@
     alone, never a native bit, for its pr_MsgPort. It has no DOS context:
     no streams, current directory or CLI, and no dos.library call of it
     reaches native DOS, which would act for the root's native process.
+
+    Typed CreateNewProc() instead imports code into this same arena and
+    gives its guest Process a private native DOS broker. The driver waits
+    while that broker executes one selected compiled thunk; no guest CPU
+    callback runs there. Guest Exec waits and ports remain cooperative.
+    A typed child keeps the domain alive after the root returns, without
+    changing the program-end lifetime of classic-only AddTask/CreateProc.
 */
 
 #include <aros/debug.h>
@@ -46,6 +53,7 @@
 #include <exec/ports.h>
 #include <dos/dos.h>
 #include <proto/exec.h>
+#include <proto/dos.h>
 #include <string.h>
 
 #include "kaffeine_intern.h"
@@ -54,6 +62,9 @@
 #include "kaffeine_sched.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_workbench.h"
+#include "kaffeine_process.h"
+#include "kaffeine_dos_broker.h"
+#include "kaffeine_domain_modules.h"
 
 /* The classic Task of the NDK (exec/tasks.h) and its constants */
 enum
@@ -77,7 +88,7 @@ enum
 #define SYSTEM_SIGNALS 0x0000FFFFUL  /* the classic SysBase->TaskSigAlloc */
 #define TASK_SR        0x2000        /* supervisor: exception frames use the task's stack */
 
-enum { SLOT_FREE, SLOT_READY, SLOT_RUN, SLOT_WAIT, SLOT_REMOVED };
+enum { SLOT_FREE, SLOT_READY, SLOT_RUN, SLOT_WAIT, SLOT_REMOVED, SLOT_RECOVERY };
 
 struct GuestTask
 {
@@ -97,6 +108,15 @@ struct GuestTask
     ULONG upper;                /* full stack reservation, including live frames */
     ULONG turn;                 /* when it last got the CPU */
     ULONG size;                 /* a child's reserved TCB: TC_SIZE, or a Process */
+    /* Native-only lifetime owners: never copied into the guest arena. */
+    struct KaffeineDosBroker *broker;
+    struct KaffeineDomainModule *module;
+    ULONG dos_lvo;
+    BOOL dos_pending;
+    ULONG cli;                  /* guest CLI cache of this DOS owner */
+    ULONG argptr, argsize;
+    ULONG startup_entry;        /* private staged MemList; never read from guest links */
+    char program_name[256];
 };
 
 struct KaffeineScheduler
@@ -106,6 +126,8 @@ struct KaffeineScheduler
     struct GuestTask *current;  /* NULL only while a removed current goes */
     ULONG slices, turns;
     BOOL  reschedule;
+    BOOL root_done, root_drained;
+    LONG root_result;
 };
 
 static BOOL arena(struct KaffeineContext *ctx, ULONG addr, ULONG size)
@@ -196,16 +218,130 @@ static struct GuestTask *task_of(struct KaffeineScheduler *s, ULONG tcb)
     {
         struct GuestTask *t = task_at(s, i);
 
-        if (t->tcb == tcb && t->state != SLOT_FREE && t->state != SLOT_REMOVED)
+        if (t->tcb == tcb && t->state != SLOT_FREE && t->state != SLOT_REMOVED &&
+            t->state != SLOT_RECOVERY)
             return t;
     }
     return NULL;
 }
 
-/* A child of CreateProc(): a guest Process without DOS context */
+/* A child Process; only the typed path gives it a native DOS broker. */
 static BOOL is_process(struct KaffeineScheduler *s, const struct GuestTask *t)
 {
     return t && t != &s->root && t->size == M68K_SIZEOF_PROCESS;
+}
+
+/* AddTask() runs in its root DOS context as before. A typed Process owns
+   its own guest Cli()/program-name view, matching its private native DOS. */
+static struct GuestTask *dos_owner(struct KaffeineScheduler *s, struct GuestTask *t)
+{
+    return t && t->broker ? t : &s->root;
+}
+
+static void dos_save(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
+                     struct GuestTask *t)
+{
+    struct GuestTask *owner = dos_owner(s, t);
+    owner->cli = ctx->m68k_cli;
+    owner->argptr = ctx->m68k_argptr;
+    owner->argsize = ctx->m68k_argsize;
+    memcpy(owner->program_name, ctx->program_name, sizeof(owner->program_name));
+    if (arena(ctx, owner->tcb, M68K_SIZEOF_PROCESS))
+        m68k_write32(ctx, owner->tcb + M68K_PR_CLI, owner->cli >> 2);
+}
+
+static void dos_load(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
+                     struct GuestTask *t)
+{
+    struct GuestTask *owner = dos_owner(s, t);
+    ctx->m68k_cli = owner->cli;
+    ctx->m68k_argptr = owner->argptr;
+    ctx->m68k_argsize = owner->argsize;
+    ctx->guest_exec_task = owner->tcb;
+    memcpy(ctx->program_name, owner->program_name, sizeof(ctx->program_name));
+}
+
+/* Startup and retirement may need native DOS before/after the child CPU's
+   lifetime. No guest instruction or dispatcher executes in this scope. A
+   nested startup restores the parent's broker owner as well as its view. */
+struct DosScope
+{
+    struct GuestTask *previous;
+    struct KaffeineCPU *cpu;
+    struct Task *broker_owner;
+    void (*after_thunk)(struct KaffeineContext *);
+    ULONG this_task;
+    BOOL broker_call;
+};
+
+static void dos_scope_begin(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
+                            struct GuestTask *t, struct KaffeineCPU *cpu,
+                            struct DosScope *scope)
+{
+    scope->previous = s->current;
+    scope->cpu = ctx->cpu;
+    scope->this_task = this_task(ctx);
+    scope->broker_call = ctx->broker_call;
+    scope->broker_owner = ctx->broker_owner;
+    scope->after_thunk = ctx->after_thunk;
+    dos_save(ctx, s, scope->previous);
+    dos_load(ctx, s, t);
+    set_this_task(ctx, t->tcb);
+    if (cpu) ctx->cpu = cpu;
+    ctx->broker_call = TRUE;
+    ctx->after_thunk = NULL;
+}
+
+static void dos_scope_end(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
+                          struct GuestTask *t, const struct DosScope *scope)
+{
+    dos_save(ctx, s, t);
+    dos_load(ctx, s, scope->previous);
+    ctx->cpu = scope->cpu;
+    set_this_task(ctx, scope->this_task);
+    ctx->broker_call = scope->broker_call;
+    ctx->broker_owner = scope->broker_owner;
+    ctx->after_thunk = scope->after_thunk;
+}
+
+static BOOL finish_process(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
+                           struct GuestTask *t)
+{
+    struct DosScope scope;
+    BOOL okay;
+    if (!t->broker) return TRUE;
+    dos_scope_begin(ctx, s, t, NULL, &scope);
+    okay = Kaffeine_DosBrokerFinish(t->broker, ctx, Kaffeine_ProcessDropGuestDos);
+    dos_scope_end(ctx, s, t, &scope);
+    return okay;
+}
+
+/* No guest resumes while retirement lacks an ACK. IsIdle is metadata-only:
+   never put a different guest view under a worker that may still use ctx.
+   The sole-driver contract excludes new submissions during this wait. */
+static BOOL finish_process_wait(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
+                                struct GuestTask *t)
+{
+    BOOL clean = TRUE;
+    if (!t->broker) return TRUE;
+    while (!Kaffeine_DosBrokerIsIdle(t->broker) || !finish_process(ctx, s, t))
+    {
+        if (clean)
+        {
+            refuse(ctx, "a Process retirement awaits its DOS broker acknowledgement");
+            clean = FALSE;
+        }
+        Delay(1);
+    }
+    if (!clean)
+        Kaffeine_StopGuest(ctx, ctx->cpu, 20);
+    return clean;
+}
+
+static IPTR drop_guest_dos(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return Kaffeine_ProcessDropGuestDos(ctx, NULL);
 }
 
 static unsigned children(struct KaffeineScheduler *s)
@@ -213,7 +349,7 @@ static unsigned children(struct KaffeineScheduler *s)
     unsigned i, n = 0;
 
     for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
-        n += s->child[i].state != SLOT_FREE;
+        n += s->child[i].state != SLOT_FREE && s->child[i].state != SLOT_RECOVERY;
     return n;
 }
 
@@ -240,7 +376,7 @@ static ULONG unowned_bits(struct KaffeineContext *ctx)
 static void mirror(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
                    struct GuestTask *t)
 {
-    static const UBYTE states[] = { 0, G_TS_READY, G_TS_RUN, G_TS_WAIT, G_TS_REMOVED };
+    static const UBYTE states[] = { 0, G_TS_READY, G_TS_RUN, G_TS_WAIT, G_TS_REMOVED, G_TS_REMOVED };
 
     if (!arena(ctx, t->tcb, TC_SIZE))
         return;
@@ -340,7 +476,7 @@ static void deliver(struct KaffeineContext *ctx, struct KaffeineScheduler *s, UL
         struct GuestTask *t = &s->child[i];
         ULONG hits;
 
-        if (t->state == SLOT_FREE || t->state == SLOT_REMOVED)
+        if (t->state == SLOT_FREE || t->state == SLOT_REMOVED || t->state == SLOT_RECOVERY)
             continue;
         hits = got & t->native;
         if (t->state == SLOT_WAIT)
@@ -395,7 +531,10 @@ static void enter(struct KaffeineContext *ctx, struct KaffeineScheduler *s, stru
     struct GuestTask *cur = s->current;
 
     if (cur)
+    {
         nest_save(ctx, cur);
+        dos_save(ctx, s, cur);
+    }
     if (cur && cur != next)
     {
         if (cur->state == SLOT_RUN)
@@ -414,6 +553,7 @@ static void enter(struct KaffeineContext *ctx, struct KaffeineScheduler *s, stru
     s->reschedule = FALSE;
     next->state = SLOT_RUN;
     nest_load(ctx, next);
+    dos_load(ctx, s, next);
     set_this_task(ctx, next->tcb);
     ctx->cpu = next->cpu;
     mirror(ctx, s, next);
@@ -553,11 +693,16 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
     struct KaffeineCPU *cpu = t->cpu;
     unsigned count, i;
     BOOL listed;
+    BOOL clean = finish_process_wait(ctx, s, t);
+
+    if (t == s->current)
+        dos_save(ctx, s, t);
 
     /* Quarantine native requests before the task's signals or stack can
        be reused. Late replies must never write into that old stack. */
     if (ctx->io_task_removed)
         ctx->io_task_removed(ctx, tcb);
+    if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, tcb);
 
     for (i = 0; i < 32; i++)
         if (t->native & (1UL << i))
@@ -576,8 +721,11 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
     {
         s->current = NULL;
         ctx->cpu = s->root.cpu;
+        dos_load(ctx, s, &s->root);
         set_this_task(ctx, s->root.tcb);
     }
+    if (!clean)
+        Kaffeine_StopGuest(ctx, ctx->cpu, 20);
     if (arena(ctx, tcb, TC_SIZE))
         ctx->mem[tcb + TC_STATE] = G_TS_REMOVED;
     listed = mem_entries(ctx, tcb, nodes, &count);
@@ -590,12 +738,16 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
                 count = 0;
                 break;
             }
-    memset(t, 0, sizeof(*t));
-    publish(ctx, s);
     if (ctx->cpu_factory)
         ctx->cpu_factory->destroy(ctx, cpu);
     else
         bug("[kaffeine] guest task %08lx: no backend to destroy its CPU\n", (unsigned long)tcb);
+    /* The driver is outside every thunk; no broker call or CPU can still
+       use the module. A busy module remains on the domain's cleanup list. */
+    if (t->module)
+        (void)Kaffeine_DomainUnload(ctx, t->module);
+    memset(t, 0, sizeof(*t));
+    publish(ctx, s);
     if (!listed)
         bug("[kaffeine] RemTask(%08lx): tc_MemEntry is not a valid list, "
             "its memory stays allocated\n", (unsigned long)tcb);
@@ -615,6 +767,10 @@ static struct KaffeineScheduler *activate(struct KaffeineContext *ctx, struct Ka
     s->root.state = SLOT_RUN;
     s->root.pri = (BYTE)ctx->mem[ctx->guest_exec_task + TC_PRI];
     s->root.turn = s->turns = 1;
+    s->root.cli = ctx->m68k_cli;
+    s->root.argptr = ctx->m68k_argptr;
+    s->root.argsize = ctx->m68k_argsize;
+    memcpy(s->root.program_name, ctx->program_name, sizeof(s->root.program_name));
     s->current = &s->root;
     m68k_write16(ctx, KAFFEINE_TASK_EXIT_ADDR, M68K_OP_NOP);
     m68k_write16(ctx, KAFFEINE_TASK_EXIT_ADDR + 2, M68K_OP_NOP);
@@ -653,6 +809,21 @@ static void schedule(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
     for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
         if (s->child[i].state == SLOT_REMOVED)
             reap(ctx, s, &s->child[i]);
+    if (!ctx->running)
+        return;
+    if (s->root_done && !children(s))
+    {
+        s->root_drained = TRUE;
+        s->current = &s->root;
+        ctx->cpu = s->root.cpu;
+        nest_load(ctx, &s->root);
+        dos_load(ctx, s, &s->root);
+        set_this_task(ctx, s->root.tcb);
+        Kaffeine_SetD(s->root.cpu, 0, (ULONG)s->root_result);
+        ctx->exit_code = s->root_result;
+        ctx->running = FALSE;
+        return;
+    }
     if (!poll(ctx, s))
     {
         stop(ctx, "a completed I/O request cannot reach its guest port");
@@ -737,26 +908,46 @@ static void sched_boundary(struct KaffeineContext *ctx)
     schedule(ctx, s);
 }
 
-/* The program ends: no child outlives it. Nothing executes, so every CPU
-   can go; the guest heap goes with the context. */
+/* Normal domain drain or a domain-wide fault. The keeper calls this only
+   after the driver has stopped executing every CPU and thunk. */
 static void sched_end(struct KaffeineContext *ctx)
 {
     struct KaffeineScheduler *s = ctx->sched;
     unsigned i;
 
     if (s->current != &s->root)
+    {
+        dos_save(ctx, s, s->current);
         nest_load(ctx, &s->root);
+    }
     s->current = &s->root;
     ctx->cpu = s->root.cpu;
+    dos_load(ctx, s, &s->root);
     for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
     {
         struct GuestTask *t = &s->child[i];
 
         if (t->state == SLOT_FREE)
             continue;
+        /* Root's preregistered native records must acknowledge staged
+           rollback before this slot, backend or shared arena can go. */
+        while (t->state == SLOT_RECOVERY)
+        {
+            Kaffeine_StopGuest(ctx, ctx->cpu, 20);
+            if (ctx->domain_drain) (void)ctx->domain_drain(ctx);
+            if (t->state == SLOT_RECOVERY) Delay(1);
+        }
+        if (t->state == SLOT_FREE)
+            continue;
         bug("[kaffeine] guest task %08lx ends with the program\n", (unsigned long)t->tcb);
+        (void)finish_process_wait(ctx, s, t);
+        if (ctx->io_task_removed)
+            ctx->io_task_removed(ctx, t->tcb);
+        if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, t->tcb);
         if (ctx->cpu_factory)
             ctx->cpu_factory->destroy(ctx, t->cpu);
+        if (t->module)
+            (void)Kaffeine_DomainUnload(ctx, t->module);
         memset(t, 0, sizeof(*t));
     }
     deactivate(ctx);
@@ -776,7 +967,7 @@ static BOOL claimed(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
 {
     unsigned i;
 
-    if (overlap(addr, size, ctx->guest_exec_task, M68K_SIZEOF_PROCESS) ||
+    if (overlap(addr, size, s ? s->root.tcb : ctx->guest_exec_task, M68K_SIZEOF_PROCESS) ||
         (ctx->stack_bottom < ctx->stack_top &&
          overlap(addr, size, ctx->stack_bottom, ctx->stack_top - ctx->stack_bottom)))
         return TRUE;
@@ -1109,6 +1300,268 @@ IPTR Kaffeine_ProcCreate(struct KaffeineContext *ctx, void *cpu, LONG *ioerr)
     return port;
 }
 
+/* The typed parser and importer completed all native-object validation.
+   This last transaction reserves only guest startup state and one CPU;
+   broker/module remain the caller's on every failure. */
+ULONG Kaffeine_SchedStartProcess(struct KaffeineContext *ctx, void *cpu,
+                                const struct KaffeineProcessStart *spec,
+                                ULONG guest_bptr, ULONG initial,
+                                struct KaffeineDosBroker *broker,
+                                struct KaffeineDomainModule *owned_module,
+                                SIPTR *error)
+{
+    struct KaffeineScheduler *s = ctx ? ctx->sched : NULL;
+    struct KaffeineCPU *caller = (struct KaffeineCPU *)cpu, *handle, *root;
+    struct GuestTask *t;
+    const char *args, *command;
+    const char *end;
+    ULONG sizes[12], members[6], entry, proc, lower, upper, name, arguments, segarray, cli = 0;
+    ULONG stack, sp, list, port, count, i, j, slot, length, arglen, commandlen;
+    struct DosScope scope;
+    SIPTR local_error, native_error = 0;
+    IPTR initialized = 0, dropped = 0;
+    BOOL newly_active = !s, okay;
+
+    if (!error) error = &local_error;
+    *error = ERROR_NOT_IMPLEMENTED;
+    if (!ctx || !spec || !broker || !owned_module || !caller || !ctx->cpu_factory ||
+        !arena(ctx, ctx->guest_exec_task, M68K_SIZEOF_PROCESS) ||
+        ctx->cpu != caller || ctx->callback_depth ||
+        (s && (!s->current || s->current->cpu != caller || s->current->state != SLOT_RUN ||
+               (is_process(s, s->current) && !s->current->broker))))
+        return 0;
+    *error = ERROR_BAD_NUMBER;
+    if (!spec->name || !(end = (const char *)memchr(spec->name, 0, KAFFEINE_PROCESS_MAX_NAME + 1)))
+        return 0;
+    length = (ULONG)(end - spec->name);
+    args = spec->arguments ? spec->arguments : "";
+    end = (const char *)memchr(args, 0, KAFFEINE_PROCESS_MAX_ARGS + 1);
+    if (!end) return 0;
+    arglen = (ULONG)(end - args);
+    command = spec->command ? spec->command : spec->name;
+    end = (const char *)memchr(command, 0, KAFFEINE_PROCESS_MAX_NAME + 1);
+    if (!end) return 0;
+    commandlen = (ULONG)(end - command);
+    if (spec->stack_size < KAFFEINE_TASK_MIN_STACK ||
+        spec->stack_size > KAFFEINE_PROCESS_MAX_STACK ||
+        !guest_bptr || guest_bptr > 0x3FFFFFFFUL ||
+        initial != (guest_bptr << 2) + 4 || !code_address(ctx, initial) ||
+        !arena(ctx, guest_bptr << 2, 8))
+        return 0;
+    stack = (spec->stack_size + 3) & ~3UL;
+    if (stack < KAFFEINE_TASK_MIN_STACK + 8)
+        stack = KAFFEINE_TASK_MIN_STACK + 8;
+    for (slot = 0; s && slot < KAFFEINE_MAX_GUEST_TASKS && s->child[slot].state != SLOT_FREE; slot++)
+        ;
+    *error = ERROR_NO_FREE_STORE;
+    if (slot == KAFFEINE_MAX_GUEST_TASKS) return 0;
+    handle = ctx->cpu_factory->create(ctx);
+    if (!handle) return 0;
+
+    /* One tracked MemList: Process, stack, name, argument string,
+       SegArray and (when requested) the private guest CLI plus BSTRs. */
+    count = spec->cli ? 6 : 5;
+    sizes[1] = M68K_SIZEOF_PROCESS;
+    sizes[3] = stack;
+    sizes[5] = length + 1;
+    sizes[7] = arglen + 1;
+    sizes[9] = 16;
+    sizes[11] = M68K_SIZEOF_CLI + 3 * M68K_CLI_STRING_SLOT;
+    for (i = 0; i < count; i++)
+        sizes[2 * i] = MEMF_PUBLIC | MEMF_CLEAR;
+    entry = Kaffeine_HeapAllocList(ctx, sizes, (UWORD)count);
+    if (entry & 0x80000000UL)
+    {
+        ctx->cpu_factory->destroy(ctx, handle);
+        return 0;
+    }
+    if ((entry & 3) || !arena(ctx, entry, MEMLIST_HEADER + 8 * count) ||
+        claimed(ctx, s, entry, MEMLIST_HEADER + 8 * count))
+        goto fail;
+    for (i = 0; i < count; i++)
+    {
+        ULONG bytes = sizes[2 * i + 1];
+        members[i] = m68k_read32(ctx, entry + MEMLIST_HEADER + 8 * i);
+        if ((members[i] & 3) || members[i] < KAFFEINE_HEAP_BASE ||
+            !arena(ctx, members[i], bytes) || !Kaffeine_GuestBytes(ctx, members[i], bytes) ||
+            claimed(ctx, s, members[i], bytes) ||
+            overlap(members[i], bytes, guest_bptr << 2, 8) ||
+            overlap(members[i], bytes, entry, MEMLIST_HEADER + 8 * count))
+            goto fail;
+        for (j = 0; j < i; j++)
+            if (overlap(members[i], bytes, members[j], sizes[2 * j + 1]))
+                goto fail;
+    }
+    if (overlap(entry, MEMLIST_HEADER + 8 * count, guest_bptr << 2, 8))
+        goto fail;
+    if (!s && !(s = activate(ctx, caller)))
+        goto fail;
+    root = s->root.cpu;
+    t = &s->child[slot];
+    proc = members[0]; lower = members[1]; name = members[2];
+    arguments = members[3]; segarray = members[4]; upper = lower + stack;
+    if (spec->cli) cli = members[5];
+
+    ctx->mem[entry + TC_TYPE] = G_NT_MEMORY;
+    list = proc + TC_MEMENTRY;
+    m68k_write32(ctx, list, entry);
+    m68k_write32(ctx, list + LH_TAIL, 0);
+    m68k_write32(ctx, list + LH_TAILPRED, entry);
+    m68k_write32(ctx, entry, list + LH_TAIL);
+    m68k_write32(ctx, entry + TC_PRED, list);
+    ctx->mem[proc + TC_TYPE] = G_NT_PROCESS;
+    ctx->mem[proc + TC_PRI] = (UBYTE)spec->priority;
+    memcpy(ctx->mem + name, spec->name, length + 1);
+    memcpy(ctx->mem + arguments, args, arglen + 1);
+    m68k_write32(ctx, proc + TC_NAME, name);
+    ctx->mem[proc + TC_IDNESTCNT] = ctx->mem[proc + TC_TDNESTCNT] = 0xFF;
+    sp = upper - 8;
+    m68k_write32(ctx, sp, KAFFEINE_TASK_EXIT_ADDR);
+    m68k_write32(ctx, sp + 4, stack);
+    m68k_write32(ctx, proc + TC_SPREG, sp);
+    m68k_write32(ctx, proc + TC_SPLOWER, lower);
+    m68k_write32(ctx, proc + TC_SPUPPER, upper);
+    port = proc + M68K_PR_MSGPORT;
+    ctx->mem[port + TC_TYPE] = G_NT_MSGPORT;
+    ctx->mem[port + MP_SIGBIT] = SIGB_DOS;
+    m68k_write32(ctx, port + MP_SIGTASK, proc);
+    m68k_write32(ctx, port + MP_MSGLIST, port + MP_MSGLIST + LH_TAIL);
+    m68k_write32(ctx, port + MP_MSGLIST + LH_TAILPRED, port + MP_MSGLIST);
+    ctx->mem[port + MP_MSGLIST + LH_TYPE] = G_NT_MESSAGE;
+    m68k_write32(ctx, segarray, 3);
+    m68k_write32(ctx, segarray + 12, guest_bptr);
+    m68k_write32(ctx, proc + M68K_PR_SEGLIST, segarray >> 2);
+    m68k_write32(ctx, proc + M68K_PR_STACKSIZE, stack);
+    m68k_write32(ctx, proc + M68K_PR_STACKBASE, upper >> 2);
+    m68k_write32(ctx, proc + M68K_PR_ARGUMENTS, arguments);
+    m68k_write32(ctx, proc + M68K_PR_CLI, cli >> 2);
+    m68k_write32(ctx, proc + PR_LOCALVARS, proc + PR_LOCALVARS + LH_TAIL);
+    m68k_write32(ctx, proc + PR_LOCALVARS + LH_TAILPRED, proc + PR_LOCALVARS);
+    if (cli)
+    {
+        ULONG bstr = cli + M68K_SIZEOF_CLI;
+        ctx->mem[bstr] = (UBYTE)commandlen;
+        memcpy(ctx->mem + bstr + 1, command, commandlen + 1);
+        m68k_write32(ctx, cli + M68K_CLI_COMMANDNAME, bstr >> 2);
+        m68k_write32(ctx, cli + M68K_CLI_SETNAME, (bstr + M68K_CLI_STRING_SLOT) >> 2);
+        m68k_write32(ctx, cli + M68K_CLI_PROMPT, (bstr + 2 * M68K_CLI_STRING_SLOT) >> 2);
+        m68k_write32(ctx, cli + M68K_CLI_DEFAULTSTACK, stack >> 2);
+        m68k_write32(ctx, cli + M68K_CLI_MODULE, guest_bptr);
+    }
+    t->broker = broker;
+    t->module = owned_module;
+    t->tcb = proc;
+    t->cpu = handle;
+    t->cli = cli;
+    t->argptr = arguments;
+    t->argsize = arglen;
+    t->state = SLOT_RECOVERY;
+    t->size = M68K_SIZEOF_PROCESS;
+    t->lower = lower;
+    t->upper = upper;
+    t->startup_entry = entry;
+    memcpy(t->program_name, command, commandlen + 1);
+
+    /* The broker supplies standard streams and installed lock snapshots
+       for this Process before C startup can inspect pr_CIS/pr_COS. It
+       owns the native references; only guest identities reach the TCB. */
+    if (!Kaffeine_DosBrokerIsIdle(broker))
+    {
+        Kaffeine_StopGuest(ctx, caller, 20);
+        return 0;
+    }
+    dos_scope_begin(ctx, s, t, handle, &scope);
+    okay = Kaffeine_DosBrokerCall(broker, ctx, handle, 0,
+                                  Kaffeine_ProcessInitGuestDos, &initialized, &native_error);
+    dos_scope_end(ctx, s, t, &scope);
+    if (!okay || initialized != 1)
+    {
+        *error = native_error ? native_error : ERROR_NO_FREE_STORE;
+        /* Idempotent partial-setup rollback, without consuming broker.
+           The caller still owns it and the module when we return zero. */
+        okay = Kaffeine_DosBrokerIsIdle(broker);
+        if (okay)
+        {
+            dos_scope_begin(ctx, s, t, handle, &scope);
+            okay = Kaffeine_DosBrokerCall(broker, ctx, handle, 0,
+                                          drop_guest_dos, &dropped, &native_error);
+            dos_scope_end(ctx, s, t, &scope);
+        }
+        if (!okay)
+        {
+            /* No allocation on this failure path: the reserved slot keeps
+               every byte/CPU alive until the caller's recovery record gets
+               a Finish ACK on the stopped domain's driver. */
+            Kaffeine_StopGuest(ctx, caller, 20);
+            return 0;
+        }
+        memset(t, 0, sizeof(*t));
+        if (newly_active)
+            deactivate(ctx);
+        goto fail;
+    }
+    start_guest(ctx, s, t, handle, root, proc, M68K_SIZEOF_PROCESS, initial, sp, lower, upper,
+                initial_sigalloc(ctx, 0) | SIGF_DOS);
+    Kaffeine_SetD(handle, 0, arglen);
+    Kaffeine_SetA(handle, 0, arguments);
+    Kaffeine_SetA(handle, 6, ctx->m68k_sysbase);
+    t->startup_entry = 0;
+    *error = 0;
+    return proc;
+
+fail:
+    Kaffeine_HeapFreeEntry(ctx, entry);
+    ctx->cpu_factory->destroy(ctx, handle);
+    return 0;
+}
+
+static struct GuestTask *recovery_start(struct KaffeineContext *ctx,
+                                       struct KaffeineDosBroker *broker)
+{
+    struct KaffeineScheduler *s = ctx ? ctx->sched : NULL;
+    unsigned i;
+    if (!s || !broker) return NULL;
+    for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; ++i)
+        if (s->child[i].state == SLOT_RECOVERY && s->child[i].broker == broker)
+            return &s->child[i];
+    return NULL;
+}
+
+BOOL Kaffeine_SchedHasRecoveryStart(struct KaffeineContext *ctx, struct KaffeineDosBroker *broker)
+{
+    return recovery_start(ctx, broker) != NULL;
+}
+
+BOOL Kaffeine_SchedRecoverStart(struct KaffeineContext *ctx, struct KaffeineDosBroker *broker)
+{
+    struct GuestTask *t = recovery_start(ctx, broker);
+    ULONG entry, tcb;
+    struct KaffeineCPU *cpu;
+
+    /* IsIdle must precede even a temporary DOS view: an unknown busy job
+       may still use this shared Context. No guest/coordinator can submit
+       work during the caller's stopped, serial-driver recovery pass. */
+    if (!t || !ctx->cpu_factory || !ctx->cpu_factory->destroy || !Kaffeine_DosBrokerIsIdle(broker))
+        return FALSE;
+    if (!finish_process(ctx, ctx->sched, t))
+        return FALSE;
+    entry = t->startup_entry;
+    tcb = t->tcb;
+    cpu = t->cpu;
+    /* Broker is consumed now. Restore a live parent view before destroying
+       this CPU; the native caller still owns the module and unloads next. */
+    if (ctx->io_task_removed) ctx->io_task_removed(ctx, tcb);
+    if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, tcb);
+    ctx->cpu_factory->destroy(ctx, cpu);
+    if (entry) Kaffeine_HeapFreeEntry(ctx, entry);
+    memset(t, 0, sizeof(*t));
+    if (ctx->callback_failed && ctx->exit_code == 20 && ctx->cpu)
+        Kaffeine_SetD(ctx->cpu, 0, 20);
+    /* Keep scheduler allocation until the driver's ordinary end/boundary,
+       so an enclosing drain/end never retains a freed scheduler pointer. */
+    return TRUE;
+}
+
 /* ── Other Exec task functions ───────────────────────────────────── */
 
 /* -288: RemTask(A1=task): NULL or the current child ends at the next slice
@@ -1150,7 +1603,7 @@ static ULONG sched_find_named(struct KaffeineContext *ctx, const char *name)
         struct GuestTask *t = &s->child[i];
         const char *candidate;
 
-        if (t->state == SLOT_FREE || t->state == SLOT_REMOVED)
+        if (t->state == SLOT_FREE || t->state == SLOT_REMOVED || t->state == SLOT_RECOVERY)
             continue;
         candidate = guest_string(ctx, m68k_read32(ctx, t->tcb + TC_NAME));
         if (candidate && !strcmp(candidate, name))
@@ -1404,15 +1857,76 @@ static BOOL sched_process_port(struct KaffeineContext *ctx, ULONG port, ULONG ow
     return s && is_process(s, task_of(s, owner)) && port == owner + M68K_PR_MSGPORT;
 }
 
-/* Before the thunk of every dos.library call: a CreateProc() child has no
-   DOS context of its own, and native DOS would act for the root's process. */
+BOOL Kaffeine_SchedFinishRoot(struct KaffeineContext *ctx, void *cpu, LONG result)
+{
+    struct KaffeineScheduler *s = ctx ? ctx->sched : NULL;
+    unsigned i;
+
+    if (!s || s->root_done || s->current != &s->root || s->root.cpu != cpu ||
+        s->root.state != SLOT_RUN || ctx->callback_depth || !children(s))
+        return FALSE;
+    /* Classic AddTask/CreateProc alone retain their program-end lifetime.
+       A typed Process is what gives this context a persistent domain. */
+    for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
+        if (s->child[i].state != SLOT_FREE && s->child[i].state != SLOT_REMOVED &&
+            s->child[i].state != SLOT_RECOVERY &&
+            s->child[i].broker)
+            break;
+    if (i == KAFFEINE_MAX_GUEST_TASKS)
+        return FALSE;
+    dos_save(ctx, s, &s->root);
+    s->root_done = TRUE;
+    s->root_result = result;
+    s->root.state = SLOT_REMOVED;
+    s->reschedule = TRUE;
+    if (ctx->io_task_removed)
+        ctx->io_task_removed(ctx, s->root.tcb);
+    if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, s->root.tcb);
+    mirror(ctx, s, &s->root);
+    publish(ctx, s);
+    if (ctx->root_complete)
+        ctx->root_complete(ctx, result);
+    return TRUE;
+}
+
+static BOOL sched_root_result(struct KaffeineContext *ctx, LONG *result)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+
+    if (!s || !s->root_done || !s->root_drained)
+        return FALSE;
+    *result = s->root_result;
+    return TRUE;
+}
+
+static ULONG sched_root_task(struct KaffeineContext *ctx)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    return s && s->root.state != SLOT_REMOVED ? s->root.tcb : 0;
+}
+
+/* Before the thunk of every dos.library call. The original CreateProc()
+   child still has no DOS context. Only a typed Process with a private
+   broker can proceed to a selected compiled thunk through dos_call. */
 static BOOL sched_process_dos(struct KaffeineContext *ctx, void *cpu, ULONG lvo, IPTR *result)
 {
     struct KaffeineScheduler *s = ctx->sched;
     struct GuestTask *t = s->current;
 
+    if (lvo == DOS_EXIT_LVO && ctx->callback_depth)
+    {
+        *result = refuse(ctx, "a callback cannot exit its Process");
+        return TRUE;
+    }
+    if (t == &s->root && lvo == DOS_EXIT_LVO &&
+        Kaffeine_SchedFinishRoot(ctx, cpu, (LONG)Kaffeine_GetD(cpu, 1)))
+    {
+        *result = (IPTR)(LONG)Kaffeine_GetD(cpu, 1);
+        return TRUE;
+    }
     if (!is_process(s, t))
         return FALSE;
+    t->dos_pending = FALSE;
     if (lvo == DOS_EXIT_LVO && !ctx->callback_depth && (struct KaffeineCPU *)cpu == t->cpu)
     {
         /* As RemTask(NULL): this child alone ends at the slice boundary. */
@@ -1424,9 +1938,66 @@ static BOOL sched_process_dos(struct KaffeineContext *ctx, void *cpu, ULONG lvo,
         *result = 0;
         return TRUE;
     }
+    if (t->broker && lvo && lvo != DOS_EXIT_LVO && !ctx->broker_call &&
+        (struct KaffeineCPU *)cpu == t->cpu && t->state == SLOT_RUN)
+    {
+        t->dos_lvo = lvo;
+        t->dos_pending = TRUE;
+        return FALSE;
+    }
     bug("[kaffeine] dos.library LVO -%lu of guest process %08lx\n",
         (unsigned long)lvo, (unsigned long)t->tcb);
-    *result = refuse(ctx, "a CreateProc() process has no DOS context for dos.library");
+    *result = refuse(ctx, t->broker ? "a Process DOS call has no safe broker route"
+                                  : "a CreateProc() process has no DOS context for dos.library");
+    return TRUE;
+}
+
+/* Match the dispatcher's manual-before-generated selection. The thunk
+   pointer comes from native tables; no guest function pointer is called. */
+static BOOL selected_dos_thunk(struct KaffeineContext *ctx, ULONG lvo, KaffeineThunkFn thunk)
+{
+    unsigned lib, i;
+    for (lib = 0; lib < ctx->num_libs; lib++)
+    {
+        const struct M68KFakeLibBase *base = &ctx->libs[lib];
+        if (!base->dos) continue;
+        for (i = 0; i < base->num_thunks; i++)
+            if (base->thunks[i].lvo == lvo && base->thunks[i].thunk)
+                return base->thunks[i].thunk == thunk;
+        for (i = 0; i < base->num_gen_thunks; i++)
+            if (base->gen_thunks[i].lvo == lvo && base->gen_thunks[i].thunk)
+                return base->gen_thunks[i].thunk == thunk;
+    }
+    return FALSE;
+}
+
+static BOOL sched_dos_call(struct KaffeineContext *ctx, void *cpu,
+                           KaffeineThunkFn thunk, IPTR *result)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s ? s->current : NULL;
+    SIPTR error = 0;
+    BOOL okay;
+
+    if (!t || !t->broker)
+        return FALSE;
+    if (!t->dos_pending || !thunk || !selected_dos_thunk(ctx, t->dos_lvo, thunk) ||
+        t->cpu != (struct KaffeineCPU *)cpu || ctx->cpu != t->cpu ||
+        t->state != SLOT_RUN || ctx->broker_call)
+    {
+        t->dos_pending = FALSE;
+        *result = refuse(ctx, "dos.library did not select a safe compiled broker thunk");
+        return TRUE;
+    }
+    t->dos_pending = FALSE;
+    ctx->broker_call = TRUE;
+    okay = Kaffeine_DosBrokerCall(t->broker, ctx, cpu, t->dos_lvo, thunk, result, &error);
+    ctx->broker_call = FALSE;
+    if (!okay)
+    {
+        bug("[kaffeine] DOS broker transport failed (%ld)\n", (long)error);
+        *result = refuse(ctx, "a Process DOS broker call failed");
+    }
     return TRUE;
 }
 
@@ -1444,7 +2015,9 @@ static BOOL sched_block_guest_port(struct KaffeineContext *ctx, ULONG port,
     bit = ctx->mem[port + 15];
     if (ctx->mem[port + 14] || bit > 31 || owner != t->tcb ||
         !(sched_owns_signal(ctx, owner, 1UL << bit) ||
-          (bit == SIGB_DOS && sched_process_port(ctx, port, owner)))) return FALSE;
+          (bit == SIGB_DOS &&
+           (sched_process_port(ctx, port, owner) ||
+            (t == &s->root && port == s->root.tcb + M68K_PR_MSGPORT))))) return FALSE;
     if (ctx->callback_depth)
     {
         *result = refuse(ctx, "a callback cannot wait for a guest port");
@@ -1525,5 +2098,7 @@ const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
     sched_boundary, sched_end, sched_known_task, sched_owns_signal,
     sched_send_signal, sched_block_guest_port,
     Kaffeine_ProcCreate, sched_process_port, sched_process_dos,
-    sched_is_root, sched_caller_task, sched_block_io, sched_io_completed
+    sched_is_root, sched_caller_task, sched_block_io, sched_io_completed,
+    sched_dos_call, Kaffeine_SchedFinishRoot, sched_root_result,
+    sched_root_task
 };

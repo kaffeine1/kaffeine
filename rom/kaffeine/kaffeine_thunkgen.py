@@ -30,6 +30,10 @@ SKIP_LIBRARIES = {
 
 # ── Functions to SKIP (manual impl, dangerous, or internal) ──
 SKIP_FUNCTIONS = {
+    # VPEs are borrowed read-only guest snapshots, never native graphics nodes.
+    "GfxNew", "GfxFree", "GfxAssociate", "GfxLookUp",
+    # Classic Remember nodes and allocation ownership are guest-native adapters.
+    "AllocRemember", "FreeRemember",
     # Typed FileLock ownership and explicit native-object refusals.
     "DupLock", "ParentDir", "SameLock", "ReadLink", "MakeLink", "ErrorReport", "SetProgramDir", "GetProgramDir", "LockDosList", "UnLockDosList", "AttemptLockDosList", "RemDosEntry", "AddDosEntry", "FindDosEntry", "NextDosEntry", "MakeDosEntry", "FreeDosEntry", "SameDevice", "AssignAddToList", "NewFontContents",
     "AddPort", "AllocMem", "AllocPooled", "AllocVec", "AllocVecPooled",

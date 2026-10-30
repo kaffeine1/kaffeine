@@ -11,3 +11,5 @@ struct Node
 #define NT_MESSAGE 5
 #define NT_REPLYMSG 7
 #define NT_FONT 12
+
+#define NT_GRAPHICS 18

@@ -297,7 +297,7 @@ static void test_explicit_native_shadow_lookup()
     f.init_list();
     f.init_node(f.n1);
     f.ctx.num_shadows = 1;
-    f.ctx.shadow_map[0] = { f.list, &native_list, 17 };
+    f.ctx.shadow_map[0] = { f.list, &native_list, 17, 0 };
     expected_native_list = &native_list;
     expected_native_ctx = &f.ctx;
     assert(f.call(276, f.list, f.string(0x600, "exec.library")) == 0xB00);

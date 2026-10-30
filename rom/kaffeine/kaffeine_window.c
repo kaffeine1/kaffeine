@@ -63,12 +63,16 @@ static BOOL guest_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)
     return ctx->mem && addr && addr < ctx->mem_size && ctx->mem_size - addr >= size;
 }
 
+static ULONG shared_identity(struct KaffeineContext *, struct MsgPort *);
+static void shared_open_failed(struct KaffeineContext *, struct Window *);
+
 /* Stop the program with return code 20. The thunk returns it, so that it
    reaches D0, from which the CPU loop takes the exit code. */
 static IPTR refuse(struct KaffeineContext *ctx, const char *why)
 {
     bug("[kaffeine] %s, stopping (20)\n", why);
     ctx->running = FALSE;
+    ctx->callback_failed = TRUE; /* authoritative even when an enclosing void thunk returns 0 */
     ctx->exit_code = 20;
     return 20;
 }
@@ -126,6 +130,14 @@ static struct TagItem *window_tags(struct KaffeineContext *ctx, ULONG list, ULON
     {
         tags[i].ti_Tag = tag = m68k_read32(ctx, item);
         data = m68k_read32(ctx, item + 4);
+#ifdef WA_UserPort
+        if (tag == WA_UserPort)
+        {
+            refuse(ctx, "OpenWindowTagList(): WA_UserPort needs a typed native port");
+            FreeMem(tags, *size);
+            return NULL;
+        }
+#endif
         if (tag == WA_Title || tag == WA_ScreenTitle || tag == WA_PubScreenName)
         {
             tags[i].ti_Data = (IPTR)m68k_to_host(ctx, data);
@@ -224,6 +236,7 @@ static ULONG window_opened(struct KaffeineContext *ctx, struct Window *w, ULONG 
             ctx->window_gadgets->opened(ctx, w, gadgets);
             ctx->window_gadgets->closing(ctx, w);
         }
+        shared_open_failed(ctx, w);
         CloseWindow(w);
         return 0;
     }
@@ -406,6 +419,8 @@ IPTR Kaffeine_OpenWindow(struct KaffeineContext *ctx, void *cpu)
 
 void Kaffeine_WindowSync(struct KaffeineContext *ctx, ULONG mw, struct Window *w)
 {
+    ULONG shared = shared_identity(ctx, w->UserPort);
+    if (shared) m68k_write32(ctx, mw + M68K_WIN_USERPORT, shared);
     m68k_write16(ctx, mw + M68K_WIN_LEFTEDGE, (UWORD)w->LeftEdge);
     m68k_write16(ctx, mw + M68K_WIN_TOPEDGE, (UWORD)w->TopEdge);
     m68k_write16(ctx, mw + M68K_WIN_WIDTH, (UWORD)w->Width);
@@ -445,8 +460,11 @@ static ULONG guest_address(struct KaffeineContext *ctx, const void *ptr)
 
 ULONG Kaffeine_UserPortCreate(struct KaffeineContext *ctx, struct MsgPort *port)
 {
-    ULONG guest = Kaffeine_HeapAlloc(ctx, M68K_SIZEOF_MSGPORT, MEMF_PUBLIC | MEMF_CLEAR);
-    ULONG list = guest + G_MP_MSGLIST, task = 0;
+    ULONG guest = shared_identity(ctx, port), list, task = 0;
+
+    if (guest) return guest; /* preserve ordinary FIFO routing, no USERPORT shadow */
+    guest = Kaffeine_HeapAlloc(ctx, M68K_SIZEOF_MSGPORT, MEMF_PUBLIC | MEMF_CLEAR);
+    list = guest + G_MP_MSGLIST;
 
     if (!guest)
         return 0;
@@ -543,6 +561,7 @@ static ULONG message_guest(struct KaffeineContext *ctx, struct IntuiMessage *im,
 {
     ULONG guest = Kaffeine_ShadowGuest(ctx, im, type);
     ULONG window = Kaffeine_ShadowGuest(ctx, im->IDCMPWindow, KAFFEINE_SHADOW_WINDOW);
+    UWORD i;
 
     /* The CHECKED flags and the NextSelect codes of the menu strip that
        Intuition set for this message, for the program to read. */
@@ -562,6 +581,12 @@ static ULONG message_guest(struct KaffeineContext *ctx, struct IntuiMessage *im,
             return 0;
         }
     }
+    for (i = 0; i < ctx->num_shadows; i++)
+        if (ctx->shadow_map[i].m68k_addr == guest && ctx->shadow_map[i].type == type)
+        {
+            ctx->shadow_map[i].idcmp_window = window;
+            break;
+        }
     ctx->mem[guest + G_LN_TYPE] = im->ExecMessage.mn_Node.ln_Type;
     ctx->mem[guest + G_LN_PRI] = (UBYTE)im->ExecMessage.mn_Node.ln_Pri;
     m68k_write16(ctx, guest + G_MN_LENGTH, M68K_SIZEOF_INTUIMESSAGE);
@@ -602,15 +627,15 @@ static struct IntuiMessage *message_native(struct KaffeineContext *ctx, ULONG gu
     return im;
 }
 
-/* The first 68k message of that type for the 68k window mw, or 0. Only the
-   68k message is read. */
+/* Ownership is native metadata: the guest may edit its IDCMPWindow field,
+   and a WAIT snapshot's native message may already have been taken/freed. */
 static ULONG message_of(struct KaffeineContext *ctx, ULONG mw, UWORD type)
 {
     UWORD i;
 
     for (i = 0; i < ctx->num_shadows; i++)
         if (ctx->shadow_map[i].type == type &&
-            m68k_read32(ctx, ctx->shadow_map[i].m68k_addr + G_IM_IDCMPWINDOW) == mw)
+            ctx->shadow_map[i].idcmp_window == mw)
             return ctx->shadow_map[i].m68k_addr;
     return 0;
 }
@@ -689,6 +714,279 @@ static void window_reply_messages(struct KaffeineContext *ctx, ULONG mw)
     }
 }
 
+/* Ordinary guest ports stay ordinary queues. Intuition alone writes these
+   separate native inboxes; no native Message or port is ever a guest node.
+   Like AppPortFill, the ordinary guest FIFO has priority over the inbox. */
+#define MAX_SHARED_IDCMP_PORTS 16
+struct KaffeineIDCMPPort
+{
+    struct KaffeineIDCMPPort *next;
+    struct MsgPort inbox;
+    ULONG guest, owner;
+    unsigned users;
+    UBYTE bit;
+    BOOL retiring;
+};
+
+static struct KaffeineIDCMPPort *shared_guest(struct KaffeineContext *ctx, ULONG guest)
+{
+    struct KaffeineIDCMPPort *p;
+    for (p = ctx->idcmp_ports; p; p = p->next)
+        if (p->guest == guest) return p;
+    return NULL;
+}
+
+static struct KaffeineIDCMPPort *shared_native(struct KaffeineContext *ctx, struct MsgPort *port)
+{
+    struct KaffeineIDCMPPort *p;
+    for (p = ctx->idcmp_ports; p; p = p->next)
+        if (&p->inbox == port) return p;
+    return NULL;
+}
+
+static ULONG shared_identity(struct KaffeineContext *ctx, struct MsgPort *port)
+{
+    struct KaffeineIDCMPPort *p = shared_native(ctx, port);
+    return p ? p->guest : 0;
+}
+
+static BOOL shared_queue(struct KaffeineContext *ctx, ULONG guest, ULONG *owner,
+                          UBYTE *bit, struct KaffeineQueue *q)
+{
+    unsigned i;
+    if (ctx->broker_call || !ctx->exec_task || FindTask(NULL) != ctx->exec_task ||
+        !Kaffeine_HeapGuestRange(ctx, guest, M68K_SIZEOF_MSGPORT) ||
+        !Kaffeine_QueueRead(ctx, guest, q) || ctx->mem[guest + G_MP_FLAGS] != PA_SIGNAL)
+        return FALSE;
+    *owner = m68k_read32(ctx, guest + G_MP_SIGTASK);
+    *bit = ctx->mem[guest + G_MP_SIGBIT];
+    if (*bit > 31 || !(ctx->guest_signals & (1UL << *bit)) ||
+        (ctx->io_signals & (1UL << *bit))) return FALSE;
+    if (ctx->sched)
+    {
+        if (!ctx->task_ops || !ctx->task_ops->known_task || !ctx->task_ops->owns_signal ||
+            !ctx->task_ops->known_task(ctx, *owner) ||
+            !ctx->task_ops->owns_signal(ctx, *owner, 1UL << *bit)) return FALSE;
+    }
+    else if (!*owner || *owner != ctx->guest_exec_task || !(ctx->guest_signals & (1UL << *bit)))
+        return FALSE;
+    for (i = 0; i < KAFFEINE_MAX_IO_PORTS; i++)
+        if (ctx->io_ports[i].guest == guest && ctx->io_ports[i].sigbit != (BYTE)*bit)
+            return FALSE;
+    return Kaffeine_AppPortMatches(ctx, guest, ctx->exec_task, *bit);
+}
+
+static void shared_destroy(struct KaffeineContext *ctx, struct KaffeineIDCMPPort *p)
+{
+    struct KaffeineIDCMPPort **at = &ctx->idcmp_ports;
+    struct Message *msg;
+    while (*at != p) at = &(*at)->next;
+    *at = p->next;
+    p->inbox.mp_Flags = PA_IGNORE;
+    p->inbox.mp_SigTask = NULL;
+    while ((msg = GetMsg(&p->inbox))) message_reply(ctx, (struct IntuiMessage *)msg);
+    /* AllocMem, not CreateMsgPort: the guest still owns its signal bit. */
+    FreeMem(p, sizeof(*p));
+}
+
+/* Remove only this window's native nodes, leaving every other window's
+   FIFO and signal intact. No native producer can see the detached window. */
+static void shared_strip(struct KaffeineContext *ctx, struct KaffeineIDCMPPort *p,
+                          struct Window *w)
+{
+    struct Node *node;
+    struct IntuiMessage *im;
+    for (;;)
+    {
+        im = NULL;
+        Forbid();
+        for (node = p->inbox.mp_MsgList.lh_Head; node->ln_Succ; node = node->ln_Succ)
+            if (((struct IntuiMessage *)node)->IDCMPWindow == w)
+            {
+                node->ln_Pred->ln_Succ = node->ln_Succ;
+                node->ln_Succ->ln_Pred = node->ln_Pred;
+                im = (struct IntuiMessage *)node;
+                break;
+            }
+        Permit();
+        if (!im) break;
+        message_reply(ctx, im);
+    }
+}
+
+static void shared_open_failed(struct KaffeineContext *ctx, struct Window *w)
+{
+    struct KaffeineIDCMPPort *p = shared_native(ctx, w->UserPort);
+    if (!p) return;
+    Forbid();
+    w->UserPort = NULL;
+    ModifyIDCMP(w, 0);
+    w->IDCMPFlags = 0;
+    Permit();
+    shared_strip(ctx, p, w);
+}
+
+static void shared_unbind(struct KaffeineContext *ctx, ULONG mw, struct Window *w,
+                           struct KaffeineIDCMPPort *p)
+{
+    window_reply_messages(ctx, mw);
+    shared_strip(ctx, p, w);
+    if (p->users) p->users--;
+    if (!p->users && !p->retiring) shared_destroy(ctx, p);
+}
+
+static void shared_detach(struct KaffeineContext *ctx, ULONG mw, struct Window *w)
+{
+    struct KaffeineIDCMPPort *p = shared_native(ctx, w->UserPort);
+    if (!p) return;
+    Forbid();
+    w->UserPort = NULL; /* ModifyIDCMP/CloseWindow must never delete a borrowed port. */
+    if (!ModifyIDCMP(w, 0)) refuse(ctx, "shared IDCMP cleanup could not disable its window");
+    w->IDCMPFlags = 0;
+    Permit();
+    m68k_write32(ctx, mw + M68K_WIN_USERPORT, 0);
+    m68k_write32(ctx, mw + M68K_WIN_IDCMPFLAGS, 0);
+    shared_unbind(ctx, mw, w, p);
+}
+
+static void shared_port_gone(struct KaffeineContext *ctx, ULONG guest)
+{
+    struct KaffeineIDCMPPort *p = shared_guest(ctx, guest);
+    UWORD i;
+    if (!p) return;
+    p->retiring = TRUE;
+    for (i = 0; i < ctx->num_shadows; i++)
+        if (ctx->shadow_map[i].type == KAFFEINE_SHADOW_WINDOW)
+        {
+            struct Window *w = ctx->shadow_map[i].native_ptr;
+            if (w->UserPort == &p->inbox)
+            {
+                shared_detach(ctx, ctx->shadow_map[i].m68k_addr, w);
+                i = (UWORD)-1; /* message retirement can move shadow entries */
+            }
+        }
+    shared_destroy(ctx, p);
+}
+
+static void shared_signal_gone(struct KaffeineContext *ctx, BYTE bit)
+{
+    struct KaffeineIDCMPPort *p;
+    for (;;)
+    {
+        for (p = ctx->idcmp_ports; p && p->bit != (UBYTE)bit; p = p->next) ;
+        if (!p) break;
+        shared_port_gone(ctx, p->guest);
+    }
+}
+
+static void shared_task_gone(struct KaffeineContext *ctx, ULONG owner)
+{
+    struct KaffeineIDCMPPort *p;
+    for (;;)
+    {
+        for (p = ctx->idcmp_ports; p && p->owner != owner; p = p->next) ;
+        if (!p) break;
+        shared_port_gone(ctx, p->guest);
+    }
+}
+
+static BOOL shared_release(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL commit)
+{
+    struct KaffeineIDCMPPort *p = ctx->idcmp_ports;
+    struct KaffeineQueue q;
+    while (p)
+    {
+        struct KaffeineIDCMPPort *next = p->next;
+        if (Kaffeine_Overlap(addr, size, p->guest, M68K_SIZEOF_MSGPORT))
+        {
+            /* Query first, without changing a multi-block release. Queued
+               ordinary IPC must be consumed before its port can be freed. */
+            if (ctx->broker_call || FindTask(NULL) != ctx->exec_task ||
+                !Kaffeine_QueueRead(ctx, p->guest, &q) || q.count) return FALSE;
+            if (commit) shared_port_gone(ctx, p->guest);
+        }
+        p = next;
+    }
+    return TRUE;
+}
+
+static void shared_cleanup(struct KaffeineContext *ctx)
+{
+    while (ctx->idcmp_ports) shared_port_gone(ctx, ctx->idcmp_ports->guest);
+}
+
+static struct KaffeineIDCMPPort *shared_create(struct KaffeineContext *ctx, ULONG guest)
+{
+    struct KaffeineIDCMPPort *p;
+    struct KaffeineQueue q;
+    ULONG owner;
+    UBYTE bit;
+    unsigned n = 0;
+    if (!shared_queue(ctx, guest, &owner, &bit, &q))
+    {
+        refuse(ctx, "ModifyIDCMP(): not a live ordinary port with its owner's signal");
+        return NULL;
+    }
+    if ((p = shared_guest(ctx, guest)))
+    {
+        if (p->owner == owner && p->bit == bit && !p->retiring) return p;
+        shared_port_gone(ctx, guest);
+        refuse(ctx, "ModifyIDCMP(): shared port identity changed");
+        return NULL;
+    }
+    for (p = ctx->idcmp_ports; p; p = p->next) n++;
+    if (n == MAX_SHARED_IDCMP_PORTS || !(p = AllocMem(sizeof(*p), MEMF_PUBLIC | MEMF_CLEAR)))
+        return NULL;
+    p->guest = guest; p->owner = owner; p->bit = bit;
+    p->inbox.mp_Node.ln_Type = NT_MSGPORT;
+    p->inbox.mp_Flags = PA_SIGNAL;
+    p->inbox.mp_SigTask = ctx->exec_task;
+    p->inbox.mp_SigBit = bit;
+    p->inbox.mp_MsgList.lh_Head = (struct Node *)&p->inbox.mp_MsgList.lh_Tail;
+    p->inbox.mp_MsgList.lh_TailPred = (struct Node *)&p->inbox.mp_MsgList.lh_Head;
+    p->next = ctx->idcmp_ports;
+    ctx->idcmp_ports = p;
+    ctx->idcmp_port_gone = shared_port_gone;
+    ctx->idcmp_signal_gone = shared_signal_gone;
+    ctx->idcmp_task_gone = shared_task_gone;
+    ctx->idcmp_release = shared_release;
+    ctx->idcmp_cleanup = shared_cleanup;
+    return p;
+}
+
+/* 0: ordinary/default port, 1: native IDCMP is next, 2: guest FIFO result,
+   -1: fail closed. App carriers share the same signal and are polled before
+   waiting, so an AppMessage cannot be stranded behind an empty IDCMP inbox. */
+static int shared_ready(struct KaffeineContext *ctx, ULONG guest, BOOL wait,
+                         struct MsgPort **native, IPTR *result)
+{
+    struct KaffeineIDCMPPort *p = shared_guest(ctx, guest);
+    struct KaffeineQueue q;
+    ULONG owner;
+    UBYTE bit;
+    if (!p) return 0;
+    if (!shared_queue(ctx, guest, &owner, &bit, &q) || owner != p->owner || bit != p->bit)
+    {
+        shared_port_gone(ctx, guest);
+        *result = refuse(ctx, "shared IDCMP port changed or its owner retired");
+        return -1;
+    }
+    if (ctx->io_poll && !ctx->io_poll(ctx)) { *result = 20; return -1; }
+    if (!q.count) Kaffeine_AppPortFill(ctx, guest, FALSE);
+    if (!Kaffeine_QueueRead(ctx, guest, &q))
+    {
+        *result = refuse(ctx, "shared IDCMP guest FIFO is malformed");
+        return -1;
+    }
+    if (q.count)
+    {
+        *result = Kaffeine_GuestGetMsg(ctx, guest, wait);
+        return 2;
+    }
+    *native = &p->inbox;
+    return 1;
+}
+
 /* The first message of a 68k port, which nothing but the program itself
    can put there so far. */
 static ULONG guest_first(struct KaffeineContext *ctx, ULONG port, ULONG *next)
@@ -718,6 +1016,22 @@ IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
     ULONG guest = THUNK_A(0), first, next, mw;
     struct MsgPort *port = Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_USERPORT);
     struct IntuiMessage *im;
+    IPTR ready;
+    int shared;
+
+    for (;;)
+    {
+        shared = shared_ready(ctx, guest, TRUE, &port, &ready);
+        if (shared == 2 || shared < 0) return ready;
+        if (!shared || port->mp_MsgList.lh_TailPred != (struct Node *)&port->mp_MsgList)
+            break;
+        if (ctx->sched &&
+            ctx->task_ops->block_port(ctx, cpu, port, Kaffeine_WaitPort, &ready))
+            return ready;
+        /* Both private IDCMP and Workbench inboxes use this validated bit.
+           WaitPort(native) alone would miss the other inbox's arrival. */
+        Wait(1UL << port->mp_SigBit);
+    }
 
     if (port)
     {
@@ -733,7 +1047,8 @@ IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
         /* what it showed before of a message that has left the port */
         if (mw && !Kaffeine_ShadowGuest(ctx, im, KAFFEINE_SHADOW_WAITMESSAGE))
             message_unshow(ctx, mw);
-        return message_guest(ctx, im, KAFFEINE_SHADOW_WAITMESSAGE);
+        first = message_guest(ctx, im, KAFFEINE_SHADOW_WAITMESSAGE);
+        return !first && shared ? refuse(ctx, "WaitPort(): no shared IDCMP mirror memory") : first;
     }
     if (!Kaffeine_AppPortFill(ctx, guest, TRUE))
         return Kaffeine_GuestGetMsg(ctx, guest, TRUE);
@@ -753,6 +1068,10 @@ IPTR Kaffeine_GetMsg(struct KaffeineContext *ctx, void *cpu)
     struct MsgPort *port = Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_USERPORT);
     struct IntuiMessage *im;
     ULONG msg;
+    IPTR ready;
+    int shared = shared_ready(ctx, guest, FALSE, &port, &ready);
+
+    if (shared == 2 || shared < 0) return ready;
 
     if (port)
     {
@@ -767,6 +1086,7 @@ IPTR Kaffeine_GetMsg(struct KaffeineContext *ctx, void *cpu)
                Intuition gets it back. */
             bug("[kaffeine] GetMsg(): no guest memory for an IntuiMessage\n");
             ReplyMsg(&im->ExecMessage);
+            if (shared) return refuse(ctx, "GetMsg(): no shared IDCMP mirror memory");
         }
         return msg;
     }
@@ -807,6 +1127,7 @@ IPTR Kaffeine_ReplyMsg(struct KaffeineContext *ctx, void *cpu)
 
 ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w)
 {
+    struct KaffeineIDCMPPort *peer = shared_native(ctx, w->UserPort);
     ULONG mw = Kaffeine_HeapAlloc(ctx, M68K_SIZEOF_WINDOW, MEMF_PUBLIC | MEMF_CLEAR);
     ULONG rp = 0, port = 0, screen_guest;
     struct Screen *bitmap_screen = NULL;
@@ -855,6 +1176,7 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w)
         Kaffeine_HeapFree(ctx, mw, M68K_SIZEOF_WINDOW);
         return 0;
     }
+    if (peer) peer->users++;
     return mw;
 }
 
@@ -868,6 +1190,7 @@ static void window_delete(struct KaffeineContext *ctx, ULONG mw, BOOL layers_don
        layer is still there */
     if (!layers_done && ctx->layer_ops)
         ctx->layer_ops->window_closing(ctx, mw, w);
+    shared_detach(ctx, mw, w);
     window_reply_messages(ctx, mw);
     Kaffeine_RastPortDelete(ctx, Kaffeine_ShadowGuest(ctx, w->RPort, KAFFEINE_SHADOW_RASTPORT));
     Kaffeine_UserPortDelete(ctx, Kaffeine_ShadowGuest(ctx, w->UserPort, KAFFEINE_SHADOW_USERPORT));
@@ -957,25 +1280,95 @@ void Kaffeine_WindowsCleanup(struct KaffeineContext *ctx)
         else
             i++;
     }
+    shared_cleanup(ctx);
+}
+
+/* Stage a private inbox without handing Intuition a guest pointer. Failure
+   restores the previous native binding and flags before any peer is freed. */
+static IPTR shared_modify(struct KaffeineContext *ctx, ULONG mw, struct Window *w,
+                           struct KaffeineIDCMPPort *old_peer, ULONG user, ULONG flags)
+{
+    struct MsgPort *old = w->UserPort, *created;
+    struct KaffeineIDCMPPort *peer = NULL;
+    ULONG old_flags = w->IDCMPFlags, port = 0;
+    ULONG old_guest = old_peer ? old_peer->guest : Kaffeine_ShadowGuest(ctx, old, KAFFEINE_SHADOW_USERPORT);
+    struct Message *msg;
+    BOOL okay;
+
+    if (flags && user && !(peer = shared_create(ctx, user)))
+        return ctx->running ? FALSE : (IPTR)ctx->exit_code;
+    if (peer && peer == old_peer)
+    {
+        okay = ModifyIDCMP(w, flags);
+        m68k_write32(ctx, mw + M68K_WIN_USERPORT, peer->guest);
+        m68k_write32(ctx, mw + M68K_WIN_IDCMPFLAGS, w->IDCMPFlags);
+        return okay ? TRUE : FALSE;
+    }
+    Forbid();
+    w->UserPort = peer ? &peer->inbox : NULL;
+    if (!peer && flags) w->IDCMPFlags = 0; /* request an ordinary owned port */
+    okay = ModifyIDCMP(w, flags);
+    created = w->UserPort;
+    if (!okay)
+    {
+        w->UserPort = old;
+        w->IDCMPFlags = old_flags;
+    }
+    Permit();
+    if (okay && !peer && created)
+    {
+        port = Kaffeine_UserPortCreate(ctx, created);
+        if (!port)
+        {
+            while ((msg = GetMsg(created))) message_reply(ctx, (struct IntuiMessage *)msg);
+            ModifyIDCMP(w, 0);
+            Forbid();
+            w->UserPort = old;
+            w->IDCMPFlags = old_flags;
+            Permit();
+            okay = FALSE;
+        }
+    }
+    if (!okay)
+    {
+        if (peer && !peer->users) shared_destroy(ctx, peer);
+        m68k_write32(ctx, mw + M68K_WIN_USERPORT, old_guest);
+        m68k_write32(ctx, mw + M68K_WIN_IDCMPFLAGS, old_flags);
+        return FALSE;
+    }
+    if (peer) { peer->users++; port = peer->guest; }
+    if (old_peer) shared_unbind(ctx, mw, w, old_peer);
+    else if (old)
+    {
+        window_reply_messages(ctx, mw);
+        while ((msg = GetMsg(old))) message_reply(ctx, (struct IntuiMessage *)msg);
+        Kaffeine_UserPortDelete(ctx, old_guest);
+        DeleteMsgPort(old); /* only the former window-owned native port */
+    }
+    m68k_write32(ctx, mw + M68K_WIN_USERPORT, port);
+    m68k_write32(ctx, mw + M68K_WIN_IDCMPFLAGS, w->IDCMPFlags);
+    return TRUE;
 }
 
 /* intuition -150: ModifyIDCMP(A0=window, D0=flags) -> D0=success. A window
    that gets flags gets its IDCMP port as a 68k MsgPort, and loses it with
-   them. A UserPort that the program set itself, to share one port among
-   windows, needs messages between 68k ports and stops the program. */
+   them. An ordinary guest UserPort is borrowed through a private peer. */
 IPTR Kaffeine_ModifyIDCMP(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG window = THUNK_A(0), flags = THUNK_D(0), user, old_flags;
     struct Window *w = Kaffeine_ShadowNative(ctx, window, KAFFEINE_SHADOW_WINDOW);
     struct MsgPort *old;
+    struct KaffeineIDCMPPort *peer;
     BOOL ok;
 
     if (!w)
         return refuse(ctx, "ModifyIDCMP(): not a window of the program");
     user = m68k_read32(ctx, window + M68K_WIN_USERPORT);
     old = w->UserPort;
-    if (user && user != Kaffeine_ShadowGuest(ctx, old, KAFFEINE_SHADOW_USERPORT))
-        return refuse(ctx, "ModifyIDCMP(): a shared IDCMP port is not supported yet");
+    peer = shared_native(ctx, old);
+    if (peer || (flags && user && user != Kaffeine_ShadowGuest(ctx, old, KAFFEINE_SHADOW_USERPORT)))
+        return shared_modify(ctx, window, w, peer, user, flags);
+    if (!flags) user = Kaffeine_ShadowGuest(ctx, old, KAFFEINE_SHADOW_USERPORT);
     old_flags = w->IDCMPFlags;
     ok = ModifyIDCMP(w, flags);
     if (w->UserPort != old)
@@ -1011,9 +1404,14 @@ IPTR Kaffeine_ModifyIDCMP(struct KaffeineContext *ctx, void *cpu)
    program or NULL for a message of GadTools only, which goes back. */
 IPTR Kaffeine_GT_GetIMsg(struct KaffeineContext *ctx, void *cpu)
 {
-    struct MsgPort *port = Kaffeine_ShadowNative(ctx, THUNK_A(0), KAFFEINE_SHADOW_USERPORT);
+    ULONG guest = THUNK_A(0);
+    struct MsgPort *port = Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_USERPORT);
     struct IntuiMessage *im, *copy;
     ULONG msg;
+    IPTR ready;
+    int shared = shared_ready(ctx, guest, FALSE, &port, &ready);
+
+    if (shared == 2 || shared < 0) return ready;
 
     if (!port)
         return 0;
@@ -1044,6 +1442,7 @@ IPTR Kaffeine_GT_GetIMsg(struct KaffeineContext *ctx, void *cpu)
            Intuition gets it back. */
         bug("[kaffeine] GT_GetIMsg(): no guest memory for an IntuiMessage\n");
         message_unfilter(ctx, copy);
+        if (shared) return refuse(ctx, "GT_GetIMsg(): no shared IDCMP mirror memory");
     }
     return 0;
 }
@@ -1057,6 +1456,14 @@ IPTR Kaffeine_GT_ReplyIMsg(struct KaffeineContext *ctx, void *cpu)
 
     if (!copy)
     {
+        UWORD i;
+        if (Kaffeine_AppReplyMsg(ctx, guest)) return 0;
+        /* GT_GetIMsg also returns ordinary guest IPC on a shared port.
+           Its reply stays the bounded guest protocol, never GadTools. */
+        for (i = 0; i < ctx->num_shadows; i++)
+            if (ctx->shadow_map[i].m68k_addr == guest) break;
+        if (i == ctx->num_shadows && guest)
+            return Kaffeine_GuestReplyMsg(ctx, guest);
         if (guest)
             bug("[kaffeine] GT_ReplyIMsg(%08lx): not a message from GT_GetIMsg(), ignored\n",
                 (unsigned long)guest);

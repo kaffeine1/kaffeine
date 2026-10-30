@@ -26,6 +26,7 @@
 #include <cstring>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <map>
 #include <string>
@@ -49,6 +50,9 @@ extern "C" void CloseFont(struct TextFont *) { assert(false); }
 #include "kaffeine_layers.h"
 #include "kaffeine_window.h"
 #include "kaffeine_dispatch.h"
+#include "kaffeine_messages.h"
+#include "kaffeine_sched.h"
+#include "kaffeine_thunks_memory.h"
 
 /* ── The native side ─────────────────────────────────────────────── */
 
@@ -64,6 +68,38 @@ static KaffeineContext *live;
 static UWORD shadows_at_close;
 static std::vector<Screen *> released_screens;
 static Window *releasing_window;
+static Task *const driver_task = reinterpret_cast<Task *>(0x12340000);
+static std::vector<MsgPort *> borrowed_ports, deleted_ports;
+static std::function<void(ULONG)> on_wait;
+static std::function<BOOL(KaffeineContext *, ULONG, BOOL)> app_fill;
+static unsigned shared_signals, native_waits, modified_calls;
+
+static bool borrowed(MsgPort *p)
+{
+    return std::find(borrowed_ports.begin(), borrowed_ports.end(), p) != borrowed_ports.end();
+}
+
+/* Native producers use real Exec list links for private shared peers. Old
+   owned-port tests keep their recording deque, including native stealing. */
+static void send_native(MsgPort *port, IntuiMessage *im)
+{
+    if (!borrowed(port)) { queues[port].push_back(im); return; }
+    auto *node = &im->ExecMessage.mn_Node;
+    auto *tail = reinterpret_cast<Node *>(&port->mp_MsgList.lh_Tail);
+    node->ln_Pred = port->mp_MsgList.lh_TailPred;
+    node->ln_Succ = tail;
+    node->ln_Pred->ln_Succ = node;
+    port->mp_MsgList.lh_TailPred = node;
+}
+
+extern "C" Task *FindTask(const char *name) { assert(!name); return driver_task; }
+extern "C" void Signal(Task *task, ULONG) { assert(task == driver_task); ++shared_signals; }
+extern "C" ULONG Wait(ULONG bits) { ++native_waits; assert(on_wait); on_wait(bits); return bits; }
+extern "C" void DeleteMsgPort(MsgPort *port)
+{
+    assert(!borrowed(port)); // Intuition must never delete the borrowed peer.
+    deleted_ports.push_back(port);
+}
 
 /* A recording gadget bridge. The real gadget lists and their mirrors are
    tested in test_gadgets; here these hooks expose the window/message order. */
@@ -283,13 +319,23 @@ static void take_natively(MsgPort *port)
 }
 
 /* workbench.library is not linked here: no port has App objects. */
-extern "C" BOOL Kaffeine_AppPortFill(KaffeineContext *, ULONG, BOOL) { return FALSE; }
+extern "C" BOOL Kaffeine_AppPortFill(KaffeineContext *ctx, ULONG port, BOOL wait)
+{ return app_fill ? app_fill(ctx, port, wait) : FALSE; }
+extern "C" BOOL Kaffeine_AppPortMatches(KaffeineContext *, ULONG, Task *, UBYTE) { return TRUE; }
 extern "C" BOOL Kaffeine_AppReplyMsg(KaffeineContext *, ULONG) { return FALSE; }
 
 extern "C" struct Message *GetMsg(struct MsgPort *port)
 {
     ++native_calls;
     window_events.push_back("GetMsg");
+    if (borrowed(port))
+    {
+        auto *node = port->mp_MsgList.lh_Head;
+        if (!node->ln_Succ) return nullptr;
+        node->ln_Pred->ln_Succ = node->ln_Succ;
+        node->ln_Succ->ln_Pred = node->ln_Pred;
+        return reinterpret_cast<Message *>(node);
+    }
     auto &q = queues[port];
     if (q.empty())
         return nullptr;
@@ -302,6 +348,12 @@ extern "C" struct Message *WaitPort(struct MsgPort *port)
 {
     ++native_calls;
     window_events.push_back("WaitPort");
+    if (borrowed(port))
+    {
+        auto *node = port->mp_MsgList.lh_Head;
+        assert(node->ln_Succ);
+        return reinterpret_cast<Message *>(node);
+    }
     assert(!queues[port].empty());
     return &queues[port].front()->ExecMessage;
 }
@@ -320,6 +372,7 @@ extern "C" void RawPutChar(UBYTE) { assert(false); }
 /* As AROS: a window that gets flags gets a port, and loses it with them. */
 extern "C" BOOL ModifyIDCMP(struct Window *window, ULONG flags)
 {
+    ++modified_calls;
     ++native_calls;
     if (fail_modify)
         return FALSE;
@@ -330,7 +383,10 @@ extern "C" BOOL ModifyIDCMP(struct Window *window, ULONG flags)
     }
     window->IDCMPFlags = flags;
     if (!flags)
+    {
+        if (window->UserPort) DeleteMsgPort(window->UserPort);
         window->UserPort = nullptr;
+    }
     return TRUE;
 }
 
@@ -410,6 +466,7 @@ extern "C" void CloseWindow(struct Window *window)
     closed.push_back(window);
     shadows_at_close = live->num_shadows;
     if (window->UserPort)
+    {
         while (struct Message *msg = GetMsg(window->UserPort))
         {
             auto *im = reinterpret_cast<IntuiMessage *>(msg);
@@ -418,6 +475,8 @@ extern "C" void CloseWindow(struct Window *window)
             im->Qualifier = 0;
             ReplyMsg(msg);
         }
+        DeleteMsgPort(window->UserPort);
+    }
 }
 
 /* GadTools keeps the messages of the class gt_only for itself, as AROS's
@@ -594,6 +653,8 @@ struct Fixture
     Fixture()
     {
         queues.clear();
+        borrowed_ports.clear(); deleted_ports.clear(); on_wait = {}; app_fill = {};
+        shared_signals = native_waits = modified_calls = 0;
         replied.clear();
         made.clear();
         closed.clear();
@@ -634,6 +695,8 @@ struct Fixture
         assert(Kaffeine_HeapInit(&ctx));
         live = &ctx;
         ctx.m68k_sysbase = exec;
+        ctx.exec_task = driver_task;
+        ctx.guest_exec_task = task;
         m68k_write32(&ctx, exec + M68K_EXECBASE_THISTASK, task);
         lib(0, exec, "exec.library", exec_manual, std::size(exec_manual),
             exec_generated, std::size(exec_generated));
@@ -661,6 +724,7 @@ struct Fixture
 
     ~Fixture()
     {
+        assert(!ctx.idcmp_ports);
         for (IntuiMessage *im : made)
             delete im;
         made.clear();
@@ -730,7 +794,7 @@ struct Fixture
     }
 
     ULONG port() { return lng(window + M68K_WIN_USERPORT); }
-    void send(IntuiMessage *im) { queues[im->IDCMPWindow ? im->IDCMPWindow->UserPort : &ports[0]].push_back(im); }
+    void send(IntuiMessage *im) { send_native(im->IDCMPWindow ? im->IDCMPWindow->UserPort : &ports[0], im); }
     UWORD word(ULONG addr) { return m68k_read16(&ctx, addr); }
     ULONG lng(ULONG addr) { return m68k_read32(&ctx, addr); }
     ULONG getmsg(ULONG p) { return call(exec, 372, { p }); }
@@ -3075,11 +3139,289 @@ static void test_newwindow_extended()
     open_result = nullptr;
 }
 
+static ULONG manual_ui_port(Fixture &f, UBYTE bit = 6)
+{
+    ULONG p = Kaffeine_HeapAlloc(&f.ctx, 34, MEMF_CLEAR);
+    assert(p);
+    f.ctx.guest_signals |= 1UL << bit;
+    f.memory[p + LN_TYPE] = NT_MSGPORT;
+    f.memory[p + MP_FLAGS] = PA_SIGNAL;
+    f.memory[p + MP_SIGBIT] = bit;
+    m68k_write32(&f.ctx, p + MP_SIGTASK, Fixture::task);
+    m68k_write32(&f.ctx, p + MP_MSGLIST, p + MP_MSGLIST + 4);
+    m68k_write32(&f.ctx, p + MP_MSGLIST + 8, p + MP_MSGLIST);
+    return p;
+}
+
+static MsgPort *bind_ui(Fixture &f, ULONG mw, Window &w, ULONG port)
+{
+    m68k_write32(&f.ctx, mw + M68K_WIN_USERPORT, port);
+    assert(f.call(Fixture::intuition, 150, {mw}, {IDCMP_NEWSIZE}) == TRUE);
+    auto *native = w.UserPort;
+    assert(native && native_object(native) && native->mp_SigTask == driver_task &&
+           native->mp_SigBit == f.memory[port + MP_SIGBIT]);
+    assert(!Kaffeine_ShadowNative(&f.ctx, port, KAFFEINE_SHADOW_USERPORT));
+    if (!borrowed(native)) borrowed_ports.push_back(native);
+    return native;
+}
+
+static ULONG opaque_ipc(Fixture &f, ULONG port)
+{
+    ULONG msg = Kaffeine_HeapAlloc(&f.ctx, 128, MEMF_CLEAR);
+    assert(msg);
+    f.memory[msg + LN_TYPE] = NT_MESSAGE;
+    m68k_write16(&f.ctx, msg + MN_LENGTH, 128);
+    m68k_write32(&f.ctx, msg + 24, Fixture::title);
+    std::memcpy(f.ctx.mem + msg + 28, "ordinary IPC survives IDCMP", 27);
+    assert(Kaffeine_GuestPutMsg(&f.ctx, port, msg, 0) == 0);
+    return msg;
+}
+
+static void test_shared_idcmp_fifo()
+{
+    Fixture f; Window a = {}, b = {};
+    ULONG ma = Kaffeine_WindowCreate(&f.ctx, &a), mb = Kaffeine_WindowCreate(&f.ctx, &b);
+    ULONG port = manual_ui_port(f);
+    auto *box = bind_ui(f, ma, a, port);
+    assert(bind_ui(f, mb, b, port) == box);
+    assert(Kaffeine_UserPortCreate(&f.ctx, box) == port);
+    Window c = {}; c.UserPort = box; c.IDCMPFlags = IDCMP_NEWSIZE;
+    ULONG mc = Kaffeine_WindowCreate(&f.ctx, &c);
+    assert(mc && f.lng(mc + M68K_WIN_USERPORT) == port &&
+           !Kaffeine_ShadowNative(&f.ctx, port, KAFFEINE_SHADOW_USERPORT));
+    f.closewindow(mc); assert(a.UserPort == box && b.UserPort == box);
+    IntuiMessage *im = message(&a, IDCMP_NEWSIZE); f.send(im);
+    ULONG ipc = opaque_ipc(f, port);
+    assert(f.waitport(port) == ipc && f.getmsg(port) == ipc);
+    assert(f.lng(ipc + 24) == Fixture::title && !std::memcmp(f.ctx.mem + ipc + 28, "ordinary IPC survives IDCMP", 27));
+    f.reply(ipc);
+    assert(f.memory[ipc + LN_TYPE] == 6 && replied.empty());
+    ULONG peek = f.waitport(port), got = f.getmsg(port);
+    assert(peek == got && got && f.is(got, KAFFEINE_SHADOW_INTUIMESSAGE, im));
+    assert(f.lng(got + IM_IDCMPWINDOW) == ma && f.lng(ma + M68K_WIN_USERPORT) == port);
+    Kaffeine_WindowSync(&f.ctx, ma, &a);
+    assert(f.lng(ma + M68K_WIN_USERPORT) == port && f.lng(mb + M68K_WIN_USERPORT) == port);
+    f.reply(got); assert(replied.size() == 1 && replied[0] == im);
+    f.closewindow(ma);
+    assert(!a.UserPort && b.UserPort == box && f.ctx.idcmp_ports);
+    f.closewindow(mb);
+    assert(!b.UserPort && !f.ctx.idcmp_ports && deleted_ports.empty());
+    assert(f.ctx.guest_signals == (1UL << 6) && f.memory[port + LN_TYPE] == NT_MSGPORT);
+}
+
+static void test_shared_idcmp_window_retirement()
+{
+    Fixture f; Window a = {}, b = {};
+    ULONG ma = Kaffeine_WindowCreate(&f.ctx, &a), mb = Kaffeine_WindowCreate(&f.ctx, &b);
+    ULONG p = manual_ui_port(f); auto *box = bind_ui(f, ma, a, p); bind_ui(f, mb, b, p);
+    IntuiMessage *held = message(&a, IDCMP_NEWSIZE); f.send(held);
+    ULONG copy = f.gt_getimsg(p); assert(copy && gt_live == 1);
+    m68k_write32(&f.ctx, copy + IM_IDCMPWINDOW, mb); // writable snapshot is not ownership
+    IntuiMessage *held_plain = message(&a, IDCMP_NEWSIZE); f.send(held_plain);
+    ULONG plain = f.getmsg(p); assert(plain);
+    m68k_write32(&f.ctx, plain + IM_IDCMPWINDOW, mb);
+    IntuiMessage *other = message(&b, IDCMP_ACTIVEWINDOW), *own = message(&a, IDCMP_NEWSIZE);
+    f.send(other); f.send(own);
+    ULONG peek = f.waitport(p); assert(peek && f.is(peek, KAFFEINE_SHADOW_WAITMESSAGE, other));
+    m68k_write32(&f.ctx, peek + IM_IDCMPWINDOW, ma);
+    f.closewindow(ma);
+    assert(gt_live == 0 && replied.size() == 3 && replied[0] == held && replied[1] == held_plain && replied[2] == own);
+    assert(f.is(peek, KAFFEINE_SHADOW_WAITMESSAGE, other));
+    assert(b.UserPort == box && f.ctx.idcmp_ports && f.waitport(p) == peek);
+    ULONG got = f.getmsg(p); assert(got == peek && f.lng(got + IM_IDCMPWINDOW) == mb);
+    f.reply(got); assert(replied.size() == 4 && replied.back() == other);
+    f.send(message(&b, IDCMP_NEWSIZE));
+    assert(f.waitport(p));
+    assert(f.call(Fixture::intuition, 150, {mb}, {0}) == TRUE);
+    assert(!b.UserPort && !b.IDCMPFlags && !f.ctx.idcmp_ports && replied.size() == 5);
+    assert(deleted_ports.empty() && (f.ctx.guest_signals & (1UL << 6)));
+    f.closewindow(mb);
+}
+
+static void test_shared_idcmp_rollback()
+{
+    Fixture f; ULONG first = manual_ui_port(f), second = manual_ui_port(f, 7);
+    MsgPort *owned = f.native_window.UserPort;
+    ULONG old_guest = f.port();
+    fail_modify = true;
+    m68k_write32(&f.ctx, f.window + M68K_WIN_USERPORT, first);
+    assert(f.call(Fixture::intuition, 150, {f.window}, {IDCMP_NEWSIZE}) == FALSE);
+    assert(f.native_window.UserPort == owned && f.lng(f.window + M68K_WIN_USERPORT) == old_guest &&
+           !f.ctx.idcmp_ports && deleted_ports.empty());
+    fail_modify = false;
+    auto *box = bind_ui(f, f.window, f.native_window, first);
+    assert(deleted_ports.size() == 1 && deleted_ports[0] == owned &&
+           !Kaffeine_ShadowNative(&f.ctx, old_guest, KAFFEINE_SHADOW_USERPORT));
+    f.send(message(&f.native_window, IDCMP_NEWSIZE));
+    fail_modify = true;
+    m68k_write32(&f.ctx, f.window + M68K_WIN_USERPORT, second);
+    assert(f.call(Fixture::intuition, 150, {f.window}, {IDCMP_ACTIVEWINDOW}) == FALSE);
+    assert(f.native_window.UserPort == box && f.lng(f.window + M68K_WIN_USERPORT) == first && replied.empty());
+    fail_modify = false;
+    assert(f.call(Fixture::intuition, 150, {f.window}, {0}) == TRUE);
+    assert(!f.ctx.idcmp_ports && replied.size() == 1 && deleted_ports.size() == 1);
+}
+
+static BOOL ui_known(KaffeineContext *, ULONG task) { return task == Fixture::task; }
+static BOOL ui_owns(KaffeineContext *, ULONG task, ULONG bits) { return task == Fixture::task && bits == (1UL << 6); }
+static unsigned cooperative_waits;
+static BOOL ui_block(KaffeineContext *ctx, void *, MsgPort *p, KaffeineTaskRetry retry, IPTR *result)
+{
+    assert(ctx == live && p->mp_SigTask == driver_task && p->mp_SigBit == 6 && retry == Kaffeine_WaitPort);
+    ++cooperative_waits; *result = 0x123; return TRUE;
+}
+
+static void test_shared_idcmp_validation()
+{
+    for (unsigned mode = 0; mode < 10; mode++)
+    {
+        Fixture f; Window a = {}; ULONG ma = Kaffeine_WindowCreate(&f.ctx, &a), p = manual_ui_port(f);
+        KaffeineTaskOps ops = {}; ops.known_task = ui_known; ops.owns_signal = ui_owns;
+        if (mode == 0) f.memory[p + MP_FLAGS] = PA_IGNORE;
+        if (mode == 1) m68k_write32(&f.ctx, p + MP_SIGTASK, 0xdeadbeef);
+        if (mode == 2) f.memory[p + MP_SIGBIT] = 32;
+        if (mode == 3) f.ctx.io_signals = 1UL << 6;
+        if (mode == 4) f.ctx.guest_signals = 0;
+        if (mode == 5) { f.memory[p + MP_SIGBIT] = SIGB_DOS; f.ctx.guest_signals = 0; f.ctx.sched = reinterpret_cast<KaffeineScheduler *>(&f); f.ctx.task_ops = &ops; }
+        if (mode == 6) p++;
+        if (mode == 7) m68k_write32(&f.ctx, p + MP_MSGLIST, p);
+        if (mode == 8) f.ctx.broker_call = TRUE;
+        if (mode == 9) { f.ctx.sched = reinterpret_cast<KaffeineScheduler *>(&f); f.ctx.task_ops = &ops; m68k_write32(&f.ctx, p + MP_SIGTASK, 0x900); }
+        m68k_write32(&f.ctx, ma + M68K_WIN_USERPORT, p);
+        unsigned before = modified_calls;
+        assert(f.call(Fixture::intuition, 150, {ma}, {IDCMP_NEWSIZE}) == 20 && f.stopped());
+        assert(!f.ctx.idcmp_ports && !a.UserPort && modified_calls == before);
+        f.ctx.broker_call = FALSE; f.ctx.sched = nullptr;
+    }
+    Fixture f; Window a = {}; ULONG ma = Kaffeine_WindowCreate(&f.ctx, &a), p = manual_ui_port(f);
+    bind_ui(f, ma, a, p);
+    f.memory[p + MP_SIGBIT] = 7; f.ctx.guest_signals |= 1UL << 7;
+    assert(f.getmsg(p) == 20 && f.stopped() && !a.UserPort && !f.ctx.idcmp_ports);
+}
+
+static void test_shared_idcmp_lifecycle()
+{
+    for (unsigned mode = 0; mode < 5; mode++)
+    {
+        Fixture f; Window a = {}, b = {};
+        ULONG ma = Kaffeine_WindowCreate(&f.ctx, &a), mb = Kaffeine_WindowCreate(&f.ctx, &b), p = manual_ui_port(f);
+        bind_ui(f, ma, a, p); bind_ui(f, mb, b, p);
+        f.send(message(&a, IDCMP_NEWSIZE)); f.send(message(&b, IDCMP_NEWSIZE));
+        assert(f.waitport(p));
+        if (mode == 0) f.ctx.idcmp_signal_gone(&f.ctx, 6);
+        if (mode == 1) f.ctx.idcmp_port_gone(&f.ctx, p);
+        if (mode == 2) f.ctx.idcmp_task_gone(&f.ctx, Fixture::task);
+        if (mode == 3)
+        {
+            assert(f.ctx.idcmp_release(&f.ctx, p, 34, FALSE) && a.UserPort && b.UserPort);
+            assert(Kaffeine_HeapFreeExact(&f.ctx, p, 34));
+            assert(Kaffeine_HeapAlloc(&f.ctx, 34, MEMF_CLEAR) == p);
+        }
+        if (mode == 4) f.ctx.idcmp_cleanup(&f.ctx);
+        assert(!a.UserPort && !b.UserPort && !f.ctx.idcmp_ports && replied.size() == 2 && deleted_ports.empty());
+        f.ctx.idcmp_cleanup(&f.ctx); assert(replied.size() == 2);
+    }
+    Fixture f; Window a = {}; ULONG ma = Kaffeine_WindowCreate(&f.ctx, &a), p = manual_ui_port(f);
+    bind_ui(f, ma, a, p); ULONG ipc = opaque_ipc(f, p);
+    assert(!Kaffeine_HeapFreeExact(&f.ctx, p, 34) && a.UserPort && f.ctx.idcmp_ports);
+    assert(f.getmsg(p) == ipc); f.reply(ipc);
+    assert(Kaffeine_HeapFreeExact(&f.ctx, p, 34) && !a.UserPort && !f.ctx.idcmp_ports);
+}
+
+static void test_shared_idcmp_wait_and_app()
+{
+    Fixture f; Window a = {}; ULONG ma = Kaffeine_WindowCreate(&f.ctx, &a), p = manual_ui_port(f);
+    bind_ui(f, ma, a, p);
+    on_wait = [&](ULONG bits) { assert(bits == (1UL << 6)); f.send(message(&a, IDCMP_NEWSIZE)); };
+    ULONG peek = f.waitport(p); assert(peek && native_waits == 1 && f.getmsg(p) == peek); f.reply(peek);
+    KaffeineTaskOps ops = {}; ops.known_task = ui_known; ops.owns_signal = ui_owns; ops.block_port = ui_block;
+    f.ctx.sched = reinterpret_cast<KaffeineScheduler *>(&f); f.ctx.task_ops = &ops; cooperative_waits = 0;
+    assert(f.waitport(p) == 0x123 && cooperative_waits == 1 && native_waits == 1);
+    f.ctx.sched = nullptr;
+    /* A real App port is also an exact bounded guest queue. Its collaborator
+       injects one carrier copy after the common native bit wakes Wait(). */
+    f.ctx.app_ports[0].guest = p;
+    bool pending = false; ULONG app = 0;
+    app_fill = [&](KaffeineContext *ctx, ULONG port, BOOL wait) {
+        assert(ctx == &f.ctx && port == p && !wait);
+        if (pending) { pending = false; app = opaque_ipc(f, p); }
+        return TRUE;
+    };
+    on_wait = [&](ULONG) { pending = true; };
+    assert(f.waitport(p) == app && app && native_waits == 2);
+    assert(f.gt_getimsg(p) == app); f.gt_replyimsg(app);
+    assert(f.memory[app + LN_TYPE] == 6);
+    f.send(message(&a, IDCMP_NEWSIZE));
+    ULONG gt = f.gt_getimsg(p); assert(gt && gt_live == 1); f.gt_replyimsg(gt);
+    f.ctx.idcmp_cleanup(&f.ctx); f.ctx.app_ports[0].guest = 0;
+}
+
+static void test_shared_idcmp_heap_reentrancy()
+{
+    Fixture f; Window a = {};
+    ULONG ma=Kaffeine_WindowCreate(&f.ctx,&a), initial=Kaffeine_HeapAvail(&f.ctx,0);
+    ULONG upper=Kaffeine_HeapAlloc(&f.ctx,64,0), hole=Kaffeine_HeapAlloc(&f.ctx,52,0);
+    ULONG port=manual_ui_port(f);
+    assert(upper>hole && hole>port);
+    bind_ui(f,ma,a,port);
+    ULONG low=Kaffeine_HeapAlloc(&f.ctx,Kaffeine_HeapAvail(&f.ctx,MEMF_LARGEST),0);
+    assert(low);
+    Kaffeine_HeapFree(&f.ctx,hole,52);
+    f.send(message(&a,IDCMP_NEWSIZE));
+    ULONG held=f.getmsg(port); assert(held==hole);
+    Kaffeine_HeapFree(&f.ctx,upper,64);
+    /* The outer port release caches the upper free interval. Its commit
+       callback frees held, merging with and deleting that cached metadata. */
+    assert(Kaffeine_HeapFreeExact(&f.ctx,port,34));
+    assert(!f.ctx.idcmp_ports && !a.UserPort && replied.size()==1);
+    Kaffeine_HeapFree(&f.ctx,low,0);
+    assert(Kaffeine_HeapAvail(&f.ctx,0)==initial);
+}
+
+static void test_userport_tag_never_native()
+{
+    Fixture f;
+    ULONG tags=Kaffeine_HeapAlloc(&f.ctx,16,MEMF_CLEAR),port=manual_ui_port(f);
+    m68k_write32(&f.ctx,tags,WA_UserPort);m68k_write32(&f.ctx,tags+4,port);
+    unsigned before=opened;
+    assert(f.call(Fixture::intuition,606,{0,tags})==20 && f.stopped() && opened==before);
+    assert(!f.ctx.idcmp_ports);
+}
+
+static void test_shared_lifecycle_stop_is_authoritative()
+{
+    Fixture f; Window a={}; ULONG ma=Kaffeine_WindowCreate(&f.ctx,&a),port=manual_ui_port(f);
+    bind_ui(f,ma,a,port);
+    static const M68KThunkEntry free_thunk[]={{210,thunk_exec_FreeMem}};
+    f.ctx.libs[0].thunks=free_thunk;f.ctx.libs[0].num_thunks=1;
+    KaffeineCPUOps run_ops=ops;
+    run_ops.execute=[](void *) {
+        KaffeineDispatchResult result={};
+        assert(Kaffeine_DispatchLibraryCall(live,live->cpu,Fixture::exec-210,&result));
+        assert(Kaffeine_GetD(live->cpu,0)==0); // actual production FreeMem's result
+    };
+    f.cpu.ops=&run_ops;
+    f.state.a[1]=port;f.state.d[0]=34;f.state.a[7]=Fixture::stack;
+    fail_modify=true; // native lifecycle refuses inside FreeMem's commit callback
+    assert(Kaffeine_RunCPU(&f.ctx,&f.cpu)==20 && f.ctx.exit_code==20 && f.ctx.callback_failed &&
+           f.state.d[0]==0 && !a.UserPort && !f.ctx.idcmp_ports);
+    fail_modify=false;
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
     const Test tests[] =
     {
+        { "Shared IDCMP manual port preserves opaque IPC, message identity and window refresh", test_shared_idcmp_fifo },
+        { "Shared IDCMP close and disable retire only one window's WAIT/native/GadTools messages", test_shared_idcmp_window_retirement },
+        { "Shared IDCMP native failure restores owned/shared bindings without consuming the guest signal", test_shared_idcmp_rollback },
+        { "Shared IDCMP rejects forged, reserved, stale and broker-owned signal identities", test_shared_idcmp_validation },
+        { "Shared IDCMP port, signal, owner, heap and Context retirement precede reuse", test_shared_idcmp_lifecycle },
+        { "Shared IDCMP waits cooperatively and preserves ordinary Workbench FIFO coexistence", test_shared_idcmp_wait_and_app },
+        { "Shared IDCMP heap commit refreshes neighbors after reentrant mirror frees", test_shared_idcmp_heap_reentrancy },
+        { "WA_UserPort extensions never forward raw guest pointers to native Intuition", test_userport_tag_never_native },
+        { "A shared lifecycle refusal survives actual FreeMem returning zero through RunCPU", test_shared_lifecycle_stop_is_authoritative },
         { "Layer bridge notifications: whole-or-nothing open, pending backdrop flags, close order", test_window_layer_hooks },
         { "Exec, Intuition and GadTools tables use their ABI slots", test_registration },
         { "InitRequester clears exactly 112 guest bytes and checks boundaries", test_init_requester },

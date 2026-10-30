@@ -31,16 +31,127 @@
 #include "kaffeine_sched.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_jit.h"
+#include "kaffeine_process.h"
+#include "kaffeine_dos_broker.h"
+#include "kaffeine_domain_modules.h"
 
 #include "Moira/Moira.cpp"
 #include "Moira/MoiraDebugger.cpp"
 #include "kaffeine_moira.cpp"
+
+struct KaffeineDosBroker
+{
+    unsigned id = 1, calls = 0, stops = 0, inits = 0, drops = 0;
+    bool fail = false, fail_init = false;
+    bool busy = false;
+    unsigned drop_refusals = 0, finish_refusals = 0;
+};
+struct KaffeineDomainModule { unsigned unloads = 0; bool busy = false; };
+static KaffeineDosBroker *active_broker;
+static std::vector<char> lifetime_order;
+static std::vector<ULONG> broker_lvos;
+static unsigned native_delays;
+static std::function<void()> delay_event;
+static std::function<void(KaffeineDosBroker *)> idle_probe;
+static std::function<BOOL(KaffeineContext *)> drain_action;
+extern "C" BOOL Kaffeine_DosBrokerIsIdle(KaffeineDosBroker *broker)
+{
+    if (idle_probe) idle_probe(broker);
+    return !broker->busy;
+}
+extern "C" BOOL Kaffeine_DosBrokerCall(KaffeineDosBroker *broker, KaffeineContext *ctx,
+    void *cpu, ULONG lvo, KaffeineDosBrokerThunk thunk, IPTR *result, SIPTR *error)
+{
+    assert(ctx->broker_call && ctx->cpu == cpu);
+    if (!lvo && thunk != Kaffeine_ProcessInitGuestDos && broker->drop_refusals)
+    {
+        --broker->drop_refusals;
+        *error = 103;
+        return FALSE;
+    }
+    if (lvo)
+    {
+        ++broker->calls;
+        broker_lvos.push_back(lvo);
+    }
+    if (broker->fail && lvo) { *error = 103; return FALSE; }
+    auto *previous_broker = active_broker;
+    auto *previous_owner = ctx->broker_owner;
+    active_broker = broker;
+    ctx->broker_owner = reinterpret_cast<Task *>(broker);
+    *result = thunk(ctx, cpu);
+    if (ctx->after_thunk)
+    {
+        auto after = ctx->after_thunk;
+        ctx->after_thunk = nullptr;
+        after(ctx);
+    }
+    active_broker = previous_broker;
+    ctx->broker_owner = previous_owner;
+    *error = 0;
+    return TRUE;
+}
+extern "C" BOOL Kaffeine_DosBrokerFinish(KaffeineDosBroker *broker, KaffeineContext *ctx,
+                                        KaffeineDosBrokerThunk cleanup)
+{
+    assert(!broker->stops);
+    if (broker->finish_refusals) { --broker->finish_refusals; return FALSE; }
+    auto *previous_broker = active_broker;
+    Task *previous_owner = ctx ? ctx->broker_owner : nullptr;
+    active_broker = broker;
+    if (ctx) ctx->broker_owner = reinterpret_cast<Task *>(broker);
+    if (cleanup) { assert(ctx->broker_call); cleanup(ctx, nullptr); }
+    active_broker = previous_broker;
+    if (ctx) ctx->broker_owner = previous_owner;
+    ++broker->stops;
+    lifetime_order.push_back('B');
+    return TRUE;
+}
+extern "C" BOOL Kaffeine_DosBrokerStop(KaffeineDosBroker *broker)
+{ return Kaffeine_DosBrokerFinish(broker, nullptr, nullptr); }
+extern "C" IPTR Kaffeine_ProcessInitGuestDos(KaffeineContext *ctx, void *cpu)
+{
+    assert(active_broker && ctx->broker_call && ctx->cpu == cpu && ctx->guest_exec_task &&
+           m68k_read32(ctx, ctx->m68k_sysbase + 276) == ctx->guest_exec_task &&
+           m68k_read32(ctx, ctx->guest_exec_task + 204) == ctx->m68k_argptr);
+    ++active_broker->inits;
+    m68k_write32(ctx, ctx->guest_exec_task + 156, 0x4100 + active_broker->id);
+    m68k_write32(ctx, ctx->guest_exec_task + 160, 0x4200 + active_broker->id);
+    m68k_write32(ctx, ctx->guest_exec_task + 224, 0x4300 + active_broker->id);
+    return active_broker->fail_init ? 0 : 1;
+}
+extern "C" IPTR Kaffeine_ProcessDropGuestDos(KaffeineContext *ctx, void *cpu)
+{
+    assert(active_broker && ctx->broker_call && !cpu && ctx->guest_exec_task &&
+           m68k_read32(ctx, ctx->m68k_sysbase + 276) == ctx->guest_exec_task);
+    ++active_broker->drops;
+    lifetime_order.push_back('D');
+    m68k_write32(ctx, ctx->guest_exec_task + 156, 0);
+    m68k_write32(ctx, ctx->guest_exec_task + 160, 0);
+    m68k_write32(ctx, ctx->guest_exec_task + 224, 0);
+    return 1;
+}
+extern "C" BOOL Kaffeine_DomainUnload(KaffeineContext *, KaffeineDomainModule *module)
+{
+    assert(!active_broker && !module->unloads);
+    ++module->unloads;
+    lifetime_order.push_back('M');
+    return !module->busy;
+}
 
 static unsigned checks, failures;
 static void check(bool ok, const char *what)
 {
     ++checks;
     if (!ok) { ++failures; std::printf("FAIL: %s\n", what); }
+}
+
+extern "C" void Delay(LONG ticks)
+{
+    assert(ticks == 1);
+    ++native_delays;
+    assert(native_delays < 100);
+    if (delay_event) delay_event();
 }
 
 /* ── The native side: one native task runs every guest task ─────── */
@@ -153,6 +264,7 @@ extern "C" void FreeSignal(LONG n)
 /* The guest heap is not linked: record which MemLists RemTask() frees. */
 extern "C" void Kaffeine_HeapFreeEntry(KaffeineContext *, ULONG entry)
 {
+    lifetime_order.push_back('F');
     freed_entries.push_back(entry);
 }
 
@@ -263,7 +375,17 @@ static const M68KThunkEntry exec_table[] =
    calls that would act for the native process, which count when reached */
 static unsigned dos_calls, dos_exits;
 static LONG dos_ioerr;
-static IPTR dos_output(KaffeineContext *, void *) { ++dos_calls; return 0x1234; }
+static IPTR dos_output(KaffeineContext *, void *)
+{ ++dos_calls; return active_broker ? 0x1000 + active_broker->id : 0x1234; }
+static IPTR dos_cli_probe(KaffeineContext *ctx, void *) { return ctx->m68k_cli; }
+static std::function<IPTR(KaffeineContext *, void *)> typed_create_thunk;
+static IPTR dos_typed_create(KaffeineContext *ctx, void *cpu)
+{ return typed_create_thunk ? typed_create_thunk(ctx, cpu) : 0; }
+static IPTR dos_callback_probe(KaffeineContext *ctx, void *cpu)
+{
+    KaffeineGuestCall call = {};
+    return Kaffeine_CallGuest(ctx, cpu, CODE + 0x2000, &call) ? 1 : 20;
+}
 static IPTR dos_exit(KaffeineContext *c, void *p)
 {
     ++dos_exits;
@@ -280,7 +402,8 @@ static IPTR dos_create_proc(KaffeineContext *c, void *p)
 }
 static const M68KThunkEntry dos_table[] =
 {
-    { 60, dos_output }, { 138, dos_create_proc }, { 144, dos_exit }
+    { 60, dos_output }, { 72, dos_callback_probe }, { 138, dos_create_proc }, { 144, dos_exit },
+    { 492, dos_cli_probe }, { 498, dos_typed_create }
 };
 
 static KaffeineCPU *mock_create(KaffeineContext *);
@@ -312,6 +435,10 @@ struct World
         fail_allocmem = false; native_event = nullptr; freed_entries.clear(); retired_signals=0;
         heap_next = HEAP_START; heap_force = 0; heap_lists = 0; fail_heap = false;
         dos_calls = dos_exits = 0; dos_ioerr = 0;
+        active_broker = nullptr; lifetime_order.clear(); broker_lvos.clear();
+        typed_create_thunk = nullptr;
+        native_delays = 0; delay_event = nullptr; idle_probe = nullptr;
+        drain_action = nullptr;
         ctx.mem = mem.data(); ctx.mem_size = ARENA;
         ctx.m68k_sysbase = SYSBASE; ctx.guest_exec_task = ROOT;
         ctx.stack_top = STACK_TOP; ctx.stack_bottom = STACK_BOTTOM;
@@ -442,6 +569,7 @@ static void mock_destroy(KaffeineContext *, KaffeineCPU *handle)
 {
     Mock *m = static_cast<Mock *>(handle->backend_state);
     ++world->destroyed;
+    lifetime_order.push_back('C');
     if (m->executing)
     {
         ++world->in_flight;
@@ -470,6 +598,7 @@ static IPTR free_signal(KaffeineContext *ctx, void *cpu)
     if (sig < 0) return 0;
     if (ctx->sched && !ctx->task_ops->signal_freeable(ctx, sig)) return 0;
     if (sig > 31 || !(ctx->guest_signals & (1u << sig))) return 0;
+    if (ctx->idcmp_signal_gone) ctx->idcmp_signal_gone(ctx, sig);
     ctx->guest_signals &= ~(1u << sig);
     FreeSignal(sig);
     return 0;
@@ -1971,6 +2100,543 @@ static void test_jit_child_faults()
     }
 }
 
+/* ── Typed Processes in the same guest arena ───────────────────── */
+
+static ULONG typed_start(Mock &m, KaffeineDosBroker &broker, KaffeineDomainModule &module,
+                         unsigned segment, BYTE pri = 1, bool cli = true)
+{
+    KaffeineProcessStart spec = {};
+    spec.stack_size = 1024;
+    spec.name = "typed worker";
+    spec.command = "C:typed";
+    spec.arguments = "one two\n";
+    spec.cli = cli;
+    spec.priority = pri;
+    spec.backend = "moira";
+    return Kaffeine_SchedStartProcess(&world->ctx, &m.handle, &spec,
+                                      SEGLIST(segment), CODE + 0x1000 * segment,
+                                      &broker, &module, nullptr);
+}
+
+static void test_typed_process_startup_messages()
+{
+    constexpr ULONG reply = 0x31000, msg = 0x31200, root_cli = 0xA400;
+    World w;
+    w.dos();
+    KaffeineDosBroker broker;
+    KaffeineDomainModule module;
+    Mock first = {};
+    std::strcpy(w.ctx.program_name, "root command");
+    w.ctx.m68k_cli = root_cli;
+    w.ctx.m68k_argptr = NAMES + 100;
+    w.ctx.m68k_argsize = 9;
+    guest_port(w, reply, ROOT, 20);
+    message(w, msg, reply);
+    w.ctx.io_task_removed = [](KaffeineContext *, ULONG) { lifetime_order.push_back('Q'); };
+    Program(ROOT_CODE).d(0, 20).call(330)
+        .op([&](Mock &m) { m.d[0] = typed_start(m, broker, module, 0); })
+        .store(SHARED, 0).op([](Mock &m) { m.a[0] = world->at(SHARED) + 92; })
+        .a(1, msg).call(366).a(0, reply).call(390).a(0, reply).call(372).store(SHARED + 4, 0)
+        .dos(492).store(SHARED + 20, 0)
+        .see(15, [] { return !std::strcmp(world->ctx.program_name, "root command") &&
+                            world->ctx.guest_exec_task == ROOT && world->ctx.m68k_argptr == NAMES + 100 &&
+                            world->ctx.m68k_argsize == 9; })
+        .d(0, 20).call(336).d(0, 0x66).rts();
+    Program(CODE).op([&](Mock &m) {
+        first = m;
+        ULONG p = w.ctx.guest_exec_task;
+        w.seen[22] = w.at(p + 156) == 0x4101 && w.at(p + 160) == 0x4201 &&
+                     w.at(p + 224) == 0x4301 && w.ctx.m68k_argptr == w.at(p + 204) &&
+                     w.ctx.m68k_argsize == 8 && p == w.at(SYSBASE + 276);
+    })
+        .dos(60).store(SHARED + 8, 0).dos(492).store(SHARED + 12, 0)
+        .see(14, [] { return !std::strcmp(world->ctx.program_name, "C:typed"); })
+        .own_port().call(390).store(SHARED + 16, 0).own_port().call(372)
+        .call(132).a(1, msg).call(378).d(1, 5).dos(144).see(19, [] { return 1u; }).rts();
+    check(w.run() == 0x66 && !w.seen[19] && !dos_exits,
+          "typed Process Exit ends that Process and preserves the root return code");
+    ULONG proc = w.at(SHARED), cli = w.at(SHARED + 12), lower = w.at(proc + 58);
+    ULONG args = w.at(proc + 204), segarray = w.at(proc + 128) << 2;
+    check(proc >= HEAP_START && w.mem[proc + 8] == 13 && w.mem[proc + 92 + 15] == SIGB_DOS &&
+          w.at(proc + 92 + 16) == proc && w.at(segarray + 12) == SEGLIST(0),
+          "typed startup returns a real guest Process with its own pr_MsgPort and SegArray");
+    check(first.d[0] == 8 && first.a[0] == args && first.a[6] == SYSBASE &&
+          first.a[7] == lower + 1024 - 8 && first.pc == CODE &&
+          !std::strcmp(reinterpret_cast<char *>(w.mem.data() + args), "one two\n"),
+          "typed startup copies arguments and initializes its independent CPU and stack");
+    check(w.seen[22],
+          "private broker standard streams and current Process argument view exist before its first instruction");
+    check(cli && cli == (w.at(proc + 172) << 2) && w.at(cli + 60) == SEGLIST(0) &&
+          w.at(cli + 52) == 256 && w.at(SHARED + 20) == root_cli && w.seen[14] && w.seen[15],
+          "typed guest CLI and program name remain separate from the root across switches");
+    check(w.at(SHARED + 4) == msg && w.at(SHARED + 16) == msg && !native_waits,
+          "typed root and child exchange the original message pointer through one arena");
+    check(w.at(SHARED + 8) == 0x1001 && broker.calls == 2 && broker_lvos == std::vector<ULONG>({60, 492}),
+          "typed DOS selects compiled thunks once and runs them through the child's broker");
+    check(broker.stops == 1 && module.unloads == 1 && w.destroyed == 1 &&
+          lifetime_order == std::vector<char>({'D', 'B', 'Q', 'C', 'M', 'F'}) && !w.ctx.broker_call &&
+          broker.inits == 1 && broker.drops == 1,
+          "task cleanup waits for broker ACK, quarantines IO, destroys CPU, releases module, then frees startup memory");
+}
+
+static void test_typed_nested_broker()
+{
+    World w;
+    w.dos();
+    KaffeineDosBroker parent, child;
+    child.id = 2;
+    KaffeineDomainModule parent_module, child_module;
+    ULONG nested = 0, stack = 0;
+    typed_create_thunk = [&](KaffeineContext *ctx, void *cpu) -> IPTR {
+        check(active_broker == &parent && ctx->broker_call && ctx->cpu == cpu,
+              "a nested typed create runs with the parent CPU stable on its broker");
+        auto &m = *static_cast<Mock *>(static_cast<KaffeineCPU *>(cpu)->backend_state);
+        ctx->after_thunk = [](KaffeineContext *c) {
+            check(c->broker_call && active_broker && active_broker->id == 1,
+                  "the whole native DOS thunk and its after-thunk action share the parent broker");
+        };
+        nested = typed_start(m, child, child_module, 1, 2, false);
+        return nested;
+    };
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, parent, parent_module, 0); })
+        .store(SHARED, 0).d(0, 0x77).rts();
+    Program(CODE).op([&](Mock &m) { stack = m.a[7]; }).dos(498).store(SHARED + 4, 0)
+        .see(20, [&] { return world->ctx.cpu && Kaffeine_GetA(world->ctx.cpu, 7) == stack; })
+        .dos(60).store(SHARED + 8, 0).d(1, 0).dos(144).rts();
+    Program(CODE + 0x1000).dos(60).store(SHARED + 12, 0)
+        .see(21, [] { return world->ctx.m68k_cli == 0; }).rts();
+    check(w.run() == 0x77 && nested && w.at(SHARED + 4) == nested && w.seen[20],
+          "a nested typed process preserves its parent's single dispatcher return and stack pop");
+    check(w.at(SHARED + 8) == 0x1001 && w.at(SHARED + 12) == 0x1002 && w.seen[21],
+          "nested Processes keep distinct DOS brokers and optional guest CLI state");
+    check(parent.calls == 2 && child.calls == 1 && parent.stops == 1 && child.stops == 1 &&
+          parent_module.unloads == 1 && child_module.unloads == 1 && w.destroyed == 2,
+          "nested Process resources retire once without stopping their parent");
+}
+
+static void test_typed_generated_and_lifetime_limits()
+{
+    World generated;
+    generated.dos();
+    KaffeineDosBroker broker;
+    KaffeineDomainModule module;
+    static const M68KThunkEntry gen[] = { {66, dos_output}, {60, dos_cli_probe} };
+    generated.ctx.libs[1].gen_thunks = gen;
+    generated.ctx.libs[1].num_gen_thunks = 2;
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, broker, module, 0); })
+        .d(0, 0x61).rts();
+    Program(CODE).dos(66).store(SHARED, 0).dos(60).store(SHARED + 4, 0).rts();
+    check(generated.run() == 0x61 && generated.at(SHARED) == 0x1001 &&
+          generated.at(SHARED + 4) == 0x1001 && broker_lvos == std::vector<ULONG>({66, 60}),
+          "generated DOS thunks use the broker and manual entries retain dispatch precedence");
+
+    World limit;
+    KaffeineDosBroker retained;
+    KaffeineDomainModule retained_module;
+    Program root(ROOT_CODE);
+    for (unsigned i = 0; i < KAFFEINE_MAX_GUEST_TASKS; ++i)
+    {
+        limit.child(i, -1);
+        root.add_task(TCB(i), CODE);
+    }
+    root.op([&](Mock &m) {
+        check(!typed_start(m, retained, retained_module, 0) &&
+              world->created == KAFFEINE_MAX_GUEST_TASKS,
+              "a full scheduler rejects typed startup before allocating another CPU");
+        check(!world->ctx.task_ops->root_exit(&world->ctx, &m.handle, 7),
+              "classic tasks alone preserve their original root program-end lifetime");
+    }).d(0, 0x62).rts();
+    Program(CODE).rts();
+    check(limit.run() == 0x62 && !retained.stops && !retained_module.unloads &&
+          limit.created == limit.destroyed,
+          "table exhaustion retains typed resource ownership and cleans existing classic CPUs");
+
+    World stop;
+    stop.dos();
+    KaffeineDosBroker stopped;
+    KaffeineDomainModule stopped_module;
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, stopped, stopped_module, 0, -1); })
+        .op([](Mock &m) { Kaffeine_StopGuest(&world->ctx, &m.handle, 20); }).rts();
+    Program(CODE).see(52, [] { return 1u; }).rts();
+    check(stop.run() == 20 && !stop.seen[52] && stopped.stops == 1 && stopped_module.unloads == 1,
+          "domain failure cleans a never-scheduled typed Process without running global resource cleanup");
+}
+
+static void test_typed_root_process_port()
+{
+    constexpr ULONG msg = 0x31200, root_port = ROOT + 92;
+    World w;
+    w.dos();
+    KaffeineDosBroker broker;
+    KaffeineDomainModule module;
+    w.ctx.num_shadows = 1;
+    w.ctx.shadow_map[0].m68k_addr = ROOT;
+    w.ctx.shadow_map[0].type = 258;
+    guest_port(w, root_port, ROOT, SIGB_DOS);
+    message(w, msg, 0);
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, broker, module, 0); })
+        .store(SHARED, 0).a(0, root_port).call(390).a(0, root_port).call(372).store(SHARED + 4, 0)
+        .a(1, msg).call(378).d(0, 0x63).rts();
+    Program(CODE).op([](Mock &) { world->put(msg + 14, world->ctx.guest_exec_task + 92); })
+        .a(0, root_port).a(1, msg).call(366).own_port().call(390).own_port().call(372)
+        .store(SHARED + 8, 0).rts();
+    check(w.run() == 0x63 && w.at(SHARED + 4) == msg && w.at(SHARED + 8) == msg,
+          "a typed Process exchanges direct messages with the root's shadowed pr_MsgPort");
+    check(w.ctx.guest_exec_task == ROOT && broker.stops == 1 && module.unloads == 1,
+          "root Process identity stays trusted while the current DOS Process view changes");
+}
+
+static void test_typed_callback_dos()
+{
+    World w;
+    w.dos();
+    KaffeineDosBroker broker;
+    KaffeineDomainModule module;
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, broker, module, 0); })
+        .d(0, 0x64).rts();
+    Program(CODE).op([](Mock &m) {
+        auto before = m;
+        KaffeineGuestCall call = {};
+        check(Kaffeine_CallGuest(&world->ctx, &m.handle, CODE + 0x2000, &call),
+              "a driver-side guest callback can make a synchronous selected DOS broker call");
+        check(call.d[0] == 0x1001 && !world->ctx.callback_depth && !world->ctx.broker_call &&
+              m.pc == before.pc && m.sr == before.sr &&
+              std::equal(m.a, m.a + 8, before.a) && std::equal(m.d, m.d + 8, before.d),
+              "synchronous DOS in a guest callback preserves its registers, stack, depth and current CPU");
+    }).rts();
+    Program(CODE + 0x2000).dos(60).see(53, [] { return world->ctx.callback_depth == 1; }).rts();
+    check(w.run() == 0x64 && w.seen[53] && broker.calls == 1,
+          "callback DOS execution resumes on the same guest CPU without a scheduler switch");
+
+    World exit;
+    exit.dos();
+    KaffeineDosBroker exiting;
+    KaffeineDomainModule exit_module;
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, exiting, exit_module, 0); })
+        .d(0, 0).rts();
+    Program(CODE).op([](Mock &m) {
+        KaffeineGuestCall call = {};
+        (void)Kaffeine_CallGuest(&world->ctx, &m.handle, CODE + 0x2000, &call);
+    }).rts();
+    Program(CODE + 0x2000).d(1, 7).dos(144).rts();
+    check(exit.run() == 20 && !dos_exits && !exiting.calls && exiting.stops == 1,
+          "a callback cannot Exit its Process or forward native DOS Exit to its broker");
+}
+
+static void test_typed_root_lifetime()
+{
+    for (bool dos_exit_root : { false, true })
+    {
+        World w;
+        w.dos();
+        KaffeineDosBroker broker;
+        KaffeineDomainModule module;
+        w.ctx.io_task_removed = [](KaffeineContext *, ULONG task) {
+            if (task == ROOT) ++world->seen[44];
+        };
+        w.ctx.idcmp_task_gone = [](KaffeineContext *, ULONG task) {
+            ++world->seen[task == ROOT ? 45 : 47];
+        };
+        w.ctx.root_complete = [](KaffeineContext *ctx, LONG result) {
+            ++world->seen[40]; world->seen[41] = result;
+            world->seen[42] = (ULONG)world->trace.size();
+            world->seen[46] = !ctx->broker_call && !ctx->broker_owner &&
+                              ctx->cpu == &world->root.handle && world->seen[44] == 1 && world->seen[45] == 1;
+        };
+        Program root(ROOT_CODE);
+        root.op([&](Mock &m) { m.d[0] = typed_start(m, broker, module, 0, -1); }).store(SHARED, 0);
+        if (dos_exit_root) root.d(1, 0x68).dos(144);
+        else root.op([](Mock &m) {
+            check(world->ctx.task_ops->root_exit(&world->ctx, &m.handle, 0x68),
+                  "root normal completion becomes a domain lifetime event");
+        });
+        root.see(49, [] { return 1u; }).rts();
+        Program(CODE).mark(43).dos(60).store(SHARED + 4, 0).d(0, 0x9999).rts();
+        check(w.run() == 0x68 && w.seen[40] == 1 && w.seen[41] == 0x68 &&
+              w.seen[42] < w.seen[43] && w.seen[44] == 1 && w.seen[46] && !w.seen[49] && !dos_exits,
+              dos_exit_root ? "root DOS Exit publishes completion once while the child keeps running"
+                            : "root return publishes completion once while the child keeps running");
+        check(w.at(SHARED + 4) == 0x1001 && broker.stops == 1 && module.unloads == 1 &&
+              !w.ctx.sched && w.root.d[0] == 0x68 && w.ctx.exit_code == 0x68 && w.seen[47] == 1,
+              "the last child retires IDCMP once and drains with the saved root result rather than its own D0");
+    }
+
+    World fault;
+    fault.dos();
+    KaffeineDosBroker broker;
+    KaffeineDomainModule module;
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, broker, module, 0, -1); })
+        .op([](Mock &m) { world->ctx.task_ops->root_exit(&world->ctx, &m.handle, 0x68); }).rts();
+    Program(CODE).jump(0x17FFE);
+    check(fault.run() == 20 && fault.root.d[0] == 20 && broker.stops == 1 && module.unloads == 1,
+          "a child fault after root completion remains a domain failure, never the saved root result");
+}
+
+static void test_typed_dos_refusals()
+{
+    for (unsigned mode = 0; mode < 4; ++mode)
+    {
+        World w;
+        w.dos();
+        KaffeineDosBroker broker;
+        KaffeineDomainModule module;
+        broker.fail = mode == 0;
+        module.busy = mode == 3;
+        Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, broker, module, 0); })
+            .d(0, 0).rts();
+        Program child(CODE);
+        if (mode == 0) child.dos(60);
+        if (mode == 1) child.dos(72);
+        if (mode == 2) child.op([](Mock &m) {
+            IPTR ret = 0;
+            world->ctx.task_ops->process_dos(&world->ctx, &m.handle, 0, &ret);
+            m.d[0] = (ULONG)ret;
+        });
+        if (mode == 3) child.op([](Mock &m) {
+            IPTR ret = 0;
+            check(!world->ctx.task_ops->process_dos(&world->ctx, &m.handle, 60, &ret),
+                  "typed guard leaves selected DOS calls for dos_call");
+            world->ctx.task_ops->dos_call(&world->ctx, &m.handle, dos_cli_probe, &ret);
+            m.d[0] = (ULONG)ret;
+        });
+        child.see(50, [] { return 1u; }).rts();
+        Program(CODE + 0x2000).see(51, [] { return 1u; }).rts();
+        check(w.run() == 20 && !w.seen[50] && !w.seen[51] && !dos_calls,
+              mode == 0 ? "broker transport failure has no native root fallback"
+              : mode == 1 ? "a native broker thunk cannot reenter the guest CPU through a callback"
+              : mode == 2 ? "native packet adapters without a selected DOS thunk remain refused"
+                          : "a different compiled thunk cannot replace the dispatcher's selected DOS call");
+        check(broker.stops == 1 && module.unloads == 1 && !w.ctx.broker_call && !w.ctx.sched,
+              "broker refusal retires task resources once and leaves busy module ownership with the domain");
+    }
+}
+
+static void test_typed_start_failures()
+{
+    for (unsigned mode = 0; mode < 6; ++mode)
+    {
+        World w;
+        w.dos();
+        KaffeineDosBroker broker;
+        KaffeineDomainModule module;
+        Program(ROOT_CODE).op([&](Mock &m) {
+            w.fail_create = mode == 0;
+            fail_heap = mode == 1;
+            fail_allocmem = mode == 2;
+            broker.fail_init = mode == 5;
+            KaffeineProcessStart spec = {};
+            spec.stack_size = mode == 3 ? KAFFEINE_PROCESS_MAX_STACK + 4 : 1024;
+            spec.name = "typed"; spec.arguments = "";
+            SIPTR error = 0;
+            ULONG result = Kaffeine_SchedStartProcess(&w.ctx, &m.handle, &spec, SEGLIST(0), CODE,
+                                                      mode == 4 ? nullptr : &broker, &module, &error);
+            fail_allocmem = false;
+            check(!result && !w.ctx.sched && !broker.stops && !module.unloads,
+                  "typed startup failure publishes no task and leaves broker/module with the caller");
+            check(w.created == w.destroyed,
+                  "typed startup failure rolls back every CPU it allocated");
+            check(error == (mode == 3 ? ERROR_BAD_NUMBER : mode == 4 ? ERROR_NOT_IMPLEMENTED
+                                                                 : ERROR_NO_FREE_STORE),
+                  "typed startup reports its validation, capability or allocation failure to the native caller");
+            if (mode == 5)
+                check(broker.inits == 1 && broker.drops == 1 && !broker.stops &&
+                      w.ctx.guest_exec_task == ROOT && !w.ctx.broker_call && !w.ctx.broker_owner,
+                      "partial broker startup rolls back DOS metadata and restores parent view without consuming broker");
+        }).d(0, 0x44).rts();
+        check(w.run() == 0x44, "a typed startup allocation or validation failure leaves its root runnable");
+    }
+}
+
+static void test_typed_backend_domain(bool jit)
+{
+    World w;
+    w.dos();
+    KaffeineDosBroker broker;
+    KaffeineDomainModule module;
+    typed_create_thunk = [&](KaffeineContext *ctx, void *cpu) -> IPTR {
+        KaffeineProcessStart spec = {};
+        spec.stack_size = 1024; spec.name = "backend typed"; spec.arguments = "args\n";
+        spec.priority = -1; spec.cli = TRUE;
+        SIPTR error;
+        return Kaffeine_SchedStartProcess(ctx, cpu, &spec, SEGLIST(0), CODE,
+                                          &broker, &module, &error);
+    };
+    w.ctx.root_complete = [](KaffeineContext *, LONG result) {
+        ++world->seen[60]; world->seen[61] = result;
+    };
+    static const UWORD root_code[] = {
+        0x2C7C, 0x0000, 0x7000,     /* MOVEA.L #dosbase,A6 */
+        0x4EAE, 0xFE0E,             /* JSR -498(A6), typed CreateNewProc */
+        0x23C0, 0x0000, 0xA010,     /* MOVE.L D0,$A010 */
+        0x7055, 0x4E75              /* MOVEQ #$55,D0; RTS */
+    };
+    static const UWORD child_code[] = {
+        0x2C7C, 0x0000, 0x7000,     /* MOVEA.L #dosbase,A6 */
+        0x4EAE, 0xFFC4,             /* JSR -60(A6), Output */
+        0x23C0, 0x0000, 0xA000,     /* MOVE.L D0,$A000 */
+        0x7007, 0x4E75              /* MOVEQ #7,D0; RTS */
+    };
+    ULONG at = ROOT_CODE;
+    for (UWORD word : root_code) { m68k_write16(&w.ctx, at, word); at += 2; }
+    at = CODE;
+    for (UWORD word : child_code) { m68k_write16(&w.ctx, at, word); at += 2; }
+    for (at = w.ctx.libs[1].jt_start; at < DOSBASE; at += 2)
+        m68k_write16(&w.ctx, at, 0xA000);
+    w.ctx.entry_point = ROOT_CODE;
+    LONG result = jit ? Kaffeine_ExecuteJIT(&w.ctx) : Kaffeine_Execute(&w.ctx);
+    check(result == 0x55 && w.ctx.exit_code == 0x55 && w.seen[60] == 1 && w.seen[61] == 0x55 &&
+          w.at(SHARED) == 0x1001 && w.at(SHARED + 16) >= HEAP_START,
+          jit ? "JIT typed Process continues after the real root sentinel and preserves its root result"
+              : "Moira typed Process continues after the real root sentinel and preserves its root result");
+    check(broker.inits == 1 && broker.calls == 1 && broker.drops == 1 && broker.stops == 1 &&
+          module.unloads == 1 && !w.ctx.cpu && !w.ctx.sched && !w.ctx.cpu_factory &&
+          w.ctx.guest_exec_task == ROOT && allocmems == freemems,
+          "backend typed domain retires its native owners and restores root context after the last real CPU");
+}
+
+static void test_empty_root_process_port()
+{
+    constexpr ULONG msg = 0x31200, root_port = ROOT + 92, other = 0x31000;
+    World w;
+    w.dos();
+    KaffeineDosBroker broker;
+    KaffeineDomainModule module;
+    guest_port(w, root_port, ROOT, SIGB_DOS);
+    message(w, msg, root_port);
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, broker, module, 0, -1); })
+        .store(SHARED, 0).op([](Mock &m) { m.a[0] = world->at(SHARED) + 92; })
+        .a(1, msg).call(366).a(0, root_port).call(390).a(0, root_port).call(372)
+        .store(SHARED + 4, 0).d(0, 0x65).rts();
+    Program(CODE).own_port().call(390).own_port().call(372).a(1, msg).call(378).rts();
+    check(w.run() == 0x65 && w.at(SHARED + 4) == msg && !native_waits &&
+          native_alloc == 0xffff && !w.ctx.guest_signals,
+          "empty root pr_MsgPort WaitPort yields to a lower-priority child reply without allocating SIGB_DOS");
+
+    World invalid;
+    invalid.dos();
+    KaffeineDosBroker another;
+    KaffeineDomainModule another_module;
+    guest_port(invalid, other, ROOT, SIGB_DOS);
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, another, another_module, 0, -1); })
+        .a(0, other).call(390).d(0, 0).rts();
+    Program(CODE).rts();
+    check(invalid.run() == 20 && !native_waits && native_alloc == 0xffff,
+          "a different root-owned port cannot borrow the root Process's reserved SIGB_DOS wait permission");
+}
+
+static void test_authoritative_stop_code()
+{
+    World w;
+    w.dos();
+    typed_create_thunk = [](KaffeineContext *ctx, void *cpu) -> IPTR {
+        Kaffeine_StopGuest(ctx, cpu, 20);
+        return 0;
+    };
+    Program(ROOT_CODE).dos(498).see(59, [] { return 1u; }).rts();
+    check(w.run() == 20 && w.ctx.exit_code == 20 && !w.seen[59],
+          "a stopped thunk returning API failure zero retains authoritative domain failure 20");
+}
+
+static void test_staged_start_recovery()
+{
+    for (bool busy_before_init : { false, true })
+    {
+        World w;
+        w.dos();
+        KaffeineDosBroker broker;
+        KaffeineDomainModule module;
+        broker.fail_init = !busy_before_init;
+        broker.drop_refusals = busy_before_init ? 0 : 1;
+        broker.finish_refusals = 1;
+        broker.busy = busy_before_init;
+        std::strcpy(w.ctx.program_name, "recovery parent");
+        w.ctx.m68k_cli = 0xA400;
+        ULONG staged_tcb = 0;
+        bool recovery_done = false;
+        idle_probe = [&](KaffeineDosBroker *b) {
+            if (b->busy)
+                check(w.ctx.guest_exec_task == ROOT && w.ctx.m68k_cli == 0xA400 &&
+                      w.at(SYSBASE + 276) == ROOT && !w.ctx.broker_call && !w.ctx.broker_owner &&
+                      !std::strcmp(w.ctx.program_name, "recovery parent"),
+                      "a busy staged broker is probed without changing any parent DOS/CPU view");
+        };
+        delay_event = [&] {
+            check(w.created == 1 && !w.destroyed && freed_entries.empty() && !broker.stops && !module.unloads,
+                  "busy or refused recovery keeps staged CPU, TCB, heap, broker and module alive");
+            broker.busy = false;
+        };
+        drain_action = [&](KaffeineContext *ctx) -> BOOL {
+            if (recovery_done) return TRUE;
+            check(Kaffeine_SchedHasRecoveryStart(ctx, &broker) &&
+                  !ctx->task_ops->known_task(ctx, staged_tcb),
+                  "a recovery slot remains private and cannot become a guest task or port owner");
+            if (!Kaffeine_SchedRecoverStart(ctx, &broker))
+            {
+                /* Match DomainDrainStarts: the owner yields before retrying
+                   an unacknowledged recovery record. */
+                Delay(1);
+                return FALSE;
+            }
+            check(broker.stops == 1 && w.destroyed == 1 && freed_entries.size() == 1 && !module.unloads &&
+                  !Kaffeine_SchedHasRecoveryStart(ctx, &broker) && ctx->cpu == &w.root.handle &&
+                  ctx->guest_exec_task == ROOT && !ctx->broker_call && !ctx->broker_owner,
+                  "only recovery Finish ACK releases staged CPU/memory and restores a live parent view");
+            Kaffeine_DomainUnload(ctx, &module);
+            recovery_done = true;
+            return TRUE;
+        };
+        w.ctx.domain_drain = [](KaffeineContext *ctx) -> BOOL { return drain_action(ctx); };
+        Program(ROOT_CODE).op([&](Mock &m) {
+            ULONG result = typed_start(m, broker, module, 0);
+            staged_tcb = w.at(HEAP_START + 16);
+            check(!result && Kaffeine_SchedHasRecoveryStart(&w.ctx, &broker) && !w.ctx.running &&
+                  w.ctx.callback_failed && w.ctx.exit_code == 20 && !w.destroyed && freed_entries.empty(),
+                  "failed startup retains its preallocated recovery slot and stops every guest CPU");
+            check(!w.ctx.task_ops->root_exit(&w.ctx, &m.handle, 55),
+                  "an unpublished recovery slot does not count as a live typed child");
+            broker.busy = true;
+            auto before = w.mem;
+            auto cpu = m;
+            check(!Kaffeine_SchedRecoverStart(&w.ctx, &broker) && w.mem == before &&
+                  std::equal(m.d, m.d + 8, cpu.d) && std::equal(m.a, m.a + 8, cpu.a),
+                  "busy recovery does not touch guest memory, registers or the staged CPU");
+            m.d[0] = result; /* dispatcher also writes zero after API failure */
+        }).see(58, [] { return 1u; }).rts();
+        Program(CODE).see(57, [] { return 1u; }).rts();
+        check(w.run() == 20 && !w.seen[58] && !w.seen[57] && native_delays == 2 &&
+              broker.stops == 1 && module.unloads == 1 && w.created == w.destroyed && !w.ctx.sched,
+              "driver drains staged recovery before scheduler/backend teardown and never resumes guest code");
+    }
+}
+
+static void test_published_finish_recovery()
+{
+    for (bool root_stops : { false, true })
+    {
+        World w;
+        w.dos();
+        KaffeineDosBroker broker;
+        KaffeineDomainModule module;
+        broker.finish_refusals = 1;
+        delay_event = [&] {
+            check(!w.destroyed && freed_entries.empty() && !broker.stops && !module.unloads,
+                  "published Process retirement retains its CPU, TCB and module until Finish ACK");
+            broker.busy = false;
+        };
+        Program root(ROOT_CODE);
+        root.op([&](Mock &m) { m.d[0] = typed_start(m, broker, module, 0, root_stops ? -1 : 1); });
+        if (root_stops) root.op([&](Mock &m) {
+            broker.busy = true; Kaffeine_StopGuest(&w.ctx, &m.handle, 20);
+        });
+        root.d(0, 0).rts();
+        Program(CODE).op([&](Mock &) { broker.busy = true; }).rts();
+        check(w.run() == 20 && native_delays == 2 && broker.stops == 1 && module.unloads == 1 &&
+              w.created == w.destroyed && !w.ctx.sched,
+              root_stops ? "domain end retries broker retirement through ACK before global cleanup"
+                         : "ordinary task reaping retries broker retirement through ACK before releasing its CPU");
+    }
+}
+
 int main()
 {
     test_no_children();
@@ -2007,11 +2673,25 @@ int main()
     test_process_quarantine();
     test_process_overlap();
     test_process_failures();
+    test_typed_process_startup_messages();
+    test_typed_nested_broker();
+    test_typed_generated_and_lifetime_limits();
+    test_typed_root_process_port();
+    test_typed_callback_dos();
+    test_typed_root_lifetime();
+    test_typed_dos_refusals();
+    test_typed_start_failures();
+    test_typed_backend_domain(false);
+    test_empty_root_process_port();
+    test_authoritative_stop_code();
+    test_staged_start_recovery();
+    test_published_finish_recovery();
     test_backend_parent_and_child(false);
     if (HJ_Available())
     {
         test_backend_parent_and_child(true);
         test_jit_child_faults();
+        test_typed_backend_domain(true);
     }
     else
         std::printf("SKIP: JIT parent/child execution needs an AArch64 JIT host\n");

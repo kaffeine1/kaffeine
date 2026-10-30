@@ -90,6 +90,7 @@ static MsgPort port0;
 
 /* workbench.library is not linked here: no port has App objects. */
 extern "C" BOOL Kaffeine_AppPortFill(KaffeineContext *, ULONG, BOOL) { return FALSE; }
+extern "C" BOOL Kaffeine_AppPortMatches(KaffeineContext *, ULONG, Task *, UBYTE) { return TRUE; }
 extern "C" BOOL Kaffeine_AppReplyMsg(KaffeineContext *, ULONG) { return FALSE; }
 
 extern "C" struct Message *GetMsg(struct MsgPort *port)

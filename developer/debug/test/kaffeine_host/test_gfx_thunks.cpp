@@ -1334,7 +1334,7 @@ static void test_askfont_refusals()
         Fixture f;
         int native_window;
         const ULONG rp = f.rastport();
-        f.ctx.shadow_map[f.ctx.num_shadows++] = { Fixture::raw + 0x40, &native_window, KAFFEINE_SHADOW_WINDOW };
+        f.ctx.shadow_map[f.ctx.num_shadows++] = { Fixture::raw + 0x40, &native_window, KAFFEINE_SHADOW_WINDOW, 0 };
         for (ULONG bad : { 0U, Fixture::raw, rp + 2, Fixture::raw + 0x40 })
             refused(f, out, bad, 0);
         refused(f, rp, out, 0);
@@ -1461,8 +1461,8 @@ static void test_guest_planar_read()
             case 15:m68k_write32(&f.ctx,bm+36,f.ctx.mem_size-8);break;
             case 16:m68k_write32(&f.ctx,bm+8,0xFFFFFFFE);break;
             case 17:m68k_write16(&f.ctx,bm,65534);m68k_write16(&f.ctx,bm+2,65535);break;
-            case 18:f.ctx.shadow_map[f.ctx.num_shadows++]={rp,&foreign,KAFFEINE_SHADOW_WINDOW};break;
-            case 19:f.ctx.shadow_map[f.ctx.num_shadows++]={bm,&foreign,KAFFEINE_SHADOW_WINDOW};break;
+            case 18:f.ctx.shadow_map[f.ctx.num_shadows++]={rp,&foreign,KAFFEINE_SHADOW_WINDOW, 0 };break;
+            case 19:f.ctx.shadow_map[f.ctx.num_shadows++]={bm,&foreign,KAFFEINE_SHADOW_WINDOW, 0 };break;
             case 20:m68k_write32(&f.ctx,bm+8,0);break;
             case 21:m68k_write32(&f.ctx,bm+8,0xFFFFFFFF);break;
         }
@@ -1486,7 +1486,7 @@ static void test_generated_guard()
     Fixture f;
     const ULONG rp = f.rastport(), raw = Fixture::raw + 0x100;
     int native_window;
-    f.ctx.shadow_map[f.ctx.num_shadows++] = { Fixture::raw + 0x40, &native_window, KAFFEINE_SHADOW_WINDOW };
+    f.ctx.shadow_map[f.ctx.num_shadows++] = { Fixture::raw + 0x40, &native_window, KAFFEINE_SHADOW_WINDOW, 0 };
     std::memset(f.memory.data() + raw, 0, M68K_SIZEOF_RASTPORT);
     f.put(Fixture::text, "\xFF\x81\x81\xFF");
     generated_native = 0;
@@ -1694,7 +1694,7 @@ static void test_state_refusals()
     const ULONG freed = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_RASTPORT, 0);
     Kaffeine_HeapFree(&f.ctx, freed, M68K_SIZEOF_RASTPORT);
     int native_window;
-    f.ctx.shadow_map[f.ctx.num_shadows++] = { 0x2600, &native_window, KAFFEINE_SHADOW_WINDOW };
+    f.ctx.shadow_map[f.ctx.num_shadows++] = { 0x2600, &native_window, KAFFEINE_SHADOW_WINDOW, 0 };
     f.ctx.memory_info = 0x3000;
     f.ctx.io_requests[0].guest = 0x3400;
     f.ctx.io_requests[0].capacity = 48;

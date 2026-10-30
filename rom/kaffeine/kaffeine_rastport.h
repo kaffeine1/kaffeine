@@ -82,6 +82,19 @@ void Kaffeine_FontOpened(struct KaffeineContext *ctx, ULONG guest);
 void Kaffeine_FontClosed(struct KaffeineContext *ctx, ULONG guest);
 /* Adopt one successful native open, closing it on any publication failure. */
 ULONG Kaffeine_FontAdopt(struct KaffeineContext *ctx, struct TextFont *font);
+/* A private transaction acquiring exactly this native font, not a matching
+ * substitute. Begin holds one native open and an unpublished typed view.
+ * End(TRUE) pins it for Context lifetime using existing opens/retained state;
+ * End(FALSE) balances that open and removes only a fresh unpublished view.
+ * The driver remains serial between Begin and End; keep this lease native. */
+struct KaffeineFontHold
+{
+    struct TextFont *native;
+    ULONG guest;
+    BOOL fresh, active;
+};
+BOOL Kaffeine_FontHoldBegin(struct KaffeineContext *, struct TextFont *, struct KaffeineFontHold *);
+void Kaffeine_FontHoldEnd(struct KaffeineContext *, struct KaffeineFontHold *, BOOL publish);
 /* Close all owned opens and release every snapshot at context teardown. */
 void Kaffeine_FontsCleanup(struct KaffeineContext *ctx);
 

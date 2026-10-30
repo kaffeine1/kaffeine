@@ -6,6 +6,8 @@ extern "C" {
 #endif
 struct Message *GetMsg(struct MsgPort *port);
 struct Message *WaitPort(struct MsgPort *port);
+void DeleteMsgPort(struct MsgPort *port);
+ULONG Wait(ULONG signals);
 void ReplyMsg(struct Message *message);
 void RawPutChar(UBYTE ch);
 #ifdef __cplusplus

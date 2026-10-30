@@ -12,6 +12,10 @@ APTR AllocMem(ULONG size, ULONG flags);
 void FreeMem(APTR memory, ULONG size);
 APTR AllocVec(ULONG size, ULONG flags);
 void FreeVec(APTR memory);
+struct SignalSemaphore;
+void InitSemaphore(struct SignalSemaphore *);
+void ObtainSemaphore(struct SignalSemaphore *);
+void ReleaseSemaphore(struct SignalSemaphore *);
 
 #ifdef __cplusplus
 }

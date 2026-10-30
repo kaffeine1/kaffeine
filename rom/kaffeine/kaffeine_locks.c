@@ -53,12 +53,19 @@ struct LockInstalled
     BOOL known;
 };
 
+struct LockOwner
+{
+    struct Task *native;
+    ULONG guest;
+    struct LockInstalled installed[2];
+};
+
 struct KaffeineLocks
 {
     struct LockRef refs[KAFFEINE_LOCK_LIMIT];
     struct LockVolume volumes[KAFFEINE_LOCK_VOLUME_LIMIT];
     struct LockBorrow borrows[KAFFEINE_LOCK_BORROW_LIMIT];
-    struct LockInstalled installed[2];
+    struct LockOwner owners[KAFFEINE_LOCK_OWNER_LIMIT];
     ULONG slabs[SLAB_LIMIT], volume_storage[KAFFEINE_LOCK_IDENTITY_LIMIT], identities, key_serial;
     unsigned slab_count, volume_storage_count;
 };
@@ -78,6 +85,8 @@ static BOOL context_ok(struct KaffeineContext *ctx)
 {
     if (!ctx || !ctx->mem)
         return FALSE;
+    if (ctx->broker_call && FindTask(NULL) != ctx->broker_owner)
+        return Kaffeine_MessageFailure(ctx, "lock outside the active DOS owner"), FALSE;
     if (ctx->guest_exec_task &&
         (!arena(ctx, ctx->m68k_sysbase, M68K_EXECBASE_THISTASK + 4) ||
          m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK) != ctx->guest_exec_task))
@@ -496,10 +505,48 @@ static void process_field(struct KaffeineContext *ctx, enum KaffeineLockInstalle
             (which == KAFFEINE_LOCK_CURRENT ? M68K_PR_CURRENTDIR : M68K_PR_HOMEDIR), token);
 }
 
+/* The scheduler publishes the current Process view before a DOS RPC. Native
+   installed references belong to that Process's broker, while caller/scoped
+   lock tokens remain shared throughout this guest domain. */
+static struct LockOwner *lock_owner(struct KaffeineContext *ctx, struct KaffeineLocks *s)
+{
+    struct Task *task = FindTask(NULL);
+    unsigned i, spare = KAFFEINE_LOCK_OWNER_LIMIT;
+    for (i = 0; i < KAFFEINE_LOCK_OWNER_LIMIT; ++i)
+    {
+        struct LockOwner *owner = &s->owners[i];
+        if (!owner->native)
+        {
+            if (spare == KAFFEINE_LOCK_OWNER_LIMIT) spare = i;
+            continue;
+        }
+        if (owner->native == task && owner->guest == ctx->guest_exec_task) return owner;
+        /* The first current/home snapshots are built before shadow_task()
+           publishes its guest TCB. Bind that same native owner's startup
+           record once the trusted Process view is available. */
+        if (owner->native == task && !owner->guest)
+        {
+            owner->guest = ctx->guest_exec_task;
+            return owner;
+        }
+        if (owner->native == task || (ctx->guest_exec_task && owner->guest == ctx->guest_exec_task))
+            return Kaffeine_MessageFailure(ctx, "lock owner of another process"), NULL;
+    }
+    if (spare == KAFFEINE_LOCK_OWNER_LIMIT)
+    {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return NULL;
+    }
+    s->owners[spare].native = task;
+    s->owners[spare].guest = ctx->guest_exec_task;
+    return &s->owners[spare];
+}
+
 BOOL Kaffeine_LockGetInstalled(struct KaffeineContext *ctx, enum KaffeineLockInstalled which, ULONG *token)
 {
     BPTR native;
     struct KaffeineLocks *s;
+    struct LockOwner *owner;
     struct LockInstalled *slot;
     ULONG published = 0;
     int old;
@@ -509,7 +556,9 @@ BOOL Kaffeine_LockGetInstalled(struct KaffeineContext *ctx, enum KaffeineLockIns
     if (!native && !ctx->locks) { process_field(ctx, which, 0); SetIoErr(error); return TRUE; }
     s = state(ctx);
     if (!s) return FALSE;
-    slot = &s->installed[which];
+    owner = lock_owner(ctx, s);
+    if (!owner) return FALSE;
+    slot = &owner->installed[which];
     if (slot->known && slot->native == native)
     {
         if (native)
@@ -550,6 +599,7 @@ BOOL Kaffeine_LockSwapInstalled(struct KaffeineContext *ctx, enum KaffeineLockIn
                                  ULONG token, ULONG *previous)
 {
     struct KaffeineLocks *s;
+    struct LockOwner *owner;
     BPTR native, old_native, returned;
     ULONG old_token;
     int incoming, outgoing;
@@ -561,6 +611,8 @@ BOOL Kaffeine_LockSwapInstalled(struct KaffeineContext *ctx, enum KaffeineLockIn
     if (token == old_token) { *previous = old_token; return TRUE; }
     s = state(ctx);
     if (!s) return FALSE;
+    owner = lock_owner(ctx, s);
+    if (!owner) return FALSE;
     incoming = find_ref(s, token);
     outgoing = find_ref(s, old_token);
     if (incoming >= 0 && !s->refs[incoming].caller)
@@ -582,7 +634,7 @@ BOOL Kaffeine_LockSwapInstalled(struct KaffeineContext *ctx, enum KaffeineLockIn
         SetIoErr(ERROR_NO_FREE_STORE);
         return FALSE;
     }
-    old_native = s->installed[which].native;
+    old_native = owner->installed[which].native;
     returned = which == KAFFEINE_LOCK_CURRENT ? CurrentDir(native) : SetProgramDir(native);
     if (returned != old_native)
     {
@@ -592,13 +644,39 @@ BOOL Kaffeine_LockSwapInstalled(struct KaffeineContext *ctx, enum KaffeineLockIn
     }
     if (incoming >= 0) { --s->refs[incoming].caller; ++s->refs[incoming].installed; }
     if (outgoing >= 0) { --s->refs[outgoing].installed; ++s->refs[outgoing].caller; }
-    s->installed[which].known = TRUE;
-    s->installed[which].native = native;
-    s->installed[which].token = token;
+    owner->installed[which].known = TRUE;
+    owner->installed[which].native = native;
+    owner->installed[which].token = token;
     *previous = old_token;
     process_field(ctx, which, token);
     SetIoErr(error);
     return TRUE;
+}
+
+/* Called in the native owner before DOS releases its current/home locks.
+   Only borrowed installed references go; caller/scoped references survive. */
+void Kaffeine_LockOwnerDrop(struct KaffeineContext *ctx, struct Task *task)
+{
+    struct KaffeineLocks *s = ctx ? ctx->locks : NULL;
+    SIPTR error = IoErr();
+    unsigned i, which;
+    if (!s || !task) return;
+    for (i = 0; i < KAFFEINE_LOCK_OWNER_LIMIT; ++i)
+        if (s->owners[i].native == task)
+        {
+            for (which = 0; which < 2; ++which)
+            {
+                struct LockInstalled *slot = &s->owners[i].installed[which];
+                int ref = slot->known ? find_ref(s, slot->token) : -1;
+                if (ref >= 0 && s->refs[ref].installed)
+                {
+                    --s->refs[ref].installed;
+                    retire(s, (unsigned)ref);
+                }
+            }
+            memset(&s->owners[i], 0, sizeof(s->owners[i]));
+        }
+    SetIoErr(error);
 }
 
 static BOOL overlaps(ULONG a, ULONG n, ULONG b, ULONG size)

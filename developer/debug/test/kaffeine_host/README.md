@@ -31,6 +31,30 @@ them elsewhere, pass an absolute `BUILD_DIR`. Source include paths are
 resolved from the Makefile location; changing the working directory does
 not change them.
 
+## Continuous integration
+
+The `kaffeine host suite` workflow runs this Makefile, the native
+`dos_process_host` fixture, and these separate compatibility suites:
+
+- `kaffeine_domain_host`: shared guest modules and relocation ownership.
+- `kaffeine_dos_broker_host`: native DOS workers, synchronous RPC and cleanup.
+- `kaffeine_domain_run_host`: driver ownership and root/child lifetimes.
+- `kaffeine_domain_process_host`: process startup and refused-cleanup recovery.
+- `kaffeine_remember_host`: Remember allocation ownership and retirement.
+- `kaffeine_videocontrol_host`: read-only ViewPortExtra queries and Screen lifetimes.
+- `kaffeine_gfxbase_host`: typed graphics.library initialization and DefaultFont ownership.
+- `kaffeine_process_integration_host`: shared driver startup, Signal and owner cleanup.
+
+The standalone suites are not invoked by this directory's `make test`.
+CI calls each `run_tests.py` normally and with `--sanitize`, using separate
+temporary build directories, GCC/G++, AddressSanitizer and
+UndefinedBehaviorSanitizer. Linux sanitizer runs enable leak detection.
+Changes to any sibling `kaffeine_*_host` directory also trigger the workflow;
+add new standalone runners to its explicit suite list.
+
+These are host checks. Native AROS and application acceptance still require
+their separate target tests.
+
 ## AArch64 Linux under QEMU user mode
 
 With an AArch64 GNU C++ toolchain and QEMU user mode installed:
@@ -53,7 +77,7 @@ Darwin-specific JIT constraints.
 ## Coverage
 
 The Makefile is the authoritative list of executables. The current suite
-has 48 test executables and a thunk-registration audit.
+has 49 test executables and a thunk-registration audit.
 
 | Area | Coverage |
 | --- | --- |
@@ -92,25 +116,37 @@ handler; direct device vectors stop with rc 20.
 `test_guest_tasks` checks CreateProc with separate CPU instances, bounded
 Process/stack/MemList allocations, message handshakes, virtual SIGB_DOS,
 priorities, Forbid/Wait, child Exit, quarantine and failure rollback. DOS
-calls from child Processes stop before their native thunks. `test_exec_messages`
-checks the same gate before file and handler packet adapters, while root
-packet dispatch remains available. CreateNewProc remains unsupported.
+calls from these legacy CreateProc children stop before their native thunks.
+`test_exec_messages` checks that gate before file and handler packet adapters.
+The typed CreateNewProc route instead imports an owned 68k HUNK with trusted
+relocation metadata into the shared guest arena, creates a separate guest CPU
+and Process, and gives it a private native DOS broker. Exec ports and waits
+remain cooperative inside that domain.
 
-`test_dos_thunks --process-trace-only` also checks the refused
-CreateNewProc call's numeric startup trace. The production tag walker is
+`test_process_tags` checks the bounded supported tag subset and typed
+module/home-lock transfers. Raw segment values, guest entry/exit callbacks,
+stream transfers, and unsupported tags are refused before native forwarding.
+The standalone domain, broker, driver and recovery suites check their separate
+ownership and lifetime contracts; these host checks do not establish
+application startup or native UI behavior.
+
+`test_dos_thunks --process-trace-only` checks numeric startup diagnostics and
+refusal cases separately from the supported typed route. The tag walker is
 limited to 64 item/control steps and the trace to 16 active tags. Tests
 cover control-only cycles, invalid and truncated lists, wrapping skips,
 independent traversal/output limits and unchanged guest memory. Names,
 entry points and seglists are reported as raw values without following
-their pointers; no process is created.
+their pointers. Rejected inputs do not create a native process.
 
 `test_dos_thunks --loadseg-trace-only` checks numeric LoadSeg/NewLoadSeg
 provenance traces. The native BPTR is recorded at full width alongside
-the delivered 32-bit D0, without reading segment contents or printing
+the delivered opaque 32-bit guest token, without reading segment contents or printing
 the filename. Success, failure, rejected strings and converted-tag
 cleanup preserve the loader's IoErr even when logging or freeing tags
-changes it. These traces establish returned-handle identity only, not a
-trusted module registry or process-start capability.
+changes it. `test_dos_thunks --segments-only` checks the implemented registry's
+classification, context ownership, stale handles, bounded reservations,
+RunCommand loans, transfers and cleanup. Numeric traces alone do not prove
+executable kind or process readiness.
 
 ### Classic RastPort initialization and font queries
 

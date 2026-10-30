@@ -260,10 +260,46 @@ reading or writing ENVARC. Its files remain under
 On a retirement timeout the parent keeps its callback code and library
 pin alive; the VM runner must enforce an outer timeout.
 
-This native test does not enable the guest `CreateNewProc()` thunk or
-establish TurboText GUI support. Target execution results must be reported
+This native test exercises native DOS process entry rather than the guest
+`CreateNewProc()` thunk and does not establish TurboText GUI support.
+Target execution results must be reported
 separately from compiling these two programs and from the host DOS-entry
 regression in `developer/debug/test/dos_process_host`.
+
+### Shared-domain process probe
+
+`domain_fixture_native.c` tests the guest `LoadSeg()` / `CreateNewProc()`
+route and the lifetime of its shared 68k arena. It generates two original
+68000 HUNK programs at runtime; no 68k compiler or application binary is
+required. Build the native controller with an AROS ARM64 SDK that provides
+the current `kaffeine.library` headers:
+
+```sh
+make -C developer/debug/test/kaffeine_target \
+    BUILD_DIR="$PWD/build-domain-process" NATIVE_CC=aarch64-aros-gcc \
+    "$PWD/build-domain-process/domain_fixture_native"
+```
+
+Run `domain_fixture_native moira` and `domain_fixture_native jit` separately
+on a disposable **uniprocessor** AROS ARM64 system. Each successful invocation
+reports 37 checks. The native caller pins the library, starts the 68k root
+through `RunHunk()`, and receives the root's result 55 while its child is
+still alive. It then overwrites and frees the original native arguments,
+unloads the source module and changes its directory and local backend setting
+before releasing the child.
+
+The child must retain its private CLI, arguments, directories, streams and
+IoErr, exchange the same 128-byte message and nested guest pointer with the
+root, save its proof and request `Exit(7)`. The controller checks bounded
+native-owner retirement and restores its original local backend variable.
+Files stay under `RAM:kaffeine-domain-moira` or `RAM:kaffeine-domain-jit`;
+copy each backend's `child/proof` before another invocation reuses that drawer.
+An outer VM deadline is required because `RunHunk()` itself is under test.
+Successful process checks do not establish GUI or editor acceptance.
+
+The optional host tool `domain_fixture_emit.c`, linked with
+`domain_fixture_hunks.c`, emits the same HUNKs for independent structural
+inspection. Its successful compilation is separate from target execution.
 
 ## Companion files
 

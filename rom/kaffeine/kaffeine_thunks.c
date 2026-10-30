@@ -44,6 +44,7 @@
 #include "kaffeine_display.h"
 #include "kaffeine_thunks_diskfont.h"
 #include "kaffeine_rastport.h"
+#include "kaffeine_gfxbase.h"
 #include "kaffeine_window.h"
 #include "kaffeine_menus.h"
 #include "kaffeine_gadgets.h"
@@ -55,6 +56,7 @@
 #include "kaffeine_icon.h"
 #include "kaffeine_layers.h"
 #include "kaffeine_regions.h"
+#include "kaffeine_remember.h"
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -136,6 +138,10 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
                 manual = kaffeine_thunks_layers_manual;
                 manual_count = kaffeine_thunks_layers_manual_count;
             }
+            if (strcmp(name, "graphics.library") == 0)
+                return Kaffeine_SetupGraphicsBase(ctx, manual, manual_count,
+                                                  kaffeine_all_gen_libs[i].thunks,
+                                                  kaffeine_all_gen_libs[i].count);
             return Kaffeine_SetupLibBase(ctx, ctx->num_libs, kaffeine_all_gen_libs[i].name,
                                         KAFFEINE_MAX_LVO,
                                         manual, manual_count,
@@ -551,15 +557,6 @@ static IPTR thunk_dos_AllocDosObject(struct KaffeineContext *ctx, void *cpu)
 
 /* ── DOS: Segments ── */
 
-/* -156: UnLoadSeg(D1=seglist): native DOS for its own seglists; that of a
-   68k library from disk is guest memory, which goes after its expunge */
-static IPTR thunk_dos_UnLoadSeg(struct KaffeineContext *ctx, void *cpu)
-{
-    if (!Kaffeine_IsM68KSegList(ctx, THUNK_D(1)))
-        UnLoadSeg((BPTR)THUNK_D(1));
-    return 0;
-}
-
 const struct M68KThunkEntry kaffeine_thunks_dos[] = {
     { 228, thunk_dos_AllocDosObject },
     KAFFEINE_DOS_FORMAT_OBJECT_THUNKS,
@@ -567,7 +564,6 @@ const struct M68KThunkEntry kaffeine_thunks_dos[] = {
     KAFFEINE_DOS_CLI_THUNKS,
     KAFFEINE_DOS_LAUNCH_THUNKS,
     KAFFEINE_DOS_LOCK_THUNKS,
-    { 156, thunk_dos_UnLoadSeg },
     { 132, thunk_dos_IoErr },
     { 462, thunk_dos_SetIoErr },
     {  90, thunk_dos_UnLock },
@@ -658,6 +654,7 @@ invalid:
 const struct M68KThunkEntry kaffeine_thunks_intuition_manual[] = {
     { 330, thunk_intuition_IntuiTextLength },
     { 348, thunk_intuition_AutoRequest },
+    KAFFEINE_INTUITION_REMEMBER_THUNKS,
     KAFFEINE_INTUITION_COMPAT_THUNKS,
     KAFFEINE_INTUITION_WINDOW_THUNKS,
     KAFFEINE_INTUITION_REQUEST_THUNKS,

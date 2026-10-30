@@ -74,6 +74,10 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
     {
         current = ctx->cpu;
         current->ops->execute(current->backend_state);
+        /* A failed start can retain native work and a staged CPU. Drain on
+           the live owner before a scheduler boundary can retire anything. */
+        if (!ctx->running && ctx->domain_drain)
+            while (!ctx->domain_drain(ctx)) { }
         /* A completed slice of the outermost loop: no thunk or callback is
            in flight, so a GUI snapshot may change under the guest here. */
         if (!outer && ctx->gui_poll && ctx->running &&
@@ -86,9 +90,16 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
             ctx->task_ops->boundary(ctx);
     }
 
+    if (ctx->domain_drain)
+        while (!ctx->domain_drain(ctx)) { }
     /* A stop in a child ends the whole program with that child's D0. */
     current = ctx->cpu;
-    ctx->exit_code = (LONG)Kaffeine_GetD(current, 0);
+    /* A refused thunk may return an ordinary failure value after StopGuest
+       set the authoritative failure code. Do not turn that stop into D0=0. */
+    if (!ctx->callback_failed)
+        ctx->exit_code = (LONG)Kaffeine_GetD(current, 0);
+    if (ctx->sched && !outer && !ctx->callback_failed && ctx->task_ops->root_result)
+        ctx->task_ops->root_result(ctx, &ctx->exit_code);
     if (current != cpu)
         Kaffeine_SetD(cpu, 0, (ULONG)ctx->exit_code);
     if (ctx->sched && !outer)
@@ -113,6 +124,11 @@ BOOL Kaffeine_CallGuest(struct KaffeineContext *ctx, void *cpu, ULONG entry,
     UWORD sr;
     unsigned i;
 
+    if (ctx->broker_call)
+    {
+        Kaffeine_StopGuest(ctx, cpu, 20);
+        return FALSE;
+    }
     if (!ctx->running)
         return FALSE;
     sp = Kaffeine_GetA(cpu, 7);

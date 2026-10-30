@@ -25,6 +25,10 @@ extern "C" {
 #endif
 void Signal(struct Task *, unsigned int);
 struct Task *FindTask(const char *);
+struct SignalSemaphore;
+void InitSemaphore(struct SignalSemaphore *);
+void ObtainSemaphore(struct SignalSemaphore *);
+void ReleaseSemaphore(struct SignalSemaphore *);
 #ifdef __cplusplus
 }
 #endif

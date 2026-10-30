@@ -302,10 +302,3 @@ IPTR Kaffeine_FreeColorMap(struct KaffeineContext *ctx, void *cpu)
 {
     return THUNK_A(0) ? refuse(ctx) : 0; /* A borrowed screen ColorMap cannot be freed. */
 }
-IPTR Kaffeine_VideoControl(struct KaffeineContext *ctx, void *cpu)
-{
-    (void)ctx; (void)cpu;
-    /* Native tags can contain monitor handles, viewports and output pointers.
-       Report the API's error until those tags have typed conversions. */
-    return 1;
-}

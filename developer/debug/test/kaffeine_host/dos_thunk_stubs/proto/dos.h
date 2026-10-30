@@ -52,6 +52,8 @@ void FreeDosObject(ULONG type, APTR object);
 APTR AllocDosObject(ULONG type, const struct TagItem *tags);
 SIPTR IoErr(void);
 SIPTR SetIoErr(SIPTR code);
+ULONG GetSegListInfo(BPTR, const struct TagItem *);
+void UnLoadSeg(BPTR);
 LONG StrToLong(CONST_STRPTR string, LONG *value);
 struct DateStamp *DateStamp(struct DateStamp *date);
 STRPTR FilePart(CONST_STRPTR path);

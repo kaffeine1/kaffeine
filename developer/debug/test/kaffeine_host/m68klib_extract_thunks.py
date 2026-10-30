@@ -32,10 +32,10 @@ def registration(text, lvo, name):
 dos_table = source[source.index("const struct M68KThunkEntry kaffeine_thunks_dos[]"):
                    source.index("const ULONG kaffeine_thunks_dos_count")]
 assert "KAFFEINE_DOS_BASE_THUNKS" in dos_table
-unload_entry = registration(dos_table, 156, "thunk_dos_UnLoadSeg")
+unload_entry = registration(dos_header, 156, "kaffeine_dos_UnLoadSeg")
 run_entry = registration(dos_header, 504, "kaffeine_dos_RunCommand")
 dos_bodies = "\n".join((
-    function(source, "static IPTR thunk_dos_UnLoadSeg("),
+    function(dos_source, "IPTR kaffeine_dos_UnLoadSeg("),
     function(dos_source, "static BOOL guest_range("),
     function(dos_source, "static const char *guest_string("),
     function(dos_source, "static IPTR bad_dos_buffer("),
@@ -51,6 +51,7 @@ Path(sys.argv[4]).write_text('''/* Generated from the production Exec and DOS th
 #include "kaffeine_locks.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_filehandle.h"
+#include "kaffeine_segments.h"
 #include "kaffeine_thunks_memory.h"
 extern IPTR m68klib_test_stop(struct KaffeineContext *, void *);
 ''' + source[start:end] + dos_bodies + '''

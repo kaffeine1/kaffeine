@@ -3335,6 +3335,9 @@ static void hj_execute(void *state)
     }
     if (pc >= SENTINEL_ADDR && pc < SENTINEL_ADDR + 2)
     {
+        if (!ctx->callback_depth && ctx->sched && ctx->task_ops->root_exit &&
+            ctx->task_ops->root_exit(ctx, &b->handle, (LONG)b->st.d[0]))
+            return;
         ctx->running = FALSE;
         if (ctx->callback_depth)
         {

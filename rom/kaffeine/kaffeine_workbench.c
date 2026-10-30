@@ -273,6 +273,15 @@ static struct MsgPort *inbox(struct KaffeineContext *ctx, int p)
     return &((struct AppPort *)ctx->app_ports[p].native)->inbox;
 }
 
+BOOL Kaffeine_AppPortMatches(struct KaffeineContext *ctx, ULONG guest, struct Task *driver, UBYTE bit)
+{
+    int p = port_index(ctx, guest);
+    struct MsgPort *box;
+    if (p < 0) return TRUE;
+    box = inbox(ctx, p);
+    return box->mp_Flags == PA_SIGNAL && box->mp_SigTask == driver && box->mp_SigBit == bit;
+}
+
 /* ── App objects ─────────────────────────────────────────────────── */
 
 static int object_index(struct KaffeineContext *ctx, ULONG guest, UBYTE kind)

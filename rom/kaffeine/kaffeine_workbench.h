@@ -20,6 +20,9 @@ extern const ULONG kaffeine_thunks_workbench_count;
    tail of the list as a 68k copy, after a native WaitPort() when wait is
    TRUE. FALSE for any other port, whose list stays as it is. */
 BOOL Kaffeine_AppPortFill(struct KaffeineContext *ctx, ULONG port, BOOL wait);
+/* Unknown ports match; an existing private App inbox must signal the same
+   driver and bit as another native producer borrowing that guest port. */
+BOOL Kaffeine_AppPortMatches(struct KaffeineContext *, ULONG, struct Task *, UBYTE);
 /* ReplyMsg() of a 68k copy of an AppMessage: the native message goes back
    to Workbench and the copy is freed. FALSE for any other message. */
 BOOL Kaffeine_AppReplyMsg(struct KaffeineContext *ctx, ULONG message);

@@ -13,6 +13,9 @@
 
 struct KaffeineContext;
 
+/* Trusted compiled bridge function, never a function pointer from the guest. */
+typedef IPTR (*KaffeineThunkFn)(struct KaffeineContext *ctx, void *cpu);
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,7 +24,7 @@ struct M68KThunkEntry
 {
     ULONG lvo;
     /* cpu points to the backend-independent KaffeineCPU handle. */
-    IPTR (*thunk)(struct KaffeineContext *ctx, void *cpu);
+    KaffeineThunkFn thunk;
 };
 
 /* Convenience macros for thunk implementations */

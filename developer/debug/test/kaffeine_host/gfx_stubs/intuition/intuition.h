@@ -288,6 +288,8 @@ struct PropInfo
 #define WA_Checkmark         (WA_Dummy + 10)
 #define WA_SuperBitMap       (WA_Dummy + 14)
 #define WA_AutoAdjust        (WA_Dummy + 45)
+/* Fixture-only optional SDK extension: production uses its SDK's value. */
+#define WA_UserPort          (WA_Dummy + 999)
 
 /* The NewWindow of OpenWindowTagList(), as AROS lays it out */
 struct BitMap;

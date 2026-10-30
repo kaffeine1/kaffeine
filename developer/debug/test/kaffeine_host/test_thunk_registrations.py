@@ -73,6 +73,7 @@ DISKFONT_NDK32 = {30: ("OpenDiskFont", ("A0",)), 42: ("NewFontContents", ("A0", 
 # These extensions have no public NDK slot; their register/slot oracle is
 # the checked-in native .conf, even when an external AROS fd is older.
 AROS_ONLY_FUNCTIONS = {
+    ("dos", 1176): "GetSegListInfo",
     ("dos", 1356): "AssignAddToList",
     ("intuition", 936): "GetDrawInfoAttr",
 }
@@ -108,6 +109,7 @@ GRAPHICS_BITMAP_REFUSED = frozenset((606, 636, 678, 918, 924, 942, 1020, 1206))
 # or other pen calls yet. ObtainBestPenA and ReleasePen are
 # manual handlers checked as native vector cases.
 GRAPHICS_PALETTE_REFUSED = frozenset((570, 834, 954, 1008))
+GRAPHICS_NODE_REFUSED = frozenset((660, 666, 672, 702))
 # Every graphics.conf vector that takes a Region but NewRegion, OrRectRegion
 # and DisposeRegion: the generated thunks would read a 68k Region as native.
 GRAPHICS_REGION_REFUSED = frozenset((504, 522, 528, 558, 612, 618, 624,
@@ -120,6 +122,8 @@ def module_name(library):
 
 
 CASES = (
+    ("intuition", "allocremember.c", "AllocRemember", "thunk_intuition_AllocRemember"),
+    ("intuition", "freeremember.c", "FreeRemember", "thunk_intuition_FreeRemember"),
     ("graphics", "openmonitor.c", "OpenMonitor", "thunk_gfx_OpenMonitor"),
     ("graphics", "closemonitor.c", "CloseMonitor", "thunk_gfx_CloseMonitor"),
     ("graphics", "getdisplayinfodata.c", "GetDisplayInfoData", "thunk_gfx_GetDisplayInfoData"),
@@ -257,6 +261,11 @@ CASES = (
     ("dos", "fputs.c", "FPuts", "kaffeine_dos_FPuts"),
     ("dos", "runcommand.c", "RunCommand", "kaffeine_dos_RunCommand"),
     ("dos", "newloadseg.c", "NewLoadSeg", "kaffeine_dos_NewLoadSeg"),
+    ("dos", "unloadseg.c", "UnLoadSeg", "kaffeine_dos_UnLoadSeg"),
+    ("dos", "addsegment.c", "AddSegment", "kaffeine_dos_SegmentUnsupported"),
+    ("dos", "findsegment.c", "FindSegment", "kaffeine_dos_SegmentUnsupported"),
+    ("dos", "remsegment.c", "RemSegment", "kaffeine_dos_SegmentUnsupported"),
+    ("dos", "getseglistinfo.c", "GetSegListInfo", "kaffeine_dos_SegmentUnsupported"),
     ("dos", "cliinitnewcli.c", "CliInitNewcli", "kaffeine_dos_CliInitNewcli"),
     ("dos", "cliinitrun.c", "CliInitRun", "kaffeine_dos_CliInitRun"),
     ("dos", "putstr.c", "PutStr", "kaffeine_dos_PutStr"),
@@ -482,16 +491,13 @@ CASES = (
     # Screen-owned pen leases: every fd register read, A1 by the tag walk.
     ("graphics", "obtainbestpena.c", "ObtainBestPenA", "Kaffeine_ObtainBestPenA"),
     ("graphics", "releasepen.c", "ReleasePen", "Kaffeine_ReleasePen"),
+    ("graphics", "videocontrol.c", "VideoControl", "Kaffeine_VideoControl"),
 )
 
 # Explicit table of manual handlers that intentionally ignore one or more
 # fd arguments, with the exact ignored register set and the reason.
 ALLOWED_IGNORED_REGS = {
     "thunk_diskfont_NewFontContents": (frozenset({"A0", "A1"}), "native FontContents are unsupported"),
-    "Kaffeine_VideoControl": (
-        frozenset({"A0", "A1"}),
-        "returns the documented error without forwarding unconverted pointer-bearing video tags",
-    ),
     "thunk_gfx_OpenMonitor": (frozenset({"A1", "D0"}), "owned native monitors are unsupported"),
     "thunk_gfx_CloseMonitor": (frozenset({"A0"}), "borrowed snapshots cannot close native monitors"),
     "thunk_gfx_FindDisplayInfo": (
@@ -853,13 +859,129 @@ def parse_task_delegates(core, functions):
     return dict(zip(members, targets))
 
 
-def handler_register_reads(name, functions, seen=None, task_ops=None):
+def matching_c_delimiter(text, start, opening, closing):
+    depth, quote, escaped = 0, None, False
+    for position in range(start, len(text)):
+        char = text[position]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if not depth:
+                return position
+    raise ValueError("unbalanced C expression in register audit")
+
+
+def split_c_expression(text, separator):
+    parts, start, position = [], 0, 0
+    while position < len(text):
+        char = text[position]
+        if char == "(":
+            position = matching_c_delimiter(text, position, "(", ")") + 1
+        elif char in ("'", '"'):
+            quote = char
+            position += 1
+            while position < len(text):
+                if text[position] == "\\":
+                    position += 2
+                elif text[position] == quote:
+                    position += 1
+                    break
+                else:
+                    position += 1
+        elif text.startswith(separator, position):
+            parts.append(text[start:position].strip())
+            position += len(separator)
+            start = position
+        else:
+            position += 1
+    return parts + [text[start:].strip()]
+
+
+def strip_outer_parentheses(text):
+    text = text.strip()
+    while text.startswith("(") and matching_c_delimiter(text, 0, "(", ")") == len(text) - 1:
+        text = text[1:-1].strip()
+    return text
+
+
+def process_lvo_constants(core, task_ops):
+    source = strip_c_comments((core / "kaffeine_sched.c").read_text())
+    target = task_ops.get("process_dos", "")
+    # Specialize only the actual third formal parameter, not a local or a
+    # guessed argument of an unrelated callback with the same member name.
+    if not re.search(r"\b" + re.escape(target) +
+                     r"\s*\([^,()]+,[^,()]+,\s*ULONG\s+lvo\s*,", source):
+        return {}
+    for enum in re.finditer(r"\benum(?:\s+\w+)?\s*\{([^{}]*)\}", source):
+        match = re.search(r"\bDOS_EXIT_LVO\s*=\s*(0[xX][0-9a-fA-F]+|[0-9]+)\s*(?:,|$)", enum.group(1))
+        if match:
+            return {"DOS_EXIT_LVO": int(match.group(1), 0)}
+    return {}
+
+
+def zero_lvo_body(body, constants):
+    # A modified/escaped parameter cannot retain its callsite value.
+    for symbol in ("lvo", *constants):
+        identifier = re.escape(symbol)
+        if re.search(r"\b" + identifier + r"\s*(?:=(?!=)|[+*/%&|^-]=|\+\+|--)|"
+                     r"(?:\+\+|--)\s*" + identifier + r"\b|(?<!&)&(?!&)\s*" + identifier + r"\b", body):
+            return body
+        if re.search(r"\b\w+\s+" + identifier + r"\b|\benum\b[^;{}]*\{[^{}]*\b" + identifier + r"\b", body):
+            return body  # conservatively reject shadowed parameters/constants
+    cursor = 0
+    while (match := re.search(r"\bif\s*\(", body[cursor:])):
+        start = cursor + match.start()
+        opening = cursor + match.end() - 1
+        closing = matching_c_delimiter(body, opening, "(", ")")
+        condition = strip_outer_parentheses(body[opening + 1:closing])
+        terms = split_c_expression(condition, "&&")
+        guard = None
+        for i, term in enumerate(terms):
+            equality = re.fullmatch(r"lvo\s*==\s*(\w+)|(\w+)\s*==\s*lvo",
+                                    strip_outer_parentheses(term))
+            if equality and constants.get(equality.group(1) or equality.group(2), 0) != 0:
+                guard = i
+                break
+        block = closing + 1
+        while block < len(body) and body[block].isspace():
+            block += 1
+        cursor = closing + 1
+        if guard is None or block >= len(body) or body[block] != "{":
+            continue
+        end = matching_c_delimiter(body, block, "{", "}") + 1
+        # Leave unfamiliar control flow conservative, including else paths.
+        if re.match(r"\s*else\b", body[end:]):
+            continue
+        # In C, preceding && operands may already have read registers. Keep
+        # those operands; only the false comparison's suffix/body cannot run.
+        prefix = "(" + " && ".join(terms[:guard]) + ");" if guard else ""
+        body = body[:start] + prefix + body[end:]
+        cursor = start + len(prefix)
+    return body
+
+
+def handler_register_reads(name, functions, seen=None, task_ops=None,
+                           lvo_constants=None, zero_lvo=False):
     if seen is None:
         seen = set()
-    if name in seen or name not in functions:
+    state = (name, zero_lvo)
+    if state in seen or name not in functions:
         return set()
-    seen.add(name)
+    seen.add(state)
     body = functions[name]
+    if zero_lvo:
+        body = zero_lvo_body(body, lvo_constants or {})
     regs = direct_register_reads(body)
     for callee in re.findall(r"\b([A-Za-z_]\w*)\s*\(", body):
         # These CPU operations save/restore architectural state or propagate
@@ -867,12 +989,67 @@ def handler_register_reads(name, functions, seen=None, task_ops=None):
         if callee in {"Kaffeine_CallGuest", "Kaffeine_StopGuest"}:
             continue
         if callee in functions and callee != name:
-            regs |= handler_register_reads(callee, functions, seen, task_ops)
-    for member in re.findall(r"\bctx->task_ops->(\w+)\s*\(", body):
+            regs |= handler_register_reads(callee, functions, seen, task_ops, lvo_constants)
+    for call in re.finditer(r"\bctx->task_ops->(\w+)\s*\(", body):
+        member = call.group(1)
         if not task_ops or member not in task_ops:
             raise ValueError("unresolved guest task operation: " + member)
-        regs |= handler_register_reads(task_ops[member], functions, seen, task_ops)
+        opening = call.end() - 1
+        closing = matching_c_delimiter(body, opening, "(", ")")
+        args = split_c_expression(body[opening + 1:closing], ",")
+        # PutMsg's DOS-packet guard explicitly passes LVO zero. It cannot
+        # read Exit's D1 argument, but nonconstant/Exit calls still can.
+        is_zero = (member == "process_dos" and len(args) == 4 and
+                   re.fullmatch(r"0[UuLl]*", args[2]) is not None)
+        regs |= handler_register_reads(task_ops[member], functions, seen, task_ops,
+                                       lvo_constants, is_zero)
     return regs
+
+
+def check_zero_lvo_register_audit():
+    functions = {
+        "put": "{ return route(ctx, THUNK_A(0), THUNK_A(1), THUNK_D(0)); }",
+        "route": "{ return ctx->task_ops->process_dos(ctx, cpu, 0, &out); }",
+        "process": "{ if (task == root && lvo == DOS_EXIT_LVO && Kaffeine_GetD(cpu, 1)) "
+                   "{ return Kaffeine_GetD(cpu, 1); } return FALSE; }",
+    }
+    delegates, constants = {"process_dos": "process"}, {"DOS_EXIT_LVO": 144}
+    def reads(changes=None, symbols=constants):
+        return handler_register_reads("put", dict(functions, **(changes or {})),
+                                      task_ops=delegates, lvo_constants=symbols)
+    controls = [
+        (reads() == {"A0", "A1", "D0"}, "constant-zero guard"),
+        ("D1" in reads({"put": functions["put"].replace("THUNK_A(0)", "THUNK_D(1)")}),
+         "direct wrong PutMsg argument"),
+        ("D1" in reads({"route": functions["route"].replace(", 0,", ", selected_lvo,")}),
+         "nonconstant DOS delegate"),
+        ("D1" in reads({"route": functions["route"].replace(", 0,", ", DOS_EXIT_LVO,")}),
+         "Exit DOS delegate"),
+        ("D1" in reads({"process": "{ Kaffeine_GetD(cpu, 1);" + functions["process"][1:]}),
+         "unconditional delegate read"),
+        ("D1" in reads({"process": "{ if (Kaffeine_GetD(cpu, 1) && lvo == DOS_EXIT_LVO) { return TRUE; } }"}),
+         "read before short-circuit guard"),
+        ("D1" in reads({"process": "{ if (lvo == DOS_EXIT_LVO || Kaffeine_GetD(cpu, 1)) { return TRUE; } }"}),
+         "non-dominating OR guard"),
+        ("D1" in reads({"route": "{ ctx->task_ops->process_dos(ctx, cpu, 0, &out); "
+                                 "return ctx->task_ops->process_dos(ctx, cpu, selected_lvo, &out); }"}),
+         "mixed callsite memoization"),
+        ("D1" in reads({"process": "{ lvo = DOS_EXIT_LVO;" + functions["process"][1:]}),
+         "modified parameter"),
+        ("D1" in reads({"process": "{ mutate(&lvo);" + functions["process"][1:]}),
+         "escaped parameter"),
+        ("D1" in reads({"process": "{ ULONG DOS_EXIT_LVO = 0;" + functions["process"][1:]}),
+         "shadowed guard constant"),
+        ("D1" in reads({"process": "{ { ULONG lvo;" + functions["process"][1:] + "}"}),
+         "shadowed parameter"),
+        ("D1" in reads({"process": "{ enum { DOS_EXIT_LVO };" + functions["process"][1:]}),
+         "shadowed enum constant"),
+        ("D1" in reads(symbols={}), "unproved guard constant"),
+    ]
+    for passed, label in controls:
+        if not passed:
+            raise ValueError("constant-LVO register audit failed: " + label)
+    return len(controls)
 
 
 # Handlers whose name cannot be the one of the function they implement
@@ -1000,6 +1177,8 @@ def main():
 
     functions = parse_c_functions(core)
     task_ops = parse_task_delegates(core, functions)
+    lvo_constants = process_lvo_constants(core, task_ops)
+    print("PASS constant-LVO register audit (" + str(check_zero_lvo_register_audit()) + " controls)")
     total_manual = 0
     seen_ignored = set()
     seen_console_refusals = set()
@@ -1009,6 +1188,7 @@ def main():
     seen_graphics_region_refusals = set()
     seen_graphics_bitmap_refusals = set()
     seen_graphics_palette_refusals = set()
+    seen_graphics_node_refusals = set()
     seen_cybergraphics_bitmap_refusals = set()
     palette_refused = re.findall(
         r"IPTR Kaffeine_PaletteUnsupported\([^\n]*\n\{(.*?)\n\}",
@@ -1016,6 +1196,12 @@ def main():
     if len(palette_refused) != 1 or not re.fullmatch(
             r'\s*\(void\)cpu;\s*return refuse\(ctx\);\s*', palette_refused[0]):
         raise ValueError("Palette refusal slots must only stop the guest")
+    if not re.fullmatch(
+            r'\s*\{\s*\(void\)cpu;\s*'
+            r'Kaffeine_MessageFailure\(ctx,\s*"untyped graphics extended node"\);\s*'
+            r'ctx->callback_failed\s*=\s*TRUE;\s*return 20;\s*\}\s*',
+            functions.get("Kaffeine_VideoControlUnsupported", "")):
+        raise ValueError("Graphics node refusal slots must only stop the guest")
     bitmap_refused = re.findall(
         r"IPTR kaffeine_bitmaps_Unsupported\([^\n]*\n\{(.*?)\n\}",
         sources["kaffeine_layers.c"], re.DOTALL)
@@ -1070,6 +1256,11 @@ def main():
             root, library, args.ndk_fd_dir, args.aros_fd_dir)
         for vector, handler in registrations[library]:
             total_manual += 1
+            if handler == "kaffeine_dos_SegmentUnsupported":
+                if library != "dos" or vector not in {774, 780, 786, 1176}:
+                    failures += 1
+                    print("FAIL unexpected native DOS segment refusal", library, vector)
+                continue
             if handler in {"kaffeine_dos_UnsupportedLockObject", "kaffeine_dos_ReadLinkUnsupported"}:
                 allowed = ({438} if handler.endswith("ReadLinkUnsupported") else
                            {480, 654, 660, 666, 672, 678, 684, 690, 696, 702})
@@ -1083,6 +1274,13 @@ def main():
                     print("FAIL", module_name(library), -vector, "unexpected GELS refusal slot")
                 else:
                     seen_gels_refusals.add(vector)
+                continue
+            if handler == "Kaffeine_VideoControlUnsupported":
+                if library != "graphics" or vector not in GRAPHICS_NODE_REFUSED:
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, "unexpected graphics node refusal slot")
+                else:
+                    seen_graphics_node_refusals.add(vector)
                 continue
             if handler == "device_unsupported":
                 if library not in DEVICE_REFUSED or vector not in DEVICE_REFUSED[library]:
@@ -1166,7 +1364,8 @@ def main():
                       "definition not found in rom/kaffeine")
                 continue
 
-            read_regs = handler_register_reads(handler, functions, task_ops=task_ops)
+            read_regs = handler_register_reads(handler, functions, task_ops=task_ops,
+                                               lvo_constants=lvo_constants)
             # Reading a register only to discard its value does not implement
             # that argument. Explicit refusal bodies must account for it as
             # ignored, just like handlers that do not read it at all.
@@ -1231,6 +1430,9 @@ def main():
     if seen_graphics_palette_refusals != GRAPHICS_PALETTE_REFUSED:
         failures += 1
         print("FAIL graphics.library palette refusal slots changed")
+    if seen_graphics_node_refusals != GRAPHICS_NODE_REFUSED:
+        failures += 1
+        print("FAIL graphics.library node refusal slots changed")
     if seen_cybergraphics_bitmap_refusals != CYBERGRAPHICS_BITMAP_REFUSED:
         failures += 1
         print("FAIL cybergraphics.library bitmap refusal slots changed")

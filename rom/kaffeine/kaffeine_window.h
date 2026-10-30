@@ -69,6 +69,15 @@ void Kaffeine_WindowsCleanup(struct KaffeineContext *ctx);
 ULONG Kaffeine_UserPortCreate(struct KaffeineContext *ctx, struct MsgPort *port);
 void Kaffeine_UserPortDelete(struct KaffeineContext *ctx, ULONG guest);
 
+/* ModifyIDCMP can borrow a complete ordinary PA_SIGNAL guest port, including
+   a manually allocated one. The owner must be live and own its signal. A
+   private native inbox signals the fixed driver; guest addresses never enter
+   Intuition. Several windows may borrow it. Get/Wait/GT_GetIMsg serve the
+   bounded ordinary guest FIFO (and Workbench copies) before native IDCMP.
+   Closing/disabling a window retires only that window's messages; neither
+   its caller-owned port nor its signal is freed. Optional Context hooks
+   retire peers before port/signal/owner/storage reuse and final cleanup. */
+
 IPTR Kaffeine_GetMsg(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_ReplyMsg(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu);

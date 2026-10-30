@@ -52,7 +52,11 @@ static void message_take(struct KaffeineContext *c, struct IntuiMessage *m) { (v
 static void message_reply(struct KaffeineContext *c, struct IntuiMessage *m) { (void)c;(void)m;abort(); }
 static BOOL Kaffeine_AppPortFill(struct KaffeineContext *c, ULONG p, BOOL w) { (void)c;(void)p;(void)w;return FALSE; }
 static BOOL Kaffeine_AppReplyMsg(struct KaffeineContext *c, ULONG m) { (void)c;(void)m;return FALSE; }
+static int shared_ready(struct KaffeineContext *c, ULONG p, BOOL w, struct MsgPort **n, IPTR *r)
+{ (void)p;(void)w;(void)n;(void)r;if(c->idcmp_ports)abort();return 0; }
+ULONG Wait(ULONG signals) { (void)signals;abort(); }
 static void Kaffeine_AppPortGone(struct KaffeineContext *c, ULONG p) { (void)c;(void)p; }
+static void Kaffeine_AppSignalGone(struct KaffeineContext *c, BYTE b) { (void)c;(void)b; }
 static IPTR refuse(struct KaffeineContext *c, const char *s) { return Kaffeine_MessageFailure(c,s); }
 '''
 text += '#define GUEST_FIB_SIZE 260\n'

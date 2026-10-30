@@ -2205,7 +2205,7 @@ static void test_keyboard_matrix()
     m68k_write32(&f.ctx,message,queue+24);m68k_write32(&f.ctx,message+4,queue+20);
     f.memory[message+LN_TYPE]=NT_MESSAGE;m68k_write16(&f.ctx,message+MN_LENGTH,20);
     f.ctx.message_ports[0]=queue;
-    f.ctx.shadow_map[0]={task_shadow,&owner_task,258};f.ctx.num_shadows=1;
+    f.ctx.shadow_map[0]={task_shadow,&owner_task,258, 0 };f.ctx.num_shadows=1;
     f.ctx.fonts[0].guest=font;f.ctx.fonts[0].allocation_size=64;
     struct { ULONG req, length, data; const char *what; } bad[] = {
         { r, 4, 0, "io_Data NULL" },

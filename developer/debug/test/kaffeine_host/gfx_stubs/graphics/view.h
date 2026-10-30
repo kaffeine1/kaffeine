@@ -1,5 +1,8 @@
 #pragma once
 #include <exec/types.h>
+#include <graphics/gfx.h>
+#include <graphics/displayinfo.h>
+#include <graphics/gfxnodes.h>
 
 struct ColorMap
 {
@@ -36,4 +39,16 @@ struct ViewPort
     UWORD Modes;
     UBYTE SpritePriorities, ExtendedModes;
     struct RasInfo *RasInfo;
+};
+
+/* Native public layout from compiler/include/graphics/view.h. */
+struct ViewPortExtra
+{
+    struct ExtendedNode n;
+    struct ViewPort *ViewPort;
+    struct Rectangle DisplayClip;
+    APTR VecTable, DriverData[2];
+    UWORD Flags;
+    Point Origin[2];
+    ULONG cop1ptr, cop2ptr;
 };

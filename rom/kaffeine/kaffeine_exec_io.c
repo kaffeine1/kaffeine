@@ -128,6 +128,7 @@ IPTR Kaffeine_FreeSignal(struct KaffeineContext *ctx, void *cpu)
     }
     /* the App objects that send to a port with this signal go first */
     Kaffeine_AppSignalGone(ctx, sig);
+    if (ctx->idcmp_signal_gone) ctx->idcmp_signal_gone(ctx, sig);
     ctx->guest_signals &= ~(1UL << sig);
     FreeSignal(sig);
     return 0;
@@ -228,9 +229,12 @@ IPTR Kaffeine_DeleteMsgPort(struct KaffeineContext *ctx, void *cpu)
     if (ctx->sched && !ctx->task_ops->signal_freeable(ctx, entry->sigbit))
         return Kaffeine_IORefuse(ctx, "DeleteMsgPort(): signal belongs to another guest task");
     Kaffeine_AppPortGone(ctx, port);
+    if (ctx->idcmp_port_gone) ctx->idcmp_port_gone(ctx, port);
     if (entry->sigbit >= 0 && entry->sigbit < 32 &&
         (ctx->guest_signals & (1UL << entry->sigbit)))
     {
+        Kaffeine_AppSignalGone(ctx, entry->sigbit);
+        if (ctx->idcmp_signal_gone) ctx->idcmp_signal_gone(ctx, entry->sigbit);
         ctx->guest_signals &= ~(1UL << entry->sigbit);
         FreeSignal(entry->sigbit);
     }
@@ -1574,6 +1578,7 @@ void Kaffeine_IOCleanup(struct KaffeineContext *ctx)
         bug("[kaffeine] I/O cleanup outside the task that ran the guest, leaving it\n");
         return;
     }
+    if (ctx->idcmp_cleanup) ctx->idcmp_cleanup(ctx);
     /* Nothing reaches the guest from here on. Copies go first, then the
        original opens, including orphans. Take back each in-flight request
        before it closes; the shared port stays until all requests are gone. */

@@ -60,6 +60,13 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   queues, `ExAll`/`ExAllEnd`, FileHandle DOS packets and guest ports for
   native DOS handlers (`DeviceProc`, `GetDeviceProc`, `FreeDeviceProc`,
   `GetConsoleTask`, `SetConsoleTask`, `GetFileSysTask`, `SetFileSysTask`).
+- Typed `LoadSeg()` / `CreateNewProc()` starts 68k children in a shared
+  pointer domain, with separate native DOS owners and child lifetime beyond
+  root return. The original target fixture passes 37 checks in each Shell
+  and Run invocation with both Moira and JIT on uniprocessor AROS ARM64.
+  See the [process contract](docs/kaffeine/guest-processes.md) and
+  [application status](docs/kaffeine/classic-applications.md) for supported
+  tags, ownership rules and the remaining TurboText GUI blocker.
 - The original 68k Personal Paint 7.2.1.0 opens from a native desktop icon
   in AROS AArch64/QEMU. The [recorded demonstration](docs/kaffeine/personal-paint-demo.md)
   starts with a 24-bit Workbench, selects a 1024×768 canvas with a 256-entry
@@ -82,9 +89,9 @@ identities for intercepted lookups. Public guest ports and semaphores have
 their own guest nodes.
 
 The default AROS path uses the Moira interpreter; standalone AArch64 can
-also select the experimental JIT. Complete
-application operation, an FPU, new guest DOS processes (`CreateProc`,
-`CreateNewProc`), general asynchronous device I/O, communication between
+also select the experimental JIT. Guest DOS processes follow the typed
+contract above. Complete application operation, an FPU,
+general asynchronous device I/O, communication between
 separate guest contexts and physical hardware remain unverified or
 unsupported within the current contracts.
 

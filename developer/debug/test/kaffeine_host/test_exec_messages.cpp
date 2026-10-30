@@ -88,8 +88,8 @@ static void invalid()
             case 10:f.ctx.mem[f.port+14]=0;f.ctx.mem[f.port+15]=2;f.w(f.port+16,f.task);break;
             case 11:f.ctx.mem[f.port+14]=0;f.ctx.guest_signals=4;f.ctx.mem[f.port+15]=2;f.w(f.port+16,f.task+2);break;
             case 12:f.w(f.port+16,f.task+2);break;
-            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.msg+30,reinterpret_cast<void *>(1),8};break;
-            case 14:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.port+2,reinterpret_cast<void *>(1),4};break;
+            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.msg+30,reinterpret_cast<void *>(1),8, 0 };break;
+            case 14:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.port+2,reinterpret_cast<void *>(1),4, 0 };break;
             case 15:f.w(f.port+20,f.port+24+2);break;
         }
         if(which==8){f.message(f.ctx.mem_size-32,0,20);m68k_write16(&f.ctx,f.ctx.mem_size-14,68);f.rejected(f.port,f.ctx.mem_size-32);}
@@ -501,12 +501,25 @@ static void process_packet_gate()
         }
 }
 
+static void io_request_cannot_be_its_own_port()
+{
+    Fixture f;
+    auto &request=f.ctx.io_requests[0];
+    request.guest=f.port; request.port=f.port; request.capacity=40; request.replied=1;
+    KaffeineQueue queue{};
+    auto before=f.bytes();
+    check(!Kaffeine_QueueRead(&f.ctx,f.port,&queue) && f.bytes()==before,
+          "a replied typed IORequest cannot impersonate its own MsgPort through the node exemption");
+    request={};
+}
+
 int main()
 {
     fifo();ignore_and_null_reply();invalid();allocation_failures();real_shadows_and_port_lifetimes();queue_capacity_and_membership();manual_port_identity_and_owned_signal();read_after_arrival_metadata_change();inspection_ignores_other_arrival_metadata();
     released_manual_port_storage();
     retired_port_signal();
     process_packet_gate();
+    io_request_cannot_be_its_own_port();
     async_requests();
     check(allocated_signals==0,"all owned native signals are released");
     check(native_blocks.empty(),"all native heap records and allocations are released");

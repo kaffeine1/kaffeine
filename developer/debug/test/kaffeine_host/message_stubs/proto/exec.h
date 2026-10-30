@@ -21,6 +21,7 @@ void RawPutChar(UBYTE);
 void PutMsg(struct MsgPort *, struct Message *);
 struct Message *GetMsg(struct MsgPort *);
 struct Message *WaitPort(struct MsgPort *);
+ULONG Wait(ULONG);
 void ReplyMsg(struct Message *);
 #ifdef __cplusplus
 }

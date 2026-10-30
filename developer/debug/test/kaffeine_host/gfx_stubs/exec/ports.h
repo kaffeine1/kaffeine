@@ -16,3 +16,4 @@ struct Message
     UWORD mn_Length;
 };
 #define PA_SIGNAL 0
+#define PA_IGNORE 2

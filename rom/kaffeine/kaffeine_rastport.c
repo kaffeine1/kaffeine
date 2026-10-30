@@ -87,6 +87,7 @@ BOOL Kaffeine_ShadowAdd(struct KaffeineContext *ctx, ULONG guest, void *native, 
     ctx->shadow_map[ctx->num_shadows].m68k_addr = guest;
     ctx->shadow_map[ctx->num_shadows].native_ptr = native;
     ctx->shadow_map[ctx->num_shadows].type = type;
+    ctx->shadow_map[ctx->num_shadows].idcmp_window = 0;
     ctx->num_shadows++;
     return TRUE;
 }
@@ -374,8 +375,77 @@ void Kaffeine_FontClosed(struct KaffeineContext *ctx, ULONG guest)
     font_release(ctx, guest);
 }
 
-/* End of the context, after its native UI calls have finished. Only opens
-   acquired by OpenFont/OpenDiskFont are ours to close, never borrowed ones. */
+/* The system owns the source font. Acquire an exact additional native
+ * open before the view is built, so preference changes cannot retire it. */
+BOOL Kaffeine_FontHoldBegin(struct KaffeineContext *ctx, struct TextFont *font,
+                            struct KaffeineFontHold *hold)
+{
+    struct TTextAttr attr;
+    struct TextFont *opened;
+    BOOL fresh;
+    ULONG guest;
+    if (!hold) return FALSE;
+    memset(hold, 0, sizeof(*hold));
+    if (!ctx || !font || !font->tf_Message.mn_Node.ln_Name ||
+        (font->tf_Style & FSF_COLORFONT) || font->tf_Accessors == (UWORD)0xffff)
+        return FALSE;
+    attr.tta_Name = font->tf_Message.mn_Node.ln_Name;
+    attr.tta_YSize = font->tf_YSize;
+    attr.tta_Style = font->tf_Style & (UBYTE)~FSF_TAGGED;
+    attr.tta_Flags = font->tf_Flags;
+    attr.tta_Tags = NULL;
+    opened = OpenFont((struct TextAttr *)&attr);
+    if (opened != font)
+    {
+        if (opened) CloseFont(opened);
+        return FALSE;
+    }
+    fresh = font_index(ctx, 0, font) < 0;
+    guest = Kaffeine_FontGuest(ctx, font);
+    if (!guest) { CloseFont(opened); return FALSE; }
+    hold->native = font; hold->guest = guest;
+    hold->fresh = fresh; hold->active = TRUE;
+    return TRUE;
+}
+
+void Kaffeine_FontHoldEnd(struct KaffeineContext *ctx, struct KaffeineFontHold *hold, BOOL publish)
+{
+    int i;
+    if (!hold || !hold->active) return;
+    i = font_index(ctx, hold->guest, hold->native);
+    /* A successful Begin's native-only lease cannot disappear on this
+     * serial driver before End; no guest receives it before publication. */
+    if (publish)
+    {
+        ctx->fonts[i].pinned = TRUE;
+        if (!ctx->fonts[i].opens && !ctx->fonts[i].retained)
+            ctx->fonts[i].retained = TRUE; /* adopts our held native open */
+        else
+            CloseFont(hold->native); /* another tracked open already keeps it */
+    }
+    else if (hold->fresh)
+    {
+        if (!Kaffeine_MirrorAbort(ctx, hold->guest))
+        {
+            /* Corrupt allocator mirrors must not leave a dangling native
+             * font. Retain the unpublished view until quiescent cleanup. */
+            ctx->fonts[i].pinned = ctx->fonts[i].retained = TRUE;
+            ctx->running = FALSE; ctx->callback_failed = TRUE; ctx->exit_code = 20;
+            hold->active = FALSE;
+            return;
+        }
+        memset(&ctx->fonts[i], 0, sizeof(ctx->fonts[i]));
+        CloseFont(hold->native);
+    }
+    else
+        CloseFont(hold->native);
+    if (publish || !hold->fresh)
+        m68k_write16(ctx, hold->guest + G_TF_ACCESSORS, hold->native->tf_Accessors);
+    hold->active = FALSE;
+}
+
+/* End of the context, after native UI calls: close guest opens and the
+   exact owned open retained for a pinned default font or referenced font. */
 void Kaffeine_FontsCleanup(struct KaffeineContext *ctx)
 {
     int i;

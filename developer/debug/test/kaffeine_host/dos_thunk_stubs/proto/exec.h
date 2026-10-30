@@ -11,6 +11,10 @@ APTR AllocMem(ULONG byteSize, ULONG requirements);
 void FreeMem(APTR memory, ULONG size);
 void FreeVec(APTR memory);
 void RawPutChar(UBYTE character);
+struct SignalSemaphore;
+void InitSemaphore(struct SignalSemaphore *);
+void ObtainSemaphore(struct SignalSemaphore *);
+void ReleaseSemaphore(struct SignalSemaphore *);
 
 #ifdef __cplusplus
 }

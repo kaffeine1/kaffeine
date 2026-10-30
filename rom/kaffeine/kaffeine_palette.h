@@ -2,6 +2,7 @@
 #ifndef KAFFEINE_PALETTE_H
 #define KAFFEINE_PALETTE_H
 #include "kaffeine_thunks.h"
+#include "kaffeine_videocontrol.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,6 +16,7 @@ IPTR Kaffeine_SetRGB4CM(struct KaffeineContext *, void *);
 IPTR Kaffeine_SetRGB32CM(struct KaffeineContext *, void *);
 IPTR Kaffeine_PaletteUnsupported(struct KaffeineContext *, void *);
 IPTR Kaffeine_VideoControl(struct KaffeineContext *, void *);
+IPTR Kaffeine_VideoControlUnsupported(struct KaffeineContext *, void *);
 IPTR Kaffeine_FreeColorMap(struct KaffeineContext *, void *);
 /* ObtainBestPenA() and ReleasePen() on the ColorMap of a live 68k Screen
    of the program, each successful result a lease of the program that
@@ -36,6 +38,7 @@ void Kaffeine_PensCleanup(struct KaffeineContext *);
     { 576, Kaffeine_FreeColorMap }, \
     { 582, Kaffeine_GetRGB4 }, \
     { 630, Kaffeine_SetRGB4CM }, \
+    KAFFEINE_GRAPHICS_VIDEO_NODE_THUNKS, \
     { 708, Kaffeine_VideoControl }, \
     { 834, Kaffeine_PaletteUnsupported }, \
     { 840, Kaffeine_ObtainBestPenA }, \

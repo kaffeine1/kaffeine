@@ -119,7 +119,7 @@ static void packet_failures()
             case 27:f.w(token*4+36,0);break;
             case 28:f.w(f.exec_base+276,f.task+4);break;
             case 29:f.w(f.msg+44,f.ctx.mem_size-4);break;
-            case 30:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.buffer+2,reinterpret_cast<void *>(1),8};break;
+            case 30:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.buffer+2,reinterpret_cast<void *>(1),8, 0 };break;
         }
         f.rejected(handler);
     }
@@ -530,7 +530,7 @@ static void packet_disk_info()
             case 5:addr=handler;break;
             case 6:f.dos(306,token);addr=f.r(token*4+12)*4;break;
             case 7:f.message(f.msg+0x100);f.exec(366,f.reply,f.msg+0x100);addr=f.msg+0x100;break;
-            case 8:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={out,reinterpret_cast<void *>(1),8};break;
+            case 8:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={out,reinterpret_cast<void *>(1),8, 0 };break;
             case 9:f.ctx.io_requests[0].guest=out;f.ctx.io_requests[0].capacity=48;break;
             case 10:f.ctx.app_ports[0].guest=out;f.ctx.app_ports[0].native=reinterpret_cast<MsgPort *>(1);break;
         }
@@ -652,7 +652,7 @@ static void cleared_packet_failures()
                 break;
             case 11:f.manual_port(msg+48);f.w(msg+24,msg+48);break;
             case 12:f.ctx.io_requests[0].guest=msg;f.ctx.io_requests[0].capacity=68;break;
-            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={msg+2,reinterpret_cast<void *>(1),8};break;
+            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={msg+2,reinterpret_cast<void *>(1),8, 0 };break;
             case 14:f.ctx.mem[f.reply+14]=1;break;
             case 15:f.ctx.mem[f.reply+14]=0;f.ctx.mem[f.reply+15]=4;f.w(f.reply+16,f.task);break;
             case 16:f.w(f.reply+20,f.reply+20);break;
@@ -690,8 +690,47 @@ static void cleared_packet_failures()
     }
 }
 
+static void process_stream_retirement()
+{
+    {
+        Fixture f;
+        ULONG token = f.dos(54); BPTR original = native_input;
+        const SIPTR wide = static_cast<SIPTR>(0x123456789ABCULL);
+        ioerr = wide;
+        Kaffeine_FileDropBorrowed(&f.ctx, token);
+        check(!native_input && !closes && ioerr == wide,
+              "root completion detaches borrowed input without closing caller handle or narrowing IoErr");
+        auto after = f.bytes();
+        Kaffeine_FileDropBorrowed(&f.ctx, token);
+        check(f.bytes() == after && !closes, "repeated borrowed-stream retirement is idempotent");
+        BPTR ignored = nullptr;
+        check(!Kaffeine_FileResolve(&f.ctx, token, &ignored) && !closes,
+              "retired stream token cannot resolve a caller handle that may be closed");
+        f.ctx.running = TRUE;
+        native_input = original;
+        ULONG fresh = f.dos(54);
+        check(fresh && fresh != token, "a later import of the same native handle gets a fresh guest identity");
+    }
+    {
+        Fixture f;
+        ULONG owned = f.open(); BPTR handle = nullptr;
+        Kaffeine_FileDropNative(&f.ctx, open_result, TRUE);
+        check(Kaffeine_FileResolve(&f.ctx, owned, &handle) && handle == open_result && !closes,
+              "borrowed-only retirement preserves a guest-owned open file");
+        const SIPTR wide = static_cast<SIPTR>(0x23456789ABCDULL);
+        ioerr = wide;
+        Kaffeine_FileDropNative(&f.ctx, open_result, FALSE);
+        check(!closes && ioerr == wide, "broker retirement drops aliases before native DOS closes its stream");
+        Kaffeine_FileCleanup(&f.ctx);
+        check(!closes, "common cleanup cannot close a stream already assigned to native DOS teardown");
+        Close(open_result);
+        check(closes == 1, "the native owner closes its retired stream exactly once");
+    }
+}
+
 int main()
 {
+    process_stream_retirement();
     cleared_file_packets();cleared_handler_packets();cleared_packet_failures();
     measured_reads();unused_message_reply_port();packet_failures();identities();buffering();ownership_failures();sequential_handles_and_selected_close();all_handle_entry_points();packet_reply_queue_preflight();bounded_packet_diagnostics();application_read_then_reserved_waitport();
     packet_writes();packet_seeks();packet_scalar_actions();packet_disk_info();nil_filehandle();
