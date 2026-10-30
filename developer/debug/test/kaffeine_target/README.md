@@ -77,7 +77,7 @@ at the end.
 | `xz_libnix.c` | What `xz` needs beyond libnix: `sigaction()` on `signal()`, `sigprocmask()` with nothing to block, `fcntl()` that gives no flags and sets none, `poll()` that finds every descriptor ready, and `fchmod()` and `fchown()`, which succeed without doing anything. |
 | `mbedtls_config.h` | The configuration of mbed TLS 3.6.7 for `mbedtls_selftest`, the same for its host build: the modules whose self-tests it runs, with every cipher mode and elliptic curve, without the network, the clock, files and entropy. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, and `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, and `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -148,9 +148,11 @@ starts or ends with stray bits. The zlib programs keep `-fno-peephole2`
 also with an `M68K_CFLAGS` of your own. None of the other programs here,
 bzip2 and the IJG JPEG library included, has the pattern today.
 
-Set `BZIP2_SRC` to an unpacked bzip2 1.0.8 source tree to include its test
-executable. Its sample input and reference output files are supplied by
-that source distribution.
+Set `BZIP2_SRC` to the bzip2 1.0.8 tree that the AROS build fetches for its
+Ports to include `bzip2`. The Makefile collects the three sample pairs of
+the distribution and two damaged copies of `sample1.bz2` in
+`build/bzip2-files`, and `make bzip2-refs` writes the reference outputs to
+`build/bzip2-refs`.
 
 Set `JPEG_SRC` to an unpacked IJG JPEG library 9f source tree, such as the
 one that the AROS build fetches for its Ports, to include `cjpeg`, `djpeg`
@@ -393,6 +395,7 @@ compile and evaluate this emitted Hook; see that directory's README.
 | `exec_libraries` | `--files exec_libraries build/exec_libraries-files` |
 | `exec_packets` | `--files exec_packets build/exec_packets-files` |
 | `hunk_process_native` (native parent) | `--files hunk_process_native build-hunk-process` (includes its 68k payload) |
+| each step of `bzip2` | `--files NAME build/bzip2-files` |
 | each step of `pngtest` | `--files NAME build/pngtest-files` |
 | each step of `xmlwf` | `--files NAME build/xmlwf-files` |
 | each step of `xz` | `--files NAME build/xz-files` |
@@ -423,6 +426,47 @@ For example, with `J` the jpeg-9f directory, the first step is
 --expect jpeg_d_ppm $J/testimg.ppm jpeg_d_ppm=build/djpeg`. The same seven
 filters give the reference files when they are built for the host from the
 same sources and `jpeg_jconfig.h`.
+
+## The bzip2 steps
+
+The steps of `bzip2` take the six steps of the `test` target of bzip2 1.0.8,
+add `-9` (`--best`), `-s` (`--small`) on compression and three bad inputs,
+and run each as a program with its files in `EMU68/`. Each passes only if
+its output is byte for byte the one of the same program built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `bzip2_c1` to `bzip2_c3` | `-c -1 EMU68/sample1.ref`, `-c -2 EMU68/sample2.ref`, `-c -3 EMU68/sample3.ref` | `sample1.bz2` to `sample3.bz2` of the distribution | 0 |
+| `bzip2_c9` | `-c -9 EMU68/sample1.ref` | `sample1.ref` compressed with a 900 KB block | 0 |
+| `bzip2_cs` | `-c -s EMU68/sample1.ref` | `sample1.ref` compressed in small mode (a 200 KB block, as `-2`) | 0 |
+| `bzip2_d1`, `bzip2_d2` | `-dc EMU68/sample1.bz2`, `-dc EMU68/sample2.bz2` | `sample1.ref`, `sample2.ref` | 0 |
+| `bzip2_d3` | `-dcs EMU68/sample3.bz2` | `sample3.ref`, decompressed in small mode | 0 |
+| `bzip2_bad_crc` | `-dc EMU68/sample1.bz2 EMU68/bad-crc.bz2` | `sample1.ref` and the 95000 bytes before the block CRC check | 2 |
+| `bzip2_bad_cut` | `-dcq EMU68/sample1.bz2 EMU68/bad-cut.bz2` | `sample1.ref` | 2 |
+| `bzip2_bad_magic` | `-dc EMU68/sample1.bz2 EMU68/sample1.ref` | `sample1.ref`, then `bad magic number` on standard error | 2 |
+
+The arguments are in `BZIP2_ARGS_` and the step name, `BZIP2_ARGS_c1` for
+example. `-t` (`--test`) is left out because it writes nothing to standard
+output on a good file, and the runner counts a step with an empty standard
+output as incomplete.
+
+On a data error or an unexpected end of file `bzip2` stops at once with exit
+code 2 instead of going on to the next file, so each bad input has a step of
+its own after `sample1.bz2`, which gives the step its standard output.
+`bad-crc.bz2` is `sample1.bz2` with a byte of its block CRC changed;
+`bad-cut.bz2` is its first 16 KiB, and `bzip2_bad_cut` runs with `-q` so
+that `compressedStreamEOF()` does not call `perror()` with `errno` 0, whose
+message differs between the host C library and libnix.
+
+`bzip2` begins its messages with the name it runs under, `SYS:EMU68/NAME` in
+the guest, so `make bzip2-refs` runs the host build under that name too,
+next to an `EMU68` that names `build/bzip2-files`, writes its error output
+to `NAME.err`, and checks with `cmp` that `bzip2_c1` to `bzip2_c3` and
+`bzip2_d1` to `bzip2_d3` match `sample1.bz2` to `sample3.bz2` and
+`sample1.ref` to `sample3.ref` of the distribution. For example, `bzip2_c1`
+is `--files bzip2_c1 build/bzip2-files --args bzip2_c1 "-c -1
+EMU68/sample1.ref" --expect bzip2_c1 build/bzip2-refs/bzip2_c1.out
+bzip2_c1=build/bzip2`.
 
 ## The zlib steps
 
@@ -665,11 +709,12 @@ each, and it enters them about 204 million times a run.
 | `exec_memory_procure=exec_memory` | `procure` | 20 |
 | `exec_memory_vacate=exec_memory` | `vacate` | 20 |
 | `cpu_faults_mmu=cpu_faults` | `mmu` | 20 |
+| `bzip2_bad_crc=bzip2`, `bzip2_bad_cut=bzip2`, `bzip2_bad_magic=bzip2` | `-dc` (or `-dcq`), `sample1.bz2` and a damaged or non-bzip2 file | 2 for a corrupt, truncated or non-bzip2 stream |
 | `png_badpal=pngtest` | `-m` and the nine `badpal` images | 1, as `tests/pngtest-all` expects |
 | `xmlwf_errors=xmlwf` | `-k -s` and three of the documents | 2 for the two that are not well formed or not standalone |
 | `xz_bad1=xz` to `xz_bad6=xz` | `-dc`, bad and unsupported files and a good one | 1, as `tests/test_files.sh` expects of each bad file |
 
-These thirty-two Shell/Run executions are deliberate nonzero cases. They must
+These thirty-eight Shell/Run executions are deliberate nonzero cases. They must
 be checked against their expected behavior; raw nonzero status alone is
 not a regression verdict. Valid ordinary queues are positive tests in
 `exec_messages`.

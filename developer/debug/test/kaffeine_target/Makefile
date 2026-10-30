@@ -35,12 +35,29 @@ EXEC_LIBRARIES_LIBS := $(EXEC_LIBRARIES_DIR)/emu68test.library \
                        $(EXEC_LIBRARIES_DIR)/emu68test_l.library
 
 # bzip2 1.0.8, from the source the AROS build fetches for its Ports: set
-# BZIP2_SRC to the unpacked bzip2-1.0.8 directory to build it. The battery
-# runs the six steps of its own self-test and compares the outputs with
-# the reference files of the distribution.
+# BZIP2_SRC to the unpacked bzip2-1.0.8 directory to build it, with
+# bzip2_amiga.c for fchmod() and fchown(). The battery runs it through the
+# six steps of its own self-test, -9, -s, and three bad inputs on the files
+# that $(BZIP2_FILES) collects under EMU68/, and compares its output with
+# the one of the same program built for the host, which "make bzip2-refs"
+# writes to $(BZIP2_REFS).
 BZIP2_SRC ?=
+BZIP2_FILES := $(BUILD_DIR)/bzip2-files
+BZIP2_REFS := $(BUILD_DIR)/bzip2-refs
 BZIP2_SOURCES := $(addprefix $(BZIP2_SRC)/,blocksort.c huffman.c crctable.c randtable.c \
                    compress.c decompress.c bzlib.c bzip2.c)
+BZIP2_STEPS := c1 c2 c3 c9 cs d1 d2 d3 bad_crc bad_cut bad_magic
+BZIP2_ARGS_c1 := -c -1 EMU68/sample1.ref
+BZIP2_ARGS_c2 := -c -2 EMU68/sample2.ref
+BZIP2_ARGS_c3 := -c -3 EMU68/sample3.ref
+BZIP2_ARGS_c9 := -c -9 EMU68/sample1.ref
+BZIP2_ARGS_cs := -c -s EMU68/sample1.ref
+BZIP2_ARGS_d1 := -dc EMU68/sample1.bz2
+BZIP2_ARGS_d2 := -dc EMU68/sample2.bz2
+BZIP2_ARGS_d3 := -dcs EMU68/sample3.bz2
+BZIP2_ARGS_bad_crc := -dc EMU68/sample1.bz2 EMU68/bad-crc.bz2
+BZIP2_ARGS_bad_cut := -dcq EMU68/sample1.bz2 EMU68/bad-cut.bz2
+BZIP2_ARGS_bad_magic := -dc EMU68/sample1.bz2 EMU68/sample1.ref
 ifneq ($(BZIP2_SRC),)
 PROGRAMS += bzip2
 endif
@@ -313,9 +330,46 @@ $(BUILD_DIR)/c_stdio: EXTRA_LINK = $(STDIO_FLOAT)
 $(BUILD_DIR)/c_stdio_vec: $(TEST_DIR)/c_stdio.c $(TEST_DIR)/libgcc_ieee.c | $(BUILD_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -DMALLOC_ON_ALLOCVEC $(M68K_LDFLAGS) -o $@ $< $(STDIO_FLOAT)
 
+HOST_CC ?= cc
+
+# The files of the bzip2 steps, installed with --files next to each step:
+# the three sample pairs of the distribution, sample1.bz2 with a byte of its
+# block CRC changed, and its first 16 KiB as a truncated stream.
+$(BZIP2_FILES).stamp: $(addprefix $(BZIP2_SRC)/,sample1.ref sample2.ref sample3.ref \
+                      sample1.bz2 sample2.bz2 sample3.bz2) | $(BUILD_DIR)
+	rm -rf $(BZIP2_FILES)
+	mkdir -p $(BZIP2_FILES)
+	cp $^ $(BZIP2_FILES)/
+	cp $(BZIP2_SRC)/sample1.bz2 $(BZIP2_FILES)/bad-crc.bz2
+	printf '\000' | dd of=$(BZIP2_FILES)/bad-crc.bz2 bs=1 seek=10 count=1 conv=notrunc 2>/dev/null
+	head -c 16384 $(BZIP2_SRC)/sample1.bz2 > $(BZIP2_FILES)/bad-cut.bz2
+	touch $@
+
 $(BUILD_DIR)/bzip2: $(BZIP2_SOURCES) $(TEST_DIR)/bzip2_amiga.c $(TEST_DIR)/libgcc_ieee.c \
-                   $(TEST_DIR)/libgcc_ieee_ports.c | $(BUILD_DIR)
+                   $(TEST_DIR)/libgcc_ieee_ports.c | $(BUILD_DIR) $(BZIP2_FILES).stamp
 	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $^ -lm
+
+# The bzip2 references: the outputs of the steps through bzip2 built for the
+# host, run where EMU68 names $(BZIP2_FILES). Each bad step decompresses
+# sample1.bz2 first so that its output is not empty, and ends with 2;
+# bad_cut runs with -q so that bzip2 does not call perror() with errno 0.
+$(BZIP2_REFS)/stamp: $(BZIP2_SOURCES) $(BZIP2_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 -o $(@D)/bzip2 $(BZIP2_SOURCES)
+	ln -s $(BZIP2_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(BZIP2_STEPS),cp bzip2 SYS:EMU68/bzip2_$(s) && \
+	    { SYS:EMU68/bzip2_$(s) $(BZIP2_ARGS_$(s)) > bzip2_$(s).out 2> bzip2_$(s).err; \
+	    test $$? = $(if $(filter bad_%,$(s)),2,0); } &&) true
+	cd $(@D) && cmp -s bzip2_c1.out EMU68/sample1.bz2 && \
+	    cmp -s bzip2_c2.out EMU68/sample2.bz2 && \
+	    cmp -s bzip2_c3.out EMU68/sample3.bz2 && \
+	    cmp -s bzip2_d1.out EMU68/sample1.ref && \
+	    cmp -s bzip2_d2.out EMU68/sample2.ref && \
+	    cmp -s bzip2_d3.out EMU68/sample3.ref
+	touch $@
+
+bzip2-refs: $(BZIP2_REFS)/stamp
 
 $(JPEG_BUILD)/stamp: $(wildcard $(JPEG_SRC)/*.c $(JPEG_SRC)/*.h) $(TEST_DIR)/jpeg_jconfig.h | $(BUILD_DIR)
 	rm -rf $(JPEG_BUILD)
@@ -348,7 +402,6 @@ $(BUILD_DIR)/zpipe: $(ZLIB_SRC)/examples/zpipe.c $(ZLIB_SOURCES) $(ZLIB_BUILD)/z
 # host from the same sources, without AMIGA. The tenth byte of a gzip
 # header names the system that wrote it, so the references get the 1 of
 # the Amiga there, as the m68k build writes.
-HOST_CC ?= cc
 $(ZLIB_REFS)/stamp: $(ZLIB_SRC)/test/minigzip.c $(ZLIB_SRC)/examples/zpipe.c $(ZLIB_SOURCES) \
                     $(ZLIB_BUILD)/zconf.h
 	mkdir -p $(@D)
@@ -524,12 +577,12 @@ $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_
 # JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC or MBEDTLS_SRC that this
 # make lacks
 clean:
-	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BUILD_DIR)/exec_public_native
+	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BZIP2_FILES).stamp $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
 	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
 	rm -f $(BUILD_DIR)/xmlwf $(XMLWF_FILES).stamp $(BUILD_DIR)/xz $(XZ_FILES).stamp
 	rm -f $(BUILD_DIR)/mbedtls_selftest
-	rm -rf $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
+	rm -rf $(BZIP2_FILES) $(BZIP2_REFS) $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
 	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS) $(XZ_BUILD) $(XZ_FILES) $(XZ_REFS)
 	rm -rf $(MBEDTLS_REFS)
 
@@ -537,7 +590,7 @@ clean:
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs
+.PHONY: all clean check-runner bzip2-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)
