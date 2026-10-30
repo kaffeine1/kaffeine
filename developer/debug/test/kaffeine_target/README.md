@@ -73,8 +73,9 @@ at the end.
 | `jpeg_jconfig.h` | The `jconfig.h` of the IJG JPEG library 9f for m68k-amigaos-gcc with libnix, after the `jconfig.sas` of its distribution: Unix command line with standard input and output, everything in memory with `jmemnobs.c`. |
 | `xz_config.h` | The `config.h` of XZ Utils 5.8.3, the same for `xz` and for its host build: what the configure of XZ Utils finds on both, without threads, the CRC instructions of some processors and the ways to find the memory and the processors of the machine. |
 | `xz_libnix.c` | What `xz` needs beyond libnix: `sigaction()` on `signal()`, `sigprocmask()` with nothing to block, `fcntl()` that gives no flags and sets none, `poll()` that finds every descriptor ready, and `fchmod()` and `fchown()`, which succeed without doing anything. |
+| `mbedtls_config.h` | The configuration of mbed TLS 3.6.7 for `mbedtls_selftest`, the same for its host build: the modules whose self-tests it runs, with every cipher mode and elliptic curve, without the network, the clock, files and entropy. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, and `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, and `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -197,6 +198,12 @@ calls that libnix lacks, and the `libm.a` of libnix for the double helpers of
 the sizes and ratios that `xz` prints. The Makefile collects the files of the
 steps in `build/xz-files`, and `make xz-refs` writes the reference outputs to
 `build/xz-refs`.
+
+Set `MBEDTLS_SRC` to the mbed TLS 3.6.7 tree that the AROS build fetches
+for its Ports to include `mbedtls_selftest`. The Makefile compiles every
+file of its `library` drawer with `mbedtls_config.h` as the configuration,
+which leaves the modules that it does not name empty, and
+`make mbedtls-refs` writes the reference output to `build/mbedtls-refs`.
 
 ## Running on AROS AArch64
 
@@ -587,6 +594,62 @@ after `Assign SYS: SHARED:xz ADD`. There an A1200 with 2 MB of chip and
 8 MB of fast memory has too little for `-1` and `-2`, which stop with `Out
 of memory`; with a 68030 and 64 MB of Zorro III memory they give the same
 output as well.
+
+## The mbed TLS self-test
+
+`mbedtls_selftest` is `programs/test/selftest` of mbed TLS 3.6.7, the
+program that mbed TLS runs to check its cryptography on a platform. Without
+arguments it runs the self-test of each of the 29 modules that
+`mbedtls_config.h` turns on: the hashes MD5, RIPEMD-160, SHA-1, SHA-224 to
+SHA-512 and SHA-3, the ciphers DES, AES, Camellia, ARIA and ChaCha20 with
+Poly1305, the modes GCM, CCM, NIST key wrapping and CMAC, Base64, big
+numbers, RSA, Diffie-Hellman, elliptic curves and EC J-PAKE, the CTR and
+HMAC random generators, PBKDF2 of PKCS #5 and `calloc()`. Each prints a
+line for each of its test vectors, and the program passes only if its
+output is byte for byte the one of the same program built for the host,
+which ends with `[ All tests PASS ]`. The step is `--expect
+mbedtls_selftest build/mbedtls-refs/mbedtls_selftest.out
+mbedtls_selftest=build/mbedtls_selftest`.
+
+The Makefile builds it for the 68020. With `MBEDTLS_HAVE_ASM` the big
+number multiplications of `bn_mul.h` then use `mulu.l` with a 64-bit
+product and chains of `addx.l`, which take the carry through the X flag
+that `mulu.l` leaves as it is. `mbedtls_config.h` leaves out the entropy
+module: AmigaOS has none of the sources of entropy that mbed TLS knows,
+and its self-test fails without one.
+
+Under QEMU it gives that output from the Shell and with Run, in about 23
+minutes a run under Moira and in about four and a half under the Kaffeine
+JIT. The four long tests of SHA-3 hash a million bytes each without calling
+the system, which takes more than five minutes under Moira: with an
+`--idle-timeout`, give the step more than that. On AmigaOS 3.2.3 under
+FS-UAE, on an A1200 with 2 MB of chip and 8 MB of fast memory, it gives the
+same output too, in about 23 minutes.
+
+## The CLI programs under the Kaffeine JIT
+
+I ran the 48 steps of zlib, pngtest, xmlwf, xz and the mbed TLS self-test
+twice in QEMU, with the same binaries and the library of master `a58f9a8`:
+once with `--cpu jit` and once with `--cpu moira`, with a boot for each
+step. Under the JIT every step gives the output of the host build byte for
+byte, from the Shell and with Run, the 29 steps with a reference for the
+error output give that too, and `png_badpal`, `xmlwf_errors` and `xz_bad1`
+to `xz_bad6` end with the exit codes of the table in the next section, as
+under Moira. Under Moira the self-test of mbed TLS needed a run of its own
+with a longer idle timeout, as the previous section says, and gives the
+same output.
+
+The times are rough: the runner sees them in steps of 5 seconds, each boot
+takes about 45 seconds, and the host was not idle during the runs. Without
+the boots, the 25 xz steps took 923 seconds under the JIT against 1390
+under Moira, and the 7 xmlwf steps 187 against 307, about one and a half
+times as fast. The xz steps that compress gain 1.5 to 2.3 times,
+`xmlwf_canon` 1.6 and `xz_unpack` almost nothing. The self-test of mbed
+TLS, which computes for minutes without calling the system, took 557
+seconds under the JIT against 2755 under Moira, about five times as fast.
+At the end of each run the JIT writes its counters to `serial-aux.log`:
+the 6501 blocks of `mbedtls_selftest` hold 51421 instructions, about eight
+each, and it enters them about 204 million times a run.
 
 ## Expected containment and exit probes
 

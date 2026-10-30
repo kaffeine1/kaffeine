@@ -231,6 +231,20 @@ XZ_ARGS_unpack := -dc $(XZ_MEM)
 ifneq ($(XZ_SRC),)
 PROGRAMS += xz
 endif
+
+# programs/test/selftest of mbed TLS 3.6.7, from the source the AROS build
+# fetches for its Ports: set MBEDTLS_SRC to its mbedtls directory to build
+# it as mbedtls_selftest, for the 68020, with mbedtls_config.h as its
+# configuration. Its output must be the one of the same program built for
+# the host, which "make mbedtls-refs" writes to $(MBEDTLS_REFS).
+MBEDTLS_SRC ?=
+MBEDTLS_REFS := $(BUILD_DIR)/mbedtls-refs
+MBEDTLS_SOURCES := $(wildcard $(MBEDTLS_SRC)/library/*.c)
+MBEDTLS_FLAGS := -DMBEDTLS_CONFIG_FILE='"$(TEST_DIR)/mbedtls_config.h"' \
+                 -I$(MBEDTLS_SRC)/include -I$(MBEDTLS_SRC)/library
+ifneq ($(MBEDTLS_SRC),)
+PROGRAMS += mbedtls_selftest
+endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
@@ -473,6 +487,21 @@ $(XZ_REFS)/stamp: $(XZ_SOURCES) $(XZ_BUILD)/config.h $(XZ_FILES).stamp
 
 xz-refs: $(XZ_REFS)/stamp
 
+# The modules that mbedtls_config.h leaves out compile to nothing
+$(BUILD_DIR)/mbedtls_selftest: $(MBEDTLS_SRC)/programs/test/selftest.c $(MBEDTLS_SOURCES) \
+                               $(TEST_DIR)/mbedtls_config.h | $(BUILD_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) -m68020 $(MBEDTLS_FLAGS) $(M68K_LDFLAGS) -o $@ $< $(MBEDTLS_SOURCES)
+
+$(MBEDTLS_REFS)/stamp: $(MBEDTLS_SRC)/programs/test/selftest.c $(MBEDTLS_SOURCES) \
+                       $(TEST_DIR)/mbedtls_config.h
+	rm -rf $(@D)
+	mkdir -p $(@D)
+	$(HOST_CC) -O2 $(MBEDTLS_FLAGS) -o $(@D)/mbedtls_selftest $< $(MBEDTLS_SOURCES)
+	$(@D)/mbedtls_selftest > $(@D)/mbedtls_selftest.out
+	touch $@
+
+mbedtls-refs: $(MBEDTLS_REFS)/stamp
+
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
 $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
@@ -488,22 +517,25 @@ $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LI
 $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
-# bzip2, the JPEG programs, the zlib ones, pngtest, xmlwf and xz too, also
-# when they were built with a BZIP2_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC,
-# EXPAT_SRC or XZ_SRC that this make lacks
+# bzip2, the JPEG programs, the zlib ones, pngtest, xmlwf, xz and
+# mbedtls_selftest too, also when they were built with a BZIP2_SRC,
+# JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC or MBEDTLS_SRC that this
+# make lacks
 clean:
 	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
 	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
 	rm -f $(BUILD_DIR)/xmlwf $(XMLWF_FILES).stamp $(BUILD_DIR)/xz $(XZ_FILES).stamp
+	rm -f $(BUILD_DIR)/mbedtls_selftest
 	rm -rf $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
 	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS) $(XZ_BUILD) $(XZ_FILES) $(XZ_REFS)
+	rm -rf $(MBEDTLS_REFS)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner zlib-refs png-refs xmlwf-refs xz-refs
+.PHONY: all clean check-runner zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)
