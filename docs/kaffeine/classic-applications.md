@@ -74,6 +74,28 @@ code fallback. These are separate from the existing shared-arena service
 processes. The startup trace does not enable either process route, and
 TurboText still returns 20 without opening an editor window.
 
+### Independent-process prerequisite (2026-10-30)
+
+The original `hunk_process_native` / `hunk_process_child` regression now
+passes 27 checks in each Shell and Run invocation with both JIT and Moira
+on AROS ARM64. The native parent loads two 68k modules and starts them
+through native DOS. Both guest contexts reach a barrier while alive,
+retain separate data and copied arguments, use distinct directories and
+native streams, save separate results and return their expected exit codes.
+After VM shutdown, the two 64-byte result files were extracted from each
+disk image; their bytes match the expected records and agree between backends.
+
+This validates overlapping process contexts on the current uniprocessor
+guest. The parent keeps the emulator library open and waits for the native
+owners to retire. The test deliberately uses native `CreateNewProc()`;
+the guest thunk used by TurboText remains refused. Module-handle ownership
+and a stable guest Process identity still need their typed implementation.
+The separate DOS fix for an unavailable emulator has host control-flow and
+cleanup regressions plus an ARM64 module build; that failure path was not
+exercised by these VM runs.
+
+### AmiPixelShop startup
+
 [AmiPixelShop 0.6.1-beta](https://github.com/radi7777/AmiPixelShop/releases/tag/v0.6.1-beta)
 is the untouched 68040/FPU release, using source tag
 `84f224e4ce1ad83e5d3c74addd12268ddc8511df`. The `64 64` arguments choose a

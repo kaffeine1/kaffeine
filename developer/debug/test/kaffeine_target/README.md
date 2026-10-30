@@ -222,6 +222,49 @@ input and `--expect NAME FILE` compares output byte for byte. `--keys` and
 `--mouse` drive the guest through QMP. `--keep-image` retains the modified
 copy for inspection.
 
+### Independent loaded-hunk process probe
+
+`hunk_process_native.c` is an ARM-native parent; `hunk_process_child.c` is
+its original 68k payload. Build both explicitly in a dedicated directory:
+
+```sh
+make -C developer/debug/test/kaffeine_target \
+    BUILD_DIR="$PWD/build-hunk-process" \
+    M68K_CC=m68k-amigaos-gcc NATIVE_CC=aarch64-aros-gcc \
+    "$PWD/build-hunk-process/hunk_process_child" \
+    "$PWD/build-hunk-process/hunk_process_native"
+```
+
+Use a disposable AROS ARM64 image with a matching **uniprocessor Exec**
+build. The parent rejects an SMP compilation and requires
+`KrnGetCPUCount() == 1` at runtime. Its task-name retirement check is not
+a general SMP join. Pass `moira` or `jit` as the parent's first argument;
+the payload defaults to `SYS:EMU68/hunk_process_child`. The runner's
+`--files hunk_process_native build-hunk-process` installs both binaries;
+`--args hunk_process_native jit` selects the JIT for this probe.
+
+The native parent loads two modules with positive 68k/relocation metadata,
+then starts them through native DOS with separate directory references,
+CLI state, default NIL streams and `NP_CopyVars=FALSE`. It pins
+`kaffeine.library` until both owners have retired. Each payload must reach
+a ready/release barrier while the other remains alive, retain private data
+and copied arguments, read its own directory's input and write a distinct
+64-byte result. The parent overwrites its original argument buffers after
+creation and checks results, return codes and stream separation. These
+are overlapping processes on one guest CPU, not a multicore execution test.
+
+The probe temporarily writes `ENV:KAFFEINE_CPU` in the disposable image;
+it snapshots and restores the file's exact presence and bytes without
+reading or writing ENVARC. Its files remain under
+`SYS:EMU68/hunk-process-0` and `SYS:EMU68/hunk-process-1` for extraction.
+On a retirement timeout the parent keeps its callback code and library
+pin alive; the VM runner must enforce an outer timeout.
+
+This native test does not enable the guest `CreateNewProc()` thunk or
+establish TurboText GUI support. Target execution results must be reported
+separately from compiling these two programs and from the host DOS-entry
+regression in `developer/debug/test/dos_process_host`.
+
 ## Companion files
 
 | Program | Runner option |
@@ -229,6 +272,7 @@ copy for inspection.
 | `exec_diskfont` | `--files exec_diskfont build/exec_diskfont-files` |
 | `exec_libraries` | `--files exec_libraries build/exec_libraries-files` |
 | `exec_packets` | `--files exec_packets build/exec_packets-files` |
+| `hunk_process_native` (native parent) | `--files hunk_process_native build-hunk-process` (includes its 68k payload) |
 | each step of `pngtest` | `--files NAME build/pngtest-files` |
 
 The bitmap font is generated from original fixture data by the Makefile.
