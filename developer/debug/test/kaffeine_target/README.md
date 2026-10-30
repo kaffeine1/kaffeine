@@ -437,13 +437,13 @@ its output is byte for byte the one of the same program built for the host:
 | Program | Arguments | Output | Exit |
 | --- | --- | --- | --- |
 | `bzip2_c1` to `bzip2_c3` | `-c -1 EMU68/sample1.ref`, `-c -2 EMU68/sample2.ref`, `-c -3 EMU68/sample3.ref` | `sample1.bz2` to `sample3.bz2` of the distribution | 0 |
-| `bzip2_c9` | `-c -9 EMU68/sample1.ref` | `sample1.ref` compressed with a 900 KB block | 0 |
-| `bzip2_cs` | `-c -s EMU68/sample1.ref` | `sample1.ref` compressed in small mode (a 200 KB block, as `-2`) | 0 |
+| `bzip2_c9` | `-c -9 EMU68/sample2.ref` | `sample2.ref` (212340 bytes) compressed in one 900 KB block | 0 |
+| `bzip2_cs` | `-c -s EMU68/sample2.ref` | `sample2.ref` compressed in small mode, which `bzip2` turns into `-2` (two 200 KB blocks) | 0 |
 | `bzip2_d1`, `bzip2_d2` | `-dc EMU68/sample1.bz2`, `-dc EMU68/sample2.bz2` | `sample1.ref`, `sample2.ref` | 0 |
 | `bzip2_d3` | `-dcs EMU68/sample3.bz2` | `sample3.ref`, decompressed in small mode | 0 |
 | `bzip2_bad_crc` | `-dc EMU68/sample1.bz2 EMU68/bad-crc.bz2` | `sample1.ref` and the 95000 bytes before the block CRC check | 2 |
 | `bzip2_bad_cut` | `-dcq EMU68/sample1.bz2 EMU68/bad-cut.bz2` | `sample1.ref` | 2 |
-| `bzip2_bad_magic` | `-dc EMU68/sample1.bz2 EMU68/sample1.ref` | `sample1.ref`, then `bad magic number` on standard error | 2 |
+| `bzip2_bad_magic` | `-dc EMU68/sample1.bz2 EMU68/sample1.ref` | `sample1.ref`, then `bzip2_bad_magic: EMU68/sample1.ref is not a bzip2 file.` on standard error | 2 |
 
 The arguments are in `BZIP2_ARGS_` and the step name, `BZIP2_ARGS_c1` for
 example. `-t` (`--test`) is left out because it writes nothing to standard
@@ -458,15 +458,15 @@ its own after `sample1.bz2`, which gives the step its standard output.
 that `compressedStreamEOF()` does not call `perror()` with `errno` 0, whose
 message differs between the host C library and libnix.
 
-`bzip2` begins its messages with the name it runs under, `SYS:EMU68/NAME` in
-the guest, so `make bzip2-refs` runs the host build under that name too,
-next to an `EMU68` that names `build/bzip2-files`, writes its error output
-to `NAME.err`, and checks with `cmp` that `bzip2_c1` to `bzip2_c3` and
-`bzip2_d1` to `bzip2_d3` match `sample1.bz2` to `sample3.bz2` and
-`sample1.ref` to `sample3.ref` of the distribution. For example, `bzip2_c1`
-is `--files bzip2_c1 build/bzip2-files --args bzip2_c1 "-c -1
-EMU68/sample1.ref" --expect bzip2_c1 build/bzip2-refs/bzip2_c1.out
-bzip2_c1=build/bzip2`.
+`bzip2` cuts the name it runs under at the last `/` and begins its messages
+with what remains, `NAME` when the guest runs `SYS:EMU68/NAME`, so `make
+bzip2-refs` runs the host build as `SYS:EMU68/NAME` too, next to an `EMU68`
+that names `build/bzip2-files`, writes its error output to `NAME.err`, and
+checks with `cmp` that `bzip2_c1` to `bzip2_c3` and `bzip2_d1` to `bzip2_d3`
+match `sample1.bz2` to `sample3.bz2` and `sample1.ref` to `sample3.ref` of
+the distribution. For example, `bzip2_c1` is `--files bzip2_c1
+build/bzip2-files --args bzip2_c1 "-c -1 EMU68/sample1.ref" --expect
+bzip2_c1 build/bzip2-refs/bzip2_c1.out bzip2_c1=build/bzip2`.
 
 ## The zlib steps
 
