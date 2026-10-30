@@ -361,6 +361,20 @@ struct LayerInfoLock
     UWORD depth;
 };
 
+/* Native BeginRefresh retains these locks even when BeginUpdate fails.
+   The existence of this private record, never writable Window.Flags, owns
+   exactly one EndRefresh. Only one update may run: native cr2 is nonnested. */
+struct WindowRefresh
+{
+    struct Window *window;
+    struct Screen *screen;
+    struct Layer_Info *info;
+    struct Layer *layer, *border;
+    struct Task *owner;
+    struct KaffeineCPU *cpu;
+    ULONG guest, task;
+};
+
 struct KaffeineLayers
 {
     struct KaffeinePaintHooks *paint_hooks;
@@ -370,6 +384,7 @@ struct KaffeineLayers
     struct LayerInfoRecord infos[KAFFEINE_LAYER_MAX_INFOS];
     struct LayerInfoLock info_locks[KAFFEINE_LAYER_MAX_GRAPHS + KAFFEINE_LAYER_MAX_INFOS];
     ULONG info_lock_count;
+    struct WindowRefresh refresh;
     struct LayerSnap snap[KAFFEINE_LAYER_MAX_DEPTH];
     UWORD snap_count;
     struct Layer *snap_bar, *snap_screen_layer;
@@ -389,6 +404,9 @@ struct KaffeineLayers
     void *gate_cpu;
     struct Task *gate_task;
 };
+
+static BOOL layers_refresh_release(struct KaffeineContext *, struct KaffeineLayers *,
+                                   struct Window *, struct Layer_Info *, ULONG);
 
 /* Stop the program with return code 20, which the thunk returns to D0. */
 static IPTR layers_refuse(struct KaffeineContext *ctx, const char *why)
@@ -448,8 +466,14 @@ static BOOL layers_info_owner(struct KaffeineContext *ctx, struct KaffeineLayers
 {
     unsigned i;
     struct Task *owner;
-    if (!st->info_lock_count) return TRUE;
+    if (!st->info_lock_count && !st->refresh.window) return TRUE;
     owner = FindTask(NULL);
+    if (st->refresh.window && (!native || st->refresh.info == native) &&
+        (!task || st->refresh.task == task) && st->refresh.owner != owner)
+    {
+        layers_info_refuse(ctx, "refresh cleanup on a different native task");
+        return FALSE;
+    }
     for (i = 0; i < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++i)
     {
         const struct LayerInfoLock *l = &st->info_locks[i];
@@ -469,6 +493,7 @@ static BOOL layers_info_release_owned(struct KaffeineContext *ctx, struct Kaffei
 {
     unsigned i;
     if (!layers_info_owner(ctx, st, native, task)) return FALSE;
+    if (!layers_refresh_release(ctx, st, NULL, native, task)) return FALSE;
     for (i = 0; i < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++i)
     {
         struct LayerInfoLock *l = &st->info_locks[i];
@@ -481,7 +506,7 @@ static BOOL layers_info_release_owned(struct KaffeineContext *ctx, struct Kaffei
 
 static BOOL layers_info_locked(struct KaffeineContext *ctx)
 {
-    return ctx->layers && ctx->layers->info_lock_count;
+    return ctx->layers && (ctx->layers->info_lock_count || ctx->layers->refresh.window);
 }
 
 /* Program layer locks acquired within an Info scope must be for that same
@@ -493,6 +518,10 @@ static BOOL layers_info_layer_access(struct KaffeineContext *ctx, struct Layer_I
     unsigned i;
     ULONG task;
     struct Task *owner;
+    if (st->refresh.window)
+        return st->refresh.info == native && st->refresh.cpu == ctx->cpu &&
+               st->refresh.task == layers_info_task(ctx, ctx->cpu) &&
+               st->refresh.owner == FindTask(NULL) && !ctx->broker_call && !ctx->callback_depth;
     if (!st->info_lock_count) return TRUE;
     task = layers_info_task(ctx, ctx->cpu); owner = FindTask(NULL);
     for (i = 0; i < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++i)
@@ -999,7 +1028,7 @@ static BOOL layers_graph_publish(struct KaffeineContext *ctx, struct KaffeineLay
 /* A new snapshot of g, unless the program holds a layer lock */
 static BOOL layers_graph_refresh(struct KaffeineContext *ctx, struct KaffeineLayers *st, int g)
 {
-    if (g < 0 || st->locks || !st->graphs[g].screen)
+    if (g < 0 || st->locks || st->refresh.window || !st->graphs[g].screen)
         return FALSE;
     if (!layers_snapshot(ctx, st, g))
     {
@@ -1019,7 +1048,7 @@ void Kaffeine_LayersRefresh(struct KaffeineContext *ctx)
     struct KaffeineLayers *st = ctx->layers;
     int i;
 
-    if (!st || st->locks || st->info_lock_count)
+    if (!st || st->locks || st->info_lock_count || st->refresh.window)
         return;
     for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
         if (ctx->pubscreens[i].guest && ctx->pubscreens[i].native)
@@ -1165,6 +1194,7 @@ static void layers_window_closing(struct KaffeineContext *ctx, ULONG mw, struct 
     r = &st->records[ri];
     g = r->graph;
     guest = r->guest;
+    if (!layers_refresh_release(ctx, st, w, NULL, 0)) return;
     /* the program's locks go back before Intuition deletes the layer */
     for (; r->locks; r->locks--, st->locks--)
         UnlockLayer(r->native);
@@ -1245,7 +1275,7 @@ static BOOL layers_has_locks(struct KaffeineContext *ctx)
 {
     struct KaffeineLayers *st = ctx->layers;
 
-    return st && (st->locks || st->info_lock_count);
+    return st && (st->locks || st->info_lock_count || st->refresh.window);
 }
 
 static void layers_release_locks(struct KaffeineContext *ctx)
@@ -1267,6 +1297,7 @@ static void layers_release_locks(struct KaffeineContext *ctx)
         }
         r->lock_task = 0;
     }
+    if (!layers_refresh_release(ctx, st, NULL, NULL, 0)) return;
     layers_info_release_owned(ctx, st, NULL, 0);
 }
 
@@ -1287,6 +1318,7 @@ static void layers_task_removed(struct KaffeineContext *ctx, ULONG task)
         }
         r->lock_task = 0;
     }
+    if (!layers_refresh_release(ctx, st, NULL, NULL, task)) return;
     layers_info_release_owned(ctx, st, NULL, task);
     Kaffeine_PaintHookRetireTask(ctx, st->paint_hooks, task);
 }
@@ -1577,6 +1609,8 @@ static IPTR layers_lock(struct KaffeineContext *ctx, ULONG layer, BOOL attempt)
     if (ri < 0)
         return ctx->exit_code;
     r = &ctx->layers->records[ri];
+    if (ctx->layers->refresh.window && r->native != ctx->layers->refresh.layer)
+        return attempt ? FALSE : layers_info_refuse(ctx, "a layer lock outside its refresh scope");
     if (!layers_info_layer_access(ctx, r->native->LayerInfo))
         return attempt ? FALSE : layers_refuse(ctx, "a layer lock outside its owned LayerInfo scope");
     /* AttemptLockLayerRom() never blocks: a lock that another guest task
@@ -1619,6 +1653,10 @@ static IPTR layers_unlock(struct KaffeineContext *ctx, ULONG layer)
     if (ri < 0)
         return ctx->exit_code;
     r = &ctx->layers->records[ri];
+    if (ctx->layers->refresh.window &&
+        (r->native != ctx->layers->refresh.layer ||
+         !layers_info_layer_access(ctx, r->native->LayerInfo)))
+        return layers_info_refuse(ctx, "a layer unlock outside its owned refresh scope");
     if (!r->locks)
         return layers_refuse(ctx, "a layer unlock without a lock of the program");
     UnlockLayer(r->native);
@@ -1690,6 +1728,9 @@ IPTR Kaffeine_InstallLayerHook(struct KaffeineContext *ctx, void *cpu)
     if ((ri = layers_owned(ctx, layer, "InstallLayerHook(): not the layer of a window of the program")) < 0)
         return ctx->exit_code;
     r = &st->records[ri];
+    if (st->refresh.window && (r->native != st->refresh.layer ||
+        !layers_info_layer_access(ctx, r->native->LayerInfo)))
+        return layers_info_refuse(ctx, "InstallLayerHook(): outside the owned refresh layer");
     if (r->kind == LR_OWNED &&
         (Kaffeine_PaintHookHasLayer(st->paint_hooks, r->native) ||
          (hook > 1 && layers_hook_handle(st, hook) < 0)))
@@ -1992,6 +2033,150 @@ static BOOL layers_info_caller(struct KaffeineContext *ctx, void *cpu)
            layers_info_task(ctx, cpu);
 }
 
+/* The native window is authoritative; writable guest snapshots cannot
+   redirect the closing half of a refresh to another layer. */
+static BOOL layers_refresh_same(struct KaffeineContext *ctx, struct KaffeineLayers *st)
+{
+    const struct WindowRefresh *f = &st->refresh;
+    int ri = layers_record_window(st, f->guest);
+    return ri >= 0 && st->records[ri].window == f->window &&
+           st->records[ri].native == f->layer && f->window->WScreen == f->screen &&
+           f->window->WLayer == f->layer && f->layer->LayerInfo == f->info &&
+           f->window->RPort && f->window->RPort->Layer == f->layer &&
+           Kaffeine_ShadowNative(ctx, f->guest, KAFFEINE_SHADOW_WINDOW) == f->window &&
+           (!f->border || (f->window->BorderRPort &&
+            f->window->BorderRPort->Layer == f->border && f->border->LayerInfo == f->info));
+}
+
+/* Publish only refresh bits; guest geometry, backdrop and RastPort state
+   are not native inputs and remain untouched. */
+static void layers_refresh_flags(struct KaffeineContext *ctx, struct KaffeineLayers *st)
+{
+    const struct WindowRefresh *f = &st->refresh;
+    int ri = layers_record_window(st, f->guest);
+    ULONG flags = m68k_read32(ctx, f->guest + M68K_WIN_FLAGS);
+    m68k_write32(ctx, f->guest + M68K_WIN_FLAGS,
+                 (flags & ~(ULONG)WFLG_WINDOWREFRESH) | (f->window->Flags & WFLG_WINDOWREFRESH));
+    if (ri >= 0)
+    {
+        ULONG guest = st->records[ri].guest;
+        UWORD mask = LAYERUPDATING | LAYERREFRESH;
+        UWORD layer_flags = m68k_read16(ctx, guest + M68K_LAYER_FLAGS);
+        m68k_write16(ctx, guest + M68K_LAYER_FLAGS,
+                     (UWORD)((layer_flags & ~mask) | (f->layer->Flags & mask)));
+    }
+}
+
+static BOOL layers_refresh_end(struct KaffeineContext *ctx, struct KaffeineLayers *st, BOOL complete)
+{
+    if (st->refresh.owner != FindTask(NULL) || st->refresh.owner != ctx->exec_task ||
+        ctx->broker_call || ctx->broker_owner || ctx->callback_depth ||
+        !layers_refresh_same(ctx, st))
+    {
+        layers_info_refuse(ctx, "EndRefresh(): native owner or typed window changed");
+        return FALSE;
+    }
+    /* BeginUpdate failure still retains outer locks. Native EndRefresh
+       skips EndUpdate then, and releases those outer locks unconditionally. */
+    EndRefresh(st->refresh.window, complete);
+    layers_refresh_flags(ctx, st);
+    memset(&st->refresh, 0, sizeof(st->refresh));
+    return TRUE;
+}
+
+/* Inner explicit layer refs precede EndRefresh(FALSE), which precedes the
+   captured lifetime's outer explicit Info refs. */
+static BOOL layers_refresh_release(struct KaffeineContext *ctx, struct KaffeineLayers *st,
+                                   struct Window *window, struct Layer_Info *info, ULONG task)
+{
+    unsigned i;
+    if (!st->refresh.window || (window && st->refresh.window != window) ||
+        (info && st->refresh.info != info) || (task && st->refresh.task != task)) return TRUE;
+    if (!layers_info_owner(ctx, st, st->refresh.info, st->refresh.task) ||
+        st->refresh.owner != ctx->exec_task || ctx->broker_call || ctx->broker_owner ||
+        ctx->callback_depth || !layers_refresh_same(ctx, st))
+    {
+        layers_info_refuse(ctx, "refresh cleanup requires its original native owner and window");
+        return FALSE;
+    }
+    for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; ++i)
+    {
+        struct LayerRecord *r = &st->records[i];
+        if (r->native != st->refresh.layer || r->lock_task != st->refresh.task) continue;
+        while (r->locks) { UnlockLayer(r->native); --r->locks; --st->locks; }
+        r->lock_task = 0;
+    }
+    return layers_refresh_end(ctx, st, FALSE);
+}
+
+IPTR Kaffeine_BeginRefresh(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    struct Window *w;
+    struct Layer *layer, *border = NULL;
+    struct Layer_Info *info;
+    ULONG guest = THUNK_A(0), task;
+    unsigned i;
+    int ri;
+    BOOL border_locked = FALSE, layer_locked = FALSE;
+    if (!ctx->running || !layers_info_caller(ctx, cpu) || ctx->bitmap_blits ||
+        st->refresh.window || st->locks || st->private_locks)
+        return layers_info_refuse(ctx, "BeginRefresh(): nested, callback, broker or layer-lock scope");
+    task = layers_info_task(ctx, cpu);
+    ri = layers_record_window(st, guest);
+    w = Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_WINDOW);
+    if (ri < 0 || !w || st->records[ri].window != w || !(layer = w->WLayer) ||
+        st->records[ri].native != layer || !w->WScreen || !w->RPort || w->RPort->Layer != layer ||
+        layer->LayerInfo != &w->WScreen->LayerInfo)
+        return layers_info_refuse(ctx, "BeginRefresh(): not a live typed window and layer");
+    info = &w->WScreen->LayerInfo;
+    for (i = 0; i < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++i)
+        if (st->info_locks[i].depth &&
+            (st->info_locks[i].task != task || st->info_locks[i].owner != ctx->exec_task))
+            return layers_info_refuse(ctx, "BeginRefresh(): explicit Info scope belongs to another owner");
+    if (w->Flags & WFLG_GIMMEZEROZERO)
+    {
+        border = w->BorderRPort ? w->BorderRPort->Layer : NULL;
+        if (!border || border == layer || border->LayerInfo != info)
+            return layers_info_refuse(ctx, "BeginRefresh(): invalid typed GZZ border layer");
+    }
+    /* Hold provisional refs across the recursive native acquisitions, so
+       there is no check/release gap that could become a blocking wait. */
+    if (!AttemptSemaphore(&info->Lock))
+        return layers_info_refuse(ctx, "BeginRefresh(): native Info is busy");
+    if (border && !(border_locked = AttemptLockLayerRom(border))) goto failed;
+    if (!(layer_locked = AttemptLockLayerRom(layer))) goto failed;
+    if ((w->Flags & WFLG_WINDOWREFRESH) || (layer->Flags & LAYERUPDATING)) goto failed;
+    st->refresh.window = w; st->refresh.screen = w->WScreen; st->refresh.info = info;
+    st->refresh.layer = layer; st->refresh.border = border; st->refresh.owner = ctx->exec_task;
+    st->refresh.cpu = (struct KaffeineCPU *)cpu; st->refresh.guest = guest; st->refresh.task = task;
+    BeginRefresh(w);
+    UnlockLayer(layer);
+    if (border) UnlockLayer(border);
+    UnlockLayerInfo(info);
+    layers_refresh_flags(ctx, st);
+    return ctx->running ? 0 : ctx->exit_code;
+failed:
+    if (layer_locked) UnlockLayer(layer);
+    if (border_locked) UnlockLayer(border);
+    UnlockLayerInfo(info);
+    return layers_info_refuse(ctx, "BeginRefresh(): busy layer or untracked native update");
+}
+
+IPTR Kaffeine_EndRefresh(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineLayers *st = ctx->layers;
+    int ri;
+    if (!ctx->running || !layers_info_caller(ctx, cpu) || !st->refresh.window ||
+        st->refresh.guest != THUNK_A(0) || st->refresh.cpu != cpu ||
+        st->refresh.task != layers_info_task(ctx, cpu))
+        return layers_info_refuse(ctx, "EndRefresh(): no matching owned refresh scope");
+    ri = layers_record_window(st, st->refresh.guest);
+    if (ri < 0 || st->records[ri].locks)
+        return layers_info_refuse(ctx, "EndRefresh(): inner layer locks must be released first");
+    return layers_refresh_end(ctx, st, THUNK_D(0) != 0) ? 0 : 20;
+}
+
 /* layers -120: native LockLayerInfo is ObtainSemaphore(&li->Lock). Take
    the same trusted semaphore without waiting for an Intuition VERIFY. A
    bounded snapshot must publish before a first lock can reach the guest. */
@@ -2004,7 +2189,7 @@ IPTR Kaffeine_LockLayerInfo(struct KaffeineContext *ctx, void *cpu)
     unsigned n, steps = 0;
     int graph, info;
     ULONG guest = THUNK_A(0), task = layers_info_task(ctx, cpu);
-    if (!ctx->running || !layers_info_caller(ctx, cpu) || ctx->bitmap_blits)
+    if (!ctx->running || !layers_info_caller(ctx, cpu) || ctx->bitmap_blits || st->refresh.window)
         return layers_info_refuse(ctx, "LockLayerInfo(): not the active native/guest owner outside callbacks");
     native = layers_info_native(ctx, guest, &graph, &info);
     if (!native) return layers_info_refuse(ctx, "LockLayerInfo(): not a live typed LayerInfo");
@@ -2060,7 +2245,7 @@ IPTR Kaffeine_UnlockLayerInfo(struct KaffeineContext *ctx, void *cpu)
     unsigned n;
     int graph, info;
     ULONG guest = THUNK_A(0);
-    if (!layers_info_caller(ctx, cpu))
+    if (!layers_info_caller(ctx, cpu) || st->refresh.window)
         return layers_info_refuse(ctx, "UnlockLayerInfo(): not the active native/guest owner");
     native = layers_info_native(ctx, guest, &graph, &info);
     for (n = 0; native && n < sizeof(st->info_locks) / sizeof(st->info_locks[0]); ++n)
@@ -2644,6 +2829,9 @@ IPTR Kaffeine_InstallClipRegion(struct KaffeineContext *ctx, void *cpu)
     struct LayerPrivate *p;
     struct LayerRecord *r;
 
+    if (st && st->refresh.window)
+        return layers_info_refuse(ctx, "InstallClipRegion(): an active refresh cannot restart BeginUpdate");
+
     if (ri >= 0 && (st->records[ri].kind == LR_OWNED || st->records[ri].kind == LR_REQUESTER))
     {
         if (st->gate || st->callbacks || st->locks || st->private_locks)
@@ -3089,7 +3277,7 @@ void Kaffeine_LayersCleanup(struct KaffeineContext *ctx)
     if (!st)
         return;
     layers_release_locks(ctx);
-    if (st->info_lock_count) return; /* a foreign native owner may not release it */
+    if (st->info_lock_count || st->refresh.window) return; /* keep a foreign owner's live scope */
     if (!Kaffeine_PaintHooksCleanup(ctx, &st->paint_hooks) && st->paint_hooks)
         return; /* native callback storage is not releasable yet */
     for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; i++)

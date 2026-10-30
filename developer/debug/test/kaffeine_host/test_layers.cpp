@@ -66,6 +66,11 @@ extern "C" Task *FindTask(const char *name) { assert(!name); return native_task;
 static bool info_busy;
 static unsigned info_calls, ibase_calls, native_installs, attempts;
 static bool attempt_fails;
+static Layer *attempt_busy_layer;
+static bool update_fails;
+static unsigned refresh_begins, refresh_ends, update_begins, update_ends;
+static std::vector<BOOL> refresh_complete;
+static std::function<void()> refresh_entry;
 struct DepthCall
 {
     Window *window;
@@ -161,11 +166,67 @@ extern "C" void UnlockLayer(struct Layer *l)
 extern "C" BOOL AttemptLockLayerRom(struct Layer *l)
 {
     ++attempts;
-    if (attempt_fails)
+    if (attempt_fails || l == attempt_busy_layer)
         return FALSE;
     ++layer_locks[l];
     ++held_locks;
     return TRUE;
+}
+/* BeginUpdate adds a layer ref; failure releases it without entering update
+   state. The extracted native Intuition body decides whether to EndUpdate. */
+static BOOL BeginUpdate(Layer *l)
+{
+    assert(!(l->Flags & LAYERUPDATING));
+    ++update_begins;events.push_back("BeginUpdate");LockLayer(0,l);
+    if(update_fails) { UnlockLayer(l);return FALSE; }
+    l->Flags |= LAYERUPDATING;return TRUE;
+}
+static void EndUpdate(Layer *l,BOOL complete)
+{
+    assert(l->Flags & LAYERUPDATING);
+    ++update_ends;events.push_back("EndUpdate");
+    l->Flags &= ~LAYERUPDATING;if(complete)l->Flags &= ~LAYERREFRESH;
+    UnlockLayer(l);
+}
+struct LayersBase;
+static struct { struct LayersBase *LayersBase; } source_ibase;
+#define GetPrivIBase(unused) (&source_ibase)
+#define AROS_LIBFUNC_INIT
+#define AROS_LIBFUNC_EXIT
+#define DEBUG_REFRESH(unused) ((void)0)
+#define SANITY_CHECK(w) assert(w);
+#define WLAYER(w) ((w)->WLayer)
+#define BLAYER(w) (((w)->Flags & WFLG_GIMMEZEROZERO) ? (w)->BorderRPort->Layer : nullptr)
+#define AROS_ATOMIC_OR(a,b) ((a) |= (b))
+#define AROS_ATOMIC_AND(a,b) ((a) &= (b))
+#define LockLayerInfo(li) ((void)LayersBase, ::LockLayerInfo(li))
+#define UnlockLayerInfo(li) ((void)LayersBase, ::UnlockLayerInfo(li))
+#include "refresh_native_generated.h"
+#undef UnlockLayerInfo
+#undef LockLayerInfo
+#undef AROS_ATOMIC_AND
+#undef AROS_ATOMIC_OR
+#undef BLAYER
+#undef WLAYER
+#undef SANITY_CHECK
+#undef DEBUG_REFRESH
+#undef AROS_LIBFUNC_EXIT
+#undef AROS_LIBFUNC_INIT
+#undef GetPrivIBase
+extern "C" void BeginRefresh(Window *w)
+{
+    assert(Kaffeine_LayerInfoLocked(live) && info_locks[&w->WScreen->LayerInfo]>0 &&
+           layer_locks[w->WLayer]>0);
+    if(w->Flags&WFLG_GIMMEZEROZERO)assert(layer_locks[w->BorderRPort->Layer]>0);
+    ++refresh_begins;events.push_back("BeginRefresh");
+    if(refresh_entry)refresh_entry();
+    source_BeginRefresh(w);
+}
+extern "C" void EndRefresh(Window *w,BOOL complete)
+{
+    assert(Kaffeine_LayerInfoLocked(live));
+    ++refresh_ends;refresh_complete.push_back(complete);events.push_back("EndRefresh");
+    source_EndRefresh(w,complete);
 }
 /* As hyperlayers: under the layer lock, the old hook comes back. */
 extern "C" struct Hook *InstallLayerHook(struct Layer *l, struct Hook *h)
@@ -397,6 +458,9 @@ struct Fixture
         info_busy = false;
         info_calls = ibase_calls = native_installs = attempts = 0;
         attempt_fails = false;
+        attempt_busy_layer=nullptr;update_fails=false;
+        refresh_begins=refresh_ends=update_begins=update_ends=0;
+        refresh_complete.clear();refresh_entry=nullptr;
         assert(native_infos.empty());
         new_infos = disposed_infos = 0;
         new_info_fails = false;
@@ -2280,11 +2344,17 @@ static void test_info_lock_boundaries()
     f.close(mw);
 }
 
+#include "refresh_fixture_tests.h"
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
     const Test tests[] =
     {
+        { "Typed native refresh balances successful/OOM and GZZ locks and preserves guest fields", test_refresh_scopes },
+        { "GadTools refresh aliases use tracked manual scopes and retain Info safety gates", test_refresh_aliases_and_gates },
+        { "Refresh rejects nested, busy, native-update, wrong-window and wrong-owner scopes", test_refresh_refusals },
+        { "Refresh abort releases inner layers before EndRefresh and outer Info before retirement", test_refresh_lifetime },
         { "Info locks refresh real topology, ignore guest semaphore bytes and bound nesting", test_info_lock_snapshot_and_nesting },
         { "Info locks reject foreign, stale, busy, callback and cross-task owners", test_info_lock_refusals },
         { "Info before layer order and same-info nested access are enforced", test_info_lock_order },

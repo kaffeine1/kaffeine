@@ -178,6 +178,18 @@ busy-snapshot rollback and retirement. `test_regions` checks leased clips on
 owned window, requester and offscreen layers, including replacement,
 borrowed/native-hook refusals and removal before native layer deletion.
 
+### Window refresh scopes
+
+`test_layers` also covers the typed Intuition and GadTools refresh adapters,
+using the unchanged public native Begin/End bodies over recording layer/update
+primitives. Four refresh groups check normal/GZZ lock counts, update OOM,
+manual aliases, owner/nesting/contention refusals, preserved guest fields,
+implicit Info safety gates and ordered abort cleanup through the real CPU
+loop. `test_layers_private` retains independent offscreen-layer coverage.
+See [scope and limits](../../../../docs/kaffeine/window-refresh.md) for the
+contract and focused normal/sanitizer commands. Host checks do not establish
+native target OOM behavior or application rendering acceptance.
+
 ### ExAll bridge
 
 `test_dos_thunks --exall-only` runs nine ExAll groups: every NDK entry type

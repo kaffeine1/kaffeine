@@ -387,8 +387,10 @@ $(BUILD_DIR)/test_workbench: $(TEST_DIR)/test_workbench.cpp $(WORKBENCH_OBJS) | 
 $(BUILD_DIR)/test_screens: $(TEST_DIR)/test_screens.cpp $(SCREEN_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(SCREEN_OBJS) $(LDLIBS)
 
-$(BUILD_DIR)/test_layers: $(TEST_DIR)/test_layers.cpp $(LAYER_OBJS) | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(LAYER_OBJS) $(LDLIBS)
+$(BUILD_DIR)/refresh_native_generated.h: $(TEST_DIR)/refresh_native_extract.py $(AROS_ROOT)/rom/intuition/beginrefresh.c $(AROS_ROOT)/rom/intuition/endrefresh.c | $(BUILD_DIR)
+	$(PYTHON) $< $(AROS_ROOT) $@
+$(BUILD_DIR)/test_layers: $(TEST_DIR)/test_layers.cpp $(BUILD_DIR)/refresh_native_generated.h $(LAYER_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) -I$(BUILD_DIR) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(LAYER_OBJS) $(LDLIBS)
 
 # Poisoned private layer collaborators; test_layers_private overrides them.
 $(BUILD_DIR)/layers_private_unused.o: $(TEST_DIR)/layers_private_unused.c | $(BUILD_DIR)

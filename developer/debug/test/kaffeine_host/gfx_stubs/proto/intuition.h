@@ -66,6 +66,8 @@ void RefreshGList(struct Gadget *gadgets, struct Window *window, struct Requeste
 /* Depth calls and the IntuitionBase lock, for the layer bridge */
 void WindowToBack(struct Window *window);
 void WindowToFront(struct Window *window);
+void BeginRefresh(struct Window *window);
+void EndRefresh(struct Window *window, BOOL complete);
 ULONG LockIBase(ULONG what);
 void UnlockIBase(ULONG ibLock);
 #ifdef __cplusplus

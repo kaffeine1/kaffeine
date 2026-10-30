@@ -252,6 +252,10 @@ BOOL Kaffeine_LayersNativeBusy(struct KaffeineContext *ctx);
 /* intuition -306, -312 */
 IPTR Kaffeine_WindowToBack(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_WindowToFront(struct KaffeineContext *ctx, void *cpu);
+/* intuition -354/-366, also GadTools -90/-96: one tracked native refresh
+   of a typed window, owned by the current native driver and guest CPU. */
+IPTR Kaffeine_BeginRefresh(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_EndRefresh(struct KaffeineContext *ctx, void *cpu);
 /* layers -90, -96, -102, -144, -150, -174, -186, -198 */
 IPTR Kaffeine_DeleteLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_LockLayer(struct KaffeineContext *ctx, void *cpu);
@@ -295,7 +299,13 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
 /* Shared by the production manual tables and the host tests. */
 #define KAFFEINE_INTUITION_LAYER_THUNKS \
     { 306, Kaffeine_WindowToBack }, \
-    { 312, Kaffeine_WindowToFront }
+    { 312, Kaffeine_WindowToFront }, \
+    { 354, Kaffeine_BeginRefresh }, \
+    { 366, Kaffeine_EndRefresh }
+
+#define KAFFEINE_GADTOOLS_LAYER_THUNKS \
+    { 90, Kaffeine_BeginRefresh }, \
+    { 96, Kaffeine_EndRefresh }
 
 /* Graphics calls that take a Layer, or a BitMap that a LayerInfo or a
    screen of the program has: the generated thunks would hand guest memory

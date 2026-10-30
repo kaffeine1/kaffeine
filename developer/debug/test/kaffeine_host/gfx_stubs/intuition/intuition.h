@@ -60,8 +60,11 @@ struct Window
     struct Layer *WLayer;
     struct Requester *DMRequest;
     UWORD ReqCount;
+    struct RastPort *BorderRPort;
 };
 #define WFLG_BACKDROP 0x00000100
+#define WFLG_GIMMEZEROZERO 0x00000400
+#define WFLG_WINDOWREFRESH 0x01000000
 #ifndef __typedef_RAWARG
 #define __typedef_RAWARG
 typedef void *RAWARG;

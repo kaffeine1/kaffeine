@@ -40,6 +40,14 @@ static BOOL layer_info_utility_arithmetic(ULONG lvo, BOOL manual)
     }
 }
 
+/* Only the typed, tracked native refresh adapters may enter Intuition or
+   its exact GadTools aliases while a LayerInfo/refresh scope pins the CPU. */
+static BOOL layer_info_refresh(const char *name, ULONG lvo, BOOL manual)
+{
+    return manual && ((!strcmp(name, "intuition.library") && (lvo == 354 || lvo == 366)) ||
+                      (!strcmp(name, "gadtools.library") && (lvo == 90 || lvo == 96)));
+}
+
 BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
                                struct KaffeineCPU *cpu, ULONG pc,
                                struct KaffeineDispatchResult *result)
@@ -87,6 +95,7 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
                 wait internally. This new scope has no safe adapter for them. */
              (strcmp(lib->name, "layers.library") && strcmp(lib->name, "graphics.library") &&
               strcmp(lib->name, "exec.library") &&
+              !layer_info_refresh(lib->name, lvo, manual) &&
               (strcmp(lib->name, "utility.library") || !entry ||
                !layer_info_utility_arithmetic(lvo, manual))) ||
              (!strcmp(lib->name, "graphics.library") && lvo == 270) ||

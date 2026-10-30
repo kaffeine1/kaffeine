@@ -354,6 +354,10 @@ CASES = (
     ("exec", "getmsg.c", "GetMsg", "Kaffeine_GetMsg"),
     ("exec", "waitport.c", "WaitPort", "Kaffeine_WaitPort"),
     ("intuition", "modifyidcmp.c", "ModifyIDCMP", "Kaffeine_ModifyIDCMP"),
+    ("intuition", "beginrefresh.c", "BeginRefresh", "Kaffeine_BeginRefresh"),
+    ("intuition", "endrefresh.c", "EndRefresh", "Kaffeine_EndRefresh"),
+    ("gadtools", "gt_beginrefresh.c", "GT_BeginRefresh", "Kaffeine_BeginRefresh"),
+    ("gadtools", "gt_endrefresh.c", "GT_EndRefresh", "Kaffeine_EndRefresh"),
     ("gadtools", "gt_getimsg.c", "GT_GetIMsg", "Kaffeine_GT_GetIMsg"),
     ("gadtools", "gt_postfilterimsg.c", "GT_PostFilterIMsg", "Kaffeine_GT_PostFilterIMsg"),
     ("intuition", "cleardmrequest.c", "ClearDMRequest", "Kaffeine_ClearDMRequest"),
@@ -1062,8 +1066,14 @@ HANDLER_FUNCTIONS = {
 }
 
 
-def expected_function_name(handler):
-    return HANDLER_FUNCTIONS.get(handler) or HANDLER_PREFIX_RE.sub("", handler)
+def expected_function_name(handler, library):
+    # Public GadTools aliases have exactly the same ABI and implementation
+    # semantics, while their vector names retain the GT_ prefix.
+    aliases = {
+        ("gadtools", "Kaffeine_BeginRefresh"): "GT_BeginRefresh",
+        ("gadtools", "Kaffeine_EndRefresh"): "GT_EndRefresh",
+    }
+    return aliases.get((library, handler)) or HANDLER_FUNCTIONS.get(handler) or HANDLER_PREFIX_RE.sub("", handler)
 
 
 def main():
@@ -1338,7 +1348,7 @@ def main():
                 else:
                     seen_graphics_palette_refusals.add(vector)
                 continue
-            want_func = expected_function_name(handler)
+            want_func = expected_function_name(handler, library)
             entry = ndk_spec.get(vector)
             if AROS_ONLY_FUNCTIONS.get((library, vector)) == want_func:
                 entry = aros_spec.get(vector)

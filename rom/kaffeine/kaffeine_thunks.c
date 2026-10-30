@@ -656,6 +656,7 @@ const struct M68KThunkEntry kaffeine_thunks_gadtools_manual[] = {
     KAFFEINE_GADTOOLS_IDCMP_THUNKS,
     KAFFEINE_GADTOOLS_MENU_THUNKS,
     KAFFEINE_GADTOOLS_GADGET_THUNKS,
+    KAFFEINE_GADTOOLS_LAYER_THUNKS,
     { 0, NULL }
 };
 const ULONG kaffeine_thunks_gadtools_manual_count =

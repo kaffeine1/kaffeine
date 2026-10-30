@@ -11,6 +11,10 @@ struct Image;
 struct Border;
 struct TextAttr;
 struct TextFont;
+struct Window;
+__attribute__((weak)) void BeginRefresh(struct Window *w) { (void)w; abort(); }
+__attribute__((weak)) void EndRefresh(struct Window *w, int complete)
+{ (void)w; (void)complete; abort(); }
 /* No successful kernel proof is invented for older GUI-only fixtures.
    Focused native-recipe tests override both symbols with recording state. */
 __attribute__((weak)) void *OpenResource(const char *name)
