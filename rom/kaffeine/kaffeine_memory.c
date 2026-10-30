@@ -17,6 +17,8 @@
 #include "kaffeine_offsets.h"
 #include "kaffeine_domain_memory.h"
 #include "kaffeine_remember_memory.h"
+#include "kaffeine_layers.h"
+#include "kaffeine_paint_memory.h"
 #include "kaffeine_thunks.h"
 
 enum
@@ -527,6 +529,25 @@ static void heap_payload(const struct M68KHeapAllocation *allocation, ULONG *blo
     if (allocation->requested < *size) *size = allocation->requested;
 }
 
+/* Lease query for a library base inside an allocation. The complete
+   interval comes from private allocator metadata, not lib_NegSize/PosSize.
+   With no installed lease this introduces no new allocation requirement. */
+BOOL Kaffeine_HeapPaintReleasable(struct KaffeineContext *ctx, ULONG interior)
+{
+    struct M68KHeapAllocation *n, *node = NULL;
+    ULONG payload, bytes;
+    if (Kaffeine_LayerMemoryReleasable(ctx, 0, ctx->mem_size)) return TRUE;
+    if (!heap_ready(ctx)) return FALSE;
+    for (n = ctx->heap_allocations; n; )
+        if (n->block <= interior) { node = n; n = n->right; }
+        else n = n->left;
+    if (!node || node->kind == HEAP_FREE || node->kind == HEAP_RESERVED ||
+        !heap_span_valid(ctx, node)) return FALSE;
+    heap_payload(node, &payload, &bytes);
+    return interior >= payload && interior - payload < bytes &&
+           Kaffeine_LayerMemoryReleasable(ctx, payload, bytes);
+}
+
 /* Asynchronous I/O may still need guest memory that is about to be freed:
    a request in flight or a reply still queued there keeps it allocated.
    Without commit the hook only answers, so that a multi-block release can
@@ -537,6 +558,7 @@ static BOOL heap_io_keeps(struct KaffeineContext *ctx,
     ULONG block, size;
 
     heap_payload(allocation, &block, &size);
+    if (!Kaffeine_LayerMemoryReleasable(ctx, block, size)) return TRUE;
     if (ctx->idcmp_release && !ctx->idcmp_release(ctx, block, size, FALSE)) return TRUE;
     if (ctx->io_release && !ctx->io_release(ctx, block, size, commit)) return TRUE;
     return commit && ctx->idcmp_release && !ctx->idcmp_release(ctx, block, size, TRUE);

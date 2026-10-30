@@ -28,7 +28,7 @@ struct KaffeineContext {
     KaffeineLibBase *emuBase{&fixture_base};
     ULONG root_streams[3]{};
     Task *exec_task{};
-    ULONG guest_exec_task{},io_signals{},guest_signals{},entry_point{},m68k_argptr{},m68k_argsize{},m68k_sysbase{};
+    ULONG guest_exec_task{},io_signals{},layer_signals{},guest_signals{},entry_point{},m68k_argptr{},m68k_argsize{},m68k_sysbase{};
     char program_name[256]{};
     BOOL running{TRUE}; LONG exit_code{};
     void *sched{}; const Ops *task_ops{};
@@ -49,6 +49,8 @@ static void bug(const char *,...) {}
 static Task *FindTask(const char *){return current_task;}
 static void Signal(Task *task,ULONG bits){++native_signals;native_bits=bits;check(task==current_task,"self Signal uses actual native execution task");}
 static ULONG guest_task(KaffeineContext *ctx){return ctx->guest_exec_task;}
+/* Native layer metadata is a collaborator; the combined-mask helper below is production. */
+static ULONG Kaffeine_LayerSignalMask(KaffeineContext *ctx){return ctx->layer_signals;}
 static IPTR Kaffeine_IORefuse(KaffeineContext *ctx,const char *){++refusals;ctx->running=FALSE;return ctx->exit_code=20;}
 static IPTR sched_signal(KaffeineContext *,void *){++scheduler_calls;return 0x42;}
 static const Ops Kaffeine_GuestTaskOps{sched_signal};
@@ -110,13 +112,13 @@ static void reset()
 int main()
 {
     for(bool scheduled:{false,true}){
-        reset();KaffeineContext ctx;ctx.guest_exec_task=0x500;ctx.io_signals=0x80;
+        reset();KaffeineContext ctx;ctx.guest_exec_task=0x500;ctx.io_signals=0x80;ctx.layer_signals=0x10000;
         ctx.task_ops=&Kaffeine_GuestTaskOps;
         if(scheduled)ctx.sched=reinterpret_cast<void *>(1);
-        CPU cpu;cpu.a[1]=ctx.guest_exec_task;cpu.d[0]=0x190;
+        CPU cpu;cpu.a[1]=ctx.guest_exec_task;cpu.d[0]=0x10190;
         IPTR result=Kaffeine_Signal(&ctx,&cpu);
         if(scheduled)check(result==0x42&&scheduler_calls==1&&!native_signals,"self/root Signal keeps scheduler routing");
-        else check(result==0&&native_signals==1&&native_bits==0x110,"self Signal retains SINGLE/DOS while masking private I/O");
+        else check(result==0&&native_signals==1&&native_bits==0x110,"self Signal retains SINGLE/DOS while masking independent private I/O and paint wakes");
     }
     for(ULONG task:{0u,0x900u}){
         reset();KaffeineContext ctx;ctx.guest_exec_task=0x500;

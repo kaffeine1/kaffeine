@@ -5,6 +5,7 @@
 */
 
 #include "kaffeine_cpu.h"
+#include "kaffeine_async.h"
 #include "kaffeine_intern.h"
 #include "kaffeine_layers.h"
 #include "kaffeine_callback.h"
@@ -75,6 +76,9 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
     {
         current = ctx->cpu;
         current->ops->execute(current->backend_state);
+        /* Poll every outer slice, also without a scheduler or a guest Wait.
+           No thunk or callback is in flight and the driver owns ctx->cpu. */
+        if (!outer && ctx->running) (void)Kaffeine_AsyncPoll(ctx);
         /* A failed start can retain native work and a staged CPU. Drain on
            the live owner before a scheduler boundary can retire anything. */
         if (!ctx->running && Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
@@ -112,6 +116,8 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
         ctx->layer_ops->release_locks(ctx);
     if (ctx->sched && !outer)
         ctx->task_ops->end(ctx);
+    else if (!outer && ctx->guest_exec_task && ctx->layer_ops && ctx->layer_ops->task_removed)
+        ctx->layer_ops->task_removed(ctx, ctx->guest_exec_task);
     ctx->cpu = outer;
     return ctx->exit_code;
 }

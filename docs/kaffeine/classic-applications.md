@@ -8,7 +8,7 @@ private test disk images are not distributed here.
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
-| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. Current JIT startup passes typed process creation, shared IPC, ViewPortExtra, shared IDCMP, default-font setup and scoped LayerInfo locking, then stops at a guest window-backfill Hook passed to `InstallLayerHook()` (LVO -198) | Next: window-backfill compatibility. No main-editor window, editing or save/reopen acceptance |
+| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. Current JIT startup passes typed process creation, shared IPC, ViewPortExtra, shared IDCMP, default-font setup, scoped LayerInfo locking and a bounded window-backfill Hook. The latest completed application run stops at a copied-RastPort `RectFill()` with unused TmpRas state | Next: validate the graphics-state fixes on the application. No main-editor window, editing or save/reopen acceptance |
 | AmiPixelShop 0.6.1-beta | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; P96 and screen-mode requester requirements are additional source-level gaps |
 
 ## Additional startup checks (2026-10-29)
@@ -70,9 +70,12 @@ and converted-tag cleanup preserve the loader's IoErr.
 The latest accepted JIT startup runs exchange the original 128-byte message inside the
 shared guest arena and proceed through ViewPortExtra queries, shared IDCMP
 ports and typed graphics default-font initialization. Startup reaches menu
-and drawing calls, successfully locks and unlocks LayerInfo, then passes a guest
-window-backfill Hook to `InstallLayerHook()` at `layers.library` LVO -198.
-That unsupported Hook currently stops execution with return code 20.
+and drawing calls, successfully locks and unlocks LayerInfo, and installs a guest
+window-backfill Hook through the [bounded native adapter](native-backfill.md).
+The latest completed application run then stops at a copied-RastPort `RectFill()`
+with nonzero TmpRas. Native RectFill does not use that field; the scoped
+compatibility fix and a classic-layout `InitTmpRas()` thunk are under target
+validation.
 
 This is startup progress, not editor acceptance. No main-editor window has
 been accepted, and editing, saving and reopening a document remain unverified.
@@ -84,6 +87,15 @@ objects, records native and guest owners privately, pins the current guest CPU,
 and balances nested locks before task or screen retirement. Native waits, DOS,
 guest callbacks and other library classes outside the graphics, layers and
 restricted Exec subset are refused while that scope is active.
+
+The original foreign-backfill controller passed **20 checks with zero failures**
+through each of Moira and JIT on AROS ARM64. A separate native Process invoked
+an installed Hook while the guest owner was blocked on CTRL_D. Both runs
+changed a seeded pixel to the native reference value, delivered exactly the
+guest signal, and completed observer retirement and cleanup. After VM shutdown,
+the installed controller and library matched the host artifacts. These checks
+validate the bounded callback and wake path; application editor acceptance
+remains a separate gate.
 
 ### Independent-process prerequisite (2026-10-30)
 

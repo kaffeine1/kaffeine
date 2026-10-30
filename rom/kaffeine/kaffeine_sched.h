@@ -23,6 +23,9 @@ struct KaffeineDomainModule;
 /* Smallest stack from the initial tc_SPReg down to tc_SPLower. A child runs
    in supervisor mode on that stack, so exception frames land there too. */
 #define KAFFEINE_TASK_MIN_STACK  256
+/* Standard per-task break capabilities (CTRL_C through CTRL_F), separate
+   from native allocated bits used to drive GUI/message ports. */
+#define KAFFEINE_TASK_BREAK_SIGNALS 0x0000F000UL
 /* CreateProc(): the largest stack that the guest heap gives a Process, the
    longest name and the most seglist entries that it accepts */
 #define KAFFEINE_PROC_MAX_STACK  (256 * 1024)
@@ -120,6 +123,13 @@ struct KaffeineTaskOps
     /* Immutable scheduler identity of the live root Process, even while
        ctx->guest_exec_task is the current typed Process's DOS view. */
     ULONG (*root_task)(struct KaffeineContext *ctx);
+    /* Optional paint-notification capability. A live private target may
+       receive its native allocated bits or its standard break bits; no
+       DOS/reserved/private wake bit and no writable guest tc_SigAlloc.
+       This validates a current identity, not a captured lifetime: native
+       pending records must retire before a TCB address can be reused.
+       Without a scheduler only the exact private root is accepted. */
+    BOOL  (*can_signal)(struct KaffeineContext *ctx, ULONG task, ULONG bits);
 };
 
 #ifdef __cplusplus

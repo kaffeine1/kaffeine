@@ -11,6 +11,16 @@ struct Image;
 struct Border;
 struct TextAttr;
 struct TextFont;
+/* No successful kernel proof is invented for older GUI-only fixtures.
+   Focused native-recipe tests override both symbols with recording state. */
+__attribute__((weak)) void *OpenResource(const char *name)
+{ (void)name; return NULL; }
+__attribute__((weak)) unsigned int Kaffeine_Host_KrnGetCPUCount(void *resource)
+{ (void)resource; abort(); }
+__attribute__((weak)) signed char AllocSignal(int requested)
+{ (void)requested; abort(); }
+__attribute__((weak)) void FreeSignal(int bit)
+{ (void)bit; abort(); }
 __attribute__((weak)) void *AllocVec(unsigned int size, unsigned int flags)
 { (void)size; (void)flags; abort(); }
 __attribute__((weak)) void FreeVec(void *memory) { (void)memory; abort(); }

@@ -30,6 +30,7 @@
 */
 
 #include "kaffeine_intern.h"
+#include "kaffeine_async_wait.h"
 #include "kaffeine_locks.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_thunks.h"
@@ -247,7 +248,8 @@ static int app_port(struct KaffeineContext *ctx, ULONG guest)
         (ctx->mem[guest + G_MP_FLAGS] & PF_ACTION) != PA_SIGNAL)
         return -1;
     sig = ctx->mem[guest + G_MP_SIGBIT];
-    if (sig > 31 || !(ctx->guest_signals & (1UL << sig)))
+    if (sig > 31 || (Kaffeine_AsyncSignalMask(ctx) & (1UL << sig)) ||
+        !(ctx->guest_signals & (1UL << sig)))
         return -1;
     for (i = 0; i < KAFFEINE_MAX_APP_PORTS && ctx->app_ports[i].guest; i++)
         ;
@@ -961,8 +963,8 @@ BOOL Kaffeine_AppPortFill(struct KaffeineContext *ctx, ULONG port, BOOL wait)
     /* the program's own messages first, and a copy that it has not taken */
     if (m68k_read32(ctx, list) != list + G_LH_TAIL)
         return TRUE;
-    if (wait)
-        WaitPort(box);
+    if (wait && !Kaffeine_AsyncWaitPort(ctx, box))
+        return TRUE; /* known App port; the caller observes the stop */
     if (!(carrier = (struct Carrier *)GetMsg(box)))
         return TRUE;
     if (!(copy = copy_message(ctx, p, carrier)))

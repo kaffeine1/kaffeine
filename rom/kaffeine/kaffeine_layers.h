@@ -184,7 +184,41 @@ struct KaffeineLayerOps
     /* Native owner only, before this guest task's DOS broker, CPU, signals
        or storage retire. Returns all layer/LayerInfo locks of that task. */
     void  (*task_removed)(struct KaffeineContext *ctx, ULONG task);
+    /* Optional private driver wake bit, kept separate from guest signals and
+       io_signals for its whole allocated lifetime. Metadata only. */
+    ULONG (*signal_mask)(struct KaffeineContext *ctx);
+    /* Driver only, outside native DOS brokers: deliver bounded pending
+       notifications to captured live guest owners, or FALSE on error. No
+       guest CPU callbacks or task switches. Default NULL is a no-op. */
+    BOOL  (*poll)(struct KaffeineContext *ctx);
+    /* Query-only dependency leases. A transaction asks about every member
+       before changing any. No detach, allocation or native call here. */
+    BOOL  (*memory_releasable)(struct KaffeineContext *ctx, ULONG addr, ULONG size);
+    BOOL  (*signal_releasable)(struct KaffeineContext *ctx, ULONG bits);
 };
+
+static inline ULONG Kaffeine_LayerSignalMask(struct KaffeineContext *ctx)
+{
+    return ctx->layer_ops && ctx->layer_ops->signal_mask ?
+           ctx->layer_ops->signal_mask(ctx) : 0;
+}
+
+static inline BOOL Kaffeine_LayerPoll(struct KaffeineContext *ctx)
+{
+    return !ctx->layer_ops || !ctx->layer_ops->poll || ctx->layer_ops->poll(ctx);
+}
+
+static inline BOOL Kaffeine_LayerMemoryReleasable(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    return !ctx->layer_ops || !ctx->layer_ops->memory_releasable ||
+           ctx->layer_ops->memory_releasable(ctx, addr, size);
+}
+
+static inline BOOL Kaffeine_LayerSignalReleasable(struct KaffeineContext *ctx, ULONG bits)
+{
+    return !ctx->layer_ops || !ctx->layer_ops->signal_releasable ||
+           ctx->layer_ops->signal_releasable(ctx, bits);
+}
 
 static inline BOOL Kaffeine_LayerInfoLocked(struct KaffeineContext *ctx)
 {

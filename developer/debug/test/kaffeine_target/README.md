@@ -13,6 +13,7 @@ at the end.
 | `hello_seglist.s` | 68k program with CODE, DATA and BSS hunks. Every absolute operand needs a relocation to DATA or BSS, so its message is printed only if the rebased copy is correct. |
 | `cpu_faults.c` | Deliberate out-of-arena long accesses at 0xFFFFFFFC, aligned word accesses at 0xFFFFFFFE, inline-assembler odd word accesses and byte accesses at 0xFFFFFFFF, then `FMOVE.L FPCR,D0` without FPU startup. Prints and flushes a STEP line before each step. Expected guest result: bounds checks pass, Line-F ends the command with `RETURN_FAIL` (20), and its Shell/Run caller continues. With the argument `mmu` it runs only `PFLUSHA`, which must also end with rc 20. |
 | `cpu_full_index.c` | Original 68020 non-indirect full-index bytecode: `CLR.B (3696,A2,A0.L*4)` and `LEA` of the same operand. Checks the computed address, a single-byte write in guarded storage, CCR and preserved base/index registers. Built with `-m68020`; passes 5 checks in both Shell and Run with Moira and JIT on AROS ARM64 in QEMU. |
+| `paint_fixture_native.c` | ARM-native controller and portable original 68000 HUNK emitter: a foreign native observer invokes the installed solid-fill Hook on its own managed Window, compares painted pixels to a native reference, and verifies the blocked classic root wakes on its exact CTRL_D signal. Run separately with an external deadline; see the foreign-paint probe below. |
 | `hooks.c` | C hooks behind NDK register-to-libnix assembler stubs, nested CallHookPkt calls, RawDoFmt with a custom C writer, interpreted advancing A3 and the standard copy routine, packed WORD/LONG/string/BSTR arguments, the advanced argument result, magic STRING/COUNT, and VSNPrintf output, truncation and required bytes including zero. |
 | `dos_fileio.c` | dos.library file I/O (`Open()`, `Write()`, `Read()`, `Seek()`, `Close()`), an FWrite/FRead block round trip, NameFromLock/NameFromFH paths, locks, `Examine()`, `Rename()`, `DeleteFile()`, `CreateDir()`, local text/binary variables and truncation, Fault/PrintFault, AddPart and its no-fit failure, SetComment/SetProtection read back through Examine, ParsePattern/MatchPattern and their NoCase forms, and converted results of `ExamineFH()`, `StrToLong()`, `FilePart()`, `PathPart()`, `FGets()` and `DateStamp()`, including guest pointer identity and aliasing. |
 | `dos_strings.c` | Second DOS batch in RAM: only: structure conversions and NDK layout assertions, dates, names/CLI/arguments, parsing, counted output, DOS-owned SetVBuf and assign ownership/removal. Separate `exit` mode flushes a line and must end with RC 7. |
@@ -300,6 +301,56 @@ Successful process checks do not establish GUI or editor acceptance.
 The optional host tool `domain_fixture_emit.c`, linked with
 `domain_fixture_hunks.c`, emits the same HUNKs for independent structural
 inspection. Its successful compilation is separate from target execution.
+
+### Foreign-native paint probe
+
+`paint_fixture_native.c` generates an original relocated 68000 HUNK, so no
+68k compiler or application binary is needed. Build this standalone native
+controller with the matching AROS ARM64 SDK:
+
+```sh
+make -C developer/debug/test/kaffeine_target \
+    BUILD_DIR="$PWD/build-paint-fixture" NATIVE_CC=aarch64-aros-gcc \
+    "$PWD/build-paint-fixture/paint_fixture_native"
+```
+
+Run `paint_fixture_native moira` and `paint_fixture_native jit` separately,
+one invocation at a time, on a disposable **uniprocessor** AROS ARM64 system
+under an external VM deadline. Both SDK and ROM must use UP Exec; the source
+rejects SMP and checks one active CPU. Expected success is 20 checks. Host
+compilation does not establish target execution or editor acceptance.
+
+The classic root opens its own 128 by 96 Window, uses the public classic
+`Window.WLayer` offset 124, and installs a 20-byte Hook. Its original code
+copies the 100-byte RastPort into private stack storage, clears Layer, sets
+pen/mode/mask, fills the exact signed BackFillMessage bounds, and optionally
+signals only its captured guest owner. The root clears CTRL_D before ready,
+requires Wait's result to equal CTRL_D exactly, and retains the Window until
+an observer ACK before restoring the old Hook and closing resources.
+
+A separate native observer confirms that root is blocked on CTRL_D. Under
+public-screen/IBase protection it locates only the exact fixture Window and
+attempts its Layer lock without blocking. After releasing IBase it requires
+a managed HIDD screen bitmap, no area pattern, and a visible ClipRect covering
+the target and reference pixels. It calls the installed Hook from its own
+native Task while retaining the Layer, compares the paint to a native pen-2
+reference and a distinct seeded value, and releases native locks before ACK.
+No Window pointer is used after ACK. The controller waits for actual observer
+Process retirement, beyond its completion flag, before unloading entry code.
+
+Observer polls and the guest ACK loop are finite. RunHunk and a native
+graphics hang are handled by the external deadline; an active observer's
+state/code stay retained until it retires. Only the reserved
+`RAM:kaffeine-paint-ready`, `RAM:kaffeine-paint-signalled`,
+`RAM:kaffeine-paint-ack` and `RAM:kaffeine-paint.hunk` paths are cleaned.
+The controller restores its exact local backend bytes/flags and borrows
+standard streams without closing them.
+
+For independent host inspection, the optional `paint_fixture_emit` target
+uses `HOST_CC` and `PAINT_FIXTURE_EMIT_ONLY`, without AROS headers. Invoke the
+result as `paint_fixture_emit IMAGE.hunk METADATA.json`. The normal and
+sanitizer runs of `../kaffeine_paint_host/run_tests.py` also parse, relocate,
+compile and evaluate this emitted Hook; see that directory's README.
 
 ## Companion files
 

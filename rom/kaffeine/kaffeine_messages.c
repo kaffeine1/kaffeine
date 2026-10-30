@@ -4,7 +4,9 @@
     Bounded classic Exec queues. Native objects never enter these lists.
 */
 #include "kaffeine_messages.h"
+#include "kaffeine_async.h"
 #include "kaffeine_locks.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_sched.h"
 #include <aros/debug.h>
@@ -163,7 +165,7 @@ static BOOL queue_arrival(struct KaffeineContext *ctx, ULONG port)
         bit = ctx->mem[port + 15];
         /* SIGB_DOS: pr_MsgPort of the root, natively, or of a CreateProc()
            child, a guest signal of that child alone */
-        if (bit > 31 || (!(process_port(ctx, port) && bit == SIGB_DOS &&
+        if (bit > 31 || (Kaffeine_AsyncSignalMask(ctx) & (1UL << bit)) || (!(process_port(ctx, port) && bit == SIGB_DOS &&
                            owner == (ctx->task_ops->root_task ? ctx->task_ops->root_task(ctx) :
                                      ctx->guest_exec_task) && ctx->task_ops->known_task(ctx, owner)) &&
                          !(bit == SIGB_DOS && ctx->task_ops->process_port &&
@@ -187,6 +189,7 @@ static BOOL queue_arrival(struct KaffeineContext *ctx, ULONG port)
         task = m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK);
         if ((ctx->guest_exec_task && task != ctx->guest_exec_task) || !task || !arena(ctx, task, 92) ||
             m68k_read32(ctx, port + 16) != task || bit > 31 ||
+            (Kaffeine_AsyncSignalMask(ctx) & (1UL << bit)) ||
             (!(ctx->guest_signals & (1UL << bit)) && !(process_port(ctx, port) && bit == SIGB_DOS)))
             return FALSE;
         for (i = 0; i < KAFFEINE_MAX_IO_PORTS; ++i)
@@ -328,7 +331,7 @@ IPTR Kaffeine_GuestGetMsg(struct KaffeineContext *ctx, ULONG port, BOOL wait)
        waits while a request in flight replies to it. */
     for (;;)
     {
-        if (ctx->io_poll && !ctx->io_poll(ctx))
+        if (!Kaffeine_AsyncPoll(ctx))
             return 20;
         if (!wait || ctx->sched || !ctx->io_wait || !Kaffeine_QueueRead(ctx, port, &q) || q.count ||
             !ctx->io_wait(ctx, port))
@@ -434,6 +437,7 @@ static BOOL memory(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL rel
 {
     struct KaffeineQueue q;
     unsigned i;
+    if (releasing && !Kaffeine_LayerMemoryReleasable(ctx, addr, size)) return FALSE;
     if (size && (!Kaffeine_GuestBytes(ctx, addr, size) || !ordinary(ctx, addr, size, NULL, 0, releasing))) return FALSE;
     for (i = 0; i < KAFFEINE_MAX_MESSAGE_PORTS; ++i)
         if (ctx->message_ports[i] &&

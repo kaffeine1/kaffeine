@@ -66,7 +66,9 @@ def main():
              "static void dispose_context(", "static LONG setup_and_execute("]
     if "static void cleanup_owned(" in run:
         names.insert(0, "static void cleanup_owned(")
-    production = function(io, "IPTR Kaffeine_Signal(") + "\n"
+    async_header = (source_dir / "kaffeine_async.h").read_text()
+    production = function(async_header, "static inline ULONG Kaffeine_AsyncSignalMask(") + "\n"
+    production += function(io, "IPTR Kaffeine_Signal(") + "\n"
     production += "\n".join(function(run, name) for name in names)
     fixture = (test_dir / "test_integration.cpp").read_text()
     marker = "/* PRODUCTION_FUNCTIONS */"

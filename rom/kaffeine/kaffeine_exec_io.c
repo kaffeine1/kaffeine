@@ -22,6 +22,7 @@
 */
 
 #include "kaffeine_intern.h"
+#include "kaffeine_async.h"
 #include "kaffeine_exec_io.h"
 #include "kaffeine_thunks_console.h"
 #include "kaffeine_offsets.h"
@@ -99,7 +100,10 @@ IPTR Kaffeine_IORefuse(struct KaffeineContext *ctx, const char *why)
    the guest owns it until FreeSignal() or the end of the program. */
 IPTR Kaffeine_AllocSignal(struct KaffeineContext *ctx, void *cpu)
 {
-    BYTE got = AllocSignal((BYTE)THUNK_D(0));
+    BYTE requested = (BYTE)THUNK_D(0), got;
+    if (requested >= 0 && requested < 32 &&
+        (Kaffeine_AsyncSignalMask(ctx) & (1UL << requested))) return (IPTR)(LONG)-1;
+    got = AllocSignal(requested);
 
     if (got >= 0)
     {
@@ -120,6 +124,9 @@ IPTR Kaffeine_FreeSignal(struct KaffeineContext *ctx, void *cpu)
 
     if (sig < 0)
         return 0;
+    if (sig < 32 && (Kaffeine_AsyncSignalMask(ctx) & (1UL << sig))) return 0;
+    if (sig < 32 && !Kaffeine_LayerSignalReleasable(ctx, 1UL << sig))
+        return Kaffeine_IORefuse(ctx, "FreeSignal(): an installed recipe retains the signal");
     if (ctx->sched && !ctx->task_ops->signal_freeable(ctx, sig))
         return 0;
     if (sig > 31 || !(ctx->guest_signals & (1UL << sig)))
@@ -151,7 +158,7 @@ IPTR Kaffeine_Signal(struct KaffeineContext *ctx, void *cpu)
         return Kaffeine_IORefuse(ctx, "Signal(): only the current task can be signalled so far");
     }
     /* The private bits of asynchronous I/O are not the guest's to send. */
-    Signal(FindTask(NULL), THUNK_D(0) & ~ctx->io_signals);
+    Signal(FindTask(NULL), THUNK_D(0) & ~Kaffeine_AsyncSignalMask(ctx));
     return 0;
 }
 
@@ -221,12 +228,16 @@ IPTR Kaffeine_DeleteMsgPort(struct KaffeineContext *ctx, void *cpu)
             (unsigned long)port);
         return 0;
     }
-    if (ctx->io_poll && !ctx->io_poll(ctx))
+    if (!Kaffeine_AsyncPoll(ctx))
         return 20;
     for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; i++)
         if (ctx->io_requests[i].guest && ctx->io_requests[i].pending &&
             !ctx->io_requests[i].orphan && ctx->io_requests[i].port == port)
             return Kaffeine_IORefuse(ctx, "DeleteMsgPort(): an I/O request in flight replies to it");
+    if (!Kaffeine_LayerMemoryReleasable(ctx, port, M68K_SIZEOF_MSGPORT) ||
+        (entry->sigbit >= 0 && entry->sigbit < 32 &&
+         !Kaffeine_LayerSignalReleasable(ctx, 1UL << entry->sigbit)))
+        return Kaffeine_IORefuse(ctx, "DeleteMsgPort(): an installed recipe retains its storage or signal");
     if (ctx->sched && !ctx->task_ops->signal_freeable(ctx, entry->sigbit))
         return Kaffeine_IORefuse(ctx, "DeleteMsgPort(): signal belongs to another guest task");
     Kaffeine_AppPortGone(ctx, port);
@@ -620,7 +631,9 @@ static BOOL io_wait_port(struct KaffeineContext *ctx, ULONG port)
         if (ctx->io_requests[i].pending && !ctx->io_requests[i].orphan &&
             !ctx->io_requests[i].waiting && ctx->io_requests[i].port == port)
         {
-            Wait(ctx->io_signals);
+            /* The caller pumps immediately after every wake, including a
+               layer event that did not complete this request. */
+            Wait(Kaffeine_AsyncSignalMask(ctx));
             return TRUE;
         }
     return FALSE;
@@ -733,7 +746,7 @@ static void io_hooks(struct KaffeineContext *ctx)
    not. FALSE when it stopped the guest. */
 static BOOL io_pumped(struct KaffeineContext *ctx)
 {
-    return !ctx->io_poll || ctx->io_poll(ctx);
+    return Kaffeine_AsyncPoll(ctx);
 }
 
 /* -654: CreateIORequest(A0=ioReplyPort, D0=size) -> D0. A cleared 68k
@@ -1499,6 +1512,13 @@ IPTR Kaffeine_WaitIO(struct KaffeineContext *ctx, void *cpu)
             if (!root && !ctx->task_ops->block_io)
                 return Kaffeine_IORefuse(ctx, "WaitIO(): no cooperative I/O wait for this task");
             /* a message is there, perhaps another request's: pump again */
+            continue;
+        }
+        /* With a native paint source the root must also wake for its
+           private events; the next pump finishes this request in place. */
+        if (Kaffeine_LayerSignalMask(ctx))
+        {
+            Wait(Kaffeine_AsyncSignalMask(ctx));
             continue;
         }
         /* AROS's WaitIO() waits while the device marks the request

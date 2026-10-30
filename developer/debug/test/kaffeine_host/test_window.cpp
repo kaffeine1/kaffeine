@@ -3408,6 +3408,68 @@ static void test_shared_lifecycle_stop_is_authoritative()
     fail_modify=false;
 }
 
+static void test_async_window_port_wakes()
+{
+    constexpr ULONG wake = 1UL << 29;
+    for (bool shared : { false, true })
+        for (bool error : { false, true })
+        {
+            Fixture f; Window extra = {};
+            ULONG mw = shared ? Kaffeine_WindowCreate(&f.ctx, &extra) : f.window;
+            ULONG guest = shared ? manual_ui_port(f) : f.port();
+            Window *w = shared ? &extra : &f.native_window;
+            MsgPort *native = shared ? bind_ui(f,mw,*w,guest) : w->UserPort;
+            native->mp_MsgList.lh_Head = reinterpret_cast<Node *>(&native->mp_MsgList.lh_Tail);
+            native->mp_MsgList.lh_Tail = nullptr;
+            native->mp_MsgList.lh_TailPred = reinterpret_cast<Node *>(&native->mp_MsgList);
+            KaffeineLayerOps layers = request_layer_ops();
+            layers.signal_mask = [](KaffeineContext *) -> ULONG { return 1UL << 29; };
+            static bool pending, failure; static unsigned delivered;
+            pending = false; failure = error; delivered = 0;
+            layers.poll = [](KaffeineContext *) {
+                if (!pending) return TRUE;
+                pending = false; ++delivered;
+                return failure ? FALSE : TRUE;
+            };
+            f.ctx.layer_ops = &layers;
+            unsigned waits = 0;
+            on_wait = [&](ULONG mask) {
+                assert(mask == (wake | (1UL << native->mp_SigBit)));
+                if (++waits == 1) pending = true;
+                else
+                {
+                    auto *im = message(w,IDCMP_NEWSIZE); f.send(im);
+                    if (!shared)
+                    {
+                        native->mp_MsgList.lh_Head = &im->ExecMessage.mn_Node;
+                        native->mp_MsgList.lh_TailPred = &im->ExecMessage.mn_Node;
+                    }
+                }
+            };
+            ULONG shown = f.waitport(guest);
+            assert(delivered == 1 && waits == (error ? 1u : 2u) && !pending);
+            if (error) assert(shown == 20 && f.ctx.callback_failed && f.ctx.exit_code == 20 && replied.empty());
+            else { assert(shown && f.getmsg(guest) == shown); f.reply(shown); assert(replied.size() == 1); }
+            if (shared) f.ctx.idcmp_cleanup(&f.ctx);
+            f.ctx.layer_ops = nullptr;
+        }
+    /* App-only ports must suspend the guest and retry typed conversion. */
+    Fixture f; ULONG guest = manual_ui_port(f);
+    f.ctx.app_ports[0].guest = guest;
+    app_fill = [&](KaffeineContext *ctx,ULONG port,BOOL wait) {
+        assert(ctx == &f.ctx && port == guest && !wait); return TRUE;
+    };
+    KaffeineTaskOps tasks = {};
+    tasks.known_task = ui_known; tasks.owns_signal = ui_owns;
+    static bool blocked; blocked = false;
+    tasks.block_guest_port = [](KaffeineContext *,ULONG,KaffeineTaskRetry retry,IPTR *result) {
+        assert(retry == Kaffeine_WaitPort); blocked = true; *result = 0x456; return TRUE;
+    };
+    f.ctx.sched = reinterpret_cast<KaffeineScheduler *>(&tasks); f.ctx.task_ops = &tasks;
+    assert(f.waitport(guest) == 0x456 && blocked && !native_waits);
+    f.ctx.sched = nullptr; f.ctx.task_ops = nullptr; f.ctx.app_ports[0].guest = 0;
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
@@ -3437,6 +3499,7 @@ int main()
         { "An IDCMP port is a signalling 68k MsgPort", test_user_port },
         { "GetMsg() gives a 68k IntuiMessage and an up-to-date window", test_getmsg_fields },
         { "WaitPort(), messages taken natively and many in a row", test_waitport_and_many },
+        { "Native paint wake joins owned/shared ports and cooperative App waits", test_async_window_port_wakes },
         { "68k ports that no message can reach yet", test_guest_ports },
         { "ModifyIDCMP() gives and takes the IDCMP port, or undoes", test_modifyidcmp },
         { "GadTools copies and messages of GadTools only", test_gadtools },

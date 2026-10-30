@@ -23,6 +23,7 @@ def function(filename, name):
     return source[start:end]
 text = '''/* Generated from production. Native IDCMP and App paths are poisoned. */
 #include "kaffeine_intern.h"
+#include "kaffeine_async_wait.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_exec_compat.h"

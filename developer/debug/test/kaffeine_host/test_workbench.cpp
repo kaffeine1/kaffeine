@@ -42,6 +42,7 @@
 extern "C" void CloseFont(struct TextFont *) { std::abort(); }
 #include "kaffeine_window.h"
 #include "kaffeine_workbench.h"
+#include "kaffeine_layers.h"
 
 static const char *case_name;
 static unsigned checks;
@@ -68,6 +69,15 @@ static unsigned get_calls, wait_calls, signal_allocations;
 static bool waited_empty;
 static Message *on_wait;
 static MsgPort *on_wait_port;
+static std::function<void(ULONG)> on_mask_wait;
+static unsigned mask_wait_calls;
+extern "C" ULONG Wait(ULONG mask)
+{
+    ++mask_wait_calls;
+    require(bool(on_mask_wait), "native masked wait has an explicit bounded event");
+    on_mask_wait(mask);
+    return mask;
+}
 static KaffeineContext *live;
 
 extern "C" APTR AllocMem(ULONG size, ULONG flags)
@@ -574,6 +584,7 @@ struct Fixture
         next_dup = 0x51000000; owner.tc_Node.ln_Type = NT_PROCESS; during_remove = nullptr; sent.clear();
         signals = 0xFFFF; signal_allocations = get_calls = wait_calls = info_calls = 0;
         waited_empty = fail_add = false; on_wait = nullptr; on_wait_port = nullptr;
+        on_mask_wait = {}; mask_wait_calls = 0;
         remove_result = info_result = TRUE;
         info_lock = nullptr; info_name = nullptr; info_screen = nullptr;
         require(originals.empty() && clones.empty() && icon_opens == 0,
@@ -1435,6 +1446,54 @@ static void test_wait_message()
     require(f.get(p) == msg && get_calls == 1, "GetMsg takes the existing WaitPort copy without touching the native queue");
     f.empty(p); f.reply(msg);
 }
+static void test_paint_wake_on_app_port()
+{
+    for (bool error : { false, true })
+    {
+        Fixture f; ULONG guest = f.port(); f.add_window(guest);
+        auto *front = f.native_port(guest), *box = Fixture::inbox(front);
+        require(AllocSignal(29) == 29, "paint source owns a private driver signal");
+        static bool pending, fail; static unsigned delivered;
+        pending = false; fail = error; delivered = 0;
+        KaffeineLayerOps layers = {};
+        layers.signal_mask = [](KaffeineContext *) -> ULONG { return 1UL << 29; };
+        layers.poll = [](KaffeineContext *) {
+            if (!pending) return TRUE;
+            pending = false; ++delivered;
+            return fail ? FALSE : TRUE;
+        };
+        f.ctx->layer_ops = &layers; f.ctx->cpu = &f.cpu;
+        Delivery *delivery = nullptr;
+        on_mask_wait = [&](ULONG mask) {
+            require(mask == ((1UL << box->mp_SigBit) | (1UL << 29)),
+                    "App inbox native wait includes only its signal and the private paint wake");
+            if (mask_wait_calls == 1) pending = true;
+            else
+            {
+                delivery = f.delivery(front, false);
+                PutMsg(front, &delivery->am.am_Message);
+                Message *carrier = queues[box].front();
+                box->mp_MsgList.lh_Head = &carrier->mn_Node;
+                box->mp_MsgList.lh_TailPred = &carrier->mn_Node;
+            }
+        };
+        ULONG msg = f.wait(guest);
+        require(delivered == 1 && !pending && mask_wait_calls == (error ? 1u : 2u) && !wait_calls,
+                "a paint-only wake is polled before waiting again for an App carrier");
+        if (error)
+            require(msg == 20 && f.ctx->callback_failed && f.ctx->exit_code == 20 && !delivery,
+                    "App native wait returns authoritative20 for a paint error before any carrier copy");
+        else
+        {
+            require(msg && delivery && f.replied(delivery), "successful App arrival retains exactly-once native reply");
+            check_message(f,msg,*delivery);
+            require(f.get(guest) == msg, "the actual converted AppMessage remains first in the guest FIFO");
+            f.reply(msg);
+        }
+        f.ctx->layer_ops = nullptr; FreeSignal(29);
+    }
+}
+
 static void test_guest_message_first()
 {
     Fixture f; ULONG p = f.port(); f.add_window(p); MsgPort *native = f.native_port(p);
@@ -1735,6 +1794,7 @@ int main(int argc, char **argv)
         {"menu_text_limit", test_menu_text_limit},
         {"appmessage_get_reply", test_get_message},
         {"appmessage_wait_get", test_wait_message},
+        {"paint_wake_app_wait", test_paint_wake_on_app_port},
         {"guest_message_first", test_guest_message_first},
         {"reply_listed_copy", test_reply_listed_copy},
         {"copy_limit_get", [] { test_copy_limit(false); }},

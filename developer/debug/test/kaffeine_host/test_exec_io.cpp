@@ -36,6 +36,7 @@
 #include "kaffeine_messages.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_layers.h"
+#include "kaffeine_async_wait.h"
 
 /* ── The native side ─────────────────────────────────────────────── */
 
@@ -2642,8 +2643,82 @@ static void test_stack_timer_message()
     }
 }
 
+static constexpr ULONG layer_wake = 1UL << 29;
+struct LayerWakeTest { bool pending = false, fail = false; ULONG signal = 0; unsigned polls = 0; };
+static LayerWakeTest *layer_wake_test;
+static KaffeineLayerOps layer_wake_ops()
+{
+    KaffeineLayerOps result = {};
+    result.signal_mask = [](KaffeineContext *) { return layer_wake; };
+    result.poll = [](KaffeineContext *ctx) {
+        assert(current_task == &owner_task && !ctx->broker_call);
+        auto &w = *layer_wake_test; ++w.polls;
+        if (!w.pending) return TRUE;
+        w.pending = false; SetSignal(0, layer_wake);
+        if (w.fail) return FALSE;
+        if (w.signal) Signal(&owner_task, w.signal);
+        return TRUE;
+    };
+    return result;
+}
+static void test_layer_async_native_waits()
+{
+    for (bool simultaneous : { false, true })
+    {
+        Fixture f; LayerWakeTest pending; layer_wake_test = &pending;
+        auto layers = layer_wake_ops(); f.ctx.layer_ops = &layers;
+        f.ctx.exec_task = &owner_task; f.ctx.guest_exec_task = Fixture::task; f.ctx.cpu = &f.cpu;
+        check(AllocSignal(29) == 29, "the native driver reserves the layer's private wake bit");
+        check(f.call(330,0,0,20) == 20, "native wait fixture owns its guest signal");
+        pending.signal = 1UL << 20;
+        const unsigned allocations = alloc_signal_calls, frees = free_signal_calls;
+        check(f.call(330,0,0,29) == 0xFFFFFFFF && alloc_signal_calls == allocations &&
+              !(f.ctx.guest_signals & layer_wake), "AllocSignal cannot expose a private layer wake bit");
+        f.call(336,0,0,29);
+        check(free_signal_calls == frees && (task_signals & layer_wake),
+              "FreeSignal cannot release the native layer wake bit");
+        f.call(324,0,Fixture::task,layer_wake | pending.signal);
+        check(signal_mask == pending.signal && !(native_signals & layer_wake),
+              "root Signal strips the private wake bit before native delivery");
+        native_signals = 0;
+        on_wait = [&] { pending.pending = true; native_signals |= layer_wake |
+                       (simultaneous ? pending.signal : 0); };
+        f.ctx.running = TRUE;
+        check(Kaffeine_AsyncWaitSignals(&f.ctx, layer_wake | pending.signal) == pending.signal &&
+              wait_calls == 1 && wait_mask == (layer_wake | pending.signal) && !f.ctx.io_signals &&
+              !pending.pending && !(native_signals & layer_wake),
+              "native root Wait pumps a private-only or simultaneous wake, returns only the guest signal and preserves the independent IO mask");
+        f.ctx.layer_ops = nullptr; FreeSignal(29);
+    }
+    for (bool wait_io : { false, true })
+        for (bool error : { false, true })
+        {
+            Fixture f; const auto [port,req] = async_setup(f);
+            LayerWakeTest pending; layer_wake_test = &pending; pending.fail = error;
+            auto layers = layer_wake_ops(); f.ctx.layer_ops = &layers;
+            f.ctx.exec_task = &owner_task; f.ctx.guest_exec_task = Fixture::task; f.ctx.cpu = &f.cpu;
+            check(AllocSignal(29) == 29, "an IO wait owns a separate native paint wake bit");
+            const ULONG io = f.ctx.io_signals;
+            f.delay(req,0,5); check(f.send(req) == 0, "the timer is pending before the mixed wake wait");
+            on_wait = [&] {
+                pending.pending = true; native_signals |= layer_wake;
+                if (!error) on_wait = [&] { complete(f.native_of(req)); };
+            };
+            ULONG result = wait_io ? f.wait_io(req) : f.wait_port(port);
+            check(result == (error ? 20u : wait_io ? 0u : req) && wait_calls == (error ? 1u : 2u) &&
+                  wait_mask == (io | layer_wake) && f.ctx.io_signals == io && !pending.pending,
+                  "native WaitIO and empty guest WaitPort wake for paint, poll, and retain the IO provider's own mask");
+            check(error ? (f.stopped() && f.ctx.callback_failed && f.record(req)->pending) :
+                          (f.ctx.running && !waitio_calls && !f.record(req)->pending),
+                  "paint error forces20 before an IO reply; success completes through the shared pump without native WaitIO swallowing the wake");
+            if (!error && !wait_io) check(f.get(port) == req, "mixed-wake WaitPort leaves the actual timer reply queued exactly once");
+            f.ctx.layer_ops = nullptr; FreeSignal(29);
+        }
+}
+
 int main()
 {
+    test_layer_async_native_waits();
     test_signals();
     test_signal_task();
     test_ports();

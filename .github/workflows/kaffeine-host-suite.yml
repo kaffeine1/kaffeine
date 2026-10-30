@@ -103,13 +103,21 @@ jobs:
             kaffeine_remember_host \
             kaffeine_videocontrol_host \
             kaffeine_gfxbase_host \
+            kaffeine_paint_host \
+            kaffeine_paint_hook_host \
             kaffeine_process_integration_host
           do
             runner="developer/debug/test/$suite/run_tests.py"
+            source_dir="$GITHUB_WORKSPACE/rom/kaffeine"
+            extra_args=()
+            if [[ "$suite" == kaffeine_paint_host ]]; then
+              source_dir="$GITHUB_WORKSPACE"
+              extra_args+=(--oracle)
+            fi
             python3 "$runner" \
-              --source-dir "$GITHUB_WORKSPACE/rom/kaffeine" \
+              --source-dir "$source_dir" "${extra_args[@]}" \
               --build-dir "$RUNNER_TEMP/kaffeine-standalone/$suite/normal"
             python3 "$runner" --sanitize \
-              --source-dir "$GITHUB_WORKSPACE/rom/kaffeine" \
+              --source-dir "$source_dir" "${extra_args[@]}" \
               --build-dir "$RUNNER_TEMP/kaffeine-standalone/$suite/sanitized"
           done

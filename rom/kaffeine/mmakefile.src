@@ -63,6 +63,8 @@ KAFFEINE_FILES := \
     kaffeine_palette \
     kaffeine_videocontrol \
     kaffeine_layers \
+    kaffeine_paint_compile \
+    kaffeine_paint_hook \
     kaffeine_regions \
     kaffeine_mirror \
     kaffeine_copy \

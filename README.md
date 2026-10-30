@@ -66,6 +66,7 @@ physical hardware benchmark.
 - [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
 - [Current behavior, architecture and verified limits](README.KAFFEINE.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
+- [Bounded native backfill hooks](docs/kaffeine/native-backfill.md).
 - [Standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).
 - [AROS target programs and QEMU runner](developer/debug/test/kaffeine_target/README.md).
 - [Library implementation](rom/kaffeine/README.md), [internals reference](rom/kaffeine/INTERNALS.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).

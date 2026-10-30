@@ -35,6 +35,7 @@
 #include "kaffeine_dos_broker.h"
 #include "kaffeine_domain_modules.h"
 #include "kaffeine_layers.h"
+#include "kaffeine_async.h"
 
 #include "Moira/Moira.cpp"
 #include "Moira/MoiraDebugger.cpp"
@@ -2728,8 +2729,145 @@ static void test_info_lock_scheduler_lifetime()
     }
 }
 
+/* Deterministic collaborator for owner delivery, not a foreign-thread or
+   recipe-lifetime proof. The native recipe bridge has its own tests. */
+static constexpr ULONG PAINT_WAKE = 1UL << 30, PAINT_BREAK = 1UL << 13;
+struct PendingPaint
+{
+    ULONG owner = 0, signals = PAINT_BREAK;
+    bool pending = false, error = false, alive = true;
+    unsigned polls = 0;
+    std::vector<ULONG> retired;
+};
+static PendingPaint *pending_paint;
+static KaffeineLayerOps pending_paint_ops()
+{
+    KaffeineLayerOps ops = {};
+    ops.signal_mask = [](KaffeineContext *) { return PAINT_WAKE; };
+    ops.poll = [](KaffeineContext *ctx) {
+        auto &p = *pending_paint;
+        ++p.polls;
+        if (!p.pending) return TRUE;
+        SetSignal(0, PAINT_WAKE);
+        p.pending = false;
+        if (p.error) return FALSE;
+        if (p.alive && p.owner && ctx->sched &&
+            ctx->task_ops->can_signal(ctx, p.owner, p.signals))
+            ctx->task_ops->send_signal(ctx, p.owner, p.signals);
+        return TRUE;
+    };
+    ops.task_removed = [](KaffeineContext *, ULONG task) {
+        auto &p = *pending_paint;
+        p.retired.push_back(task);
+        if (task == p.owner) { p.alive = false; p.pending = false; }
+    };
+    return ops;
+}
+static void test_async_virtual_break_wake()
+{
+    World w; w.dos(); KaffeineDosBroker broker; KaffeineDomainModule module;
+    PendingPaint paint; pending_paint = &paint;
+    auto ops = pending_paint_ops(); w.ctx.layer_ops = &ops;
+    native_alloc |= PAINT_WAKE; // captured native driver bit, never guest-owned
+    native_event = [&] { paint.pending = true; native_recvd |= PAINT_WAKE; };
+    Program(ROOT_CODE).op([&](Mock &m) {
+        paint.owner = typed_start(m, broker, module, 0, -1);
+        check(paint.owner != 0, "paint wake fixture starts a typed guest Process");
+        check(w.ctx.task_ops->can_signal(&w.ctx, paint.owner, PAINT_BREAK) &&
+              !w.ctx.task_ops->owns_signal(&w.ctx, paint.owner, PAINT_BREAK),
+              "CTRL_D is a private per-task capability, not a native GUI-port signal");
+        w.put(paint.owner + 18, 0); // writable tc_SigAlloc cannot revoke private capability
+        check(w.ctx.task_ops->can_signal(&w.ctx, paint.owner, PAINT_BREAK),
+              "paint break capability does not read the writable guest tc_SigAlloc");
+        w.put(paint.owner + 18, 0xFFFFFFFF);
+        check(!w.ctx.task_ops->can_signal(&w.ctx, paint.owner, 1UL << 8) &&
+              !w.ctx.task_ops->can_signal(&w.ctx, paint.owner, PAINT_WAKE) &&
+              !w.ctx.task_ops->can_signal(&w.ctx, paint.owner, 1UL << 19),
+              "forged allocation fields cannot authorize DOS, private wake or unallocated bits");
+        check(w.ctx.task_ops->root_exit(&w.ctx, &m.handle, 55),
+              "root completion leaves the paint owner alive in the shared domain");
+    }).mark(9).rts();
+    Program(CODE).op([&](Mock &m) {
+        m.d[0] = PAINT_WAKE; m.d[1] = PAINT_WAKE;
+        check(Kaffeine_TaskSetSignal(&w.ctx, &m.handle) == 0 && !w.at(paint.owner + 26),
+              "child SetSignal cannot set or reveal the private layer wake bit");
+        w.ctx.task_ops->send_signal(&w.ctx, paint.owner, PAINT_WAKE);
+        check(!w.at(paint.owner + 26), "child Signal cannot synthesize a private wake");
+    }).wait(PAINT_BREAK | PAINT_WAKE).store(SHARED + 4, 0)
+        .op([&](Mock &) {
+            check(!(native_recvd & PAINT_BREAK),
+                  "child CTRL_D delivery never becomes a native signal or unowned broadcast");
+        }).d(1, 7).dos(144).mark(8).rts();
+    check(w.run() == 55 && native_waits == 1 && native_wait_mask == PAINT_WAKE &&
+          w.at(SHARED + 4) == PAINT_BREAK && !w.seen[8] && !w.seen[9],
+          "a sole child waiting on virtual CTRL_D wakes through the private layer bit and keeps the root result");
+    check(std::count(paint.retired.begin(), paint.retired.end(), ROOT) == 1 &&
+          std::count(paint.retired.begin(), paint.retired.end(), paint.owner) == 1 &&
+          !paint.alive && !w.ctx.sched && w.created == w.destroyed &&
+          !(w.ctx.guest_signals & PAINT_WAKE),
+          "root and child retire before domain teardown without giving the private bit to the guest");
+    w.ctx.layer_ops = nullptr;
+}
+static void test_async_hidden_signals_and_retirement()
+{
+    World w; w.child(0, -1);
+    PendingPaint paint; pending_paint = &paint; paint.owner = TCB(0);
+    auto ops = pending_paint_ops(); w.ctx.layer_ops = &ops;
+    native_alloc |= PAINT_WAKE;
+    Program(ROOT_CODE).add_task(TCB(0), CODE).op([&](Mock &m) {
+        m.d[0] = PAINT_WAKE; m.d[1] = PAINT_WAKE;
+        check(Kaffeine_TaskSetSignal(&w.ctx, &m.handle) == 0 && !(native_recvd & PAINT_WAKE),
+              "root SetSignal cannot set or reveal the private layer wake bit");
+        w.ctx.task_ops->send_signal(&w.ctx, ROOT, PAINT_WAKE);
+        check(!(native_recvd & PAINT_WAKE), "root Signal cannot synthesize a private wake");
+        check(!w.ctx.task_ops->can_signal(&w.ctx, TCB(0), 1UL << 19),
+              "a live task cannot receive an arbitrary unallocated paint signal");
+    }).a(1, TCB(0)).call(288).op([&](Mock &) {
+        check(!w.ctx.task_ops->can_signal(&w.ctx, TCB(0), PAINT_BREAK) && !paint.alive,
+              "task removal revokes its captured owner before the CPU and TCB may be reused");
+        check(std::count(paint.retired.begin(), paint.retired.end(), TCB(0)) == 1 && w.destroyed == 1,
+              "ordinary reap notifies layer ownership before dropping the task's CPU");
+        w.child(0, -1);
+    }).add_task(TCB(0), CODE + 0x1000).op([&](Mock &) {
+        check(w.ctx.task_ops->can_signal(&w.ctx, TCB(0), PAINT_BREAK),
+              "a new task at the same TCB has its own current break capability");
+        paint.pending = true; native_recvd |= PAINT_WAKE;
+        check(Kaffeine_AsyncPoll(&w.ctx) && !w.at(TCB(0) + 26) && !(native_recvd & PAINT_BREAK),
+              "the already-retired captured record cannot target a reused TCB or fall back to root");
+    }).d(0, 0).rts();
+    Program(CODE).mark(7).rts();
+    Program(CODE + 0x1000).mark(6).rts();
+    check(w.run() == 0 && !w.seen[6] && !w.seen[7] && w.created == w.destroyed,
+          "domain end retires a still-live replacement task without executing either child");
+    check(std::count(paint.retired.begin(), paint.retired.end(), ROOT) == 1 &&
+          std::count(paint.retired.begin(), paint.retired.end(), TCB(0)) == 2,
+          "final sched_end notifies the root and every remaining child lifetime");
+    w.ctx.layer_ops = nullptr;
+}
+static void test_async_owner_poll_without_scheduler()
+{
+    World w;
+    PendingPaint paint; pending_paint = &paint; paint.error = true;
+    auto ops = pending_paint_ops(); w.ctx.layer_ops = &ops;
+    Program(ROOT_CODE).op([&](Mock &) { paint.pending = true; }).mark(4).d(0, 0).rts();
+    check(w.run() == 20 && w.ctx.callback_failed && w.ctx.exit_code == 20 &&
+          !w.seen[4] && !w.ctx.sched && paint.polls == 1,
+          "a layer-poll error after a root slice forces authoritative20 before another instruction, without a scheduler");
+    w.ctx.running = true; w.ctx.callback_failed = false; w.ctx.broker_call = true;
+    paint.pending = true; unsigned polls = paint.polls;
+    check(Kaffeine_AsyncPoll(&w.ctx) && paint.polls == polls && paint.pending,
+          "a compiled DOS broker cannot pump driver-owned layer state");
+    w.ctx.broker_call = false;
+    check(std::count(paint.retired.begin(), paint.retired.end(), ROOT) == 1,
+          "a no-scheduler root retires layer ownership before its backend and native signals go");
+    w.ctx.layer_ops = nullptr;
+}
+
 int main()
 {
+    test_async_virtual_break_wake();
+    test_async_hidden_signals_and_retirement();
+    test_async_owner_poll_without_scheduler();
     test_info_lock_scheduler_lifetime();
     test_no_children();
     test_root_priority();

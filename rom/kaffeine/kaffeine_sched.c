@@ -48,6 +48,7 @@
 */
 
 #include <aros/debug.h>
+#include "kaffeine_async.h"
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <exec/ports.h>
@@ -370,7 +371,7 @@ static ULONG child_bits(struct KaffeineScheduler *s)
    but not the private ones of asynchronous I/O */
 static ULONG unowned_bits(struct KaffeineContext *ctx)
 {
-    return ~ctx->guest_signals & ~SYSTEM_SIGNALS & ~ctx->io_signals;
+    return ~ctx->guest_signals & ~SYSTEM_SIGNALS & ~Kaffeine_AsyncSignalMask(ctx);
 }
 
 /* The guest Task fields that Exec would keep, in BE */
@@ -471,6 +472,7 @@ static void deliver(struct KaffeineContext *ctx, struct KaffeineScheduler *s, UL
     ULONG owned = child_bits(s), unowned = unowned_bits(ctx), rootbits = 0, taken = 0;
     unsigned i;
 
+    got &= ~Kaffeine_LayerSignalMask(ctx);
     if (s->root.state == SLOT_WAIT)
     {
         rootbits = got & s->root.wait & ~owned;
@@ -506,7 +508,7 @@ static BOOL poll(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
 {
     ULONG want, got;
 
-    if (ctx->io_poll && !ctx->io_poll(ctx))
+    if (!Kaffeine_AsyncPoll(ctx))
         return FALSE;
     want = wake_bits(ctx, s) | child_bits(s);
     if (want && (got = SetSignal(0, 0) & want))
@@ -518,8 +520,12 @@ static BOOL poll(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
 static ULONG take(struct KaffeineContext *ctx, struct KaffeineScheduler *s,
                   struct GuestTask *t, ULONG mask)
 {
-    ULONG got = t->recvd & mask;
+    ULONG got;
 
+    /* Internal legacy WaitIO port retries may consume their private IO
+       bit; no guest path may observe the separate layer control bit. */
+    mask &= ~Kaffeine_LayerSignalMask(ctx);
+    got = t->recvd & mask;
     t->recvd &= ~mask;
     if (t == &s->root)
     {
@@ -869,7 +875,9 @@ static void schedule(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
                 for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
                     if (s->child[i].state == SLOT_WAIT && s->child[i].io_request)
                         io_waiter = TRUE;
-                if (!io_waiter || !ctx->io_signals)
+                /* A foreign paint producer can wake a virtual break-bit
+                   waiter even when no guest wait mask has a native bit. */
+                if ((!io_waiter || !ctx->io_signals) && !Kaffeine_LayerSignalMask(ctx))
                 {
                     stop(ctx, "every guest task waits for signals that nothing can send");
                     return;
@@ -878,7 +886,7 @@ static void schedule(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
             /* No guest task can run: the native task waits for them all,
                and for the private bits of I/O in flight, which the next
                poll turns into guest port signals. */
-            got = Wait(want | ctx->io_signals) & want;
+            got = Wait(want | Kaffeine_AsyncSignalMask(ctx)) & want;
             SetSignal(got, got);
             deliver(ctx, s, got);
             tries = 0;
@@ -940,6 +948,8 @@ static void sched_end(struct KaffeineContext *ctx)
     s->current = &s->root;
     ctx->cpu = s->root.cpu;
     dos_load(ctx, s, &s->root);
+    if (!s->root_done && ctx->layer_ops && ctx->layer_ops->task_removed)
+        ctx->layer_ops->task_removed(ctx, s->root.tcb);
     for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
     {
         struct GuestTask *t = &s->child[i];
@@ -957,6 +967,8 @@ static void sched_end(struct KaffeineContext *ctx)
         if (t->state == SLOT_FREE)
             continue;
         bug("[kaffeine] guest task %08lx ends with the program\n", (unsigned long)t->tcb);
+        if (ctx->layer_ops && ctx->layer_ops->task_removed)
+            ctx->layer_ops->task_removed(ctx, t->tcb);
         (void)finish_process_wait(ctx, s, t);
         if (ctx->io_task_removed)
             ctx->io_task_removed(ctx, t->tcb);
@@ -1679,7 +1691,8 @@ IPTR Kaffeine_TaskSetSignal(struct KaffeineContext *ctx, void *cpu)
 {
     struct KaffeineScheduler *s = ctx->sched;
     struct GuestTask *t;
-    ULONG set = THUNK_D(1), signals = THUNK_D(0) & set, old;
+    ULONG set = THUNK_D(1) & ~Kaffeine_AsyncSignalMask(ctx);
+    ULONG signals = THUNK_D(0) & set, old;
 
     if (!s)
         return refuse(ctx, "SetSignal(): no guest task scheduler");
@@ -1689,14 +1702,15 @@ IPTR Kaffeine_TaskSetSignal(struct KaffeineContext *ctx, void *cpu)
     /* The root's private I/O bits are the bridge's, never shown or changed */
     if (t == &s->root)
     {
-        set &= ~ctx->io_signals;
+        set &= ~Kaffeine_AsyncSignalMask(ctx);
         signals &= set;
     }
-    old = t->recvd;
+    old = t->recvd & ~Kaffeine_AsyncSignalMask(ctx);
+    t->recvd &= ~Kaffeine_AsyncSignalMask(ctx);
     t->recvd = (t->recvd & ~set) | signals;
     if (t == &s->root)
     {
-        ULONG native = ~child_bits(s) & ~ctx->io_signals;
+        ULONG native = ~child_bits(s) & ~Kaffeine_AsyncSignalMask(ctx);
 
         t->recvd &= ~native;
         old = (old & ~native) | (SetSignal(signals & native, set & native) & native);
@@ -1712,7 +1726,7 @@ IPTR Kaffeine_TaskWait(struct KaffeineContext *ctx, void *cpu)
 {
     struct KaffeineScheduler *s = ctx->sched;
     struct GuestTask *t;
-    ULONG mask = THUNK_D(0), got;
+    ULONG mask = THUNK_D(0) & ~Kaffeine_AsyncSignalMask(ctx), got;
 
     if (Kaffeine_LayerInfoLocked(ctx))
         return refuse(ctx, "Wait(): while holding a LayerInfo lock");
@@ -1723,7 +1737,7 @@ IPTR Kaffeine_TaskWait(struct KaffeineContext *ctx, void *cpu)
         return 20;
     /* The root never waits for, nor takes, the private bits of I/O */
     if (t == &s->root)
-        mask &= ~ctx->io_signals;
+        mask &= ~Kaffeine_AsyncSignalMask(ctx);
     got = take(ctx, s, t, mask);
     if (got)
     {
@@ -1744,11 +1758,12 @@ static void sched_send_signal(struct KaffeineContext *ctx, ULONG task, ULONG set
     struct KaffeineScheduler *s = ctx->sched;
     struct GuestTask *t = task_of(s, task);
     if (!t) return;
+    set &= ~Kaffeine_AsyncSignalMask(ctx);
     if (t == &s->root)
     {
         ULONG owned = child_bits(s);
 
-        set &= ~ctx->io_signals;
+        set &= ~Kaffeine_AsyncSignalMask(ctx);
         if (set & ~owned)
             Signal(FindTask(NULL), set & ~owned);
         t->recvd |= set & owned;
@@ -1840,6 +1855,7 @@ static BOOL sched_block_port(struct KaffeineContext *ctx, void *cpu, struct MsgP
     if (port->mp_MsgList.lh_TailPred != (struct Node *)&port->mp_MsgList)
         return FALSE;
     if (port->mp_Flags != 0 || port->mp_SigBit > 31 ||
+        (Kaffeine_LayerSignalMask(ctx) & (1UL << port->mp_SigBit)) ||
         (t == &s->root ? ((1UL << port->mp_SigBit) & child_bits(s)) != 0 :
          ((1UL << port->mp_SigBit) & (t->native | unowned_bits(ctx))) == 0))
     {
@@ -1867,8 +1883,34 @@ static BOOL sched_owns_signal(struct KaffeineContext *ctx, ULONG task, ULONG bit
 {
     struct KaffeineScheduler *s = ctx->sched;
     struct GuestTask *t = task_of(s, task);
-    if (!t || !bit || !(ctx->guest_signals & bit)) return FALSE;
+    if (!t || !bit || (bit & Kaffeine_AsyncSignalMask(ctx)) ||
+        !(ctx->guest_signals & bit)) return FALSE;
     return t == &s->root ? !(child_bits(s) & bit) : (t->native & bit) == bit;
+}
+
+static BOOL sched_can_signal(struct KaffeineContext *ctx, ULONG task, ULONG bits)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t;
+    ULONG allowed;
+
+    if (!ctx->running || !bits || (bits & Kaffeine_AsyncSignalMask(ctx))) return FALSE;
+    if (!s)
+    {
+        if (!ctx->running || !task || task != ctx->guest_exec_task) return FALSE;
+        allowed = (ctx->guest_signals & ~SYSTEM_SIGNALS) | KAFFEINE_TASK_BREAK_SIGNALS;
+    }
+    else
+    {
+        t = task_of(s, task);
+        if (!t) return FALSE;
+        if (t == &s->root)
+            allowed = (ctx->guest_signals & ~child_bits(s) & ~SYSTEM_SIGNALS) |
+                      KAFFEINE_TASK_BREAK_SIGNALS;
+        else
+            allowed = (t->native & ~SYSTEM_SIGNALS) | (t->alloc & KAFFEINE_TASK_BREAK_SIGNALS);
+    }
+    return !(bits & ~allowed);
 }
 
 static BOOL sched_process_port(struct KaffeineContext *ctx, ULONG port, ULONG owner)
@@ -2128,5 +2170,5 @@ const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
     Kaffeine_ProcCreate, sched_process_port, sched_process_dos,
     sched_is_root, sched_caller_task, sched_block_io, sched_io_completed,
     sched_dos_call, Kaffeine_SchedFinishRoot, sched_root_result,
-    sched_root_task
+    sched_root_task, sched_can_signal
 };

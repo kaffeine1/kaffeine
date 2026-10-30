@@ -213,6 +213,7 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_hook.h"
 #include "kaffeine_layers.h"
+#include "kaffeine_paint_hook.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_regions.h"
@@ -362,6 +363,7 @@ struct LayerInfoLock
 
 struct KaffeineLayers
 {
+    struct KaffeinePaintHooks *paint_hooks;
     struct LayerRecord records[KAFFEINE_LAYER_MAX_RECORDS];
     struct LayerGraph graphs[KAFFEINE_LAYER_MAX_GRAPHS];
     struct LayerHook hooks[KAFFEINE_LAYER_MAX_HOOKS];
@@ -622,6 +624,8 @@ static ULONG layers_hook_guest(struct KaffeineContext *ctx, struct KaffeineLayer
         return p && p->guest_hook && native == &p->hook ? p->guest_hook : 0;
     if (st->records[ri].kind != LR_OWNED)
         return 0;
+    guest = Kaffeine_PaintHookGuest(st->paint_hooks, st->records[ri].native, native);
+    if (guest) return guest;
     for (i = 0; i < KAFFEINE_LAYER_MAX_HOOKS; i++)
     {
         if (st->hooks[i].guest && st->hooks[i].owner == ri && st->hooks[i].native == native)
@@ -1164,6 +1168,10 @@ static void layers_window_closing(struct KaffeineContext *ctx, ULONG mw, struct 
     /* the program's locks go back before Intuition deletes the layer */
     for (; r->locks; r->locks--, st->locks--)
         UnlockLayer(r->native);
+    /* Quiesce native recipes before Intuition or any guest mirror retires.
+       A semantic fault still detaches; a broken native barrier keeps storage. */
+    if (!Kaffeine_PaintHookRetireLayer(ctx, st->paint_hooks, r->native) &&
+        Kaffeine_PaintHookHasLayer(st->paint_hooks, r->native)) return;
     /* and its clip Region, which Intuition would not take out */
     layers_clip_release(ctx, st, ri);
     /* the layer leaves the list as DeleteLayer() takes it out */
@@ -1280,6 +1288,7 @@ static void layers_task_removed(struct KaffeineContext *ctx, ULONG task)
         r->lock_task = 0;
     }
     layers_info_release_owned(ctx, st, NULL, task);
+    Kaffeine_PaintHookRetireTask(ctx, st->paint_hooks, task);
 }
 
 /* The owned record of a native window of the program, or -1 */
@@ -1408,6 +1417,23 @@ static void layers_request_closing(struct KaffeineContext *ctx, struct Layer *l)
 static BOOL layers_draw_target(struct KaffeineContext *ctx, ULONG layer, ULONG bitmap,
                                struct RastPort *rp, struct BitMap *adapter);
 
+static ULONG layers_paint_signal_mask(struct KaffeineContext *ctx)
+{
+    return ctx->layers ? Kaffeine_PaintHookSignalMask(ctx->layers->paint_hooks) : 0;
+}
+static BOOL layers_paint_poll(struct KaffeineContext *ctx)
+{
+    return !ctx->layers || Kaffeine_PaintHookPoll(ctx, ctx->layers->paint_hooks);
+}
+static BOOL layers_paint_memory_releasable(struct KaffeineContext *ctx, ULONG a, ULONG n)
+{
+    return !ctx->layers || Kaffeine_PaintHookMemoryReleasable(ctx->layers->paint_hooks, a, n);
+}
+static BOOL layers_paint_signal_releasable(struct KaffeineContext *ctx, ULONG bits)
+{
+    return !ctx->layers || Kaffeine_PaintHookSignalReleasable(ctx->layers->paint_hooks, bits);
+}
+
 static const struct KaffeineLayerOps layer_ops =
 {
     layers_window_opened,
@@ -1422,7 +1448,9 @@ static const struct KaffeineLayerOps layer_ops =
     layers_request_closing,
     layers_draw_target,
     layers_info_locked,
-    layers_task_removed
+    layers_task_removed,
+    layers_paint_signal_mask, layers_paint_poll,
+    layers_paint_memory_releasable, layers_paint_signal_releasable
 };
 
 /* ── Depth calls ─────────────────────────────────────────────────── */
@@ -1662,6 +1690,17 @@ IPTR Kaffeine_InstallLayerHook(struct KaffeineContext *ctx, void *cpu)
     if ((ri = layers_owned(ctx, layer, "InstallLayerHook(): not the layer of a window of the program")) < 0)
         return ctx->exit_code;
     r = &st->records[ri];
+    if (r->kind == LR_OWNED &&
+        (Kaffeine_PaintHookHasLayer(st->paint_hooks, r->native) ||
+         (hook > 1 && layers_hook_handle(st, hook) < 0)))
+    {
+        if (r->clip_native)
+            return layers_refuse(ctx, "InstallLayerHook(): recipe on a clipped window layer");
+        if (!Kaffeine_PaintHookChange(ctx, &st->paint_hooks, r->native, layer, hook, &result))
+            return ctx->exit_code;
+        m68k_write32(ctx, r->guest + M68K_LAYER_BACKFILL, hook);
+        return result;
+    }
     if (hook == 0 || hook == 1)
         native = hook ? LAYERS_NOBACKFILL : NULL;
     else if (r->kind == LR_PRIVATE && r->priv->guest_hook && hook == r->priv->guest_hook)
@@ -3051,6 +3090,8 @@ void Kaffeine_LayersCleanup(struct KaffeineContext *ctx)
         return;
     layers_release_locks(ctx);
     if (st->info_lock_count) return; /* a foreign native owner may not release it */
+    if (!Kaffeine_PaintHooksCleanup(ctx, &st->paint_hooks) && st->paint_hooks)
+        return; /* native callback storage is not releasable yet */
     for (i = 0; i < KAFFEINE_LAYER_MAX_RECORDS; i++)
     {
         r = &st->records[i];

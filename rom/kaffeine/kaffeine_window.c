@@ -25,6 +25,7 @@
 */
 
 #include "kaffeine_intern.h"
+#include "kaffeine_async_wait.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_gadgets.h"
 #include "kaffeine_layers.h"
@@ -761,7 +762,7 @@ static BOOL shared_queue(struct KaffeineContext *ctx, ULONG guest, ULONG *owner,
     *owner = m68k_read32(ctx, guest + G_MP_SIGTASK);
     *bit = ctx->mem[guest + G_MP_SIGBIT];
     if (*bit > 31 || !(ctx->guest_signals & (1UL << *bit)) ||
-        (ctx->io_signals & (1UL << *bit))) return FALSE;
+        (Kaffeine_AsyncSignalMask(ctx) & (1UL << *bit))) return FALSE;
     if (ctx->sched)
     {
         if (!ctx->task_ops || !ctx->task_ops->known_task || !ctx->task_ops->owns_signal ||
@@ -976,7 +977,7 @@ static int shared_ready(struct KaffeineContext *ctx, ULONG guest, BOOL wait,
         *result = refuse(ctx, "shared IDCMP port changed or its owner retired");
         return -1;
     }
-    if (ctx->io_poll && !ctx->io_poll(ctx)) { *result = 20; return -1; }
+    if (!Kaffeine_AsyncPoll(ctx)) { *result = 20; return -1; }
     if (!q.count) Kaffeine_AppPortFill(ctx, guest, FALSE);
     if (!Kaffeine_QueueRead(ctx, guest, &q))
     {
@@ -1035,7 +1036,8 @@ IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
             return ready;
         /* Both private IDCMP and Workbench inboxes use this validated bit.
            WaitPort(native) alone would miss the other inbox's arrival. */
-        Wait(1UL << port->mp_SigBit);
+        Wait((1UL << port->mp_SigBit) | Kaffeine_AsyncSignalMask(ctx));
+        if (!Kaffeine_AsyncPoll(ctx)) return 20;
     }
 
     if (port)
@@ -1045,9 +1047,9 @@ IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
         if (ctx->sched &&
             ctx->task_ops->block_port(ctx, cpu, port, Kaffeine_WaitPort, &blocked))
             return blocked;
-        im = (struct IntuiMessage *)WaitPort(port);
+        im = (struct IntuiMessage *)Kaffeine_AsyncWaitPort(ctx, port);
         if (!im)
-            return 0;
+            return ctx->callback_failed ? 20 : 0;
         mw = Kaffeine_ShadowGuest(ctx, im->IDCMPWindow, KAFFEINE_SHADOW_WINDOW);
         /* what it showed before of a message that has left the port */
         if (mw && !Kaffeine_ShadowGuest(ctx, im, KAFFEINE_SHADOW_WAITMESSAGE))
@@ -1055,8 +1057,25 @@ IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
         first = message_guest(ctx, im, KAFFEINE_SHADOW_WAITMESSAGE);
         return !first && shared ? refuse(ctx, "WaitPort(): no shared IDCMP mirror memory") : first;
     }
+    /* A scheduled App port also yields the guest CPU. Retry the whole
+       typed wait so a native App carrier is copied before checking the
+       ordinary guest FIFO, rather than blocking the driver in WaitPort. */
+    if (ctx->sched && Kaffeine_AppPortFill(ctx, guest, FALSE))
+    {
+        struct KaffeineQueue q;
+        IPTR blocked;
+        if (ctx->callback_failed) return 20;
+        if (!Kaffeine_QueueRead(ctx, guest, &q))
+            return refuse(ctx, "WaitPort(): malformed App guest FIFO");
+        if (q.count) return Kaffeine_GuestGetMsg(ctx, guest, TRUE);
+        if (ctx->task_ops->block_guest_port &&
+            ctx->task_ops->block_guest_port(ctx, guest, Kaffeine_WaitPort, &blocked))
+            return blocked;
+        return refuse(ctx, "WaitPort(): App port cannot signal this guest task");
+    }
     if (!Kaffeine_AppPortFill(ctx, guest, TRUE))
         return Kaffeine_GuestGetMsg(ctx, guest, TRUE);
+    if (ctx->callback_failed) return 20;
     first = guest_first(ctx, guest, &next);
     if (first)
         return first;

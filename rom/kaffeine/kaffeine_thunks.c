@@ -4,6 +4,7 @@
     kaffeine.library — native thunk implementations for exec and dos
 */
 #include <exec/types.h>
+#include "kaffeine_async_wait.h"
 #include <exec/memory.h>
 #include <aros/debug.h>
 #include <proto/exec.h>
@@ -286,28 +287,9 @@ static IPTR thunk_exec_SetTaskPri(struct KaffeineContext *ctx, void *cpu)
    takes; the private bits never reach D0. */
 static IPTR thunk_exec_Wait(struct KaffeineContext *ctx, void *cpu)
 {
-    ULONG mask = THUNK_D(0) & ~ctx->io_signals, got;
-
     if (ctx->sched)
         return ctx->task_ops->wait(ctx, cpu);
-    if (!ctx->io_poll)
-        return (IPTR)Wait(mask);
-    mask &= ~ctx->io_signals;
-    for (;;)
-    {
-        if (!ctx->io_poll(ctx))
-            return 20;
-        got = SetSignal(0, mask) & mask;
-        if (got)
-            return got;
-        if (!ctx->io_signals)
-            return (IPTR)Wait(mask);
-        /* Wait() takes what it got; give back the guest's part, which the
-           next round takes after the completions behind it are in. */
-        got = Wait(mask | ctx->io_signals) & mask;
-        if (got)
-            SetSignal(got, got);
-    }
+    return Kaffeine_AsyncWaitSignals(ctx, THUNK_D(0));
 }
 
 /* -534: TypeOfMem(A1=address) -> D0=attributes */
@@ -414,9 +396,9 @@ static IPTR thunk_exec_SetSignal(struct KaffeineContext *ctx, void *cpu)
 
     if (ctx->sched)
         return ctx->task_ops->set_signal(ctx, cpu);
-    if (ctx->io_poll && !ctx->io_poll(ctx))
+    if (!Kaffeine_AsyncPoll(ctx))
         return 20;
-    hidden = ctx->io_signals;
+    hidden = Kaffeine_AsyncSignalMask(ctx);
     return (IPTR)(SetSignal(THUNK_D(0) & ~hidden, THUNK_D(1) & ~hidden) & ~hidden);
 }
 

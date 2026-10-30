@@ -71,6 +71,7 @@ SCREEN_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unuse
 # their clip Regions.
 LAYER_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o copy.o format.o rastport.o memory.o taglist.o layers.o hook.o regions.o)
 LAYER_OBJS += $(BUILD_DIR)/layers_private_unused.o $(BUILD_DIR)/gfx_thunk_exec_compat.o
+LAYER_OBJS += $(BUILD_DIR)/gfx_thunk_paint_hook.o $(BUILD_DIR)/gfx_thunk_paint_compile.o
 MENU_CPPFLAGS := -I$(TEST_DIR)/menus_stubs $(GFX_CPPFLAGS)
 MENU_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o mirror.o copy.o rastport.o memory.o taglist.o)
 MENU_OBJS += $(BUILD_DIR)/menus_bridge.o
