@@ -62,6 +62,35 @@ ifneq ($(BZIP2_SRC),)
 PROGRAMS += bzip2
 endif
 
+# zstd of Zstandard 1.5.7, from the source the AROS build fetches for its
+# Ports: set ZSTD_SRC to its zstd-1.5.7 directory to build it, without
+# threads, legacy formats, the benchmark or the dictionary builder. The
+# battery runs it on the files that $(ZSTD_FILES) collects under EMU68/, and
+# compares its output with the one of the same program built for the host,
+# which "make zstd-refs" writes to $(ZSTD_REFS).
+ZSTD_SRC ?=
+ZSTD_FILES := $(BUILD_DIR)/zstd-files
+ZSTD_REFS := $(BUILD_DIR)/zstd-refs
+ZSTD_SOURCES := $(wildcard $(patsubst %,$(ZSTD_SRC)/lib/%/*.c,common compress decompress)) \
+                $(addprefix $(ZSTD_SRC)/programs/,zstdcli.c util.c timefn.c fileio.c fileio_asyncio.c)
+ZSTD_FLAGS := -DXXH_NAMESPACE=ZSTD_ -DZSTD_DISABLE_ASM -DZSTD_NO_INTRINSICS \
+              -DZSTD_NOBENCH -DZSTD_NODICT -DZSTD_NOTRACE -DZSTD_LEGACY_SUPPORT=0 \
+              -I$(ZSTD_SRC)/lib -I$(ZSTD_SRC)/lib/common
+ZSTD_GOOD := $(addprefix EMU68/,block-128k.zst empty-block.zst rle-first-block.zst zeroSeq_2B.zst)
+ZSTD_BAD := $(addprefix EMU68/,off0.bin.zst truncated_huff_state.zst zeroSeq_extraneous.zst)
+ZSTD_INPUTS := $(addprefix EMU68/,PR-3517-block-splitter-corruption-test http \
+               huffman-compressed-larger large-literal-and-match-lengths)
+ZSTD_PACK := c1 c3 c9 c19
+ZSTD_STEPS := good bad list $(ZSTD_PACK) unpack
+ZSTD_ARGS_good := -dc $(ZSTD_GOOD)
+ZSTD_ARGS_bad := -dc $(ZSTD_BAD) EMU68/zeroSeq_2B.zst
+ZSTD_ARGS_list := -l $(ZSTD_GOOD)
+$(foreach l,1 3 9 19,$(eval ZSTD_ARGS_c$(l) := -c -$(l) $(ZSTD_INPUTS)))
+ZSTD_ARGS_unpack := -dc
+ifneq ($(ZSTD_SRC),)
+PROGRAMS += zstd
+endif
+
 # cjpeg, djpeg and jpegtran of the IJG JPEG library 9f, from the source the
 # AROS build fetches for its Ports: set JPEG_SRC to the unpacked jpeg-9f
 # directory to build them. The sources are copied to $(JPEG_BUILD) with
@@ -371,6 +400,45 @@ $(BZIP2_REFS)/stamp: $(BZIP2_SOURCES) $(BZIP2_FILES).stamp
 
 bzip2-refs: $(BZIP2_REFS)/stamp
 
+# The files of the zstd steps, installed with --files next to each step:
+# the archives of tests/golden-decompression and
+# tests/golden-decompression-errors, and the first 16 KiB of each file of
+# tests/golden-compression.
+$(ZSTD_FILES).stamp: $(wildcard $(ZSTD_SRC)/tests/golden-decompression/*.zst \
+                     $(ZSTD_SRC)/tests/golden-decompression-errors/*.zst \
+                     $(ZSTD_SRC)/tests/golden-compression/*) | $(BUILD_DIR)
+	rm -rf $(ZSTD_FILES)
+	mkdir -p $(ZSTD_FILES)
+	cp $(ZSTD_SRC)/tests/golden-decompression/*.zst \
+	   $(ZSTD_SRC)/tests/golden-decompression-errors/*.zst $(ZSTD_FILES)/
+	for f in $(ZSTD_SRC)/tests/golden-compression/*; do \
+	    head -c 16384 "$$f" > $(ZSTD_FILES)/$$(basename "$$f") || exit 1; done
+	touch $@
+
+# -lm brings the double helpers of the sizes and ratios that zstd prints
+$(BUILD_DIR)/zstd: $(ZSTD_SOURCES) | $(BUILD_DIR) $(ZSTD_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) $(ZSTD_FLAGS) $(M68K_LDFLAGS) -o $@ $(ZSTD_SOURCES) -lm
+
+# The zstd references: the outputs of the steps through zstd built for the
+# host, run where EMU68 names $(ZSTD_FILES). zstd_bad ends with 1, and
+# zstd_unpack reads zstd_unpack.in, the outputs of the four compression
+# steps one after the other.
+$(ZSTD_REFS)/stamp: $(ZSTD_SOURCES) $(ZSTD_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 $(ZSTD_FLAGS) -o $(@D)/zstd $(ZSTD_SOURCES)
+	ln -s $(ZSTD_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(filter-out unpack,$(ZSTD_STEPS)),cp zstd SYS:EMU68/zstd_$(s) && \
+	    { SYS:EMU68/zstd_$(s) $(ZSTD_ARGS_$(s)) > zstd_$(s).out 2> zstd_$(s).err; \
+	    test $$? = $(if $(filter bad,$(s)),1,0); } &&) true
+	cd $(@D) && cat $(patsubst %,zstd_%.out,$(ZSTD_PACK)) > zstd_unpack.in
+	cd $(@D) && cp zstd SYS:EMU68/zstd_unpack && \
+	    SYS:EMU68/zstd_unpack $(ZSTD_ARGS_unpack) < zstd_unpack.in > zstd_unpack.out 2> zstd_unpack.err
+	cd $(@D) && cat $(ZSTD_INPUTS) $(ZSTD_INPUTS) $(ZSTD_INPUTS) $(ZSTD_INPUTS) | cmp -s - zstd_unpack.out
+	touch $@
+
+zstd-refs: $(ZSTD_REFS)/stamp
+
 $(JPEG_BUILD)/stamp: $(wildcard $(JPEG_SRC)/*.c $(JPEG_SRC)/*.h) $(TEST_DIR)/jpeg_jconfig.h | $(BUILD_DIR)
 	rm -rf $(JPEG_BUILD)
 	mkdir -p $(JPEG_BUILD)
@@ -572,17 +640,17 @@ $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LI
 $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
-# bzip2, the JPEG programs, the zlib ones, pngtest, xmlwf, xz and
+# bzip2, zstd, the JPEG programs, the zlib ones, pngtest, xmlwf, xz and
 # mbedtls_selftest too, also when they were built with a BZIP2_SRC,
-# JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC or MBEDTLS_SRC that this
-# make lacks
+# ZSTD_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC or MBEDTLS_SRC
+# that this make lacks
 clean:
-	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BZIP2_FILES).stamp $(BUILD_DIR)/exec_public_native
+	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BZIP2_FILES).stamp $(BUILD_DIR)/zstd $(ZSTD_FILES).stamp $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
 	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
 	rm -f $(BUILD_DIR)/xmlwf $(XMLWF_FILES).stamp $(BUILD_DIR)/xz $(XZ_FILES).stamp
 	rm -f $(BUILD_DIR)/mbedtls_selftest
-	rm -rf $(BZIP2_FILES) $(BZIP2_REFS) $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
+	rm -rf $(BZIP2_FILES) $(BZIP2_REFS) $(ZSTD_FILES) $(ZSTD_REFS) $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
 	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS) $(XZ_BUILD) $(XZ_FILES) $(XZ_REFS)
 	rm -rf $(MBEDTLS_REFS)
 
@@ -590,7 +658,7 @@ clean:
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner bzip2-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs
+.PHONY: all clean check-runner bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)

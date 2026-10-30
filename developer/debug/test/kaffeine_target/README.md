@@ -77,7 +77,7 @@ at the end.
 | `xz_libnix.c` | What `xz` needs beyond libnix: `sigaction()` on `signal()`, `sigprocmask()` with nothing to block, `fcntl()` that gives no flags and sets none, `poll()` that finds every descriptor ready, and `fchmod()` and `fchown()`, which succeed without doing anything. |
 | `mbedtls_config.h` | The configuration of mbed TLS 3.6.7 for `mbedtls_selftest`, the same for its host build: the modules whose self-tests it runs, with every cipher mode and elliptic curve, without the network, the clock, files and entropy. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, and `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `zstd` of Zstandard 1.5.7 when `ZSTD_SRC` names its source, with its references from `make zstd-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, and `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -153,6 +153,14 @@ Ports to include `bzip2`. The Makefile collects the three sample pairs of
 the distribution and two damaged copies of `sample1.bz2` in
 `build/bzip2-files`, and `make bzip2-refs` writes the reference outputs to
 `build/bzip2-refs`.
+
+Set `ZSTD_SRC` to the Zstandard 1.5.7 tree that the AROS build fetches for
+its Ports to include `zstd`, with libzstd built in. The m68k and the host
+build use the same flags, without threads, legacy formats, the benchmark, the
+dictionary builder, assembly or SIMD intrinsics; the m68k build links the
+`libm.a` of libnix for the double helpers of the sizes and ratios that `zstd`
+prints. The Makefile collects the files of the steps in `build/zstd-files`,
+and `make zstd-refs` writes the reference outputs to `build/zstd-refs`.
 
 Set `JPEG_SRC` to an unpacked IJG JPEG library 9f source tree, such as the
 one that the AROS build fetches for its Ports, to include `cjpeg`, `djpeg`
@@ -396,6 +404,7 @@ compile and evaluate this emitted Hook; see that directory's README.
 | `exec_packets` | `--files exec_packets build/exec_packets-files` |
 | `hunk_process_native` (native parent) | `--files hunk_process_native build-hunk-process` (includes its 68k payload) |
 | each step of `bzip2` | `--files NAME build/bzip2-files` |
+| each step of `zstd` | `--files NAME build/zstd-files` |
 | each step of `pngtest` | `--files NAME build/pngtest-files` |
 | each step of `xmlwf` | `--files NAME build/xmlwf-files` |
 | each step of `xz` | `--files NAME build/xz-files` |
@@ -467,6 +476,43 @@ match `sample1.bz2` to `sample3.bz2` and `sample1.ref` to `sample3.ref` of
 the distribution. For example, `bzip2_c1` is `--files bzip2_c1
 build/bzip2-files --args bzip2_c1 "-c -1 EMU68/sample1.ref" --expect
 bzip2_c1 build/bzip2-refs/bzip2_c1.out bzip2_c1=build/bzip2`.
+
+## The zstd steps
+
+The steps of `zstd` work on the files of `tests/golden-decompression`,
+`tests/golden-decompression-errors` and `tests/golden-compression` in the
+Zstandard distribution: four valid `.zst` frames (`block-128k.zst`,
+`empty-block.zst`, `rle-first-block.zst` and `zeroSeq_2B.zst`), three
+damaged ones (`off0.bin.zst`, `truncated_huff_state.zst` and
+`zeroSeq_extraneous.zst`), and four inputs (`PR-3517-block-splitter-corruption-test`,
+`http`, `huffman-compressed-larger` and `large-literal-and-match-lengths`)
+cut to their first 16 KiB at most so that each step runs in a reasonable
+time under Moira. Eight programs run `zstd` on them, and each passes only if
+its output is byte for byte the one of the same program built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `zstd_good` | `-dc` and the four files of `tests/golden-decompression` | what the files hold | 0 |
+| `zstd_bad` | `-dc`, the three files of `tests/golden-decompression-errors` and `zeroSeq_2B.zst` | an error for each of the first three on `stderr`, and the 13 bytes of `zeroSeq_2B.zst` on standard output | 1 |
+| `zstd_list` | `-l` and the four files of `tests/golden-decompression` | their frames, sizes, ratios and checks | 0 |
+| `zstd_c1`, `zstd_c3`, `zstd_c9`, `zstd_c19` | `-c -1`, `-c -3`, `-c -9` or `-c -19` and the four inputs of `tests/golden-compression` | the inputs compressed at that level | 0 |
+| `zstd_unpack` | `-dc`, with `--input` of the outputs of the four compression steps | the four inputs, four times | 0 |
+
+`-t` is left out: on a valid file it writes nothing to standard output, which
+the runner counts as an incomplete run. `zstd_bad` ends with `zeroSeq_2B.zst`,
+which `zstd` decompresses after the errors of the three damaged files, so
+that its standard output is not empty.
+
+The arguments are in `ZSTD_ARGS_` and the step name, `ZSTD_ARGS_c1` for
+example. `make zstd-refs` runs the host build under `SYS:EMU68/NAME` next to
+an `EMU68` that names `build/zstd-files`, writes its error output to
+`NAME.err`, and checks with `cmp -s` that `zstd_unpack` gives back the four
+inputs four times. For example, `zstd_c1` is `--files zstd_c1
+build/zstd-files --args zstd_c1 "-c -1
+EMU68/PR-3517-block-splitter-corruption-test EMU68/http
+EMU68/huffman-compressed-larger EMU68/large-literal-and-match-lengths"
+--expect zstd_c1 build/zstd-refs/zstd_c1.out zstd_c1=build/zstd`, and
+`zstd_unpack` adds `--input zstd_unpack build/zstd-refs/zstd_unpack.in`.
 
 ## The zlib steps
 
@@ -710,11 +756,12 @@ each, and it enters them about 204 million times a run.
 | `exec_memory_vacate=exec_memory` | `vacate` | 20 |
 | `cpu_faults_mmu=cpu_faults` | `mmu` | 20 |
 | `bzip2_bad_crc=bzip2`, `bzip2_bad_cut=bzip2`, `bzip2_bad_magic=bzip2` | `-dc` (or `-dcq`), `sample1.bz2` and a damaged or non-bzip2 file | 2 for a corrupt, truncated or non-bzip2 stream |
+| `zstd_bad=zstd` | `-dc`, the three files of `tests/golden-decompression-errors` and `zeroSeq_2B.zst` | 1 for the three damaged streams |
 | `png_badpal=pngtest` | `-m` and the nine `badpal` images | 1, as `tests/pngtest-all` expects |
 | `xmlwf_errors=xmlwf` | `-k -s` and three of the documents | 2 for the two that are not well formed or not standalone |
 | `xz_bad1=xz` to `xz_bad6=xz` | `-dc`, bad and unsupported files and a good one | 1, as `tests/test_files.sh` expects of each bad file |
 
-These thirty-eight Shell/Run executions are deliberate nonzero cases. They must
+These forty Shell/Run executions are deliberate nonzero cases. They must
 be checked against their expected behavior; raw nonzero status alone is
 not a regression verdict. Valid ordinary queues are positive tests in
 `exec_messages`.
