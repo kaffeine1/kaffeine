@@ -4,6 +4,7 @@
     Backend-independent register access and execution loop.
 */
 
+#include <aros/debug.h>
 #include "kaffeine_cpu.h"
 #include "kaffeine_async.h"
 #include "kaffeine_intern.h"
@@ -124,6 +125,10 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
 
 void Kaffeine_StopGuest(struct KaffeineContext *ctx, void *cpu, LONG code)
 {
+    if (code == 20 && !ctx->callback_failed)
+        bug("[kaffeine] forced stop (20), caller delta=%ld callback depth=%u\n",
+            (long)((IPTR)__builtin_return_address(0) - (IPTR)Kaffeine_StopGuest),
+            (unsigned)ctx->callback_depth);
     ctx->running = FALSE;
     ctx->callback_failed = TRUE;
     ctx->exit_code = code;
@@ -140,6 +145,8 @@ BOOL Kaffeine_CallGuest(struct KaffeineContext *ctx, void *cpu, ULONG entry,
 
     if (ctx->broker_call || Kaffeine_LayerInfoLocked(ctx))
     {
+        bug("[kaffeine] guest callback with broker=%u LayerInfo=%u, stopping (20)\n",
+            (unsigned)!!ctx->broker_call, (unsigned)!!Kaffeine_LayerInfoLocked(ctx));
         Kaffeine_StopGuest(ctx, cpu, 20);
         return FALSE;
     }

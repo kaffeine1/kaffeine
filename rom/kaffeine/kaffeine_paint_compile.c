@@ -633,7 +633,8 @@ static int execute_symbolic(struct Compiler*c,struct State*s)
             }
             else
             {
-                if(!ea(c,s,mode==3?2:mode,reg,size,1,&a))return 0;at=a.address;
+                if(!ea(c,s,mode==3?2:mode,reg,size,1,&a))return 0;
+                at=a.address;
                 for(i=0;i<16;++i)if(w&((uint16_t)1<<i))
                 {
                     if(load){from=memory_read(c,s,at,size);if(size==2)from=scalar(c,sx(c,scalar_expr(c,from),16));if(!from)return 0;s->reg[i]=from;}

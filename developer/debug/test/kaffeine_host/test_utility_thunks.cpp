@@ -28,6 +28,7 @@
 #include "kaffeine_cpu.h"
 #include "kaffeine_dispatch.h"
 #include "kaffeine_intern.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_taglist.h"
 #include "kaffeine_thunks_utility.h"
 
@@ -52,6 +53,8 @@ extern "C" {
 #undef AROS_LH1
 #define AROS_LH1(type, fn, a1, bt, bn, o, lib) type fn(a1)
 #include "../../../../rom/utility/checkdate.c"
+#include "../../../../rom/utility/smult32.c"
+#include "../../../../rom/utility/umult32.c"
 #undef AROS_LIBFUNC_EXIT
 #undef AROS_LIBFUNC_INIT
 #undef AROS_LH2
@@ -59,6 +62,8 @@ extern "C" {
 #undef AROS_LHA
 #undef UTILITY_INTERN_H
 }
+
+#include "utility_arithmetic_generated.h"
 
 static unsigned checks;
 static unsigned failures;
@@ -139,6 +144,7 @@ enum
     LVO_ALLOCATETAGITEMS = 66, LVO_CLONETAGITEMS = 72, LVO_FREETAGITEMS = 78,
     LVO_REFRESHTAGITEMCLONES = 84, LVO_TAGINARRAY = 90, LVO_FILTERTAGITEMS = 96,
     LVO_AMIGA2DATE = 120, LVO_DATE2AMIGA = 126, LVO_CHECKDATE = 132,
+    LVO_SMULT32 = 138, LVO_UMULT32 = 144,
     LVO_SDIVMOD32 = 150, LVO_UDIVMOD32 = 156,
     LVO_STRICMP = 162, LVO_STRNICMP = 168,
     LVO_SMULT64 = 198, LVO_UMULT64 = 204
@@ -155,6 +161,7 @@ static IPTR unexpected_generated(KaffeineContext *, void *)
 /* If a manual entry moves or disappears, the call reaches one of these. */
 static const M68KThunkEntry generated_thunks[] =
 {
+    { LVO_SMULT32, thunk_utility_SMult32 }, { LVO_UMULT32, thunk_utility_UMult32 },
     { LVO_FINDTAGITEM, unexpected_generated }, { LVO_GETTAGDATA, unexpected_generated },
     { LVO_PACKBOOLTAGS, unexpected_generated },
     { LVO_NEXTTAGITEM, unexpected_generated }, { LVO_SDIVMOD32, unexpected_generated },
@@ -216,7 +223,7 @@ struct Fixture
         check(dispatched, "utility.library LVO is dispatched", lvo);
         check(state.a[7] == 0x84 && result.return_pc == return_pc && !result.supervisor,
               "dispatch consumes exactly one guest return address", lvo);
-        check(generated_calls == 0, "the manual thunk wins over the generated fallback", lvo);
+        check(generated_calls == 0, "no poisoned generated fallback is called", lvo);
         bool others = state.a[0] == a0 && state.a[1] == a1 &&
                       state.sr == 0xA715 && state.pc == 0x87654321;
         for (int i = 2; i < 8; i++)
@@ -291,6 +298,112 @@ static void test_mult64()
     expect(LVO_UMULT64, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFEu, 1, "UMult64(2^32-1, 2^32-1)");
     expect(LVO_UMULT64, 0x10000u, 0x10000u, 1, 0, "UMult64(2^16, 2^16)");
     expect(LVO_UMULT64, 0x80000000u, 2, 1, 0, "UMult64 treats D0 as unsigned");
+}
+
+static unsigned forbidden_info_calls;
+static IPTR forbidden_info_thunk(KaffeineContext *ctx, void *)
+{
+    ++forbidden_info_calls;
+    ctx->mem[0x700] ^= 0xFF;
+    return 0xBAD0BAD0;
+}
+static void forbidden_info_after(KaffeineContext *ctx)
+{
+    ++forbidden_info_calls;
+    ctx->mem[0x701] ^= 0xFF;
+}
+
+static void test_layer_info_arithmetic()
+{
+    struct Arithmetic { const char *name; ULONG lvo, a, b, d0, d1; bool manual; };
+    const Arithmetic allowed[] = {
+        {"SMult32", 138, s(-7), 6, s(-42), 6, false},
+        {"UMult32", 144, 0xFFFFFFFF, 2, 0xFFFFFFFE, 2, false},
+        {"SDivMod32", 150, s(-100), 7, s(-14), s(-2), true},
+        {"UDivMod32", 156, 3000000000u, 7, 428571428u, 4, true},
+        {"SMult64", 198, s(-2), 3, 0xFFFFFFFF, 0xFFFFFFFA, true},
+        {"UMult64", 204, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFE, 1, true}
+    };
+    auto &ctx = fixture.ctx;
+    auto saved_lib = ctx.libs[0];
+    auto saved_layers = ctx.layer_ops;
+    BOOL saved_running = ctx.running, saved_failed = ctx.callback_failed;
+    LONG saved_exit = ctx.exit_code;
+    KaffeineLayerOps held = {};
+    held.info_locked = [](KaffeineContext *) { return TRUE; };
+    ctx.layer_ops = &held;
+    m68k_write32(&ctx, 0x80, Fixture::return_pc);
+    const auto before = std::vector<UBYTE>(fixture.memory, fixture.memory + sizeof(fixture.memory));
+    const size_t allocations = native_blocks.size();
+    auto reset_stop = [&] { ctx.running = TRUE; ctx.callback_failed = FALSE; ctx.exit_code = 0; };
+    auto unchanged = [&] {
+        return std::memcmp(fixture.memory, before.data(), before.size()) == 0 &&
+               native_blocks.size() == allocations && ctx.layer_ops == &held;
+    };
+    auto rejected = [&](ULONG lvo) {
+        reset_stop(); forbidden_info_calls = 0; ctx.after_thunk = forbidden_info_after;
+        fixture.call(lvo, 4, 9, 0x400, 0x500);
+        check(!ctx.running && ctx.callback_failed && ctx.exit_code == 20 &&
+              fixture.state.d[0] == 20 && !forbidden_info_calls && unchanged() &&
+              ctx.after_thunk == forbidden_info_after,
+              "Info-held refusal precedes thunk, callback, memory and allocation effects", lvo);
+        ctx.after_thunk = nullptr;
+    };
+    for (const auto &a : allowed)
+    {
+        bool found = false;
+        for (const auto &v : utility_conf_vectors)
+            if (!std::strcmp(v.name, a.name)) found = v.lvo == a.lvo;
+        check(found, "arithmetic literal LVO agrees with the independent public utility.conf", a.lvo);
+        for (UWORD depth : { 0, 1 })
+        {
+            reset_stop(); ctx.callback_depth = depth;
+            fixture.call(a.lvo, a.a, a.b);
+            check(ctx.running && !ctx.callback_failed && !ctx.exit_code && ctx.callback_depth == depth &&
+                  fixture.state.d[0] == a.d0 && fixture.state.d[1] == a.d1 && unchanged(),
+                  "real generated/manual arithmetic preserves scope, both results and guest/native storage", a.lvo);
+        }
+    }
+    ctx.callback_depth = 0;
+    /* Existing edge-case tests execute the real manual D0/D1 implementations
+       inside the held scope, including zero divisors and signed overflow. */
+    reset_stop(); test_sdivmod32(); test_udivmod32(); test_mult64();
+    check(ctx.running && !ctx.callback_failed && unchanged(),
+          "manual arithmetic edge cases stay pure inside the Info scope");
+    for (const auto &v : utility_conf_vectors)
+    {
+        bool arithmetic = false;
+        for (const auto &a : allowed) arithmetic |= !std::strcmp(v.name,a.name);
+        if (arithmetic) continue;
+        /* Exhaustive public-vector oracle: callbacks, tag walks and mutations,
+           allocation, strings, dates and every other Utility API stay blocked
+           before either a manual or generated entry can run. */
+        M68KThunkEntry poison = {v.lvo,forbidden_info_thunk};
+        for (bool manual : { false, true })
+        {
+            ctx.libs[0] = saved_lib;
+            ctx.libs[0].thunks = manual ? &poison : nullptr;
+            ctx.libs[0].num_thunks = manual ? 1 : 0;
+            ctx.libs[0].gen_thunks = &poison; ctx.libs[0].num_gen_thunks = 1;
+            rejected(v.lvo);
+        }
+    }
+    for (const auto &a : allowed)
+    {
+        ctx.libs[0] = saved_lib;
+        ctx.libs[0].num_thunks = 0;
+        if (!a.manual) ctx.libs[0].num_gen_thunks = 0;
+        rejected(a.lvo); // no pair-result generated fallback or missing-thunk success
+    }
+    for (ULONG lvo : { 48u, 54u, 66u, 72u, 78u, 102u })
+    {
+        ctx.libs[0] = saved_lib;
+        rejected(lvo); // actual manual tag/allocation/Hook entries remain gated
+    }
+    ctx.libs[0] = saved_lib; std::strcpy(ctx.libs[0].name,"other.library"); rejected(138);
+    ctx.libs[0] = saved_lib; ctx.libs[0].dos = TRUE; rejected(138);
+    ctx.libs[0] = saved_lib; ctx.layer_ops = saved_layers;
+    ctx.running = saved_running; ctx.callback_failed = saved_failed; ctx.exit_code = saved_exit;
 }
 
 /* Compare with 64-bit reference arithmetic on pseudo-random operands. */
@@ -1788,6 +1901,7 @@ static void test_dates_bounds()
 int main(int argc, char **argv)
 {
     test_table();
+    test_layer_info_arithmetic();
     test_empty_utility_calls();
     test_packbooltags();
     test_filtertagchanges();

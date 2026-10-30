@@ -26,6 +26,20 @@ static const struct M68KThunkEntry *find_thunk(
     return NULL;
 }
 
+/* Register-only utility arithmetic, from utility.conf. The 32-bit multiply
+   wrappers call pure native integer functions. Division and 64-bit products
+   need the manual thunks that preserve their classic D0/D1 result pair. */
+static BOOL layer_info_utility_arithmetic(ULONG lvo, BOOL manual)
+{
+    switch (lvo)
+    {
+        case 138: case 144: return TRUE; /* SMult32, UMult32 */
+        case 150: case 156:              /* SDivMod32, UDivMod32 */
+        case 198: case 204: return manual; /* SMult64, UMult64 */
+        default: return FALSE;
+    }
+}
+
 BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
                                struct KaffeineCPU *cpu, ULONG pc,
                                struct KaffeineDispatchResult *result)
@@ -37,6 +51,7 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
         struct M68KFakeLibBase *lib = &ctx->libs[i];
         const struct M68KThunkEntry *entry;
         const char *kind = "CALL";
+        BOOL manual;
         ULONG lvo, sp;
 
         if (pc < lib->jt_start || pc >= lib->m68k_addr)
@@ -44,6 +59,7 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
 
         lvo = lib->m68k_addr - pc;
         entry = find_thunk(lib->thunks, lib->num_thunks, lvo);
+        manual = entry != NULL;
         if (!entry)
         {
             entry = find_thunk(lib->gen_thunks, lib->num_gen_thunks, lvo);
@@ -70,13 +86,17 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
              /* Other library classes can load files, open GUI objects or
                 wait internally. This new scope has no safe adapter for them. */
              (strcmp(lib->name, "layers.library") && strcmp(lib->name, "graphics.library") &&
-              strcmp(lib->name, "exec.library")) ||
+              strcmp(lib->name, "exec.library") &&
+              (strcmp(lib->name, "utility.library") || !entry ||
+               !layer_info_utility_arithmetic(lvo, manual))) ||
              (!strcmp(lib->name, "graphics.library") && lvo == 270) ||
              (!strcmp(lib->name, "exec.library") &&
               (lvo == 318 || lvo == 336 || lvo == 384 || lvo == 408 || lvo == 444 || lvo == 450 ||
                lvo == 456 || lvo == 462 || lvo == 474 || lvo == 552 || lvo == 564 || lvo == 582 ||
                lvo == 660 || lvo == 672 || lvo == 678))))
         {
+            bug("[kaffeine] %s LVO -%lu while LayerInfo is held, stopping (20)\n",
+                lib->name, (unsigned long)lvo);
             Kaffeine_StopGuest(ctx, cpu, 20);
             return TRUE;
         }

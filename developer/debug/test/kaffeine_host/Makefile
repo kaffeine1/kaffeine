@@ -179,8 +179,11 @@ $(BUILD_DIR)/test_memheader $(BUILD_DIR)/test_memheader_moira: EXTRA_OBJS = $(ME
 $(BUILD_DIR)/utility_thunk_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
 
-$(BUILD_DIR)/test_utility_thunks: $(TEST_DIR)/test_utility_thunks.cpp $(UTILITY_THUNK_OBJS) | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(UTILITY_THUNK_OBJS) $(LDLIBS)
+$(BUILD_DIR)/utility_arithmetic_generated.h: $(TEST_DIR)/utility_arithmetic_extract.py $(KAFFEINE_DIR)/kaffeine_thunks_gen.c $(AROS_ROOT)/rom/utility/utility.conf | $(BUILD_DIR)
+	$(PYTHON) $(TEST_DIR)/utility_arithmetic_extract.py $(KAFFEINE_DIR) $(AROS_ROOT)/rom/utility/utility.conf $@
+
+$(BUILD_DIR)/test_utility_thunks: $(TEST_DIR)/test_utility_thunks.cpp $(BUILD_DIR)/utility_arithmetic_generated.h $(UTILITY_THUNK_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) -I$(BUILD_DIR) $(MEMORY_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(UTILITY_THUNK_OBJS) $(LDLIBS)
 
 $(BUILD_DIR)/test_callbacks: $(TEST_DIR)/test_callbacks.cpp $(CALLBACK_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(CALLBACK_OBJS) $(LDLIBS)
