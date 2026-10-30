@@ -64,6 +64,19 @@ Coverage includes:
   Recovery callers must stop guest execution and ensure that every nested
   coordinator has returned before using this serial probe followed by a
   scoped Finish. The probe does not reserve a concurrent transaction.
+- Native `DosEntry` stream ownership: the collaborator saves startup
+  input/output/error handles before worker entry and reads the live
+  `PRF_CLOSE*` bits at exit. Interleaved brokers can replace all selected
+  streams without native DOS closing those replacements. Explicitly closing
+  a displaced original disarms every matching saved slot, including shared
+  startup handles; a fresh owned file reusing that native address survives
+  worker exit. These recording callbacks exercise native exit semantics;
+  the [main DOS packet fixture](../kaffeine_host/process_stream_fixture.h)
+  separately checks production alias retirement with real FileRecords.
+
+Normal and ASan/UBSan runs each pass **3095 checks**, with **150 compiled
+callbacks** and **157 RPC/reply pairs**. The startup-stream recording callbacks
+do not replace the independent real-registry tests above.
 
 This is host evidence, not an AROS execution or application acceptance test.
 The broker is a private synchronous transport. Its trusted scheduler caller

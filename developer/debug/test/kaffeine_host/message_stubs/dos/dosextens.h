@@ -7,7 +7,10 @@
 #include <exec/tasks.h>
 #define NT_PROCESS 13
 struct MsgPort;
-struct Process { struct Task pr_Task; BPTR pr_CES; struct MsgPort *pr_ConsoleTask, *pr_FileSystemTask; BPTR pr_CurrentDir; };
+struct Process { struct Task pr_Task; BPTR pr_CES; struct MsgPort *pr_ConsoleTask, *pr_FileSystemTask; BPTR pr_CurrentDir, pr_CIS, pr_COS; ULONG pr_Flags; };
+#define PRF_CLOSEINPUT (1UL << 3)
+#define PRF_CLOSEOUTPUT (1UL << 4)
+#define PRF_CLOSEERROR (1UL << 6)
 /* Only fields read by the production DevProc lifetime guard. */
 struct AssignList { struct AssignList *al_Next; BPTR al_Lock; };
 struct DosList

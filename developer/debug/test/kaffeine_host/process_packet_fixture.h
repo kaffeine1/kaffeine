@@ -30,18 +30,7 @@ extern "C" void Delay(LONG) { std::abort(); }
 extern "C" void Kaffeine_AppSignalGone(KaffeineContext *, BYTE) {}
 extern "C" BOOL Kaffeine_DomainUnload(KaffeineContext *, KaffeineDomainModule *m)
 { check(!m->unloads,"packet Process module releases once after broker ACK");++m->unloads;return TRUE; }
-extern "C" IPTR Kaffeine_ProcessInitGuestDos(KaffeineContext *ctx, void *cpu)
-{
-    assert(packet_active_broker && ctx->broker_call && ctx->cpu==cpu);
-    ++packet_active_broker->inits;
-    return 1;
-}
-extern "C" IPTR Kaffeine_ProcessDropGuestDos(KaffeineContext *ctx, void *cpu)
-{
-    assert(packet_active_broker && ctx->broker_call && !cpu);
-    ++packet_active_broker->drops;
-    return 1;
-}
+extern "C" void Kaffeine_LockOwnerDrop(KaffeineContext *, Task *) {}
 extern "C" BOOL Kaffeine_DosBrokerIsIdle(KaffeineDosBroker *) { return TRUE; }
 extern "C" BOOL Kaffeine_DosBrokerCall(KaffeineDosBroker *b,KaffeineContext *ctx,
     void *cpu,ULONG lvo,KaffeineDosBrokerThunk thunk,IPTR *result,SIPTR *error)
@@ -51,12 +40,17 @@ extern "C" BOOL Kaffeine_DosBrokerCall(KaffeineDosBroker *b,KaffeineContext *ctx
     if(!lvo && thunk!=Kaffeine_ProcessInitGuestDos)++b->helpers;
     if(b->fail) { *error=103;return FALSE; }
     auto *old_owner=ctx->broker_owner;auto *old_active=packet_active_broker;
+    BPTR old_input=native_input,old_output=native_output;
     SIPTR caller_error=ioerr;
     native_caller=&b->process.pr_Task;packet_active_broker=b;ioerr=b->error;
+    native_input=b->process.pr_CIS;native_output=b->process.pr_COS;
     ctx->broker_owner=b->wrong_owner ? &native_task : native_caller;
+    if(thunk==Kaffeine_ProcessInitGuestDos)++b->inits;
     *result=thunk(ctx,cpu);
     if(ctx->after_thunk) { auto after=ctx->after_thunk;ctx->after_thunk=nullptr;after(ctx); }
     b->error=ioerr;ioerr=caller_error;ctx->broker_owner=old_owner;
+    b->process.pr_CIS=native_input;b->process.pr_COS=native_output;
+    native_input=old_input;native_output=old_output;
     native_caller=nullptr;packet_active_broker=old_active;*error=0;return TRUE;
 }
 extern "C" BOOL Kaffeine_DosBrokerFinish(KaffeineDosBroker *b,KaffeineContext *ctx,KaffeineDosBrokerThunk cleanup)
@@ -65,9 +59,13 @@ extern "C" BOOL Kaffeine_DosBrokerFinish(KaffeineDosBroker *b,KaffeineContext *c
     if(ctx)
     {
         auto *old=ctx->broker_owner;SIPTR caller_error=ioerr;
+        BPTR old_input=native_input,old_output=native_output;
         native_caller=&b->process.pr_Task;packet_active_broker=b;ioerr=b->error;
+        native_input=b->process.pr_CIS;native_output=b->process.pr_COS;
         ctx->broker_owner=native_caller;
-        if(cleanup)cleanup(ctx,nullptr);
+        if(cleanup) { if(cleanup==Kaffeine_ProcessDropGuestDos)++b->drops;cleanup(ctx,nullptr); }
+        b->process.pr_CIS=native_input;b->process.pr_COS=native_output;
+        native_input=old_input;native_output=old_output;
         ctx->broker_owner=old;native_caller=nullptr;packet_active_broker=nullptr;ioerr=caller_error;
     }
     ++b->finishes;return TRUE;

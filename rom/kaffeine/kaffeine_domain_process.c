@@ -16,9 +16,86 @@
 #include "kaffeine_locks.h"
 #include "kaffeine_offsets.h"
 
+/* DosEntry saves these identities before entering the worker, then closes
+ * the saved values according to the Process's live PRF_CLOSE* flags. Neither
+ * SelectInput nor SelectOutput transfers that exit ownership to a new file.
+ * Records exist only between this worker's Init and acknowledged Drop. The
+ * driver and its synchronous brokers are the sole serial Context callers. */
+struct KaffeineProcessStreams
+{
+    struct KaffeineProcessStreams *next;
+    struct Process *owner;
+    BPTR startup[3];
+};
+
+static const ULONG stream_close_flags[3] = {
+    PRF_CLOSEINPUT, PRF_CLOSEOUTPUT, PRF_CLOSEERROR
+};
+
+static BOOL streams_valid(struct KaffeineContext *ctx)
+{
+    struct KaffeineProcessStreams *record;
+    struct Task *caller = FindTask(NULL);
+    if (!caller || (ctx->broker_call ? caller != ctx->broker_owner :
+                   caller != ctx->exec_task)) return FALSE;
+    for (record = ctx->process_streams; record; record = record->next)
+        if (!record->owner || record->owner->pr_Task.tc_Node.ln_Type != NT_PROCESS)
+            return FALSE;
+    return TRUE;
+}
+
+/* Disarm every saved alias before an explicit close or one owner's exit.
+ * Other captured workers are idle under the serial Context protocol. Clear
+ * their selected native aliases too, so Input/Output cannot reimport a file
+ * that this close frees. The current Close path updates its guest fields. */
+static void streams_detach(struct Process *owner, BPTR native)
+{
+    if (owner->pr_CIS == native) owner->pr_CIS = (BPTR)0;
+    if (owner->pr_COS == native) owner->pr_COS = (BPTR)0;
+    if (owner->pr_CES == native) owner->pr_CES = (BPTR)0;
+}
+
+static void streams_disarm(struct KaffeineContext *ctx, BPTR native,
+                           struct Process *keep_owner, ULONG keep_flag,
+                           struct Process *close_caller)
+{
+    struct KaffeineProcessStreams *record;
+    unsigned i;
+    for (record = ctx->process_streams; record; record = record->next)
+    {
+        struct Process *owner = record->owner;
+        for (i = 0; i < 3; ++i)
+            if (record->startup[i] == native)
+            {
+                if (owner != keep_owner || stream_close_flags[i] != keep_flag)
+                    owner->pr_Flags &= ~stream_close_flags[i];
+                record->startup[i] = (BPTR)0;
+            }
+        if (owner == close_caller) continue;
+        streams_detach(owner, native);
+    }
+    /* The driver can select an imported child's original too. Its native
+     * Process remains live until all child cleanup has acknowledged. */
+    if (ctx->exec_task && ctx->exec_task != (struct Task *)close_caller &&
+        ctx->exec_task->tc_Node.ln_Type == NT_PROCESS)
+        streams_detach((struct Process *)ctx->exec_task, native);
+}
+
+static BOOL process_file_close(struct KaffeineContext *ctx, BPTR native)
+{
+    SIPTR error = IoErr();
+    if (!streams_valid(ctx)) return FALSE;
+    if (native)
+        streams_disarm(ctx, native, NULL, 0, (struct Process *)FindTask(NULL));
+    SetIoErr(error);
+    return TRUE;
+}
+
 IPTR Kaffeine_ProcessInitGuestDos(struct KaffeineContext *ctx, void *cpu)
 {
     struct Process *me = (struct Process *)FindTask(NULL);
+    struct KaffeineProcessStreams *record;
+    SIPTR error = IoErr();
     ULONG current = 0, home = 0, input, output, errors;
     ULONG task = ctx->guest_exec_task;
     (void)cpu;
@@ -26,12 +103,24 @@ IPTR Kaffeine_ProcessInitGuestDos(struct KaffeineContext *ctx, void *cpu)
         !task || task >= ctx->mem_size || ctx->mem_size - task < M68K_SIZEOF_PROCESS ||
         !me || me->pr_Task.tc_Node.ln_Type != NT_PROCESS)
         return 0;
-    input = Kaffeine_FileImport(ctx, Input(), FALSE);
-    if (Input() && !input) return 0;
-    output = Kaffeine_FileImport(ctx, Output(), FALSE);
-    if (Output() && !output) return 0;
-    errors = Kaffeine_FileImport(ctx, me->pr_CES, FALSE);
-    if (me->pr_CES && !errors) return 0;
+    for (record = ctx->process_streams; record; record = record->next)
+        if (record->owner == me) return 0; /* never recapture replacements */
+    record = AllocVec(sizeof(*record), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!record) { SetIoErr(ERROR_NO_FREE_STORE); return 0; }
+    record->owner = me;
+    record->startup[0] = Input();
+    record->startup[1] = Output();
+    record->startup[2] = me->pr_CES;
+    record->next = ctx->process_streams;
+    ctx->process_streams = record;
+    ctx->process_file_close = process_file_close;
+    SetIoErr(error);
+    input = Kaffeine_FileImport(ctx, record->startup[0], FALSE);
+    if (record->startup[0] && !input) return 0;
+    output = Kaffeine_FileImport(ctx, record->startup[1], FALSE);
+    if (record->startup[1] && !output) return 0;
+    errors = Kaffeine_FileImport(ctx, record->startup[2], FALSE);
+    if (record->startup[2] && !errors) return 0;
     if (!Kaffeine_LockGetInstalled(ctx, KAFFEINE_LOCK_CURRENT, &current) ||
         !Kaffeine_LockGetInstalled(ctx, KAFFEINE_LOCK_PROGRAM, &home)) return 0;
     m68k_write32(ctx, task + M68K_PR_CIS, input);
@@ -45,15 +134,33 @@ IPTR Kaffeine_ProcessInitGuestDos(struct KaffeineContext *ctx, void *cpu)
 IPTR Kaffeine_ProcessDropGuestDos(struct KaffeineContext *ctx, void *cpu)
 {
     struct Process *me = (struct Process *)FindTask(NULL);
+    struct KaffeineProcessStreams **link, *record;
+    SIPTR error = IoErr();
+    unsigned i;
     (void)cpu;
     if (!ctx->broker_call || ctx->broker_owner != (struct Task *)me ||
-        !me || me->pr_Task.tc_Node.ln_Type != NT_PROCESS) return 0;
-    /* Native DOS closes its current streams after the worker returns. Drop
-       all aliases first, including a guest-owned stream it selected later. */
-    Kaffeine_FileDropNative(ctx, Input(), FALSE);
-    Kaffeine_FileDropNative(ctx, Output(), FALSE);
-    Kaffeine_FileDropNative(ctx, me->pr_CES, FALSE);
+        !me || me->pr_Task.tc_Node.ln_Type != NT_PROCESS ||
+        !streams_valid(ctx)) return 0;
+    link = &ctx->process_streams;
+    while (*link && (*link)->owner != me) link = &(*link)->next;
+    record = *link;
+    if (record)
+    {
+        for (i = 0; i < 3; ++i)
+        {
+            BPTR native = record->startup[i];
+            if (!native || !(me->pr_Flags & stream_close_flags[i])) continue;
+            /* Exactly one native exit slot closes a shared original. Clear
+             * all other saved aliases before its storage can be reused. */
+            streams_disarm(ctx, native, me, stream_close_flags[i], NULL);
+            Kaffeine_FileDropNative(ctx, native, FALSE);
+        }
+        *link = record->next;
+        FreeVec(record);
+        if (!ctx->process_streams) ctx->process_file_close = NULL;
+    }
     Kaffeine_LockOwnerDrop(ctx, &me->pr_Task);
+    SetIoErr(error);
     return 1;
 }
 

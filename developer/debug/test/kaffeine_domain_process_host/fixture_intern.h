@@ -21,6 +21,8 @@ struct KaffeineContext {
     LONG exit_code;
     UBYTE *mem;
     ULONG mem_size, guest_exec_task;
+    struct KaffeineProcessStreams *process_streams;
+    BOOL (*process_file_close)(struct KaffeineContext *, BPTR);
     struct KaffeineDomainStartRecovery *domain_start_recovery;
     BOOL (*domain_drain)(struct KaffeineContext *);
 };

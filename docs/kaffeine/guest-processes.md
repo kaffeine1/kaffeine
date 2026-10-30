@@ -20,6 +20,26 @@ arguments, local variables, distinct current/home locks and private streams, ini
 opened on `NIL:`. It runs selected compiled DOS thunks, with its own `IoErr()`;
 it never runs the guest CPU. Guest files and locks use typed registries.
 
+The [startup adapter](../../rom/kaffeine/kaffeine_domain_process.c) privately
+captures the broker's original native streams before importing any guest
+aliases. Native `DosEntry` closes those saved input/output/error handles at
+exit according to the live `PRF_CLOSE*` flags; `SelectInput()` and
+`SelectOutput()` change selections without transferring that exit ownership.
+Broker cleanup retires only captured originals still armed for native close.
+Guest-owned replacement files remain registered for explicit `Close()` or
+Context cleanup. A partial initialization retains its capture until cleanup;
+a broker that never imported streams has no aliases to retire.
+
+Explicit guest `Close()` first disarms every matching captured startup slot
+across the Context's controlled native Processes, even if native close later
+reports failure. It also detaches selected native aliases on the other
+brokers and driver. Captured identities are invalidated before the native
+handle can be reused, so a fresh file at the same BPTR survives later broker
+exit. Duplicate/shared originals retain exactly one native exit-close slot.
+These operations use the existing serial driver/broker protocol; they do not
+inspect or change unrelated native Processes. The private close hook is
+removed with the final startup-stream record.
+
 Guest queues, messages and nested payload pointers remain in the shared arena;
 a child can receive the exact address used by its parent. This does not permit
 forwarding arbitrary guest payloads/ports to native `PutMsg()`.
@@ -180,6 +200,15 @@ recording CPUs/native transport. It checks child Process/directory/error
 identity, file reads and packet errors, direct and nested routes, root/child
 reply ownership, malformed or mixed inputs, callback refusal, staged-request clearing,
 classic-task limits and authoritative return code 20 through the real CPU loop.
+The [startup-stream groups](../../developer/debug/test/kaffeine_host/process_stream_fixture.h)
+also compile the production initialization/retirement helpers verbatim and use
+real FileRecords, `Close()`, heap and full-file preparation/snapshot sweeps.
+They cover selected owned replacements, native-freed originals, root/peer
+aliases, duplicate/shared startup handles, live close flags, explicit close
+failure followed by BPTR reuse, partial initialization and untrusted callers.
+Normal and ASan/UBSan runs each pass **18548 checks** in `test_dos_packets`.
+The threaded broker suite independently models native `DosEntry` saving its
+streams before worker entry and consulting the live close flags afterward.
 
 ```sh
 make -C developer/debug/test/kaffeine_host BUILD_DIR=/tmp/kaffeine-packets -j1 test_dos_packets

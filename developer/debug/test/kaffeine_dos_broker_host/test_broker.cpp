@@ -60,6 +60,8 @@ static BPTR next_native = (BPTR)0x100000000ULL;
 static unsigned opens, closes, cnp_calls, callbacks, replies, dynamic_ports, request_sends;
 static bool fail_open, fail_dup, fail_alloc, fail_cnp;
 static bool next_defer, next_fail_port, next_fail_var, next_fail_command;
+static bool next_shared_streams;
+static constexpr ULONG close_stream_flags[] = { PRF_CLOSEINPUT, PRF_CLOSEOUTPUT, PRF_CLOSEERROR };
 static constexpr SIPTR injected_error = (SIPTR)0x12345678000000abULL;
 static constexpr SIPTR driver_error = (SIPTR)0x23456789000000cdULL;
 static constexpr SIPTR process_error = (SIPTR)0x3456789a000000efULL;
@@ -330,6 +332,7 @@ extern "C" Process *CreateNewProc(const TagItem *tags)
           "native CNP receives controlled compiled entry and private userdata");
     child->process.pr_Arguments = child->arguments.data();
     child->process.pr_CLI = child->cli ? (BPTR)0x900000001ULL : 0;
+    child->process.pr_Flags = PRF_CLOSEINPUT | PRF_CLOSEOUTPUT | PRF_CLOSEERROR;
     Process *parent = current_child ? &current_child->process : &root_process;
     {
         std::lock_guard<std::mutex> lock(fixture_lock);
@@ -337,7 +340,14 @@ extern "C" Process *CreateNewProc(const TagItem *tags)
         if (parent->pr_CurrentDir) child->process.pr_CurrentDir = make_lock_locked();
         BPTR *stream_fields[] = { &child->process.pr_CIS, &child->process.pr_COS, &child->process.pr_CES };
         for (BPTR *stream : stream_fields) { *stream = ++next_native; streams[*stream] = 1; }
+        if (next_shared_streams)
+        {
+            /* Model caller-supplied aliases without leaking the unused NILs. */
+            streams[child->process.pr_COS] = streams[child->process.pr_CES] = 0;
+            child->process.pr_COS = child->process.pr_CES = child->process.pr_CIS;
+        }
     }
+    next_shared_streams = false;
     if (child->copy_vars)
         child->variables = current_child ? current_child->variables : std::map<std::string, std::string>{{"ROOT_ONLY", "root"}};
     child->deferred = next_defer;
@@ -358,6 +368,9 @@ extern "C" Process *CreateNewProc(const TagItem *tags)
             std::unique_lock<std::mutex> lock(fixture_lock);
             if (raw->deferred) changed.wait(lock, [raw] { return raw->release_start; });
         }
+        /* DosEntry saves these before initialPC, then reads the close flags
+         * live after it returns. SelectInput/Output do not change the saved BPTRs. */
+        const BPTR startup_streams[] = { raw->process.pr_CIS, raw->process.pr_COS, raw->process.pr_CES };
         raw->result = entry();
         check(!raw->process.pr_Task.tc_UserData,
               "worker clears private userdata before native DOS cleanup");
@@ -365,11 +378,14 @@ extern "C" Process *CreateNewProc(const TagItem *tags)
         if (raw->process.pr_CurrentDir) UnLock(raw->process.pr_CurrentDir);
         {
             std::lock_guard<std::mutex> lock(fixture_lock);
-            BPTR stream_fields[] = { raw->process.pr_CIS, raw->process.pr_COS, raw->process.pr_CES };
-            for (BPTR stream : stream_fields)
+            for (unsigned i = 0; i < 3; ++i)
             {
-                check(streams[stream] == 1, "native DOS closes each private NIL stream once");
-                --streams[stream];
+                BPTR stream = startup_streams[i];
+                if ((raw->process.pr_Flags & close_stream_flags[i]) && stream)
+                {
+                    check(streams[stream] == 1, "native DOS closes each armed saved startup stream once");
+                    if (streams[stream]) --streams[stream];
+                }
             }
             raw->finished = true;
             changed.notify_all();
@@ -890,6 +906,179 @@ static void test_idle_probe()
           "busy-then-ready probe changes no ownership or cleanup accounting");
 }
 
+struct StreamExitState
+{
+    Child *child{};
+    BPTR startup[3]{}, replacement{}, reused{};
+    SIPTR error{process_error};
+    ULONG disarmed{};
+    bool close_original{};
+};
+
+static IPTR replace_selected_streams(KaffeineContext *ctx, void *)
+{
+    auto state = static_cast<StreamExitState *>(ctx->fixture);
+    check(current_child && ctx->broker_owner == current_task && ctx->broker_call,
+          "stream selections change only in the selected native broker Process");
+    state->child = current_child;
+    Process &process = current_child->process;
+    state->startup[0] = process.pr_CIS;
+    state->startup[1] = process.pr_COS;
+    state->startup[2] = process.pr_CES;
+    check(process.pr_Flags == (PRF_CLOSEINPUT | PRF_CLOSEOUTPUT | PRF_CLOSEERROR),
+          "native CNP starts with each default startup close flag armed");
+    {
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        state->replacement = ++next_native;
+        streams[state->replacement] = 1;
+        process.pr_CIS = process.pr_COS = process.pr_CES = state->replacement;
+        if (state->close_original)
+        {
+            /* Model a typed Close preflight: all matching saved slots must be
+             * disarmed before Close, including slots no longer selected. */
+            state->reused = state->startup[1];
+            for (unsigned i = 0; i < 3; ++i)
+                if (state->startup[i] == state->reused)
+                    state->disarmed |= close_stream_flags[i];
+            process.pr_Flags &= ~state->disarmed;
+            check(streams[state->reused] == 1, "explicit Close sees one live original native stream");
+            --streams[state->reused];
+            check(!streams[state->reused], "explicit Close retires the original before address reuse");
+            streams[state->reused] = 1; /* a different owned Open reuses its BPTR */
+        }
+    }
+    native_error = state->error;
+    ++callbacks;
+    return state->replacement;
+}
+
+static IPTR inspect_selected_streams(KaffeineContext *ctx, void *)
+{
+    auto state = static_cast<StreamExitState *>(ctx->fixture);
+    check(current_child == state->child && ctx->broker_owner == current_task &&
+          ctx->broker_call && IoErr() == state->error,
+          "surviving broker keeps its selected streams and full-width native error");
+    check(current_child->process.pr_CIS == state->replacement &&
+          current_child->process.pr_COS == state->replacement &&
+          current_child->process.pr_CES == state->replacement,
+          "shared selected replacement remains independent of the startup close identities");
+    ++callbacks;
+    return 1;
+}
+
+static IPTR finish_selected_streams(KaffeineContext *ctx, void *cpu)
+{
+    auto state = static_cast<StreamExitState *>(ctx->fixture);
+    check(!cpu && current_child == state->child && ctx->broker_owner == current_task && ctx->broker_call,
+          "selected-stream Finish cleanup runs on its captured native Process before exit");
+    {
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        for (BPTR stream : state->startup)
+            check(streams[stream] == 1, "saved originals or their fresh replacements remain live before native exit");
+        check(streams[state->replacement] == 1 &&
+              !(current_child->process.pr_Flags & state->disarmed),
+              "Finish sees live owned selection and preserves all explicit-Close disarms");
+    }
+    native_error = injected_error;
+    ++callbacks;
+    return 1;
+}
+
+static void retire_test_stream(BPTR stream)
+{
+    check(streams[stream] == 1, "test-owned replacement survives until its explicit owner cleanup");
+    if (streams[stream]) --streams[stream];
+}
+
+static void test_saved_startup_streams()
+{
+    const unsigned initial_locks = live_locks();
+    auto spec_a = spec_for(make_lock());
+    auto spec_b = spec_for(make_lock());
+    SIPTR error = -1;
+    native_error = driver_error;
+    auto a = Kaffeine_DosBrokerStart(&root_process.pr_Task, &spec_a, &error);
+    auto b = Kaffeine_DosBrokerStart(&root_process.pr_Task, &spec_b, &error);
+    StreamExitState state_a, state_b;
+    state_b.error = process_error + 1;
+    KaffeineContext ctx{};
+    ctx.exec_task = &root_process.pr_Task; ctx.broker_call = TRUE;
+    Cpu cpu{};
+    IPTR result = 0;
+    ctx.fixture = &state_a;
+    check(a && b && Kaffeine_DosBrokerCall(a, &ctx, &cpu, 0, replace_selected_streams, &result, &error),
+          "first broker selects a shared owned replacement without changing startup ownership");
+    ctx.fixture = &state_b;
+    check(Kaffeine_DosBrokerCall(b, &ctx, &cpu, 0, replace_selected_streams, &result, &error),
+          "second broker independently replaces its selected streams");
+    ctx.fixture = &state_a;
+    check(Kaffeine_DosBrokerFinish(a, &ctx, finish_selected_streams),
+          "first broker acknowledges selected-stream metadata cleanup");
+    state_a.child->thread.join(); /* Finish ACK precedes native DosEntry's final stream close. */
+    {
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        for (BPTR stream : state_a.startup)
+            check(!streams[stream], "first native exit closes the saved originals instead of current selections");
+        for (BPTR stream : state_b.startup)
+            check(streams[stream] == 1, "peer startup streams remain live after first broker exits");
+        check(streams[state_a.replacement] == 1 && streams[state_b.replacement] == 1,
+              "neither broker's owned replacement is consumed by its peer's native exit");
+    }
+    ctx.fixture = &state_b;
+    check(Kaffeine_DosBrokerCall(b, &ctx, &cpu, 0, inspect_selected_streams, &result, &error),
+          "second broker remains callable after its peer's native DOS cleanup");
+    check(Kaffeine_DosBrokerFinish(b, &ctx, finish_selected_streams),
+          "second broker finishes without consuming its current replacement");
+    state_b.child->thread.join();
+    {
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        for (BPTR stream : state_b.startup)
+            check(!streams[stream], "second native exit closes its own saved startup streams");
+        retire_test_stream(state_a.replacement);
+        retire_test_stream(state_b.replacement);
+    }
+    check(IoErr() == driver_error && !ctx.broker_owner && live_locks() == initial_locks,
+          "interleaved selected-stream retirement preserves driver error and native owner lifetimes");
+}
+
+static void test_disarmed_startup_streams()
+{
+    for (bool shared : {false, true})
+    {
+        const unsigned initial_locks = live_locks();
+        auto spec = spec_for(make_lock());
+        next_shared_streams = shared;
+        SIPTR error = -1;
+        native_error = driver_error;
+        auto broker = Kaffeine_DosBrokerStart(&root_process.pr_Task, &spec, &error);
+        StreamExitState state;
+        state.close_original = true;
+        KaffeineContext ctx{};
+        ctx.exec_task = &root_process.pr_Task; ctx.broker_call = TRUE; ctx.fixture = &state;
+        Cpu cpu{};
+        IPTR result = 0;
+        check(broker && Kaffeine_DosBrokerCall(broker, &ctx, &cpu, 0, replace_selected_streams, &result, &error),
+              "worker explicitly closes a displaced original and a fresh owned file reuses its BPTR");
+        check(state.disarmed == (shared ? PRF_CLOSEINPUT | PRF_CLOSEOUTPUT | PRF_CLOSEERROR : PRF_CLOSEOUTPUT),
+              "explicit close disarms every saved matching slot, including duplicate startup aliases");
+        check(Kaffeine_DosBrokerFinish(broker, &ctx, finish_selected_streams),
+              "Finish keeps live close flags disarmed after original native stream reuse");
+        state.child->thread.join();
+        {
+            std::lock_guard<std::mutex> lock(fixture_lock);
+            for (BPTR stream : state.startup)
+                if (stream != state.reused)
+                    check(!streams[stream], "native exit still closes unrelated armed startup slots");
+            check(streams[state.reused] == 1 && streams[state.replacement] == 1,
+                  "native exit cannot close a reused original identity or owned current selection");
+            retire_test_stream(state.reused);
+            retire_test_stream(state.replacement);
+        }
+        check(IoErr() == driver_error && live_locks() == initial_locks,
+              "disarmed saved-stream cleanup preserves full-width driver error and balances directories");
+    }
+}
+
 int main()
 {
     root_process.pr_HomeDir = make_lock();
@@ -903,8 +1092,10 @@ int main()
     test_process_isolation();
     test_finish_cleanup();
     test_idle_probe();
+    test_saved_startup_streams();
+    test_disarmed_startup_streams();
     check(request_sends == replies, "every private RPC request has one reply before reclamation");
-    check(callbacks == 141, "only explicitly selected compiled callbacks execute");
+    check(callbacks == 150, "only explicitly selected compiled callbacks execute");
     check(allocations.empty() && semaphores.empty() && !dynamic_ports && inboxes.empty(),
           "all records, semaphores and native inboxes are retired");
     check(opens == closes, "all worker library pins are balanced");

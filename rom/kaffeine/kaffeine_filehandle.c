@@ -289,6 +289,8 @@ IPTR kaffeine_dos_Close(struct KaffeineContext *ctx, void *cpu)
     if (!Kaffeine_FileResolve(ctx, token, &native)) return 20;
     f = entry(ctx, token);
     if (!f) return Kaffeine_MessageFailure(ctx, "Close");
+    if (ctx->process_file_close && !ctx->process_file_close(ctx, native))
+        return Kaffeine_MessageFailure(ctx, "Close startup stream");
     detach_streams(ctx, native);
     result = Close(native);
     /* AROS frees the FileHandle even when ACTION_END fails. The identity

@@ -255,6 +255,8 @@ struct KaffeineContext
     BOOL broker_call; /* selected DOS thunk is executing on its owner worker */
     struct Task *broker_owner; /* valid only while that private RPC runs */
     ULONG root_streams[3]; /* caller-borrowed streams retired before early return */
+    struct KaffeineProcessStreams *process_streams; /* native broker startup identities */
+    BOOL (*process_file_close)(struct KaffeineContext *, BPTR);
     struct KaffeineDomainStartRecovery *domain_start_recovery;
     BOOL (*domain_drain)(struct KaffeineContext *); /* FALSE waits one native tick */
 

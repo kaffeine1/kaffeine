@@ -31,6 +31,15 @@ The ordinary and ASan/UBSan runs cover:
 - native cleanup ACK before staged CPU retirement and module release;
 - context-owned deferred module cleanup, repeated drains, and alias-drop helpers.
 
+Stream capture now precedes the first import and retires with the broker's
+cleanup acknowledgement. Rollback without initialization retires no
+uncaptured streams. The focused helper case checks capture retirement and
+private-hook reset; file collaborators here only record imports/drops. The
+[main DOS packet fixture](../kaffeine_host/process_stream_fixture.h) separately
+links the same production helpers to real FileRecords, `Close()`, heap and
+snapshot sweeps to verify replacement ownership, saved original identities,
+live native close flags and explicit-close/BPTR-reuse safety.
+
 `--baseline` runs only the refused-cleanup ownership check on an old production
 source directory that lacks recovery support. It deliberately expects a test
 failure: ignoring Finish(FALSE) unloads the still-owned module and resumes the
@@ -42,8 +51,8 @@ CPU/backend tests remain separate requirements. ASan leak detection is disabled
 for portability on Darwin; startup allocations and native home ownership are
 independently counted. These host checks provide no ARM/application proof.
 
-Verified isolated results: ordinary **677 checks, 0 failures** and ASan/UBSan
-**677 checks, 0 failures**. The frozen old adapter fails the focused baseline
+Verified isolated results: ordinary **666 checks, 0 failures** and ASan/UBSan
+**666 checks, 0 failures**. The frozen old adapter fails the focused baseline
 with **17 checks, 3 failures** (early module release, missing retention, and
 continued guest execution after a refused Finish). The normal and sanitizer
 builds use the same production source and fixture.

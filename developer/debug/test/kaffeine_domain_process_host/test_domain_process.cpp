@@ -478,7 +478,8 @@ static void immediate_cleanup(bool staged, bool nested)
     check(f.source_intact() && native_error == operation_error && f.ctx.running,
           "acknowledged rollback restores caller-owned leases and permits normal error handling");
     check(f.finishes == 1 && !f.broker()->live && f.unload_calls == 1 &&
-          f.file_drops == 3 && f.owner_drops == 1, "rollback drops native aliases before owner ACK");
+          f.file_drops == 0 && f.owner_drops == 1 && !f.ctx.process_streams &&
+          !f.ctx.process_file_close, "rollback without Init retires no uncaptured streams before owner ACK");
     check(!f.broker()->child_cpu_live && f.recover_calls == (staged ? 1u : 0u),
           "staged startup uses scoped scheduler recovery");
     check(f.ctx.broker_call == (nested ? TRUE : FALSE) && f.ctx.broker_owner == owner,
@@ -583,6 +584,7 @@ static void init_guest_dos_contract()
     Process owner{};
     owner.pr_Task.tc_Node.ln_Type = NT_PROCESS;
     owner.pr_CES = 0x7300;
+    owner.pr_Flags = PRF_CLOSEINPUT | PRF_CLOSEOUTPUT | PRF_CLOSEERROR;
     current_task = &owner.pr_Task;
     f.ctx.broker_owner = current_task;
     f.ctx.broker_call = TRUE;
@@ -593,6 +595,9 @@ static void init_guest_dos_contract()
     unsigned imports = f.imported;
     check(!Kaffeine_ProcessInitGuestDos(&f.ctx, &f.root_cpu) && f.imported == imports,
           "invalid guest Process extent is rejected before native imports");
+    check(Kaffeine_ProcessDropGuestDos(&f.ctx, nullptr) == 1 && f.file_drops == 3 &&
+          !f.ctx.process_streams && !f.ctx.process_file_close,
+          "startup stream capture retires before the native owner's exit");
 }
 #endif
 

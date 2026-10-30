@@ -70,6 +70,7 @@ static Process native_process;
 static Task &native_task = native_process.pr_Task;
 /* Optional owner/effect observers used by the real scheduler packet lane. */
 static Task *native_caller;
+static bool process_native_streams;
 static void (*packet_native_observer)(void);
 static BPTR close_frees;
 static ULONG allocated_signals, pending_signals, signalled_mask;
@@ -230,8 +231,10 @@ extern "C" void *Kaffeine_ShadowNative(KaffeineContext *, ULONG, UWORD) { return
 extern "C" ULONG Kaffeine_ShadowGuest(KaffeineContext *, const void *, UWORD) { std::abort(); }
 extern "C" SIPTR IoErr(void) { return ioerr; }
 extern "C" SIPTR SetIoErr(SIPTR error) { SIPTR old = ioerr; ioerr = error; return old; }
-extern "C" BPTR Input(void) { return native_input; }
-extern "C" BPTR Output(void) { return native_output; }
+extern "C" BPTR Input(void)
+{ return process_native_streams ? reinterpret_cast<Process *>(FindTask(nullptr))->pr_CIS : native_input; }
+extern "C" BPTR Output(void)
+{ return process_native_streams ? reinterpret_cast<Process *>(FindTask(nullptr))->pr_COS : native_output; }
 extern "C" BPTR Open(CONST_STRPTR name, LONG mode)
 { assert(!std::strcmp(name, "fixture")); assert(mode == 1005); ++scalar_calls; return open_result; }
 extern "C" LONG Close(BPTR handle)
@@ -330,9 +333,17 @@ extern "C" void Kaffeine_FreeRDArgs(KaffeineContext *, ULONG) { std::abort(); }
 extern "C" ULONG Kaffeine_ExAllAllocControl(KaffeineContext *) { std::abort(); }
 extern "C" BOOL Kaffeine_ExAllFreeControl(KaffeineContext *, ULONG) { std::abort(); }
 extern "C" BPTR SelectInput(BPTR handle)
-{ BPTR old = native_input; native_input = handle; ++scalar_calls; return old; }
+{
+    BPTR old = Input(); native_input = handle; ++scalar_calls;
+    if(process_native_streams)reinterpret_cast<Process *>(FindTask(nullptr))->pr_CIS=handle;
+    return old;
+}
 extern "C" BPTR SelectOutput(BPTR handle)
-{ BPTR old = native_output; native_output = handle; ++scalar_calls; return old; }
+{
+    BPTR old = Output(); native_output = handle; ++scalar_calls;
+    if(process_native_streams)reinterpret_cast<Process *>(FindTask(nullptr))->pr_COS=handle;
+    return old;
+}
 static LONG buffered(BPTR handle)
 {
     ++buffer_calls; seen_handle = handle;
@@ -447,12 +458,14 @@ struct Fixture
     Fixture():ctx(*make_context())
     {
         native_caller=nullptr;packet_native_observer=nullptr;
+        process_native_streams=false;
         allocated_signals=pending_signals=signals=freed_signals=signalled_mask=0;
         reads=writes=closes=seeks=buffer_calls=scalar_calls=0;
         read_override=INT_MIN; read_override_bytes.clear(); signal_failure=false; generated_calls=0; ioerr=137;
         write_override=INT_MIN; written_bytes.clear(); native_packets=0; packet_handler=nullptr;
         packet_action=0; packet_result=-1; packet_error=37; packet_args={}; packet_info={};
         close_frees=nullptr;native_task.tc_Node.ln_Type=NT_PROCESS;native_process.pr_CES=nullptr;
+        native_process.pr_CIS=native_process.pr_COS=nullptr;native_process.pr_Flags=0;
         native_process.pr_ConsoleTask=native_process.pr_FileSystemTask=nullptr;
         native_ports={};console_task=&native_ports[1];filesys_task=&native_ports[2];
         packet_name1.clear();packet_name2.clear();packet_stamp={};packet_fib={};packet_fib_in={};

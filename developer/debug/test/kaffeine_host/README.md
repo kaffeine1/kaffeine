@@ -223,6 +223,18 @@ Use fresh build directories.
 
 ### DOS packet bridge
 
+Four startup-stream groups in
+[`process_stream_fixture.h`](process_stream_fixture.h) link verbatim production
+`InitGuestDos`/`DropGuestDos` helpers to the real file registry, `Close()`, heap
+and full-file preparation/snapshot sweeps. They check displaced startup
+streams, replacement ownership, duplicate/shared native originals, root/peer
+selection aliases, live native close flags, explicit close failure followed by
+BPTR reuse, partial/no initialization and unsafe-caller refusal. Native exit
+closes the handles saved before worker entry, rather than later selections.
+The complete `test_dos_packets` passes **18548 checks** in both normal and
+ASan/UBSan runs. These are host ownership regressions; native target evidence
+remains separate. See the [Process contract](../../../../docs/kaffeine/guest-processes.md).
+
 `test_dos_packet_thunks` exercises the production AllocDosObject and
 FreeDosObject paths for DOS_STDPKT and all five packet LVOs. The existing
 extractor takes their bodies and private helpers verbatim from production.
