@@ -272,6 +272,18 @@ $(BUILD_DIR)/hunk_process_child: $(TEST_DIR)/hunk_process_child.c | $(BUILD_DIR)
 $(BUILD_DIR)/hunk_process_native: $(TEST_DIR)/hunk_process_native.c | $(BUILD_DIR)
 	$(NATIVE_CC) -O2 -Wall -Wextra -Werror -Wno-pointer-sign -o $@ $<
 
+# The native controller emits its original 68k HUNKs itself.
+$(BUILD_DIR)/domain_fixture_native: $(TEST_DIR)/domain_fixture_native.c $(TEST_DIR)/domain_fixture_hunks.c $(TEST_DIR)/domain_fixture_hunks.h | $(BUILD_DIR)
+	$(NATIVE_CC) -O2 -Wall -Wextra -Werror -Wno-pointer-sign -o $@ $(TEST_DIR)/domain_fixture_native.c $(TEST_DIR)/domain_fixture_hunks.c
+
+# Original native foreign-Hook controller; separate from the 68k battery.
+$(BUILD_DIR)/paint_fixture_native: $(TEST_DIR)/paint_fixture_native.c | $(BUILD_DIR)
+	$(NATIVE_CC) -O2 -Wall -Wextra -Werror -Wno-pointer-sign -o $@ $<
+
+# Portable emitter has no dependency on AROS headers or a cross compiler.
+$(BUILD_DIR)/paint_fixture_emit: $(TEST_DIR)/paint_fixture_native.c | $(BUILD_DIR)
+	$(HOST_CC) -std=c99 -O1 -Wall -Wextra -Werror -pedantic -DPAINT_FIXTURE_EMIT_ONLY -o $@ $<
+
 $(BUILD_DIR)/exec_public_native: $(TEST_DIR)/exec_public.c | $(BUILD_DIR)
 	$(NATIVE_CC) -O2 -Wall -DKAFFEINE_NATIVE_PORT_FIXTURE -o $@ $<
 

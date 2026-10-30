@@ -32,6 +32,13 @@ KAFFEINE_FILES := \
     kaffeine_format \
     kaffeine_dispatch \
     kaffeine_memory \
+    kaffeine_remember \
+    kaffeine_segments \
+    kaffeine_process_tags \
+    kaffeine_domain_run \
+    kaffeine_domain_process \
+    kaffeine_domain_modules \
+    kaffeine_dos_broker \
     kaffeine_thunks \
     kaffeine_thunks_memory \
     kaffeine_lists \
@@ -48,12 +55,16 @@ KAFFEINE_FILES := \
     kaffeine_display \
     kaffeine_fontattr \
     kaffeine_rastport \
+    kaffeine_gfxbase \
     kaffeine_window \
     kaffeine_menus \
     kaffeine_gadgets \
     kaffeine_screens \
     kaffeine_palette \
+    kaffeine_videocontrol \
     kaffeine_layers \
+    kaffeine_paint_compile \
+    kaffeine_paint_hook \
     kaffeine_regions \
     kaffeine_mirror \
     kaffeine_copy \
@@ -70,6 +81,7 @@ KAFFEINE_FILES := \
     kaffeine_exec_io \
     kaffeine_thunks_timer \
     kaffeine_thunks_console \
+    kaffeine_keymap \
     kaffeine_shadow \
     kaffeine_m68klib \
     kaffeine_workbench \

@@ -2,7 +2,7 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
     Cooperative scheduler for classic 68k tasks that a program adds with
-    AddTask(), and processes that it makes with CreateProc(). See
+    AddTask(), CreateProc(), and typed CreateNewProc(). See
     kaffeine_sched.c.
 */
 #ifndef KAFFEINE_SCHED_H
@@ -12,6 +12,9 @@
 #include "kaffeine_thunks.h"
 
 struct MsgPort;
+struct KaffeineProcessStart;
+struct KaffeineDosBroker;
+struct KaffeineDomainModule;
 
 /* Children besides the root task, the native task that runs the program */
 #define KAFFEINE_MAX_GUEST_TASKS 16
@@ -20,6 +23,9 @@ struct MsgPort;
 /* Smallest stack from the initial tc_SPReg down to tc_SPLower. A child runs
    in supervisor mode on that stack, so exception frames land there too. */
 #define KAFFEINE_TASK_MIN_STACK  256
+/* Standard per-task break capabilities (CTRL_C through CTRL_F), separate
+   from native allocated bits used to drive GUI/message ports. */
+#define KAFFEINE_TASK_BREAK_SIGNALS 0x0000F000UL
 /* CreateProc(): the largest stack that the guest heap gives a Process, the
    longest name and the most seglist entries that it accepts */
 #define KAFFEINE_PROC_MAX_STACK  (256 * 1024)
@@ -87,9 +93,10 @@ struct KaffeineTaskOps
        guest signal of that child alone */
     BOOL  (*process_port)(struct KaffeineContext *ctx, ULONG port, ULONG owner);
     /* Before any dos.library call, lvo, of the current task: FALSE lets it
-       go to its thunk. A CreateProc() child has no DOS context, so its
-       Exit() ends that child alone and every other call stops the program;
-       *result is D0 then. */
+       reach the dispatcher-selected thunk (through dos_call for typed
+       Processes). A CreateProc() child still has no DOS context. Exit()
+       ends a child alone; the root may complete while typed children live.
+       A consumed/refused call returns TRUE with its D0 in *result. */
     BOOL  (*process_dos)(struct KaffeineContext *ctx, void *cpu, ULONG lvo, IPTR *result);
     /* Whether cpu is the root's and the root is the current task, from the
        scheduler's own state, never from the guest ThisTask */
@@ -102,6 +109,35 @@ struct KaffeineTaskOps
     BOOL  (*block_io)(struct KaffeineContext *ctx, void *cpu, ULONG request,
                       KaffeineTaskRetry retry, IPTR *result);
     void  (*io_completed)(struct KaffeineContext *ctx, ULONG request, ULONG owner);
+    /* The dispatcher passes only its selected compiled DOS thunk, after
+       process_dos. TRUE means it ran in the current Process's private DOS
+       broker (or failed closed); FALSE leaves ordinary root/AddTask calls
+       on the driver. Neither this hook nor the broker dispatches twice. */
+    BOOL  (*dos_call)(struct KaffeineContext *ctx, void *cpu,
+                      KaffeineThunkFn thunk, IPTR *result);
+    /* At the root's normal return or Exit(), keep its domain alive while
+       children remain. A child fault still ends the domain with its fault.
+       root_result is TRUE only after a normal drain, before end(). */
+    BOOL  (*root_exit)(struct KaffeineContext *ctx, void *cpu, LONG result);
+    BOOL  (*root_result)(struct KaffeineContext *ctx, LONG *result);
+    /* Immutable scheduler identity of the live root Process, even while
+       ctx->guest_exec_task is the current typed Process's DOS view. */
+    ULONG (*root_task)(struct KaffeineContext *ctx);
+    /* Optional paint-notification capability. A live private target may
+       receive its native allocated bits or its standard break bits; no
+       DOS/reserved/private wake bit and no writable guest tc_SigAlloc.
+       This validates a current identity, not a captured lifetime: native
+       pending records must retire before a TCB address can be reused.
+       Without a scheduler only the exact private root is accepted. */
+    BOOL  (*can_signal)(struct KaffeineContext *ctx, ULONG task, ULONG bits);
+    /* An already matched private file/handler port in RoutePutMsg. A typed
+       Process executes the existing validated adapter in its own DOS broker,
+       using only native staged scalar arguments and a fixed compiled helper.
+       TRUE consumes/refuses the route; FALSE keeps root/AddTask behavior.
+       file selects ctx->file_packet, otherwise ctx->handler_packet. Neither
+       this hook nor its helper accepts a guest/native function pointer. */
+    BOOL  (*packet_call)(struct KaffeineContext *ctx, ULONG port, ULONG msg,
+                         BOOL file, IPTR *result);
 };
 
 #ifdef __cplusplus
@@ -121,6 +157,32 @@ IPTR Kaffeine_TaskSetSignal(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_TaskWait(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_TaskSignal(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_ProcCreate(struct KaffeineContext *ctx, void *cpu, LONG *ioerr);
+
+/* Typed CreateNewProc: code was already imported transactionally into
+   this arena. spec, broker and module are trusted native values, never
+   guest addresses. The new Process owns its CPU, stack, arguments, CLI
+   and pr_MsgPort in this same context; it may create another typed child.
+   Return is the guest Process address (not its port). Nonzero consumes
+   broker/module; zero leaves both with the caller and changes no task.
+   error is an optional native output; this function never sets driver
+   IoErr. The native spec is copied before return. Native DOS owns the spec's
+   native lock/stream references through broker, never the guest fields. */
+ULONG Kaffeine_SchedStartProcess(struct KaffeineContext *ctx, void *cpu,
+                                const struct KaffeineProcessStart *spec,
+                                ULONG guest_bptr, ULONG entry,
+                                struct KaffeineDosBroker *broker,
+                                struct KaffeineDomainModule *owned_module,
+                                SIPTR *error);
+BOOL Kaffeine_SchedFinishRoot(struct KaffeineContext *ctx, void *cpu, LONG result);
+/* A refused startup whose DOS rollback did not acknowledge remains private
+   and nonrunnable, with its CPU/startup memory reserved. The caller's native
+   recovery record still owns broker/module. Recover probes broker idle before
+   changing any Context view, then scopes Finish+Drop. TRUE consumes broker
+   only after ACK and releases staged CPU/startup memory; module stays with
+   the caller. FALSE leaves every resource alive. Run only on the stopped
+   domain's sole driver/coordinator, before backend/global teardown. */
+BOOL Kaffeine_SchedHasRecoveryStart(struct KaffeineContext *, struct KaffeineDosBroker *);
+BOOL Kaffeine_SchedRecoverStart(struct KaffeineContext *, struct KaffeineDosBroker *);
 
 #ifdef __cplusplus
 }

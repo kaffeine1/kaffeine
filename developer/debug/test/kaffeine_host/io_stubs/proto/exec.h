@@ -30,6 +30,7 @@ void SendIO(struct IORequest *iORequest);
 LONG AbortIO(struct IORequest *iORequest);
 LONG WaitIO(struct IORequest *iORequest);
 struct Message *GetMsg(struct MsgPort *port);
+struct Message *WaitPort(struct MsgPort *port);
 ULONG SetSignal(ULONG newSignals, ULONG signalSet);
 ULONG Wait(ULONG signalSet);
 

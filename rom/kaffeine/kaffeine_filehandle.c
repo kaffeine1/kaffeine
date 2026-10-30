@@ -250,6 +250,36 @@ static void detach_streams(struct KaffeineContext *ctx, BPTR native)
     }
 }
 
+static void retire_file(struct KaffeineContext *ctx, struct KaffeineFile *f)
+{
+    if (f->mirror) Kaffeine_HeapFree(ctx, f->mirror, KAFFEINE_FILE_BUFFER_LIMIT);
+    memset(ctx->mem + f->guest, 0, KAFFEINE_FILE_SLOT_SIZE);
+    memset(f, 0, sizeof(*f));
+}
+
+void Kaffeine_FileDropNative(struct KaffeineContext *ctx, BPTR native, BOOL borrowed_only)
+{
+    SIPTR error = IoErr();
+    unsigned i;
+    if (!native) return;
+    for (i = 0; i < KAFFEINE_MAX_FILES; ++i)
+        if (ctx->files[i].native == native && (!borrowed_only || !ctx->files[i].owned))
+            retire_file(ctx, &ctx->files[i]);
+    SetIoErr(error);
+}
+
+void Kaffeine_FileDropBorrowed(struct KaffeineContext *ctx, ULONG token)
+{
+    SIPTR error = IoErr();
+    struct KaffeineFile *f = entry(ctx, token);
+    if (f && !f->owned)
+    {
+        detach_streams(ctx, f->native);
+        retire_file(ctx, f);
+    }
+    SetIoErr(error);
+}
+
 IPTR kaffeine_dos_Close(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG token = THUNK_D(1);
@@ -259,13 +289,13 @@ IPTR kaffeine_dos_Close(struct KaffeineContext *ctx, void *cpu)
     if (!Kaffeine_FileResolve(ctx, token, &native)) return 20;
     f = entry(ctx, token);
     if (!f) return Kaffeine_MessageFailure(ctx, "Close");
+    if (ctx->process_file_close && !ctx->process_file_close(ctx, native))
+        return Kaffeine_MessageFailure(ctx, "Close startup stream");
     detach_streams(ctx, native);
     result = Close(native);
     /* AROS frees the FileHandle even when ACTION_END fails. The identity
        remains quarantined, while the native table and mirror are reusable. */
-    if (f->mirror) Kaffeine_HeapFree(ctx, f->mirror, KAFFEINE_FILE_BUFFER_LIMIT);
-    memset(ctx->mem + f->guest, 0, KAFFEINE_FILE_SLOT_SIZE);
-    memset(f, 0, sizeof(*f));
+    retire_file(ctx, f);
     return result;
 }
 

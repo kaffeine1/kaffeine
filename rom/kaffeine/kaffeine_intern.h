@@ -8,6 +8,7 @@
 
 #include <exec/types.h>
 #include <exec/libraries.h>
+#include <exec/semaphores.h>
 #include <dos/bptr.h>
 
 struct KaffeineLibBase
@@ -15,6 +16,8 @@ struct KaffeineLibBase
     struct Library          lib;
     struct ExecBase        *sysBase;
     struct DosLibrary      *dosBase;
+    struct SignalSemaphore segment_ids_lock;
+    ULONG segment_next_token;
 };
 
 #define KAFFEINE_MEM_SIZE        (32 * 1024 * 1024)
@@ -66,6 +69,11 @@ struct KaffeineClassic;
 struct KaffeineScreenKeep;
 struct KaffeineLayers;
 struct KaffeineLocks;
+struct KaffeineSegment;
+struct KaffeineDomainModule;
+struct KaffeineRemember;
+struct KaffeineVideoExtra;
+struct KaffeineIDCMPPort;
 struct KaffeineLayerOps;
 
 /* Completed slices of the outermost Kaffeine_RunCPU() between two calls of
@@ -170,6 +178,26 @@ struct KaffeineFile
 
 struct KaffeineContext
 {
+    struct KaffeineVideoExtra *video_extras;
+    ULONG video_extra_count; /* includes retired identities until arena destruction */
+    BOOL video_closing;
+    void (*video_screen_retire)(struct KaffeineContext *, struct Screen *);
+    BOOL (*video_protected)(struct KaffeineContext *, ULONG, ULONG);
+    ULONG (*video_extra_guest)(struct KaffeineContext *, struct Screen *, ULONG);
+    void (*video_destroy)(struct KaffeineContext *);
+    struct KaffeineRemember *remembers;
+    ULONG remember_count; /* includes retired node identities until arena destruction */
+    BOOL remember_closing;
+    void (*remember_destroy)(struct KaffeineContext *);
+    struct KaffeineDomainModule *domain_modules;
+    ULONG domain_module_count;
+    BOOL domain_modules_closing, domain_cleanup_running;
+    void (*domain_cleanup)(struct KaffeineContext *);
+    void (*domain_destroy)(struct KaffeineContext *);
+    struct KaffeineSegment *segments;
+    ULONG segment_count; /* live, loaned and transfer entries plus pending LoadBegin */
+    void (*segments_cleanup)(struct KaffeineContext *);
+    BOOL segments_closing, segments_cleanup_running;
     UBYTE  *mem;
     ULONG   mem_size;
 
@@ -220,6 +248,18 @@ struct KaffeineContext
 
     struct KaffeineLibBase *emuBase;
 
+    /* The native driver keeps this domain until every independent guest
+       Process has ended. Only its owner invokes the completion callback. */
+    void (*root_complete)(struct KaffeineContext *, LONG);
+    APTR root_completion_data;
+    BOOL broker_call; /* selected DOS thunk is executing on its owner worker */
+    struct Task *broker_owner; /* valid only while that private RPC runs */
+    ULONG root_streams[3]; /* caller-borrowed streams retired before early return */
+    struct KaffeineProcessStreams *process_streams; /* native broker startup identities */
+    BOOL (*process_file_close)(struct KaffeineContext *, BPTR);
+    struct KaffeineDomainStartRecovery *domain_start_recovery;
+    BOOL (*domain_drain)(struct KaffeineContext *); /* FALSE waits one native tick */
+
     ULONG   m68k_argptr;
     ULONG   m68k_argsize;
     ULONG   m68k_sysbase;
@@ -267,9 +307,20 @@ struct KaffeineContext
     BOOL (*io_release)(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL commit);
     void (*io_task_removed)(struct KaffeineContext *ctx, ULONG task);
     ULONG io_signals;
+    /* Window-owned peers of ordinary guest ports. Native Intuition sees
+       only these private inboxes, with the driver's task and a validated
+       guest-owned signal. Retire before port storage, signals or owners go. */
+    struct KaffeineIDCMPPort *idcmp_ports;
+    void (*idcmp_port_gone)(struct KaffeineContext *, ULONG);
+    void (*idcmp_signal_gone)(struct KaffeineContext *, BYTE);
+    void (*idcmp_task_gone)(struct KaffeineContext *, ULONG);
+    BOOL (*idcmp_release)(struct KaffeineContext *, ULONG, ULONG, BOOL);
+    void (*idcmp_cleanup)(struct KaffeineContext *);
     /* Shadow struct mapping: m68k addr <-> native ptr */
     #define KAFFEINE_MAX_SHADOWS 1024
-    struct { ULONG m68k_addr; void *native_ptr; UWORD type; } shadow_map[KAFFEINE_MAX_SHADOWS];
+    struct { ULONG m68k_addr; void *native_ptr; UWORD type;
+             ULONG idcmp_window; /* immutable owner of an IDCMP mirror, else 0 */
+    } shadow_map[KAFFEINE_MAX_SHADOWS];
     UWORD num_shadows;
 
     /* Run by the dispatcher right after a thunk returns, then cleared: the
@@ -572,6 +623,7 @@ ULONG  Kaffeine_HeapAvail(struct KaffeineContext *ctx, ULONG requirements);
 /* Utility allocations: exact base, native ownership and requested capacity. */
 ULONG  Kaffeine_TagItemsAlloc(struct KaffeineContext *ctx, ULONG count);
 ULONG  Kaffeine_TagItemsCapacity(struct KaffeineContext *ctx, ULONG addr);
+BOOL   Kaffeine_TagItemsRange(struct KaffeineContext *ctx, ULONG addr, ULONG size);
 void   Kaffeine_TagItemsFree(struct KaffeineContext *ctx, ULONG addr);
 /* Locale allocations: exact base and native ownership. */
 ULONG  Kaffeine_LocaleAlloc(struct KaffeineContext *ctx, ULONG size);
@@ -584,6 +636,7 @@ void   Kaffeine_AChainFree(struct KaffeineContext *ctx, ULONG addr);
    base, cleared, and native ownership. */
 ULONG  Kaffeine_MirrorAlloc(struct KaffeineContext *ctx, ULONG size);
 void   Kaffeine_MirrorRelease(struct KaffeineContext *ctx, ULONG addr);
+BOOL   Kaffeine_MirrorAbort(struct KaffeineContext *ctx, ULONG addr);
 ULONG  Kaffeine_PoolCreate(struct KaffeineContext *ctx, ULONG requirements,
                          ULONG puddle_size, ULONG threshold_size);
 void   Kaffeine_PoolDelete(struct KaffeineContext *ctx, ULONG pool);
@@ -611,6 +664,10 @@ ULONG  Kaffeine_OpenM68KLibrary(struct KaffeineContext *ctx, void *cpu, const ch
    when base is none, that of a library or one whose Close() lies in the
    hunks of a library, as the base that Open() makes for each opener */
 BOOL   Kaffeine_CloseM68KLibrary(struct KaffeineContext *ctx, void *cpu, ULONG base);
+ULONG  Kaffeine_SetupLibBaseSized(struct KaffeineContext *, UWORD lib_id,
+                                  const char *name, UWORD vectors, UWORD positive_size,
+                                  const struct M68KThunkEntry *, ULONG,
+                                  const struct M68KThunkEntry *, ULONG);
 ULONG  Kaffeine_SetupLibBase(struct KaffeineContext *ctx, UWORD lib_id,
                              const char *name, UWORD num_vectors,
                              const struct M68KThunkEntry *thunks, ULONG num_thunks,

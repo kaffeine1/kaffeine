@@ -13,6 +13,7 @@ on:
       - '.github/workflows/kaffeine-host-suite.yml'
       - 'rom/kaffeine/**'
       - 'developer/debug/test/kaffeine_host/**'
+      - 'developer/debug/test/kaffeine_*_host/**'
       - 'developer/debug/test/dos_process_host/**'
       - 'compiler/include/dos/**'
       - 'rom/dos/**'
@@ -32,6 +33,7 @@ on:
       - '.github/workflows/kaffeine-host-suite.yml'
       - 'rom/kaffeine/**'
       - 'developer/debug/test/kaffeine_host/**'
+      - 'developer/debug/test/kaffeine_*_host/**'
       - 'developer/debug/test/dos_process_host/**'
       - 'compiler/include/dos/**'
       - 'rom/dos/**'
@@ -84,3 +86,38 @@ jobs:
         run: |
           make -C developer/debug/test/dos_process_host
           make -C developer/debug/test/dos_process_host test-sanitize
+
+      - name: Run standalone compatibility suites
+        shell: bash
+        env:
+          CC: gcc
+          CXX: g++
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          for suite in \
+            kaffeine_domain_host \
+            kaffeine_dos_broker_host \
+            kaffeine_domain_run_host \
+            kaffeine_domain_process_host \
+            kaffeine_remember_host \
+            kaffeine_videocontrol_host \
+            kaffeine_gfxbase_host \
+            kaffeine_paint_host \
+            kaffeine_paint_hook_host \
+            kaffeine_process_integration_host
+          do
+            runner="developer/debug/test/$suite/run_tests.py"
+            source_dir="$GITHUB_WORKSPACE/rom/kaffeine"
+            extra_args=()
+            if [[ "$suite" == kaffeine_paint_host ]]; then
+              source_dir="$GITHUB_WORKSPACE"
+              extra_args+=(--oracle)
+            fi
+            python3 "$runner" \
+              --source-dir "$source_dir" "${extra_args[@]}" \
+              --build-dir "$RUNNER_TEMP/kaffeine-standalone/$suite/normal"
+            python3 "$runner" --sanitize \
+              --source-dir "$source_dir" "${extra_args[@]}" \
+              --build-dir "$RUNNER_TEMP/kaffeine-standalone/$suite/sanitized"
+          done

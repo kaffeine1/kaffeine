@@ -17,7 +17,7 @@ DOS_LOADSEG_OBJ := $(BUILD_DIR)/dos_loadseg_aos.o
 EXEC_LISTS_OBJ := $(BUILD_DIR)/kaffeine_lists.o
 DOS_THUNK_CPPFLAGS := -I$(TEST_DIR)/dos_thunk_stubs $(TEST_CPPFLAGS)
 DOS_THUNK_CFLAGS := -std=c99 -Wall -Wextra -Wno-unused-parameter
-DOS_THUNK_OBJS := $(addprefix $(BUILD_DIR)/dos_thunk_,cpu.o dispatch.o thunks_dos.o cli.o format.o taglist.o)
+DOS_THUNK_OBJS := $(addprefix $(BUILD_DIR)/dos_thunk_,cpu.o dispatch.o thunks_dos.o cli.o format.o taglist.o segments.o)
 DOS_THUNK_OBJS += $(BUILD_DIR)/dos_buffers_native.o $(BUILD_DIR)/file_boundary_unit.o
 DOS_THUNK_OBJS += $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o
 MEMHEADER_OBJS := $(addprefix $(BUILD_DIR)/memheader_,cpu.o dispatch.o memheader.o)
@@ -42,11 +42,12 @@ MEMORY_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unuse
 # Allows mutation tests to compile disposable copies, leaving rom/ untouched.
 M68KLIB_SOURCE_DIR ?= $(KAFFEINE_DIR)
 M68KLIB_CPPFLAGS := -I$(TEST_DIR)/m68klib_stubs -I$(M68KLIB_SOURCE_DIR) $(MEMORY_CPPFLAGS)
-M68KLIB_OBJS := $(BUILD_DIR)/file_boundary_unit.o $(addprefix $(BUILD_DIR)/m68klib_,cpu.o dispatch.o thunks_memory.o memory.o m68klib.o moira.o library_thunks.o)
+M68KLIB_OBJS := $(BUILD_DIR)/file_boundary_unit.o $(addprefix $(BUILD_DIR)/m68klib_,cpu.o dispatch.o thunks_memory.o memory.o m68klib.o moira.o library_thunks.o segments.o)
 TASK_CPPFLAGS := -I$(TEST_DIR)/task_stubs $(TEST_CPPFLAGS)
 IO_CPPFLAGS := -I$(TEST_DIR)/io_stubs $(TEST_CPPFLAGS)
 IO_OBJS := $(addprefix $(BUILD_DIR)/io_,cpu.o dispatch.o exec_io.o thunks_timer.o thunks_console.o memory.o)
 IO_OBJS += $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o
+KEYMAP_OBJS := $(BUILD_DIR)/io_keymap.o $(BUILD_DIR)/keymap_generated.o
 # Disposable bridge sources can be supplied for the mutation checks.
 WORKBENCH_SOURCE_DIR ?= $(KAFFEINE_DIR)
 WORKBENCH_CPPFLAGS := -I$(TEST_DIR)/workbench_stubs -I$(TEST_DIR)/gfx_stubs -I$(TEST_DIR)/io_stubs $(TEST_CPPFLAGS)
@@ -64,12 +65,14 @@ GFX_THUNK_OBJS := $(BUILD_DIR)/gfx_generated_rp.o $(BUILD_DIR)/gfx_thunk_copy.o 
 DISKFONT_CPPFLAGS := -I$(TEST_DIR)/memory_stubs $(GFX_CPPFLAGS)
 DISKFONT_OBJS := $(BUILD_DIR)/gfx_thunk_copy.o $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/diskfont_,cpu.o dispatch.o thunks_diskfont.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
 WINDOW_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o copy.o format.o rastport.o memory.o taglist.o)
-SCREEN_OBJS := $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o palette.o rastport.o memory.o taglist.o fontattr.o)
+WINDOW_OBJS += $(BUILD_DIR)/gfx_thunk_thunks_memory.o
+SCREEN_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o screens.o palette.o videocontrol.o rastport.o memory.o taglist.o fontattr.o)
 # The layer bridge with the production run loop, window bridge and heap,
 # the native hook entry of its private layers and the Region bridge of
 # their clip Regions.
 LAYER_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o copy.o format.o rastport.o memory.o taglist.o layers.o hook.o regions.o)
-LAYER_OBJS += $(BUILD_DIR)/layers_private_unused.o
+LAYER_OBJS += $(BUILD_DIR)/layers_private_unused.o $(BUILD_DIR)/gfx_thunk_exec_compat.o
+LAYER_OBJS += $(BUILD_DIR)/gfx_thunk_paint_hook.o $(BUILD_DIR)/gfx_thunk_paint_compile.o
 MENU_CPPFLAGS := -I$(TEST_DIR)/menus_stubs $(GFX_CPPFLAGS)
 MENU_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o mirror.o copy.o rastport.o memory.o taglist.o)
 MENU_OBJS += $(BUILD_DIR)/menus_bridge.o
@@ -119,6 +122,7 @@ TESTS += test_layers_private
 TESTS += test_regions
 TESTS += test_m68klib
 TESTS += test_hosted_jit
+TESTS += test_process_tags
 TESTS += test_guest_tasks
 TEST_BINS := $(addprefix $(BUILD_DIR)/,$(TESTS))
 
@@ -147,6 +151,14 @@ $(BUILD_DIR)/test_exec_lists: $(EXEC_LISTS_OBJ)
 $(BUILD_DIR)/test_exec_lists: EXTRA_OBJS = $(EXEC_LISTS_OBJ)
 
 # Compile the production DOS thunks and dispatcher as C, then link the C++ test.
+PROCESS_TAG_OBJS := $(addprefix $(BUILD_DIR)/process_tags_,cpu.o dispatch.o taglist.o process_tags.o)
+$(BUILD_DIR)/process_tags_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) -I$(TEST_DIR)/process_tags_stubs $(DOS_THUNK_CPPFLAGS) $(CFLAGS) $(DOS_THUNK_CFLAGS) -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_process_tags: $(TEST_DIR)/test_process_tags.cpp $(PROCESS_TAG_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) -I$(TEST_DIR)/process_tags_stubs $(DOS_THUNK_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(PROCESS_TAG_OBJS) $(LDLIBS)
+-include $(PROCESS_TAG_OBJS:.o=.d)
+
 $(BUILD_DIR)/dos_thunk_thunks_dos.o: DOS_THUNK_TRACE_CPPFLAGS := -I$(TEST_DIR)/dos_trace_stubs
 $(BUILD_DIR)/dos_thunk_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 	$(CC) $(DOS_THUNK_TRACE_CPPFLAGS) $(CPPFLAGS) $(DOS_THUNK_CPPFLAGS) $(CFLAGS) $(DOS_THUNK_CFLAGS) -MMD -MP -c -o $@ $<
@@ -168,8 +180,11 @@ $(BUILD_DIR)/test_memheader $(BUILD_DIR)/test_memheader_moira: EXTRA_OBJS = $(ME
 $(BUILD_DIR)/utility_thunk_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
 
-$(BUILD_DIR)/test_utility_thunks: $(TEST_DIR)/test_utility_thunks.cpp $(UTILITY_THUNK_OBJS) | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(UTILITY_THUNK_OBJS) $(LDLIBS)
+$(BUILD_DIR)/utility_arithmetic_generated.h: $(TEST_DIR)/utility_arithmetic_extract.py $(KAFFEINE_DIR)/kaffeine_thunks_gen.c $(AROS_ROOT)/rom/utility/utility.conf | $(BUILD_DIR)
+	$(PYTHON) $(TEST_DIR)/utility_arithmetic_extract.py $(KAFFEINE_DIR) $(AROS_ROOT)/rom/utility/utility.conf $@
+
+$(BUILD_DIR)/test_utility_thunks: $(TEST_DIR)/test_utility_thunks.cpp $(BUILD_DIR)/utility_arithmetic_generated.h $(UTILITY_THUNK_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) -I$(BUILD_DIR) $(MEMORY_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(UTILITY_THUNK_OBJS) $(LDLIBS)
 
 $(BUILD_DIR)/test_callbacks: $(TEST_DIR)/test_callbacks.cpp $(CALLBACK_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(CALLBACK_OBJS) $(LDLIBS)
@@ -274,8 +289,17 @@ $(BUILD_DIR)/io_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 $(BUILD_DIR)/test_exec_io: $(TEST_DIR)/test_exec_io.cpp $(IO_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(IO_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(IO_OBJS) $(LDLIBS)
 
-$(BUILD_DIR)/test_console: $(TEST_DIR)/test_console.cpp $(IO_OBJS) | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) $(IO_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(IO_OBJS) $(LDLIBS)
+$(BUILD_DIR)/keymap_generated.c: $(TEST_DIR)/keymap_generated_extract.py $(KAFFEINE_DIR)/kaffeine_thunks_gen.c | $(BUILD_DIR)
+	$(PYTHON) $(TEST_DIR)/keymap_generated_extract.py $(KAFFEINE_DIR)/kaffeine_thunks_gen.c $@
+
+# The unchanged generated wrappers contain const output-pointer warnings;
+# keep the actual adapter and fixture under -Werror, not this fallback oracle.
+$(BUILD_DIR)/keymap_generated.o: $(BUILD_DIR)/keymap_generated.c
+	$(CC) $(CPPFLAGS) $(IO_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-error -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_console: $(TEST_DIR)/test_console.cpp $(IO_OBJS) $(KEYMAP_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(IO_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(IO_OBJS) $(KEYMAP_OBJS) $(LDLIBS)
+-include $(KEYMAP_OBJS:.o=.d)
 
 # The task tests use the real shadow engine, including ExecBase initialization.
 $(BUILD_DIR)/task_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
@@ -373,8 +397,10 @@ $(BUILD_DIR)/test_workbench: $(TEST_DIR)/test_workbench.cpp $(WORKBENCH_OBJS) | 
 $(BUILD_DIR)/test_screens: $(TEST_DIR)/test_screens.cpp $(SCREEN_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(SCREEN_OBJS) $(LDLIBS)
 
-$(BUILD_DIR)/test_layers: $(TEST_DIR)/test_layers.cpp $(LAYER_OBJS) | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(LAYER_OBJS) $(LDLIBS)
+$(BUILD_DIR)/refresh_native_generated.h: $(TEST_DIR)/refresh_native_extract.py $(AROS_ROOT)/rom/intuition/beginrefresh.c $(AROS_ROOT)/rom/intuition/endrefresh.c | $(BUILD_DIR)
+	$(PYTHON) $< $(AROS_ROOT) $@
+$(BUILD_DIR)/test_layers: $(TEST_DIR)/test_layers.cpp $(BUILD_DIR)/refresh_native_generated.h $(LAYER_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) -I$(BUILD_DIR) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(LAYER_OBJS) $(LDLIBS)
 
 # Poisoned private layer collaborators; test_layers_private overrides them.
 $(BUILD_DIR)/layers_private_unused.o: $(TEST_DIR)/layers_private_unused.c | $(BUILD_DIR)
@@ -423,8 +449,11 @@ diagnose-seglist: $(BUILD_DIR)/test_hunk_loading
 	$(RUNNER) $< --diagnose-seglist
 
 clean:
+	rm -f $(KEYMAP_OBJS) $(KEYMAP_OBJS:.o=.d) $(BUILD_DIR)/keymap_generated.c
+	rm -f $(PROCESS_TAG_OBJS) $(PROCESS_TAG_OBJS:.o=.d)
 	rm -f $(LOCK_OBJS) $(LOCK_OBJS:.o=.d)
-	rm -f $(MESSAGE_OBJS) $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_entries.c $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_messages.d $(BUILD_DIR)/message_native_unused.o $(BUILD_DIR)/message_native_unused.d $(BUILD_DIR)/file_boundary_unit.o $(BUILD_DIR)/file_boundary_unit.d
+	rm -f $(MESSAGE_OBJS) $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_boundary_sched.o $(BUILD_DIR)/message_boundary_sched.d $(BUILD_DIR)/message_entries.c $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_messages.d $(BUILD_DIR)/message_native_unused.o $(BUILD_DIR)/message_native_unused.d $(BUILD_DIR)/file_boundary_unit.o $(BUILD_DIR)/file_boundary_unit.d
+	rm -f $(BUILD_DIR)/message_process_streams.c $(BUILD_DIR)/message_process_streams.o $(BUILD_DIR)/message_process_streams.d
 	rm -f $(DISKFONT_OBJS) $(DISKFONT_OBJS:.o=.d)
 	rm -f $(LIBRARY_PATHS_OBJS) $(LIBRARY_PATHS_OBJS:.o=.d) $(BUILD_DIR)/library_paths_lookup.c
 	rm -f $(MATHFFP_THUNK_OBJS) $(MATHFFP_THUNK_OBJS:.o=.d)
@@ -471,15 +500,19 @@ $(BUILD_DIR)/message_entries.c: $(TEST_DIR)/messages_extract.py $(KAFFEINE_DIR)/
 	$(PYTHON) $< $(KAFFEINE_DIR) $@
 $(BUILD_DIR)/message_entries.o: $(BUILD_DIR)/message_entries.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
+$(BUILD_DIR)/message_process_streams.c: $(TEST_DIR)/process_streams_extract.py $(KAFFEINE_DIR)/kaffeine_domain_process.c | $(BUILD_DIR)
+	$(PYTHON) $< $(KAFFEINE_DIR) $@
+$(BUILD_DIR)/message_process_streams.o: $(BUILD_DIR)/message_process_streams.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
 $(BUILD_DIR)/test_exec_messages: $(TEST_DIR)/test_exec_messages.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
-$(BUILD_DIR)/test_dos_packets: $(TEST_DIR)/test_dos_packets.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
+$(BUILD_DIR)/test_dos_packets: $(TEST_DIR)/test_dos_packets.cpp $(MESSAGE_OBJS) $(BUILD_DIR)/message_boundary_sched.o $(BUILD_DIR)/message_process_streams.o | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(BUILD_DIR)/message_boundary_sched.o $(BUILD_DIR)/message_process_streams.o $(LDLIBS)
 $(BUILD_DIR)/test_dos_packet_thunks: $(TEST_DIR)/test_dos_packet_thunks.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
 $(BUILD_DIR)/test_dos_handlers: $(TEST_DIR)/test_dos_handlers.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
--include $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_messages.d
+-include $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_boundary_sched.d $(BUILD_DIR)/message_messages.d $(BUILD_DIR)/message_process_streams.d
 .PHONY: test_exec_messages test_dos_packets
 
 $(BUILD_DIR)/icon_boundary_icon.o: $(KAFFEINE_DIR)/kaffeine_icon.c | $(BUILD_DIR)

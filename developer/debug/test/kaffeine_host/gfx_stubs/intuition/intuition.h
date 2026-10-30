@@ -60,8 +60,11 @@ struct Window
     struct Layer *WLayer;
     struct Requester *DMRequest;
     UWORD ReqCount;
+    struct RastPort *BorderRPort;
 };
 #define WFLG_BACKDROP 0x00000100
+#define WFLG_GIMMEZEROZERO 0x00000400
+#define WFLG_WINDOWREFRESH 0x01000000
 #ifndef __typedef_RAWARG
 #define __typedef_RAWARG
 typedef void *RAWARG;
@@ -288,6 +291,8 @@ struct PropInfo
 #define WA_Checkmark         (WA_Dummy + 10)
 #define WA_SuperBitMap       (WA_Dummy + 14)
 #define WA_AutoAdjust        (WA_Dummy + 45)
+/* Fixture-only optional SDK extension: production uses its SDK's value. */
+#define WA_UserPort          (WA_Dummy + 999)
 
 /* The NewWindow of OpenWindowTagList(), as AROS lays it out */
 struct BitMap;

@@ -178,7 +178,53 @@ struct KaffeineLayerOps
        any native call. */
     BOOL  (*draw_target)(struct KaffeineContext *ctx, ULONG layer, ULONG bitmap,
                          struct RastPort *rp, struct BitMap *adapter);
+    /* Optional: an explicit LockLayerInfo scope pins the current guest CPU
+       and forbids native DOS/waits and synchronous guest callbacks. */
+    BOOL  (*info_locked)(struct KaffeineContext *ctx);
+    /* Native owner only, before this guest task's DOS broker, CPU, signals
+       or storage retire. Returns all layer/LayerInfo locks of that task. */
+    void  (*task_removed)(struct KaffeineContext *ctx, ULONG task);
+    /* Optional private driver wake bit, kept separate from guest signals and
+       io_signals for its whole allocated lifetime. Metadata only. */
+    ULONG (*signal_mask)(struct KaffeineContext *ctx);
+    /* Driver only, outside native DOS brokers: deliver bounded pending
+       notifications to captured live guest owners, or FALSE on error. No
+       guest CPU callbacks or task switches. Default NULL is a no-op. */
+    BOOL  (*poll)(struct KaffeineContext *ctx);
+    /* Query-only dependency leases. A transaction asks about every member
+       before changing any. No detach, allocation or native call here. */
+    BOOL  (*memory_releasable)(struct KaffeineContext *ctx, ULONG addr, ULONG size);
+    BOOL  (*signal_releasable)(struct KaffeineContext *ctx, ULONG bits);
 };
+
+static inline ULONG Kaffeine_LayerSignalMask(struct KaffeineContext *ctx)
+{
+    return ctx->layer_ops && ctx->layer_ops->signal_mask ?
+           ctx->layer_ops->signal_mask(ctx) : 0;
+}
+
+static inline BOOL Kaffeine_LayerPoll(struct KaffeineContext *ctx)
+{
+    return !ctx->layer_ops || !ctx->layer_ops->poll || ctx->layer_ops->poll(ctx);
+}
+
+static inline BOOL Kaffeine_LayerMemoryReleasable(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    return !ctx->layer_ops || !ctx->layer_ops->memory_releasable ||
+           ctx->layer_ops->memory_releasable(ctx, addr, size);
+}
+
+static inline BOOL Kaffeine_LayerSignalReleasable(struct KaffeineContext *ctx, ULONG bits)
+{
+    return !ctx->layer_ops || !ctx->layer_ops->signal_releasable ||
+           ctx->layer_ops->signal_releasable(ctx, bits);
+}
+
+static inline BOOL Kaffeine_LayerInfoLocked(struct KaffeineContext *ctx)
+{
+    return ctx->layer_ops && ctx->layer_ops->info_locked &&
+           ctx->layer_ops->info_locked(ctx);
+}
 
 #ifdef __cplusplus
 extern "C" {
@@ -206,10 +252,18 @@ BOOL Kaffeine_LayersNativeBusy(struct KaffeineContext *ctx);
 /* intuition -306, -312 */
 IPTR Kaffeine_WindowToBack(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_WindowToFront(struct KaffeineContext *ctx, void *cpu);
+/* intuition -354/-366, also GadTools -90/-96: one tracked native refresh
+   of a typed window, owned by the current native driver and guest CPU. */
+IPTR Kaffeine_BeginRefresh(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_EndRefresh(struct KaffeineContext *ctx, void *cpu);
 /* layers -90, -96, -102, -144, -150, -174, -186, -198 */
 IPTR Kaffeine_DeleteLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_LockLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_UnlockLayer(struct KaffeineContext *ctx, void *cpu);
+/* layers -120/-138, A0: exact typed live LayerInfo only. A busy native
+   semaphore fails closed rather than waiting behind an Intuition reply. */
+IPTR Kaffeine_LockLayerInfo(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_UnlockLayerInfo(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_NewLayerInfo(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_InstallLayerInfoHook(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_DisposeLayerInfo(struct KaffeineContext *ctx, void *cpu);
@@ -245,7 +299,13 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
 /* Shared by the production manual tables and the host tests. */
 #define KAFFEINE_INTUITION_LAYER_THUNKS \
     { 306, Kaffeine_WindowToBack }, \
-    { 312, Kaffeine_WindowToFront }
+    { 312, Kaffeine_WindowToFront }, \
+    { 354, Kaffeine_BeginRefresh }, \
+    { 366, Kaffeine_EndRefresh }
+
+#define KAFFEINE_GADTOOLS_LAYER_THUNKS \
+    { 90, Kaffeine_BeginRefresh }, \
+    { 96, Kaffeine_EndRefresh }
 
 /* Graphics calls that take a Layer, or a BitMap that a LayerInfo or a
    screen of the program has: the generated thunks would hand guest memory
@@ -295,10 +355,10 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     { 102, Kaffeine_UnlockLayer }, \
     { 108, kaffeine_layers_Unsupported },     /* LockLayers */ \
     { 114, kaffeine_layers_Unsupported },     /* UnlockLayers */ \
-    { 120, kaffeine_layers_Unsupported },     /* LockLayerInfo */ \
+    { 120, Kaffeine_LockLayerInfo },          /* LockLayerInfo */ \
     { 126, kaffeine_layers_Unsupported },     /* SwapBitsRastPortClipRect */ \
     { 132, kaffeine_layers_Unsupported },     /* WhichLayer */ \
-    { 138, kaffeine_layers_Unsupported },     /* UnlockLayerInfo */ \
+    { 138, Kaffeine_UnlockLayerInfo },        /* UnlockLayerInfo */ \
     { 144, Kaffeine_NewLayerInfo }, \
     { 150, Kaffeine_DisposeLayerInfo }, \
     { 156, kaffeine_layers_Unsupported },     /* FattenLayerInfo */ \

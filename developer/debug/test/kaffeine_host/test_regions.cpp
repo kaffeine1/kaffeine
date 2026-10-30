@@ -421,6 +421,7 @@ extern "C" LONG SysReqHandler(struct Window *, ULONG *, BOOL) { assert(false); r
 extern "C" void FreeSysRequest(struct Window *) { assert(false); }
 extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *, const char *) { assert(false); return 0; }
 extern "C" BOOL Kaffeine_AppPortFill(KaffeineContext *, ULONG, BOOL) { return FALSE; }
+extern "C" BOOL Kaffeine_AppPortMatches(KaffeineContext *, ULONG, Task *, UBYTE) { return TRUE; }
 extern "C" BOOL Kaffeine_AppReplyMsg(KaffeineContext *, ULONG) { return FALSE; }
 extern "C" void CloseFont(struct TextFont *) { assert(false); }
 

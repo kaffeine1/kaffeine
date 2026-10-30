@@ -34,6 +34,7 @@
 #include <intuition/screens.h>
 #include <proto/graphics.h>
 #include <proto/intuition.h>
+#include <proto/dos.h>
 #include "kaffeine_intern.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
@@ -41,6 +42,15 @@
 #include "kaffeine_palette.h"
 #include "kaffeine_layers.h"
 #include "kaffeine_dispatch.h"
+
+static SIPTR native_io_error;
+extern "C" SIPTR IoErr(void) { return native_io_error; }
+extern "C" SIPTR SetIoErr(SIPTR error)
+{
+    SIPTR previous = native_io_error;
+    native_io_error = error;
+    return previous;
+}
 
 /* The native side. Names have backing storage for the bridge's bounded
    reads. No locale/POSIX string functions are needed for ASCII names. */

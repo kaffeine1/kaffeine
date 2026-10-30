@@ -31,6 +31,39 @@ them elsewhere, pass an absolute `BUILD_DIR`. Source include paths are
 resolved from the Makefile location; changing the working directory does
 not change them.
 
+## Continuous integration
+
+The `kaffeine host suite` workflow runs this Makefile, the native
+`dos_process_host` fixture, and these separate compatibility suites:
+
+- `kaffeine_domain_host`: shared guest modules and relocation ownership.
+- `kaffeine_dos_broker_host`: native DOS workers, synchronous RPC and cleanup.
+- `kaffeine_domain_run_host`: driver ownership and root/child lifetimes.
+- `kaffeine_domain_process_host`: process startup and refused-cleanup recovery.
+- `kaffeine_remember_host`: Remember allocation ownership and retirement.
+- `kaffeine_videocontrol_host`: read-only ViewPortExtra queries and Screen lifetimes.
+- `kaffeine_gfxbase_host`: typed graphics.library initialization and DefaultFont ownership.
+- `kaffeine_process_integration_host`: shared driver startup, Signal and owner cleanup.
+
+The standalone suites are not invoked by this directory's `make test`.
+CI calls each `run_tests.py` normally and with `--sanitize`, using separate
+temporary build directories, GCC/G++, AddressSanitizer and
+UndefinedBehaviorSanitizer. Linux sanitizer runs enable leak detection.
+Changes to any sibling `kaffeine_*_host` directory also trigger the workflow;
+add new standalone runners to its explicit suite list.
+
+These are host checks. Native AROS and application acceptance still require
+their separate target tests.
+
+The typed `keymap.library` profile supports `MapRawKey` with the native
+default keymap (`A2 == NULL`). Custom guest KeyMap tables, `SetKeyMapDefault`,
+`AskKeyMapDefault` and `MapANSI` refuse before any native call. The console
+fixture checks the generated fallback table against these manual overrides.
+See the [typed keymap boundary](../../../../docs/kaffeine/keymap.md) for the
+classic/native event conversion, protected-buffer contract and focused
+`test_console` normal/sanitizer commands. Its native mapper is a recording
+collaborator; these checks do not establish target keyboard typing.
+
 ## AArch64 Linux under QEMU user mode
 
 With an AArch64 GNU C++ toolchain and QEMU user mode installed:
@@ -53,7 +86,7 @@ Darwin-specific JIT constraints.
 ## Coverage
 
 The Makefile is the authoritative list of executables. The current suite
-has 48 test executables and a thunk-registration audit.
+has 49 test executables and a thunk-registration audit.
 
 | Area | Coverage |
 | --- | --- |
@@ -61,7 +94,7 @@ has 48 test executables and a thunk-registration audit.
 | Exec | Heap and pools, lists, signals, task snapshots, embedded ExecBase list headers and bounded Moira callback traversal, semaphores, public ports, guest message queues, I/O requests and timer boundaries |
 | DOS | Handle identities and lifetimes, buffers, packet thunks and FileHandle actions, handler ports (`DeviceProc`/`GetDeviceProc`), formatting, CLI state, argument parsing, data structures and directory traversal (`ExAll`/`ExAllEnd`) |
 | Graphics, Layers and Intuition | RastPorts, fonts, display and monitor metadata, owned and public screens, `DrawInfo`, live and offscreen planar layers and backfill hooks, clip regions, bitmaps (`InitBitMap`/`BltBitMap`/`GetBitMapAttr`), windows, IDCMP, requests, menus, gadgets and Workbench objects |
-| Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, `icon.library` metadata snapshots, no-window console calls and diskfont snapshots |
+| Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, `icon.library` metadata snapshots, no-window console calls, typed default-keymap InputEvents and diskfont snapshots |
 | CPU backend extension | Production AArch64 translator, hosted differential tests and library mode contracts |
 | Guest scheduling | Separate Moira and JIT CPUs, task identity/priority, deferred Wait/WaitPort, Forbid/Disable, message exchange, native signal routing, removal, bounds, allocation rollback and cleanup |
 
@@ -92,25 +125,37 @@ handler; direct device vectors stop with rc 20.
 `test_guest_tasks` checks CreateProc with separate CPU instances, bounded
 Process/stack/MemList allocations, message handshakes, virtual SIGB_DOS,
 priorities, Forbid/Wait, child Exit, quarantine and failure rollback. DOS
-calls from child Processes stop before their native thunks. `test_exec_messages`
-checks the same gate before file and handler packet adapters, while root
-packet dispatch remains available. CreateNewProc remains unsupported.
+calls from these legacy CreateProc children stop before their native thunks.
+`test_exec_messages` checks that gate before file and handler packet adapters.
+The typed CreateNewProc route instead imports an owned 68k HUNK with trusted
+relocation metadata into the shared guest arena, creates a separate guest CPU
+and Process, and gives it a private native DOS broker. Exec ports and waits
+remain cooperative inside that domain.
 
-`test_dos_thunks --process-trace-only` also checks the refused
-CreateNewProc call's numeric startup trace. The production tag walker is
+`test_process_tags` checks the bounded supported tag subset and typed
+module/home-lock transfers. Raw segment values, guest entry/exit callbacks,
+stream transfers, and unsupported tags are refused before native forwarding.
+The standalone domain, broker, driver and recovery suites check their separate
+ownership and lifetime contracts; these host checks do not establish
+application startup or native UI behavior.
+
+`test_dos_thunks --process-trace-only` checks numeric startup diagnostics and
+refusal cases separately from the supported typed route. The tag walker is
 limited to 64 item/control steps and the trace to 16 active tags. Tests
 cover control-only cycles, invalid and truncated lists, wrapping skips,
 independent traversal/output limits and unchanged guest memory. Names,
 entry points and seglists are reported as raw values without following
-their pointers; no process is created.
+their pointers. Rejected inputs do not create a native process.
 
 `test_dos_thunks --loadseg-trace-only` checks numeric LoadSeg/NewLoadSeg
 provenance traces. The native BPTR is recorded at full width alongside
-the delivered 32-bit D0, without reading segment contents or printing
+the delivered opaque 32-bit guest token, without reading segment contents or printing
 the filename. Success, failure, rejected strings and converted-tag
 cleanup preserve the loader's IoErr even when logging or freeing tags
-changes it. These traces establish returned-handle identity only, not a
-trusted module registry or process-start capability.
+changes it. `test_dos_thunks --segments-only` checks the implemented registry's
+classification, context ownership, stale handles, bounded reservations,
+RunCommand loans, transfers and cleanup. Numeric traces alone do not prove
+executable kind or process readiness.
 
 ### Classic RastPort initialization and font queries
 
@@ -142,6 +187,18 @@ busy-snapshot rollback and retirement. `test_regions` checks leased clips on
 owned window, requester and offscreen layers, including replacement,
 borrowed/native-hook refusals and removal before native layer deletion.
 
+### Window refresh scopes
+
+`test_layers` also covers the typed Intuition and GadTools refresh adapters,
+using the unchanged public native Begin/End bodies over recording layer/update
+primitives. Four refresh groups check normal/GZZ lock counts, update OOM,
+manual aliases, owner/nesting/contention refusals, preserved guest fields,
+implicit Info safety gates and ordered abort cleanup through the real CPU
+loop. `test_layers_private` retains independent offscreen-layer coverage.
+See [scope and limits](../../../../docs/kaffeine/window-refresh.md) for the
+contract and focused normal/sanitizer commands. Host checks do not establish
+native target OOM behavior or application rendering acceptance.
+
 ### ExAll bridge
 
 `test_dos_thunks --exall-only` runs nine ExAll groups: every NDK entry type
@@ -166,6 +223,18 @@ Use fresh build directories.
 
 ### DOS packet bridge
 
+Four startup-stream groups in
+[`process_stream_fixture.h`](process_stream_fixture.h) link verbatim production
+`InitGuestDos`/`DropGuestDos` helpers to the real file registry, `Close()`, heap
+and full-file preparation/snapshot sweeps. They check displaced startup
+streams, replacement ownership, duplicate/shared native originals, root/peer
+selection aliases, live native close flags, explicit close failure followed by
+BPTR reuse, partial/no initialization and unsafe-caller refusal. Native exit
+closes the handles saved before worker entry, rather than later selections.
+The complete `test_dos_packets` passes **18548 checks** in both normal and
+ASan/UBSan runs. These are host ownership regressions; native target evidence
+remains separate. See the [Process contract](../../../../docs/kaffeine/guest-processes.md).
+
 `test_dos_packet_thunks` exercises the production AllocDosObject and
 FreeDosObject paths for DOS_STDPKT and all five packet LVOs. The existing
 extractor takes their bodies and private helpers verbatim from production.
@@ -180,6 +249,17 @@ NIL packet ports, message length normalization and rc20 boundaries.
 handler actions, classic InfoData conversion and buffer checks, unknown
 actions and FileHandles with no native handler. The task and scheduler
 suites check the Process port layout and reserved DOS signal ownership.
+
+Three typed-Process packet groups also link the real scheduler into
+`test_dos_packets`. They exercise direct `PutMsg()` and nested `SendPkt()`/`DoPkt()`
+through the existing file/handler adapters on a recording child broker, with
+separate native Process, directory and IoErr state. Root and child reply signals,
+original message/FIFO identity, file-read errors, malformed/mixed packets,
+callback/LayerInfo/owner refusals, transport retry and unchanged classic-task
+limits are checked. A real `Kaffeine_RunCPU()` case preserves a marked return
+code 20 after a refused worker callback and a subsequent void result of zero.
+The broker and CPUs in this lane are collaborators; it does not claim native
+thread scheduling, target execution or application GUI acceptance.
 
 The Process packet port lives inside the registered Task shadow: guest queues
 take exactly that port, and the SIGB_DOS exception holds for it alone, with

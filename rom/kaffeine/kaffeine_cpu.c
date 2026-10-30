@@ -4,8 +4,11 @@
     Backend-independent register access and execution loop.
 */
 
+#include <aros/debug.h>
 #include "kaffeine_cpu.h"
+#include "kaffeine_async.h"
 #include "kaffeine_intern.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_callback.h"
 #include "kaffeine_sched.h"
 
@@ -74,6 +77,15 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
     {
         current = ctx->cpu;
         current->ops->execute(current->backend_state);
+        /* Poll every outer slice, also without a scheduler or a guest Wait.
+           No thunk or callback is in flight and the driver owns ctx->cpu. */
+        if (!outer && ctx->running) (void)Kaffeine_AsyncPoll(ctx);
+        /* A failed start can retain native work and a staged CPU. Drain on
+           the live owner before a scheduler boundary can retire anything. */
+        if (!ctx->running && Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
+            ctx->layer_ops->release_locks(ctx);
+        if (!ctx->running && ctx->domain_drain)
+            while (!ctx->domain_drain(ctx)) { }
         /* A completed slice of the outermost loop: no thunk or callback is
            in flight, so a GUI snapshot may change under the guest here. */
         if (!outer && ctx->gui_poll && ctx->running &&
@@ -86,19 +98,37 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
             ctx->task_ops->boundary(ctx);
     }
 
+    /* Never enter owner/broker cleanup while a native Info scope remains. */
+    if (Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
+        ctx->layer_ops->release_locks(ctx);
+    if (ctx->domain_drain)
+        while (!ctx->domain_drain(ctx)) { }
     /* A stop in a child ends the whole program with that child's D0. */
     current = ctx->cpu;
-    ctx->exit_code = (LONG)Kaffeine_GetD(current, 0);
+    /* A refused thunk may return an ordinary failure value after StopGuest
+       set the authoritative failure code. Do not turn that stop into D0=0. */
+    if (!ctx->callback_failed)
+        ctx->exit_code = (LONG)Kaffeine_GetD(current, 0);
+    if (ctx->sched && !outer && !ctx->callback_failed && ctx->task_ops->root_result)
+        ctx->task_ops->root_result(ctx, &ctx->exit_code);
     if (current != cpu)
         Kaffeine_SetD(cpu, 0, (ULONG)ctx->exit_code);
+    if (!outer && Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
+        ctx->layer_ops->release_locks(ctx);
     if (ctx->sched && !outer)
         ctx->task_ops->end(ctx);
+    else if (!outer && ctx->guest_exec_task && ctx->layer_ops && ctx->layer_ops->task_removed)
+        ctx->layer_ops->task_removed(ctx, ctx->guest_exec_task);
     ctx->cpu = outer;
     return ctx->exit_code;
 }
 
 void Kaffeine_StopGuest(struct KaffeineContext *ctx, void *cpu, LONG code)
 {
+    if (code == 20 && !ctx->callback_failed)
+        bug("[kaffeine] forced stop (20), caller delta=%ld callback depth=%u\n",
+            (long)((IPTR)__builtin_return_address(0) - (IPTR)Kaffeine_StopGuest),
+            (unsigned)ctx->callback_depth);
     ctx->running = FALSE;
     ctx->callback_failed = TRUE;
     ctx->exit_code = code;
@@ -113,6 +143,13 @@ BOOL Kaffeine_CallGuest(struct KaffeineContext *ctx, void *cpu, ULONG entry,
     UWORD sr;
     unsigned i;
 
+    if (ctx->broker_call || Kaffeine_LayerInfoLocked(ctx))
+    {
+        bug("[kaffeine] guest callback with broker=%u LayerInfo=%u, stopping (20)\n",
+            (unsigned)!!ctx->broker_call, (unsigned)!!Kaffeine_LayerInfoLocked(ctx));
+        Kaffeine_StopGuest(ctx, cpu, 20);
+        return FALSE;
+    }
     if (!ctx->running)
         return FALSE;
     sp = Kaffeine_GetA(cpu, 7);
@@ -166,8 +203,10 @@ BOOL Kaffeine_CallGuest(struct KaffeineContext *ctx, void *cpu, ULONG entry,
     ctx->callback_depth--;
     if (!ctx->running)
     {
-        /* A thunk may have stopped with its own process return code. */
-        Kaffeine_StopGuest(ctx, cpu, (LONG)Kaffeine_GetD(cpu, 0));
+        /* A refused void thunk may have replaced D0 after StopGuest. Keep
+           its authoritative code; an unmarked process stop still uses D0. */
+        Kaffeine_StopGuest(ctx, cpu, ctx->callback_failed ? ctx->exit_code :
+                           (LONG)Kaffeine_GetD(cpu, 0));
         return FALSE;
     }
 

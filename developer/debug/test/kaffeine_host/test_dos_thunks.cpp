@@ -36,6 +36,7 @@
 #include "kaffeine_cli.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_sched.h"
+#include "kaffeine_segments.h"
 
 extern "C" {
 #include "kaffeine_shadow.h"
@@ -74,6 +75,13 @@ extern "C" {
 
 static unsigned checks;
 static unsigned failures;
+/* This fixture checks the DOS trace/dispatch boundary. The production
+   parser's lease and scalar rules are tested by test_process_tags. */
+extern "C" ULONG Kaffeine_ProcessFromTags(struct KaffeineContext *, ULONG)
+{
+    SetIoErr(ERROR_NOT_IMPLEMENTED);
+    return 0;
+}
 static std::vector<std::string> debug_lines;
 static bool debug_changes_ioerr;
 static SIPTR debug_ioerr;
@@ -458,6 +466,39 @@ struct Calls
 };
 
 static Calls calls;
+static unsigned segment_info_calls;
+static unsigned segment_kind = 1;
+static ULONG segment_acknowledged = 2;
+static SIPTR segment_info_error;
+static bool segment_have_relocs = true;
+static std::vector<BPTR> segment_unloads;
+static KaffeineContext *segment_reentrant_context;
+static ULONG segment_reentrant_release;
+static KaffeineContext *segment_alloc_context;
+static KaffeineSegmentLoad *segment_alloc_reservation;
+static BOOL segment_alloc_result;
+extern "C" void InitSemaphore(SignalSemaphore *sem) { sem->opaque = 0; }
+extern "C" void ObtainSemaphore(SignalSemaphore *sem) { check(sem->opaque == 0, "segment ticket lock is not recursively held"); ++sem->opaque; }
+extern "C" void ReleaseSemaphore(SignalSemaphore *sem) { check(sem->opaque == 1, "segment ticket lock is balanced"); --sem->opaque; }
+extern "C" ULONG GetSegListInfo(BPTR native, const TagItem *tags)
+{
+    ++segment_info_calls;
+    check(tags[0].ti_Tag == GSLI_68KHUNK && tags[1].ti_Tag == GSLI_68KRelocs &&
+        tags[2].ti_Tag == GSLI_ElfHandle && tags[3].ti_Tag == TAG_DONE,
+        "segment classification uses only native metadata destinations");
+    check(!*reinterpret_cast<IPTR *>(tags[0].ti_Data) &&
+        !*reinterpret_cast<IPTR *>(tags[1].ti_Data) && !*reinterpret_cast<IPTR *>(tags[2].ti_Data),
+        "segment classification clears every metadata output first");
+    if (segment_kind == 1 || segment_kind == 3 || segment_kind == 4) {
+        *reinterpret_cast<IPTR *>(tags[0].ti_Data) = reinterpret_cast<IPTR>(native) + (segment_kind == 4 ? 4 : 0);
+        if (segment_have_relocs) *reinterpret_cast<IPTR *>(tags[1].ti_Data) = 0x1234567800004321UL;
+    } else if (segment_kind == 2) *reinterpret_cast<IPTR *>(tags[2].ti_Data) = reinterpret_cast<IPTR>(native);
+    if (segment_kind == 3) *reinterpret_cast<IPTR *>(tags[2].ti_Data) = reinterpret_cast<IPTR>(native);
+    SetIoErr(segment_info_error);
+    return segment_acknowledged;
+}
+extern "C" void UnLoadSeg(BPTR native) { segment_unloads.push_back(native); SetIoErr(-998); }
+
 
 static IPTR unexpected_generated(KaffeineContext *, void *)
 {
@@ -681,6 +722,11 @@ extern "C" struct TagItem *m68k_to_native_taglist(KaffeineContext *, ULONG tags)
 
 extern "C" APTR AllocVec(ULONG byteSize, ULONG)
 {
+    if (segment_alloc_context) {
+        KaffeineContext *ctx = segment_alloc_context;
+        segment_alloc_context = nullptr;
+        segment_alloc_result = Kaffeine_SegmentLoadBegin(ctx, segment_alloc_reservation);
+    }
     ++calls.alloc_vec_calls;
     if (calls.alloc_vec_fails)
         return nullptr;
@@ -695,7 +741,7 @@ extern "C" APTR AllocVec(ULONG byteSize, ULONG)
 extern "C" void FreeVec(APTR memory)
 {
     ++calls.free_vec_calls;
-    calls.freed_converted_tags = memory && memory == calls.allocated_tags;
+    calls.freed_converted_tags = memory && (memory == calls.converted_tags || memory == calls.allocated_tags);
     if (memory)
     {
         bool live = false;
@@ -1116,6 +1162,10 @@ extern "C" LONG PutStr(CONST_STRPTR string)
 
 extern "C" LONG RunCommand(BPTR seglist, ULONG stack, STRPTR args, ULONG size)
 {
+    if (segment_reentrant_context) {
+        check(Kaffeine_SegmentRelease(segment_reentrant_context, segment_reentrant_release), "RunCommand can retire its caller handle while loaned");
+        check(segment_unloads.empty(), "RunCommand loan prevents early native unload");
+    }
     calls.base.handle = seglist;
     calls.base.stack = stack;
     calls.base.argsize = size;
@@ -1600,6 +1650,7 @@ struct Fixture
     static constexpr ULONG file_handle = 0x10203040;
     static constexpr ULONG return_pc = 0x76543210;
     KaffeineContext ctx = {};
+    KaffeineLibBase segment_base = {};
     UBYTE memory[4096] = {};
     std::vector<UBYTE> isolated;
     TestCPU state;
@@ -1608,6 +1659,12 @@ struct Fixture
     explicit Fixture(const char *format = "")
     {
         calls = {};
+        segment_info_calls = 0; segment_kind = 1; segment_acknowledged = 2;
+        segment_info_error = -997; segment_have_relocs = true;
+        segment_unloads.clear(); segment_reentrant_context = nullptr; segment_reentrant_release = 0;
+        segment_alloc_context = nullptr; segment_alloc_reservation = nullptr; segment_alloc_result = FALSE;
+        Kaffeine_SegmentsInit(&segment_base);
+        ctx.emuBase = &segment_base;
         debug_lines.clear();
         debug_changes_ioerr = false;
         debug_ioerr = 0;
@@ -1638,6 +1695,7 @@ struct Fixture
 
     ~Fixture()
     {
+        Kaffeine_SegmentsCleanup(&ctx);
         if (calls.directory.enabled)
         {
             Kaffeine_ExAllCleanup(&ctx);
@@ -2586,7 +2644,7 @@ static void check_process_trace(Fixture &f, ULONG list,
             actual.push_back(line);
     char line[256];
     std::snprintf(line, sizeof(line),
-        "[kaffeine] CreateNewProc refused tags=%08lx\n", (unsigned long)list);
+        "[kaffeine] CreateNewProc tags=%08lx\n", (unsigned long)list);
     expected.emplace_back(line);
     for (unsigned i = 0; i < items.size(); ++i)
     {
@@ -4358,7 +4416,11 @@ static void prepare_base(Fixture &f, const BaseVector &v)
         break;
     case runcommand_call:
         std::strcpy(guest(f, base_extra), "one two\n");
-        f.state.d[1] = 0x00334455;
+        {
+            KaffeineSegmentLoad load;
+            check(Kaffeine_SegmentLoadBegin(&f.ctx, &load), "RunCommand fixture reserves a loader acquisition");
+            f.state.d[1] = Kaffeine_SegmentLoadEnd(&f.ctx, &load, base_handle(0x00334455));
+        }
         f.state.d[2] = 8192;
         f.state.d[3] = base_extra;
         f.state.d[4] = 8;
@@ -4403,7 +4465,7 @@ static void test_base_valid()
             "base DOS LVO reaches exactly its native call");
         check(calls.base.pointer == f.ctx.mem + first && calls.base.text == text,
             "the native call receives the checked guest string in place");
-        check(f.state.d[0] == 0x1234 && calls.ioerr == calls.base.error,
+        check(f.state.d[0] == ((v.call == loadseg_call || v.call == newloadseg_call) ? KAFFEINE_SEGMENT_TOKEN_FIRST : 0x1234) && calls.ioerr == calls.base.error,
             "the native result and IoErr reach the guest unchanged");
         switch (v.call)
         {
@@ -4485,13 +4547,13 @@ static void test_loadseg_trace()
                 check(calls.base.pointer == f.ctx.mem + base_name &&
                     calls.base.text == "private-path-must-not-be-printed",
                     "loader trace still passes the checked D1 string to native DOS");
-                check(f.state.d[0] == static_cast<ULONG>(result.handle),
-                    "loader trace preserves the native handle's delivered 32-bit D0");
+                check(f.state.d[0] == (result.handle ? KAFFEINE_SEGMENT_TOKEN_FIRST : 0),
+                    "loader trace reports the issued 32-bit handle, not truncated native bits");
                 check(IoErr() == result.error,
                     "loader trace restores the full post-loader IoErr after logging and freeing tags");
-                check(calls.free_vec_calls == (converted ? 1U : 0U) &&
-                    calls.alloc_vec_calls == (converted ? 1U : 0U) &&
-                    calls.vec_live.empty() && !calls.vec_double_free &&
+                check(calls.free_vec_calls == (converted ? 1U : 0U) + (!result.handle ? 1U : 0U) &&
+                    calls.alloc_vec_calls == (converted ? 1U : 0U) + 1 &&
+                    calls.vec_live.size() == (result.handle ? 1U : 0U) && !calls.vec_double_free &&
                     (!converted || calls.freed_converted_tags),
                     "loader trace frees exactly its existing converted tags on success and failure");
                 check(std::memcmp(before.data(), f.ctx.mem, before.size()) == 0 &&
@@ -4502,7 +4564,7 @@ static void test_loadseg_trace()
                     "[kaffeine] %s input=%08lx native=%p d0=%08lx\n",
                     newer ? "NewLoadSeg" : "LoadSeg", (unsigned long)base_name,
                     reinterpret_cast<APTR>(result.handle),
-                    (unsigned long)static_cast<ULONG>(result.handle));
+                    (unsigned long)(result.handle ? KAFFEINE_SEGMENT_TOKEN_FIRST : 0));
                 check(debug_lines == std::vector<std::string>{expected} && debug_ioerr_changes == 1,
                     "loader trace logs raw input, full-width native BPTR and delivered D0 exactly once");
                 bool no_path = true;
@@ -4535,6 +4597,249 @@ static void test_loadseg_trace()
             check(std::memcmp(before.data(), f.ctx.mem, before.size()) == 0,
                 "invalid loader input leaves the entire guest arena unchanged");
         }
+}
+
+static void segment_dispatch(Fixture &f, ULONG lvo)
+{
+    f.state.a[7] = 0x80;
+    m68k_write32(&f.ctx, 0x80, Fixture::return_pc);
+    f.dispatch(lvo);
+}
+static ULONG segment_load(Fixture &f, IPTR native, bool newer = false)
+{
+    calls.base.mem = f.ctx.mem; calls.base.mem_size = f.ctx.mem_size;
+    std::strcpy(reinterpret_cast<char *>(f.ctx.mem + base_name), "synthetic module");
+    calls.base.loader_result_override = true; calls.base.loader_result = native;
+    f.state.d[1] = base_name; f.state.d[2] = 0;
+    const std::vector<UBYTE> before(f.ctx.mem, f.ctx.mem + f.ctx.mem_size);
+    segment_dispatch(f, newer ? 768 : 150);
+    check(std::memcmp(before.data(), f.ctx.mem, before.size()) == 0,
+        "module loading and classification never modify guest memory");
+    return f.state.d[0];
+}
+static void segment_unload(Fixture &f, ULONG token)
+{
+    f.state.d[1] = token; segment_dispatch(f, 156);
+}
+static void segment_run(Fixture &f, ULONG token)
+{
+    f.state.d[1] = token; f.state.d[2] = 8192; f.state.d[3] = f.state.d[4] = 0;
+    segment_dispatch(f, 504);
+}
+static void test_segments()
+{
+    {
+        Fixture a, b;
+        b.ctx.emuBase = &a.segment_base;
+        IPTR na = 0x1111111187654321UL, nb = 0x2222222287654321UL;
+        ULONG ta = segment_load(a, na), tb = segment_load(b, nb, true);
+        check(Kaffeine_SegmentToken(ta) && Kaffeine_SegmentToken(tb) && ta != tb,
+            "native handles with identical low bits receive globally distinct positive tokens");
+        KaffeineSegmentLoan loan;
+        check(!Kaffeine_SegmentLoanBegin(&b.ctx, ta, &loan) &&
+            !Kaffeine_SegmentLoanBegin(&a.ctx, tb, &loan), "foreign-context tokens cannot alias live local modules");
+        segment_run(a, ta);
+        check(calls.base.handle == reinterpret_cast<BPTR>(na), "RunCommand restores the full first native BPTR");
+        segment_run(b, tb);
+        check(calls.base.handle == reinterpret_cast<BPTR>(nb), "RunCommand restores the full second native BPTR");
+        segment_unload(a, static_cast<ULONG>(na));
+        check(segment_unloads.empty(), "raw native low bits never reach native UnLoadSeg");
+        segment_unload(a, ta); segment_unload(a, ta);
+        check(segment_unloads == std::vector<BPTR>{reinterpret_cast<BPTR>(na)}, "retired tokens unload exactly once");
+        ULONG replacement = segment_load(a, na);
+        check(replacement != ta && replacement != tb, "reusing a native address never reuses a guest identity");
+        segment_run(a, ta);
+        check(a.state.d[0] == ULONG(-1) && IoErr() == ERROR_OBJECT_WRONG_TYPE,
+            "a stale token cannot execute its native address replacement");
+        segment_unload(a, replacement); segment_unload(b, tb);
+        check(segment_unloads.size() == 3, "every independent loader acquisition is disposed once");
+    }
+    {
+        Fixture f;
+        /* A native 32-bit BPTR numerically equal to another issued token is
+           still looked up only through its own separately issued identity. */
+        ULONG first = segment_load(f, KAFFEINE_SEGMENT_TOKEN_FIRST + 1);
+        ULONG second = segment_load(f, 0x1234, true);
+        check(second == KAFFEINE_SEGMENT_TOKEN_FIRST + 1 && first != second,
+            "all 32-bit native BPTRs are wrapped, including token-shaped values");
+        segment_run(f, first);
+        check(calls.base.handle == reinterpret_cast<BPTR>(KAFFEINE_SEGMENT_TOKEN_FIRST + 1),
+            "token-shaped native values retain their exact association");
+        segment_run(f, second);
+        check(calls.base.handle == reinterpret_cast<BPTR>(0x1234), "a token is never numerically forwarded");
+    }
+    for (unsigned mode = 0; mode < 8; ++mode)
+    {
+        Fixture f;
+        segment_kind = mode == 0 ? 0 : mode == 1 ? 2 : mode == 6 ? 3 : mode == 7 ? 4 : 1;
+        segment_have_relocs = mode != 2;
+        segment_acknowledged = mode == 0 || mode == 4 ? 0 : mode == 1 || mode == 2 || mode == 3 ? 1 : 2;
+        ULONG token = segment_load(f, 0x123456789ABCDEF0UL, mode & 1);
+        check(token && IoErr() == calls.base.error, "metadata queries preserve the complete loader IoErr");
+        segment_run(f, token);
+        bool executable = mode == 1 || mode == 5;
+        check(calls.base.count[runcommand_call] == (executable ? 1U : 0U),
+            "only positively identified ELF or HUNK plus acknowledged relocations may execute");
+        KaffeineSegmentTransfer transfer;
+        bool transferable = Kaffeine_SegmentTransferBegin(&f.ctx, token, &transfer);
+        check(transferable == (mode == 5), "only idle owned 68k HUNK with relocations can transfer");
+        if (transferable) Kaffeine_SegmentTransferEnd(&f.ctx, &transfer, FALSE);
+        segment_unload(f, token);
+        check(segment_unloads.size() == 1, "unknown or unsupported types remain safely unloadable");
+    }
+    {
+        Fixture f;
+        ULONG token = segment_load(f, 0xCAFEBABE12345678UL);
+        KaffeineSegmentTransfer transfer;
+        KaffeineSegmentLoan loan;
+        check(Kaffeine_SegmentTransferBegin(&f.ctx, token, &transfer) &&
+            transfer.native == reinterpret_cast<BPTR>(0xCAFEBABE12345678UL), "transfer reserves the full native BPTR");
+        check(!Kaffeine_SegmentLoanBegin(&f.ctx, token, &loan) &&
+            !Kaffeine_SegmentRelease(&f.ctx, token), "a reserved transfer excludes execution and unloading");
+        SetIoErr(0x123456789ABCDEFL);
+        Kaffeine_SegmentTransferEnd(&f.ctx, &transfer, FALSE);
+        check(IoErr() == SIPTR(0x123456789ABCDEFL) && Kaffeine_SegmentLoanBegin(&f.ctx, token, &loan),
+            "failed creation rolls back without allocation or loss of IoErr");
+        check(!Kaffeine_SegmentTransferBegin(&f.ctx, token, &transfer), "a runtime loan excludes transfer");
+        Kaffeine_SegmentLoanEnd(&f.ctx, &loan);
+        check(Kaffeine_SegmentTransferBegin(&f.ctx, token, &transfer), "an idle module can retry transfer");
+        /* Simulate immediate child disposal before native CNP returns. The
+           relocation pointer was an unreadable poison value throughout. */
+        segment_unloads.push_back(transfer.native);
+        Kaffeine_SegmentTransferEnd(&f.ctx, &transfer, TRUE);
+        segment_unload(f, token); Kaffeine_SegmentsCleanup(&f.ctx);
+        check(segment_unloads.size() == 1 && !f.ctx.segments,
+            "successful transfer retires metadata without native unload or relocation reads");
+    }
+    {
+        Fixture f;
+        ULONG token = segment_load(f, 0xAABBCCDD76543210UL);
+        segment_reentrant_context = &f.ctx; segment_reentrant_release = token;
+        calls.free_vec_changes_ioerr = true; calls.free_vec_ioerr = -888;
+        segment_run(f, token);
+        check(f.state.d[0] == 0x1234 && IoErr() == calls.base.error && segment_unloads.size() == 1,
+            "RunCommand retains code through reentrant release and restores its own result/error");
+        segment_reentrant_context = nullptr;
+    }
+    {
+        Fixture f;
+        ULONG token = segment_load(f, 0x1122334455667788UL);
+        KaffeineSegmentTransfer transfer;
+        check(Kaffeine_SegmentTransferBegin(&f.ctx, token, &transfer), "cleanup test reserves a transfer");
+        Kaffeine_SegmentsCleanup(&f.ctx);
+        check(segment_unloads.empty(), "owner cleanup defers a reserved native module");
+        Kaffeine_SegmentTransferEnd(&f.ctx, &transfer, FALSE);
+        Kaffeine_SegmentsCleanup(&f.ctx);
+        check(segment_unloads.size() == 1 && !f.ctx.segments, "failed transfer after cleanup unloads once instead of resurrecting its token");
+    }
+    {
+        Fixture f;
+        calls.alloc_vec_fails = true;
+        check(!segment_load(f, 0x1234) && IoErr() == ERROR_NO_FREE_STORE &&
+            calls.base.count[loadseg_call] == 0 && !segment_info_calls && segment_unloads.empty(),
+            "reservation allocation failure prevents native loading and has no owner leak");
+    }
+    {
+        Fixture f;
+        check(!segment_load(f, 0) && IoErr() == calls.base.error && !segment_info_calls &&
+            calls.vec_live.empty() && segment_unloads.empty(), "native loader failure frees its reservation and preserves native IoErr");
+        f.segment_base.segment_next_token = KAFFEINE_SEGMENT_TOKEN_LAST;
+        ULONG last = segment_load(f, 0x87654321);
+        check(last == KAFFEINE_SEGMENT_TOKEN_LAST, "last representable ticket is published once");
+        unsigned loads = calls.base.count[loadseg_call];
+        check(!segment_load(f, 0x1234) && IoErr() == ERROR_NO_FREE_STORE &&
+            calls.base.count[loadseg_call] == loads, "ticket exhaustion fails before the loader without wrap or reuse");
+        segment_unload(f, last);
+    }
+    {
+        Fixture f;
+        ULONG token = segment_load(f, 0x12345678ABCDEF10UL);
+        calls.base.result = -1; calls.base.error = SIPTR(0x1234567887654321UL);
+        segment_run(f, token);
+        KaffeineSegmentTransfer transfer;
+        check(f.state.d[0] == ULONG(-1) && IoErr() == calls.base.error &&
+            Kaffeine_SegmentTransferBegin(&f.ctx, token, &transfer),
+            "a native RunCommand failure preserves full IoErr and releases its runtime loan");
+        Kaffeine_SegmentTransferEnd(&f.ctx, &transfer, FALSE);
+    }
+    {
+        Fixture f;
+        segment_load(f, 0x1111111188888888UL);
+        segment_load(f, 0x2222222288888888UL);
+        SetIoErr(SIPTR(0x1234567887654321UL));
+        Kaffeine_SegmentsCleanup(&f.ctx);
+        check(segment_unloads.size() == 2 && !f.ctx.segments && calls.vec_live.empty() &&
+            IoErr() == SIPTR(0x1234567887654321UL), "owner cleanup unloads every live acquisition and preserves complete IoErr");
+        Kaffeine_SegmentsCleanup(&f.ctx);
+        check(segment_unloads.size() == 2, "repeated owner cleanup has no native disposal side effects");
+    }
+    {
+        Fixture f;
+        ULONG token = segment_load(f, 0x1234432156788765UL);
+        KaffeineSegmentLoan loan;
+        check(Kaffeine_SegmentLoanBegin(&f.ctx, token, &loan), "owner cleanup test acquires a runtime loan");
+        Kaffeine_SegmentsCleanup(&f.ctx);
+        check(segment_unloads.empty(), "owner cleanup preserves an active runtime loan");
+        Kaffeine_SegmentLoanEnd(&f.ctx, &loan);
+        check(segment_unloads.size() == 1 && !f.ctx.segments && calls.vec_live.empty(),
+            "ending the final runtime loan completes deferred owner cleanup exactly once");
+    }
+    {
+        Fixture f;
+        std::vector<ULONG> tokens;
+        for (unsigned i = 0; i < KAFFEINE_SEGMENT_LIMIT; ++i)
+            tokens.push_back(segment_load(f, 0x1122334400001000UL + i));
+        unsigned native_loads = calls.base.count[loadseg_call], allocations = calls.alloc_vec_calls;
+        check(f.ctx.segment_count == KAFFEINE_SEGMENT_LIMIT && !segment_load(f, 0x1234) &&
+            IoErr() == ERROR_NO_FREE_STORE && calls.base.count[loadseg_call] == native_loads &&
+            calls.alloc_vec_calls == allocations, "live module cap rejects before allocation or native loading");
+        segment_unload(f, tokens[17]);
+        ULONG replacement = segment_load(f, 0x1122334400001011UL, true);
+        check(replacement && replacement != tokens[17] && f.ctx.segment_count == KAFFEINE_SEGMENT_LIMIT,
+            "dropping a module recovers capacity without recycling its identity");
+        Kaffeine_SegmentsCleanup(&f.ctx);
+        check(!f.ctx.segment_count && !f.ctx.segments && calls.vec_live.empty() &&
+            segment_unloads.size() == KAFFEINE_SEGMENT_LIMIT + 1, "cleanup accounts for every capped live module once");
+    }
+    {
+        Fixture f;
+        KaffeineSegmentLoad held[KAFFEINE_SEGMENT_LIMIT] = {}, nested = {};
+        for (unsigned i = 0; i + 1 < KAFFEINE_SEGMENT_LIMIT; ++i)
+            check(Kaffeine_SegmentLoadBegin(&f.ctx, &held[i]), "pending loader reservation takes capacity before native loading");
+        segment_alloc_context = &f.ctx; segment_alloc_reservation = &nested;
+        SetIoErr(0x1234);
+        check(Kaffeine_SegmentLoadBegin(&f.ctx, &held[KAFFEINE_SEGMENT_LIMIT - 1]) &&
+            !segment_alloc_result && !nested.entry && f.ctx.segment_count == KAFFEINE_SEGMENT_LIMIT &&
+            IoErr() == 0x1234, "reentrant reservation at allocation sees the outer reservation and cannot exceed the cap");
+        unsigned allocations = calls.alloc_vec_calls;
+        check(!Kaffeine_SegmentLoadBegin(&f.ctx, &nested) && IoErr() == ERROR_NO_FREE_STORE &&
+            calls.alloc_vec_calls == allocations && !calls.base.count[loadseg_call],
+            "pending reservations alone enforce the cap without invoking the native loader");
+        Kaffeine_SegmentLoadEnd(&f.ctx, &held[0], nullptr);
+        check(Kaffeine_SegmentLoadBegin(&f.ctx, &nested) &&
+            f.ctx.segment_count == KAFFEINE_SEGMENT_LIMIT, "failed loading recovers reservation capacity immediately");
+        Kaffeine_SegmentLoadEnd(&f.ctx, &nested, nullptr);
+        for (unsigned i = 1; i < KAFFEINE_SEGMENT_LIMIT; ++i)
+            Kaffeine_SegmentLoadEnd(&f.ctx, &held[i], nullptr);
+        check(!f.ctx.segment_count && calls.vec_live.empty(), "all reservation rollbacks decrement capacity exactly once");
+        check(Kaffeine_SegmentLoadBegin(&f.ctx, &nested), "a pending load exists before cleanup");
+        Kaffeine_SegmentsCleanup(&f.ctx);
+        check(f.ctx.segment_count == 1 && segment_unloads.empty(), "cleanup retains pending loader reservations until End");
+        check(!Kaffeine_SegmentLoadEnd(&f.ctx, &nested, reinterpret_cast<BPTR>(0x123456789ABCDEF0UL)) &&
+            !f.ctx.segment_count && segment_unloads.size() == 1 && calls.vec_live.empty(),
+            "a late native result after cleanup is disposed once and releases its reservation");
+    }
+    for (ULONG lvo : {774U, 780U, 786U, 1176U})
+    {
+        Fixture f;
+        f.state.d[0] = f.state.d[1] = f.state.d[2] = f.state.a[0] = 0xFFFFFFFF;
+        const std::vector<UBYTE> before(f.ctx.mem, f.ctx.mem + f.ctx.mem_size);
+        segment_dispatch(f, lvo);
+        check(!f.state.d[0] && IoErr() == ERROR_NOT_IMPLEMENTED && !segment_info_calls &&
+            !calls.taglist_converter_calls && segment_unloads.empty() &&
+            !std::memcmp(before.data(), f.ctx.mem, before.size()),
+            "unsafe generated segment consumers are explicitly refused before native calls or output writes");
+    }
 }
 
 static void test_base_strings_refused()
@@ -5960,6 +6265,12 @@ int main(int argc, char **argv)
         std::printf("DOS loader trace regressions: %u/%u checks passed\n", checks - failures, checks);
         return failures ? 1 : 0;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--segments-only") == 0)
+    {
+        test_segments();
+        std::printf("DOS segment regressions: %u/%u checks passed\n", checks - failures, checks);
+        return failures ? 1 : 0;
+    }
     if (argc > 1 && !valid_only)
         return 2;
     if (!valid_only)
@@ -5985,6 +6296,7 @@ int main(int argc, char **argv)
     test_process_launch();
     test_process_trace();
     test_loadseg_trace();
+    test_segments();
     test_packet_boundaries();
     test_system_taglist_lvo();
     test_buffer_dispatch();

@@ -42,6 +42,7 @@
 extern "C" void CloseFont(struct TextFont *) { std::abort(); }
 #include "kaffeine_window.h"
 #include "kaffeine_workbench.h"
+#include "kaffeine_layers.h"
 
 static const char *case_name;
 static unsigned checks;
@@ -68,6 +69,15 @@ static unsigned get_calls, wait_calls, signal_allocations;
 static bool waited_empty;
 static Message *on_wait;
 static MsgPort *on_wait_port;
+static std::function<void(ULONG)> on_mask_wait;
+static unsigned mask_wait_calls;
+extern "C" ULONG Wait(ULONG mask)
+{
+    ++mask_wait_calls;
+    require(bool(on_mask_wait), "native masked wait has an explicit bounded event");
+    on_mask_wait(mask);
+    return mask;
+}
 static KaffeineContext *live;
 
 extern "C" APTR AllocMem(ULONG size, ULONG flags)
@@ -134,8 +144,10 @@ extern "C" BYTE AllocSignal(LONG n)
     signals |= 1u << n;
     return static_cast<BYTE>(n);
 }
+static std::function<void(LONG)> before_signal_free;
 extern "C" void FreeSignal(LONG n)
 {
+    if (before_signal_free) before_signal_free(n);
     require(n >= 0 && n < 32 && (signals & (1u << n)), "only an allocated signal is freed");
     events.push_back("FreeSignal");
     signals &= ~(1u << n);
@@ -233,7 +245,15 @@ extern "C" void RawPutChar(UBYTE) { require(false, "unexpected RawPutChar"); }
 extern "C" Window *OpenWindowTagList(NewWindow *, TagItem *) { require(false, "unexpected OpenWindow"); return nullptr; }
 extern "C" void FreeSysRequest(Window *) { require(false, "unexpected FreeSysRequest"); }
 extern "C" void CloseWindow(Window *) { require(false, "unexpected CloseWindow"); }
-extern "C" BOOL ModifyIDCMP(Window *, ULONG) { require(false, "unexpected ModifyIDCMP"); return FALSE; }
+static bool shared_idcmp_test;
+extern "C" BOOL ModifyIDCMP(Window *window, ULONG flags)
+{
+    require(shared_idcmp_test, "unexpected ModifyIDCMP");
+    require(flags ? window->UserPort != nullptr : window->UserPort == nullptr,
+            "shared peers are borrowed on enable and detached before disable");
+    window->IDCMPFlags = flags;
+    return TRUE;
+}
 extern "C" IntuiMessage *GT_FilterIMsg(IntuiMessage *) { require(false, "unexpected IDCMP filter"); return nullptr; }
 extern "C" IntuiMessage *GT_PostFilterIMsg(IntuiMessage *) { require(false, "unexpected IDCMP postfilter"); return nullptr; }
 extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *, const char *) { require(false, "unexpected OpenLibrary"); return 0; }
@@ -556,6 +576,7 @@ struct Fixture
 
     Fixture()
     {
+        before_signal_free={};
         require(blocks.empty(), "previous case released all native allocations");
         queues.clear(); replies.clear(); events.clear(); objects.clear(); adds.clear(); removes.clear();
         object_storage.clear();
@@ -563,6 +584,7 @@ struct Fixture
         next_dup = 0x51000000; owner.tc_Node.ln_Type = NT_PROCESS; during_remove = nullptr; sent.clear();
         signals = 0xFFFF; signal_allocations = get_calls = wait_calls = info_calls = 0;
         waited_empty = fail_add = false; on_wait = nullptr; on_wait_port = nullptr;
+        on_mask_wait = {}; mask_wait_calls = 0;
         remove_result = info_result = TRUE;
         info_lock = nullptr; info_name = nullptr; info_screen = nullptr;
         require(originals.empty() && clones.empty() && icon_opens == 0,
@@ -1326,6 +1348,91 @@ static void test_get_message()
     f.reply(msg);
     require(replies.size() == 1 && f.ctx->running, "a second ReplyMsg changes nothing");
 }
+
+static void test_shared_idcmp_gadtools_app_reply()
+{
+    Fixture f;
+    ULONG port=f.port();
+    f.ctx->guest_exec_task=Fixture::task;
+    f.longword(f.guest_window+M68K_WIN_USERPORT,port);
+    f.state.a[0]=f.guest_window;f.state.d[0]=IDCMP_NEWSIZE;
+    shared_idcmp_test=true;
+    require(Kaffeine_ModifyIDCMP(f.ctx,&f.cpu)==TRUE,"ModifyIDCMP borrows the actual App port through a private inbox");
+    static const M68KThunkEntry gt[]={KAFFEINE_GADTOOLS_IDCMP_THUNKS};
+    constexpr ULONG base=0x9000;
+    Fixture::library(f.ctx->libs[3],base,120,"gadtools.library",gt,std::size(gt));
+    f.ctx->num_libs=4;
+    f.add_window(port);
+    Delivery *delivery=f.delivery(f.native_port(port));
+    const ULONG before=Kaffeine_HeapAvail(f.ctx,0);
+    ULONG copy=f.call(base,72,{port});
+    require(copy && f.copy_present(copy) && dups.size()==3,"GT_GetIMsg returns a real tracked Workbench copy and its owned locks");
+    require(f.call(base,78,{0,copy})==0,"GT_ReplyIMsg routes the App copy through its typed owner");
+    require(!f.copy_present(copy) && dups.empty() && Kaffeine_HeapAvail(f.ctx,0)==before && f.replied(delivery),
+            "GT_ReplyIMsg releases the real carrier, guest copy and lock scope exactly once");
+    f.ctx->idcmp_cleanup(f.ctx);
+    shared_idcmp_test=false;
+}
+
+static void test_shared_idcmp_app_identity()
+{
+    for (unsigned mode=0;mode<3;mode++)
+    {
+        Fixture f;
+        ULONG bit=f.call(Fixture::exec,330,{},(ULONG)-1);
+        ULONG port=Kaffeine_HeapAlloc(f.ctx,34,MEMF_CLEAR);
+        f.ctx->guest_exec_task=Fixture::task;
+        f.ctx->mem[port+LN_TYPE]=NT_MSGPORT;f.ctx->mem[port+MP_FLAGS]=PA_SIGNAL;f.ctx->mem[port+MP_SIGBIT]=bit;
+        f.longword(port+MP_SIGTASK,Fixture::task);f.longword(port+MP_LIST,port+MP_LIST+4);f.longword(port+MP_LIST+8,port+MP_LIST);
+        f.add_window(port);
+        MsgPort *box=Fixture::inbox(f.native_port(port));
+        if (mode==0)
+        {
+            ULONG other=f.call(Fixture::exec,330,{},(ULONG)-1);
+            f.ctx->mem[port+MP_SIGBIT]=other;
+        }
+        if (mode==1) box->mp_SigTask=reinterpret_cast<Task *>(0x12340000);
+        if (mode==2) box->mp_Flags=PA_IGNORE;
+        f.longword(f.guest_window+M68K_WIN_USERPORT,port);
+        f.state.a[0]=f.guest_window;f.state.d[0]=IDCMP_NEWSIZE;
+        require(Kaffeine_ModifyIDCMP(f.ctx,&f.cpu)==20 && !f.ctx->running && !f.ctx->idcmp_ports && !f.window.UserPort,
+                "a captured App inbox with a different signal, driver or action cannot become a shared IDCMP peer");
+    }
+}
+
+static void test_shared_idcmp_exec_retirement()
+{
+    for (unsigned mode=0;mode<4;mode++)
+    {
+        Fixture f;ULONG owned=f.port(),port=owned;
+        UBYTE bit=f.ctx->mem[owned+MP_SIGBIT];
+        if (mode==3)
+        {
+            port=Kaffeine_HeapAlloc(f.ctx,34,MEMF_CLEAR);
+            f.ctx->mem[port+LN_TYPE]=NT_MSGPORT;f.ctx->mem[port+MP_FLAGS]=PA_SIGNAL;f.ctx->mem[port+MP_SIGBIT]=bit;
+            f.longword(port+MP_SIGTASK,Fixture::task);f.longword(port+MP_LIST,port+MP_LIST+4);f.longword(port+MP_LIST+8,port+MP_LIST);
+        }
+        f.ctx->guest_exec_task=Fixture::task;
+        f.longword(f.guest_window+M68K_WIN_USERPORT,port);f.state.a[0]=f.guest_window;f.state.d[0]=IDCMP_NEWSIZE;
+        shared_idcmp_test=true;
+        require(Kaffeine_ModifyIDCMP(f.ctx,&f.cpu)==TRUE,"a private IDCMP peer borrows the real Exec-owned signal");
+        f.add_window(port);
+        unsigned observed=0;
+        before_signal_free=[&](LONG gone) {
+            if (gone!=bit)return;
+            ++observed;
+            require(!f.window.UserPort && !f.ctx->idcmp_ports && objects.empty() &&
+                    Kaffeine_HeapGuestRange(f.ctx,port,34),
+                    "actual Exec retirement detaches IDCMP and App producers before native signal or guest storage reuse");
+        };
+        if (mode==0 || mode==3) f.call(Fixture::exec,672,{owned});
+        if (mode==1) f.call(Fixture::exec,336,{},bit);
+        if (mode==2) Kaffeine_IOCleanup(f.ctx);
+        require(observed==1 && !f.ctx->idcmp_ports && !f.window.UserPort,
+                "DeleteMsgPort, FreeSignal and IO cleanup retire each binding before freeing its bit");
+        before_signal_free={};shared_idcmp_test=false;
+    }
+}
 static void test_wait_message()
 {
     Fixture f; ULONG p = f.port(); f.add_window(p); MsgPort *native = f.native_port(p);
@@ -1339,6 +1446,54 @@ static void test_wait_message()
     require(f.get(p) == msg && get_calls == 1, "GetMsg takes the existing WaitPort copy without touching the native queue");
     f.empty(p); f.reply(msg);
 }
+static void test_paint_wake_on_app_port()
+{
+    for (bool error : { false, true })
+    {
+        Fixture f; ULONG guest = f.port(); f.add_window(guest);
+        auto *front = f.native_port(guest), *box = Fixture::inbox(front);
+        require(AllocSignal(29) == 29, "paint source owns a private driver signal");
+        static bool pending, fail; static unsigned delivered;
+        pending = false; fail = error; delivered = 0;
+        KaffeineLayerOps layers = {};
+        layers.signal_mask = [](KaffeineContext *) -> ULONG { return 1UL << 29; };
+        layers.poll = [](KaffeineContext *) {
+            if (!pending) return TRUE;
+            pending = false; ++delivered;
+            return fail ? FALSE : TRUE;
+        };
+        f.ctx->layer_ops = &layers; f.ctx->cpu = &f.cpu;
+        Delivery *delivery = nullptr;
+        on_mask_wait = [&](ULONG mask) {
+            require(mask == ((1UL << box->mp_SigBit) | (1UL << 29)),
+                    "App inbox native wait includes only its signal and the private paint wake");
+            if (mask_wait_calls == 1) pending = true;
+            else
+            {
+                delivery = f.delivery(front, false);
+                PutMsg(front, &delivery->am.am_Message);
+                Message *carrier = queues[box].front();
+                box->mp_MsgList.lh_Head = &carrier->mn_Node;
+                box->mp_MsgList.lh_TailPred = &carrier->mn_Node;
+            }
+        };
+        ULONG msg = f.wait(guest);
+        require(delivered == 1 && !pending && mask_wait_calls == (error ? 1u : 2u) && !wait_calls,
+                "a paint-only wake is polled before waiting again for an App carrier");
+        if (error)
+            require(msg == 20 && f.ctx->callback_failed && f.ctx->exit_code == 20 && !delivery,
+                    "App native wait returns authoritative20 for a paint error before any carrier copy");
+        else
+        {
+            require(msg && delivery && f.replied(delivery), "successful App arrival retains exactly-once native reply");
+            check_message(f,msg,*delivery);
+            require(f.get(guest) == msg, "the actual converted AppMessage remains first in the guest FIFO");
+            f.reply(msg);
+        }
+        f.ctx->layer_ops = nullptr; FreeSignal(29);
+    }
+}
+
 static void test_guest_message_first()
 {
     Fixture f; ULONG p = f.port(); f.add_window(p); MsgPort *native = f.native_port(p);
@@ -1528,6 +1683,9 @@ int main(int argc, char **argv)
 {
     using Test = std::pair<const char *, std::function<void()>>;
     const Test tests[] = {
+        {"shared_idcmp_gadtools_app_reply",test_shared_idcmp_gadtools_app_reply},
+        {"shared_idcmp_app_identity",test_shared_idcmp_app_identity},
+        {"shared_idcmp_exec_retirement",test_shared_idcmp_exec_retirement},
         {"window_add_remove", test_window_add_remove},
         {"window_remove_false", test_window_remove_false},
         {"shared_native_port", test_shared_port},
@@ -1636,6 +1794,7 @@ int main(int argc, char **argv)
         {"menu_text_limit", test_menu_text_limit},
         {"appmessage_get_reply", test_get_message},
         {"appmessage_wait_get", test_wait_message},
+        {"paint_wake_app_wait", test_paint_wake_on_app_port},
         {"guest_message_first", test_guest_message_first},
         {"reply_listed_copy", test_reply_listed_copy},
         {"copy_limit_get", [] { test_copy_limit(false); }},

@@ -4,6 +4,7 @@
     kaffeine.library — native thunk implementations for exec and dos
 */
 #include <exec/types.h>
+#include "kaffeine_async_wait.h"
 #include <exec/memory.h>
 #include <aros/debug.h>
 #include <proto/exec.h>
@@ -44,6 +45,7 @@
 #include "kaffeine_display.h"
 #include "kaffeine_thunks_diskfont.h"
 #include "kaffeine_rastport.h"
+#include "kaffeine_gfxbase.h"
 #include "kaffeine_window.h"
 #include "kaffeine_menus.h"
 #include "kaffeine_gadgets.h"
@@ -55,6 +57,8 @@
 #include "kaffeine_icon.h"
 #include "kaffeine_layers.h"
 #include "kaffeine_regions.h"
+#include "kaffeine_remember.h"
+#include "kaffeine_keymap.h"
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -135,7 +139,14 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
             } else if (strcmp(name, "layers.library") == 0) {
                 manual = kaffeine_thunks_layers_manual;
                 manual_count = kaffeine_thunks_layers_manual_count;
+            } else if (strcmp(name, "keymap.library") == 0) {
+                manual = kaffeine_thunks_keymap_manual;
+                manual_count = kaffeine_thunks_keymap_manual_count;
             }
+            if (strcmp(name, "graphics.library") == 0)
+                return Kaffeine_SetupGraphicsBase(ctx, manual, manual_count,
+                                                  kaffeine_all_gen_libs[i].thunks,
+                                                  kaffeine_all_gen_libs[i].count);
             return Kaffeine_SetupLibBase(ctx, ctx->num_libs, kaffeine_all_gen_libs[i].name,
                                         KAFFEINE_MAX_LVO,
                                         manual, manual_count,
@@ -280,28 +291,9 @@ static IPTR thunk_exec_SetTaskPri(struct KaffeineContext *ctx, void *cpu)
    takes; the private bits never reach D0. */
 static IPTR thunk_exec_Wait(struct KaffeineContext *ctx, void *cpu)
 {
-    ULONG mask = THUNK_D(0) & ~ctx->io_signals, got;
-
     if (ctx->sched)
         return ctx->task_ops->wait(ctx, cpu);
-    if (!ctx->io_poll)
-        return (IPTR)Wait(mask);
-    mask &= ~ctx->io_signals;
-    for (;;)
-    {
-        if (!ctx->io_poll(ctx))
-            return 20;
-        got = SetSignal(0, mask) & mask;
-        if (got)
-            return got;
-        if (!ctx->io_signals)
-            return (IPTR)Wait(mask);
-        /* Wait() takes what it got; give back the guest's part, which the
-           next round takes after the completions behind it are in. */
-        got = Wait(mask | ctx->io_signals) & mask;
-        if (got)
-            SetSignal(got, got);
-    }
+    return Kaffeine_AsyncWaitSignals(ctx, THUNK_D(0));
 }
 
 /* -534: TypeOfMem(A1=address) -> D0=attributes */
@@ -408,9 +400,9 @@ static IPTR thunk_exec_SetSignal(struct KaffeineContext *ctx, void *cpu)
 
     if (ctx->sched)
         return ctx->task_ops->set_signal(ctx, cpu);
-    if (ctx->io_poll && !ctx->io_poll(ctx))
+    if (!Kaffeine_AsyncPoll(ctx))
         return 20;
-    hidden = ctx->io_signals;
+    hidden = Kaffeine_AsyncSignalMask(ctx);
     return (IPTR)(SetSignal(THUNK_D(0) & ~hidden, THUNK_D(1) & ~hidden) & ~hidden);
 }
 
@@ -551,15 +543,6 @@ static IPTR thunk_dos_AllocDosObject(struct KaffeineContext *ctx, void *cpu)
 
 /* ── DOS: Segments ── */
 
-/* -156: UnLoadSeg(D1=seglist): native DOS for its own seglists; that of a
-   68k library from disk is guest memory, which goes after its expunge */
-static IPTR thunk_dos_UnLoadSeg(struct KaffeineContext *ctx, void *cpu)
-{
-    if (!Kaffeine_IsM68KSegList(ctx, THUNK_D(1)))
-        UnLoadSeg((BPTR)THUNK_D(1));
-    return 0;
-}
-
 const struct M68KThunkEntry kaffeine_thunks_dos[] = {
     { 228, thunk_dos_AllocDosObject },
     KAFFEINE_DOS_FORMAT_OBJECT_THUNKS,
@@ -567,7 +550,6 @@ const struct M68KThunkEntry kaffeine_thunks_dos[] = {
     KAFFEINE_DOS_CLI_THUNKS,
     KAFFEINE_DOS_LAUNCH_THUNKS,
     KAFFEINE_DOS_LOCK_THUNKS,
-    { 156, thunk_dos_UnLoadSeg },
     { 132, thunk_dos_IoErr },
     { 462, thunk_dos_SetIoErr },
     {  90, thunk_dos_UnLock },
@@ -658,6 +640,7 @@ invalid:
 const struct M68KThunkEntry kaffeine_thunks_intuition_manual[] = {
     { 330, thunk_intuition_IntuiTextLength },
     { 348, thunk_intuition_AutoRequest },
+    KAFFEINE_INTUITION_REMEMBER_THUNKS,
     KAFFEINE_INTUITION_COMPAT_THUNKS,
     KAFFEINE_INTUITION_WINDOW_THUNKS,
     KAFFEINE_INTUITION_REQUEST_THUNKS,
@@ -677,10 +660,19 @@ const struct M68KThunkEntry kaffeine_thunks_gadtools_manual[] = {
     KAFFEINE_GADTOOLS_IDCMP_THUNKS,
     KAFFEINE_GADTOOLS_MENU_THUNKS,
     KAFFEINE_GADTOOLS_GADGET_THUNKS,
+    KAFFEINE_GADTOOLS_LAYER_THUNKS,
     { 0, NULL }
 };
 const ULONG kaffeine_thunks_gadtools_manual_count =
     sizeof(kaffeine_thunks_gadtools_manual) / sizeof(kaffeine_thunks_gadtools_manual[0]) - 1;
+
+/* Typed InputEvent conversion overrides the generated raw-pointer call. */
+const struct M68KThunkEntry kaffeine_thunks_keymap_manual[] = {
+    KAFFEINE_KEYMAP_THUNKS,
+    { 0, NULL }
+};
+const ULONG kaffeine_thunks_keymap_manual_count =
+    sizeof(kaffeine_thunks_keymap_manual) / sizeof(kaffeine_thunks_keymap_manual[0]) - 1;
 
 /* ── Graphics manual thunks (shadow RastPort) ── */
 const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {

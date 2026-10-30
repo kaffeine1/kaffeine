@@ -22,6 +22,7 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include "kaffeine_intern.h"
+#include "kaffeine_segments.h"
 #include "kaffeine_callback.h"
 #include "kaffeine_thunks.h"
 
@@ -35,6 +36,7 @@ struct Failed {};
     std::printf("FAIL %s:%d [%s]: %s\n", __FILE__, __LINE__, case_name, #c); \
     ++failures; throw Failed{}; } } while (0)
 static std::map<APTR, ULONG> native_allocations;
+static std::map<APTR, ULONG> native_vectors;
 extern "C" APTR AllocMem(ULONG size, ULONG flags)
 {
     APTR p = std::malloc(size);
@@ -47,9 +49,25 @@ extern "C" APTR AllocMem(ULONG size, ULONG flags)
 extern "C" void FreeMem(APTR p, ULONG size)
 {
     auto it = native_allocations.find(p);
-    if (it == native_allocations.end() || it->second != size) std::abort();
+    if (it == native_allocations.end() || it->second != size || native_vectors.count(p))
+        std::abort();
     native_allocations.erase(it);
     std::free(p);
+}
+extern "C" APTR AllocVec(ULONG size, ULONG flags)
+{
+    APTR p = AllocMem(size, flags);
+    if (p) native_vectors.emplace(p, size);
+    return p;
+}
+extern "C" void FreeVec(APTR p)
+{
+    if (!p) return;
+    auto it = native_vectors.find(p);
+    if (it == native_vectors.end()) std::abort();
+    ULONG size = it->second;
+    native_vectors.erase(it);
+    FreeMem(p, size);
 }
 
 /* Stable low memory is outside all library hunks and guest heap blocks. */
@@ -296,8 +314,17 @@ extern "C" void UnLoadSeg(BPTR seg)
     ++unloads;
     native_segments.reset(); /* no native payload can be used after this */
 }
+extern "C" void InitSemaphore(SignalSemaphore *sem) { sem->opaque = 0; }
+extern "C" void ObtainSemaphore(SignalSemaphore *sem) { ++sem->opaque; }
+extern "C" void ReleaseSemaphore(SignalSemaphore *sem) { --sem->opaque; }
 extern "C" LONG GetSegListInfo(BPTR seg, const TagItem *tags)
 {
+    if (seg == BPTR(0x23456) && tags[0].ti_Tag == GSLI_68KHUNK &&
+        tags[1].ti_Tag == GSLI_68KRelocs && tags[2].ti_Tag == GSLI_ElfHandle &&
+        tags[3].ti_Tag == TAG_DONE) {
+        *reinterpret_cast<IPTR *>(tags[2].ti_Data) = IPTR(seg);
+        return 1;
+    }
     ++infos;
     if (!native_segments || seg != native_segments->segs[0] ||
         tags[0].ti_Tag != GSLI_68KRelocs || tags[1].ti_Tag != TAG_DONE) {
@@ -332,6 +359,7 @@ struct Guest
     size_t initial_records;
     Guest()
     {
+        Kaffeine_SegmentsInit(&emu);
         disk_image = &image;
         disk_images.clear();
         attempts.clear(); accepted_path.clear();
@@ -945,7 +973,7 @@ static void unload_library_seglist()
     CHECK(dos_call(g, 156, seg) == 0);
     CHECK(unload_calls.size() == calls && g.avail() == before);
     CHECK(dos_call(g, 156, 0x12345) == 0);
-    CHECK(unload_calls.size() == calls + 1 && unload_calls.back() == BPTR(0x12345));
+    CHECK(unload_calls.size() == calls && IoErr() == ERROR_OBJECT_WRONG_TYPE);
     CHECK(g.ctx->m68klibs[0].seglist == seg && g.ctx->num_m68klibs == 1);
     g.thunk_close(base);
     CHECK(g.ctx->num_m68klibs == 0 && g.avail() == g.initial_avail);
@@ -954,18 +982,27 @@ static void unload_library_seglist()
 
 static void run_library_seglist()
 {
-    Guest g; g.setup_dos();
+    Guest g; g.setup_dos(); allow_foreign_unloads = true;
     g.image.expunge(g.ctx->m68k_sysbase);
     ULONG base = g.thunk_open(); CHECK(base);
     ULONG seg = g.ctx->m68klibs[0].seglist, before = g.avail();
     CHECK(dos_call(g, 504, seg) == ULONG(-1));
     CHECK(IoErr() == ERROR_OBJECT_WRONG_TYPE && run_commands.empty());
     g.text(0x3A00, "hello\n"); SetIoErr(73);
-    CHECK(dos_call(g, 504, 0x23456, 0x3A00, 6) == 73);
+    CHECK(dos_call(g, 504, 0x23456, 0x3A00, 6) == ULONG(-1));
+    CHECK(run_commands.empty() && IoErr() == ERROR_OBJECT_WRONG_TYPE);
+    KaffeineSegmentLoad load;
+    CHECK(Kaffeine_SegmentLoadBegin(g.ctx, &load));
+    ULONG token = Kaffeine_SegmentLoadEnd(g.ctx, &load, BPTR(0x23456));
+    CHECK(token != 0); SetIoErr(73);
+    CHECK(dos_call(g, 504, token, 0x3A00, 6) == 73);
     CHECK(run_commands.size() == 1 && run_commands[0].seglist == BPTR(0x23456));
     CHECK(run_commands[0].stacksize == 8192 && run_commands[0].args ==
         reinterpret_cast<char *>(g.ctx->mem + 0x3A00) && run_commands[0].size == 6);
     CHECK(IoErr() == 73 && g.avail() == before);
+    size_t unload_before = unload_calls.size();
+    CHECK(dos_call(g, 156, token) == 0);
+    CHECK(unload_calls.size() == unload_before + 1 && unload_calls.back() == BPTR(0x23456));
     g.thunk_close(base);
     CHECK(g.ctx->num_m68klibs == 0 && g.avail() == g.initial_avail);
     g.unchanged();

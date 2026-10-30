@@ -32,6 +32,8 @@
 #include "kaffeine_shadow.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_taglist.h"
+#include "kaffeine_segments.h"
+#include "kaffeine_process_tags.h"
 #include "kaffeine_thunks_dos.h"
 
 #define GUEST_FIB_SIZE 260
@@ -927,9 +929,23 @@ IPTR kaffeine_dos_RunCommand(struct KaffeineContext *ctx, void *cpu)
             return bad_dos_buffer(-1);
     }
     if (size > KAFFEINE_FILE_BUFFER_LIMIT) return bad_dos_buffer(-1);
-    if (!Kaffeine_FileAllPrepare(ctx)) return ctx->exit_code == 20 ? 20 : -1;
-    IPTR result = (IPTR)RunCommand((BPTR)(IPTR)THUNK_D(1), THUNK_D(2), (STRPTR)text, size);
-    return Kaffeine_FileAllFinish(ctx) ? result : 20;
+    struct KaffeineSegmentLoan loan;
+    IPTR result;
+    SIPTR ioerr;
+    BOOL finished;
+    if (!Kaffeine_SegmentLoanBegin(ctx, THUNK_D(1), &loan)) return (IPTR)-1;
+    if (!Kaffeine_FileAllPrepare(ctx))
+    {
+        Kaffeine_SegmentLoanEnd(ctx, &loan);
+        return ctx->exit_code == 20 ? 20 : -1;
+    }
+    result = (IPTR)RunCommand(loan.native, THUNK_D(2), (STRPTR)text, size);
+    ioerr = IoErr();
+    finished = Kaffeine_FileAllFinish(ctx);
+    Kaffeine_SegmentLoanEnd(ctx, &loan);
+    if (!finished) return 20;
+    SetIoErr(ioerr);
+    return result;
 }
 
 /* -150: LoadSeg(D1=name) -> D0=segList */
@@ -939,16 +955,20 @@ IPTR kaffeine_dos_LoadSeg(struct KaffeineContext *ctx, void *cpu)
     const char *name = guest_string(ctx, file);
     BPTR seg;
     SIPTR ioerr;
+    ULONG token;
+    struct KaffeineSegmentLoad load;
 
     if (!name)
         return bad_dos_buffer(0);
+    if (!Kaffeine_SegmentLoadBegin(ctx, &load)) return 0;
     seg = LoadSeg((CONST_STRPTR)name);
+    token = Kaffeine_SegmentLoadEnd(ctx, &load, seg);
     ioerr = IoErr();
     /* Record the opaque native BPTR, not BADDR(seg) or any segment bytes. */
     bug("[kaffeine] LoadSeg input=%08lx native=%p d0=%08lx\n",
-        (unsigned long)file, (APTR)(IPTR)seg, (unsigned long)(ULONG)(IPTR)seg);
+        (unsigned long)file, (APTR)(IPTR)seg, (unsigned long)token);
     SetIoErr(ioerr);
-    return (IPTR)seg;
+    return token;
 }
 
 /* -768: NewLoadSeg(D1=file, D2=tags) -> D0=segList */
@@ -959,19 +979,40 @@ IPTR kaffeine_dos_NewLoadSeg(struct KaffeineContext *ctx, void *cpu)
     struct TagItem *tags;
     BPTR seg;
     SIPTR ioerr;
+    ULONG token;
+    struct KaffeineSegmentLoad load;
 
     if (!name)
         return bad_dos_buffer(0);
+    if (!Kaffeine_SegmentLoadBegin(ctx, &load)) return 0;
     /* The tags still go through the generic converter; see INTERNALS.md. */
     tags = m68k_to_native_taglist(ctx, THUNK_D(2));
     seg = NewLoadSeg((CONST_STRPTR)name, tags);
+    token = Kaffeine_SegmentLoadEnd(ctx, &load, seg);
     ioerr = IoErr();
     if (tags)
         FreeVec(tags);
     bug("[kaffeine] NewLoadSeg input=%08lx native=%p d0=%08lx\n",
-        (unsigned long)file, (APTR)(IPTR)seg, (unsigned long)(ULONG)(IPTR)seg);
+        (unsigned long)file, (APTR)(IPTR)seg, (unsigned long)token);
     SetIoErr(ioerr);
-    return (IPTR)seg;
+    return token;
+}
+
+/* -156: only this context's loaded modules may reach native UnLoadSeg. */
+IPTR kaffeine_dos_UnLoadSeg(struct KaffeineContext *ctx, void *cpu)
+{
+    if (!Kaffeine_IsM68KSegList(ctx, THUNK_D(1)))
+        Kaffeine_SegmentRelease(ctx, THUNK_D(1));
+    return 0;
+}
+
+/* Global segment publication and native-width information outputs need
+   separate bridges. Do not expose loader handles through generated thunks. */
+IPTR kaffeine_dos_SegmentUnsupported(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)ctx; (void)cpu;
+    SetIoErr(ERROR_NOT_IMPLEMENTED);
+    return 0;
 }
 
 /* -930/-936: CliInitNewcli()/CliInitRun(A0=packet). AROS reads a native
@@ -1811,11 +1852,9 @@ void Kaffeine_MatchCleanup(struct KaffeineContext *ctx)
             release_anchor(ctx, i);
 }
 
-/* A native process would run guest code natively: NP_Entry, NP_Seglist
-   and the seglist of CreateProc() are 68k code, and the tag conversion
-   also turns small values such as NP_StackSize into guest pointers.
-   CreateNewProc() fails as DOS does when it cannot create a process.
-   CreateProc() makes a guest Process on the guest task scheduler, which
+/* Raw guest code and generic tag conversion cannot start a native process.
+   Registered independent modules use the typed process adapter. CreateProc
+   makes a guest Process on the guest task scheduler, which
    has no DOS context (kaffeine_sched.c); without a scheduler and a backend
    CPU factory it fails like CreateNewProc(). */
 
@@ -1827,9 +1866,9 @@ IPTR kaffeine_dos_CreateNewProc(struct KaffeineContext *ctx, void *cpu)
     ULONG list = THUNK_D(1), item = 0, tags = 0, logged = 0;
     int result;
 
-    /* Diagnostic only: report raw tag values, never strings, code or
-       translated pointers. The caller still gets the same DOS refusal. */
-    bug("[kaffeine] CreateNewProc refused tags=%08lx\n", (unsigned long)list);
+    /* Numeric diagnosis precedes typed validation; never follow arbitrary
+       tag payloads here. The typed adapter owns startup and rollback. */
+    bug("[kaffeine] CreateNewProc tags=%08lx\n", (unsigned long)list);
     Kaffeine_TagWalkInit(&walk, list);
     /* A preset limit bounds control tags too and disables the walker's
        extra cycle-length scan. Cycles and long lists stop at this budget. */
@@ -1850,8 +1889,14 @@ IPTR kaffeine_dos_CreateNewProc(struct KaffeineContext *ctx, void *cpu)
         result == KAFFEINE_TAG_END ? "end" :
             (walk.steps >= TRACE_STEPS ? "limit" : "invalid"),
         (unsigned long)tags, (unsigned long)logged, (unsigned long)walk.steps);
-    SetIoErr(ERROR_NOT_IMPLEMENTED);
-    return 0;
+    {
+        ULONG process = Kaffeine_ProcessFromTags(ctx, list);
+        SIPTR error = IoErr();
+        bug("[kaffeine] process startup result=%08lx error=%ld\n",
+            (unsigned long)process, (long)error);
+        SetIoErr(error);
+        return process;
+    }
 }
 
 /* -138: CreateProc(D1=name, D2=pri, D3=seglist, D4=stack) -> D0=port */
@@ -1860,6 +1905,11 @@ IPTR kaffeine_dos_CreateProc(struct KaffeineContext *ctx, void *cpu)
     LONG ioerr = ERROR_NOT_IMPLEMENTED;
     IPTR port = 0;
 
+    if (Kaffeine_SegmentToken(THUNK_D(3)))
+    {
+        SetIoErr(ERROR_NOT_IMPLEMENTED);
+        return 0;
+    }
     /* A refusal stops the program and returns its 20, without IoErr(). */
     if (ctx->task_ops && ctx->task_ops->create_proc && ctx->cpu_factory)
         port = ctx->task_ops->create_proc(ctx, cpu, &ioerr);

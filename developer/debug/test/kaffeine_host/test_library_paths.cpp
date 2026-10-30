@@ -13,8 +13,9 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_dispatch.h"
+#include "kaffeine_gfxbase.h"
 
-static unsigned checks, failures, setup_calls, disk_calls;
+static unsigned checks, failures, setup_calls, graphics_setup_calls, disk_calls;
 static bool fail_setup, stop_disk;
 static ULONG disk_result, disk_version;
 static std::string disk_name;
@@ -40,6 +41,7 @@ MANUAL_TABLE(locale_manual);
 MANUAL_TABLE(gadtools_manual);
 MANUAL_TABLE(icon_manual);
 MANUAL_TABLE(layers_manual);
+MANUAL_TABLE(keymap_manual);
 MANUAL_TABLE(mathffp);
 MANUAL_TABLE(workbench);
 MANUAL_TABLE(mathieeedoubbas);
@@ -72,6 +74,18 @@ extern "C" ULONG Kaffeine_SetupLibBase(KaffeineContext *ctx, UWORD id,
         entry.m68k_base = lib.m68k_addr;
     }
     return lib.m68k_addr;
+}
+
+/* This fixture records lookup routing only. The gfxbase_host suite builds
+   the actual graphics setup, positive-area reservation and font ownership. */
+extern "C" ULONG Kaffeine_SetupGraphicsBase(KaffeineContext *ctx,
+    const M68KThunkEntry *manual, ULONG manual_count,
+    const M68KThunkEntry *generated, ULONG generated_count)
+{
+    ++graphics_setup_calls;
+    return Kaffeine_SetupLibBase(ctx, ctx->num_libs, "graphics.library",
+                                KAFFEINE_MAX_LVO, manual, manual_count,
+                                generated, generated_count);
 }
 
 extern "C" ULONG Kaffeine_OpenM68KLibrary(KaffeineContext *ctx, void *,
@@ -113,7 +127,7 @@ struct Fixture
         ctx.m68k_sysbase = Kaffeine_SetupLibBase(&ctx, 0, "exec.library",
             KAFFEINE_MAX_LVO, kaffeine_thunks_exec, kaffeine_thunks_exec_count, nullptr, 0);
         Kaffeine_SetupLibBase(&ctx, 1, "dos.library", KAFFEINE_MAX_LVO, nullptr, 0, nullptr, 0);
-        setup_calls = disk_calls = 0;
+        setup_calls = graphics_setup_calls = disk_calls = 0;
         for (unsigned i = 0; i < 8; ++i) {
             state.d[i] = 0xd0d00100 + i; state.a[i] = 0xa0a00100 + i;
         }
@@ -163,6 +177,7 @@ static const Manual manuals[] = {
     {"gadtools.library", kaffeine_thunks_gadtools_manual, kaffeine_thunks_gadtools_manual_count},
     {"icon.library", kaffeine_thunks_icon_manual, kaffeine_thunks_icon_manual_count},
     {"layers.library", kaffeine_thunks_layers_manual, kaffeine_thunks_layers_manual_count},
+    {"keymap.library", kaffeine_thunks_keymap_manual, kaffeine_thunks_keymap_manual_count},
     {"mathffp.library", kaffeine_thunks_mathffp, kaffeine_thunks_mathffp_count},
     {"workbench.library", kaffeine_thunks_workbench, kaffeine_thunks_workbench_count},
     {"mathieeedoubbas.library", kaffeine_thunks_mathieeedoubbas, kaffeine_thunks_mathieeedoubbas_count},
@@ -197,6 +212,7 @@ static void reuse(const char *name, const Manual *manual, const M68KLibThunkSet 
         other_case[0] -= 'a' - 'A';
         CHECK(f.native("LIBS:" + other_case) == 0);
         CHECK(setup_calls == 1 && disk_calls == 0 && f.ctx.num_libs == 3 && f.ctx.num_libmap == 3);
+        CHECK(graphics_setup_calls == (!std::strcmp(name, "graphics.library") ? 1u : 0u));
     }
 }
 
@@ -282,15 +298,17 @@ static void rejection_and_fallback()
     CHECK(f.call("LIBS:unknown.library") == 20 && !f.ctx.running);
     CHECK(setup_calls == 0 && f.ctx.num_libs == 2 && f.ctx.num_libmap == 2);
 
-    for (const char *name : {"diskfont.library", "mathffp.library", "workbench.library"}) {
+    for (const char *name : {"diskfont.library", "mathffp.library", "workbench.library", "graphics.library"}) {
         Fixture retry;
         fail_setup = true;
         CHECK(retry.call(std::string("LIBS:") + name) == 0);
         CHECK(setup_calls == 1 && disk_calls == 1 && disk_name == std::string("LIBS:") + name);
+        CHECK(graphics_setup_calls == (!std::strcmp(name, "graphics.library") ? 1u : 0u));
         CHECK(disk_version == 34 && retry.ctx.num_libs == 2 && retry.ctx.num_libmap == 2);
         ULONG base = retry.call(std::string("SYS:Libs/") + name);
         CHECK(base != 0 && retry.call(name) == base);
         CHECK(setup_calls == 2 && disk_calls == 1 && retry.ctx.num_libs == 3 && retry.ctx.num_libmap == 3);
+        CHECK(graphics_setup_calls == (!std::strcmp(name, "graphics.library") ? 2u : 0u));
     }
 }
 

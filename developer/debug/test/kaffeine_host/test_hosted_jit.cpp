@@ -106,8 +106,15 @@ static IPTR probe_stop7(KaffeineContext *ctx, void *)
     return 7;
 }
 
+static IPTR probe_stop_void(KaffeineContext *ctx, void *cpu)
+{
+    Kaffeine_StopGuest(ctx, cpu, 20);
+    return 0;
+}
+
 static const M68KThunkEntry probe_thunks[] = {
-    { 30, probe_echo }, { 36, probe_snapshot }, { 42, probe_count }, { 48, probe_stop7 }
+    { 30, probe_echo }, { 36, probe_snapshot }, { 42, probe_count }, { 48, probe_stop7 },
+    { 54, probe_stop_void }
 };
 /* The production cache thunks reach the probe through its flush_code() */
 static const M68KThunkEntry exec_thunks[] = {
@@ -141,7 +148,7 @@ struct Machine
         ctx.entry_point = Layout::entry; ctx.stack_top = Layout::stack;
         ctx.m68k_sysbase = Layout::exec;
         ctx.num_libs = 3;
-        library(0, Layout::probe, "probe.library", probe_thunks, 4, nullptr, 0);
+        library(0, Layout::probe, "probe.library", probe_thunks, 5, nullptr, 0);
         library(1, Layout::utility, "utility.library", kaffeine_thunks_utility_manual,
                 kaffeine_thunks_utility_manual_count, utility_generated, 2);
         library(2, Layout::exec, "exec.library", exec_thunks, 3, exec_generated, 1);
@@ -1035,6 +1042,31 @@ static void callback_faults()
         m.rts();
         CHECK(m.run(which) == 7 && m.ctx.callback_failed && m.mem[Layout::buffer] == 0xA5);
     }
+}
+
+/* A void thunk may return 0 after recording a fatal stop. The callback
+   and both dispatch adapters must retain that code through every level. */
+static void callback_stop_codes()
+{
+    for (Backend which : { MOIRA, JIT, JIT_LIBRARY })
+        for (UWORD lvo : { 48, 54 })
+        {
+            Machine m;
+            const ULONG inner = Layout::hook + 32, inner_code = Layout::hook_code + 0x100;
+            m.pc = inner_code; m.jsr(Layout::probe, lvo); m.word(0x702A); m.rts();
+            m.hook_at(inner, inner_code);
+            m.pc = Layout::hook_code; m.hook_call(inner); m.rts();
+            m.hook_at(Layout::hook, Layout::hook_code);
+            m.pc = Layout::entry; m.hook_call();
+            m.word(0x13FC); m.word(0x003C); m.longword(Layout::buffer); m.rts();
+            LONG expected = lvo == 54 ? 20 : 7;
+            CHECK(m.run(which) == expected);
+            CHECK(m.ctx.exit_code == expected && m.ctx.callback_failed);
+            CHECK(!m.ctx.running && !m.ctx.callback_depth && m.mem[Layout::buffer] == 0xA5);
+            CHECK(!generated_calls);
+            if (which != MOIRA)
+                CHECK(HJ_GetStats(m.jit)->max_depth == 3 && !HJ_LastFault(m.jit)[0]);
+        }
 }
 
 static void bitfield_boundaries()
@@ -2364,7 +2396,8 @@ int main(int argc, char **argv)
         {"block-limits", block_limits, true}, {"code-reset", code_reset, true},
         {"library-calls", library_calls, true}, {"callback-depth", callback_depth, true},
         {"callback-registers", callback_registers, true}, {"callback-format", callback_format, true},
-        {"callback-faults", callback_faults, true}, {"bitfield-boundaries", bitfield_boundaries, true},
+        {"callback-faults", callback_faults, true}, {"callback-stop-codes", callback_stop_codes, true},
+        {"bitfield-boundaries", bitfield_boundaries, true},
         {"code-changes", code_changes, true},
         {"faults", faults, true}, {"extended-insns", extended_insns, true},
         {"full-index", full_index, true},

@@ -17,10 +17,13 @@ BYTE AllocSignal(LONG);
 void FreeSignal(LONG);
 void Signal(struct Task *, ULONG);
 struct Task *FindTask(CONST_STRPTR);
+BYTE SetTaskPri(struct Task *, LONG);
 void RawPutChar(UBYTE);
 void PutMsg(struct MsgPort *, struct Message *);
 struct Message *GetMsg(struct MsgPort *);
 struct Message *WaitPort(struct MsgPort *);
+ULONG Wait(ULONG);
+ULONG SetSignal(ULONG, ULONG);
 void ReplyMsg(struct Message *);
 #ifdef __cplusplus
 }

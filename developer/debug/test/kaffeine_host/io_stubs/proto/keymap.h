@@ -6,6 +6,9 @@ struct KeyMap;
 extern "C" {
 #endif
 WORD MapRawKey(struct InputEvent *event, STRPTR buffer, LONG length, struct KeyMap *keyMap);
+void SetKeyMapDefault(struct KeyMap *keyMap);
+struct KeyMap *AskKeyMapDefault(void);
+LONG MapANSI(STRPTR string, LONG count, STRPTR buffer, LONG length, struct KeyMap *keyMap);
 #ifdef __cplusplus
 }
 #endif

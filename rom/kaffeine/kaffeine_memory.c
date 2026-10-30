@@ -15,12 +15,16 @@
 
 #include "kaffeine_intern.h"
 #include "kaffeine_offsets.h"
+#include "kaffeine_domain_memory.h"
+#include "kaffeine_remember_memory.h"
+#include "kaffeine_layers.h"
+#include "kaffeine_paint_memory.h"
 #include "kaffeine_thunks.h"
 
 enum
 {
     HEAP_FREE, HEAP_ALLOCATION, HEAP_POOL, HEAP_TAGITEMS, HEAP_LOCALE,
-    HEAP_ABSOLUTE, HEAP_MEMLIST, HEAP_ENTRY, HEAP_ACHAIN, HEAP_MIRROR, HEAP_RESERVED
+    HEAP_ABSOLUTE, HEAP_MEMLIST, HEAP_ENTRY, HEAP_ACHAIN, HEAP_MIRROR, HEAP_RESERVED, HEAP_DOMAIN, HEAP_REMEMBER
 };
 
 /* The native intervals partition the arena. Guest headers are only checked
@@ -356,6 +360,12 @@ struct KaffeineContext *Kaffeine_CreateContext(struct KaffeineLibBase *base)
 void Kaffeine_DestroyContext(struct KaffeineContext *ctx)
 {
     if (!ctx) return;
+    if (ctx->idcmp_cleanup) ctx->idcmp_cleanup(ctx);
+    if (ctx->segments_cleanup) ctx->segments_cleanup(ctx);
+    if (ctx->domain_cleanup) ctx->domain_cleanup(ctx);
+    if (ctx->domain_destroy) ctx->domain_destroy(ctx);
+    if (ctx->remember_destroy) ctx->remember_destroy(ctx);
+    if (ctx->video_destroy) ctx->video_destroy(ctx);
     heap_destroy(ctx->heap_allocations);
     if (ctx->mem) FreeMem(ctx->mem, ctx->mem_size + KAFFEINE_MEM_GUARD);
     FreeMem(ctx, sizeof(*ctx));
@@ -519,6 +529,25 @@ static void heap_payload(const struct M68KHeapAllocation *allocation, ULONG *blo
     if (allocation->requested < *size) *size = allocation->requested;
 }
 
+/* Lease query for a library base inside an allocation. The complete
+   interval comes from private allocator metadata, not lib_NegSize/PosSize.
+   With no installed lease this introduces no new allocation requirement. */
+BOOL Kaffeine_HeapPaintReleasable(struct KaffeineContext *ctx, ULONG interior)
+{
+    struct M68KHeapAllocation *n, *node = NULL;
+    ULONG payload, bytes;
+    if (Kaffeine_LayerMemoryReleasable(ctx, 0, ctx->mem_size)) return TRUE;
+    if (!heap_ready(ctx)) return FALSE;
+    for (n = ctx->heap_allocations; n; )
+        if (n->block <= interior) { node = n; n = n->right; }
+        else n = n->left;
+    if (!node || node->kind == HEAP_FREE || node->kind == HEAP_RESERVED ||
+        !heap_span_valid(ctx, node)) return FALSE;
+    heap_payload(node, &payload, &bytes);
+    return interior >= payload && interior - payload < bytes &&
+           Kaffeine_LayerMemoryReleasable(ctx, payload, bytes);
+}
+
 /* Asynchronous I/O may still need guest memory that is about to be freed:
    a request in flight or a reply still queued there keeps it allocated.
    Without commit the hook only answers, so that a multi-block release can
@@ -528,9 +557,11 @@ static BOOL heap_io_keeps(struct KaffeineContext *ctx,
 {
     ULONG block, size;
 
-    if (!ctx->io_release) return FALSE;
     heap_payload(allocation, &block, &size);
-    return !ctx->io_release(ctx, block, size, commit);
+    if (!Kaffeine_LayerMemoryReleasable(ctx, block, size)) return TRUE;
+    if (ctx->idcmp_release && !ctx->idcmp_release(ctx, block, size, FALSE)) return TRUE;
+    if (ctx->io_release && !ctx->io_release(ctx, block, size, commit)) return TRUE;
+    return commit && ctx->idcmp_release && !ctx->idcmp_release(ctx, block, size, TRUE);
 }
 
 /* A guest may drain a manual port with inline list operations, then release
@@ -567,8 +598,8 @@ static void heap_forget_empty_ports(struct KaffeineContext *ctx,
     }
 }
 
-static BOOL heap_release(struct KaffeineContext *ctx, struct M68KHeapAllocation *allocation,
-                          struct M68KHeapAllocation *pool)
+static BOOL heap_release_impl(struct KaffeineContext *ctx, struct M68KHeapAllocation *allocation,
+                               struct M68KHeapAllocation *pool, BOOL unpublished)
 {
     struct M68KHeapAllocation *previous = heap_free_neighbor(allocation, FALSE);
     struct M68KHeapAllocation *following = heap_free_neighbor(allocation, TRUE);
@@ -579,9 +610,15 @@ static BOOL heap_release(struct KaffeineContext *ctx, struct M68KHeapAllocation 
         return FALSE;
     /* Only now, with the release certain to succeed: the hook closes what
        it releases. */
-    if (heap_io_keeps(ctx, allocation, TRUE))
+    if (!unpublished && heap_io_keeps(ctx, allocation, TRUE))
         return FALSE;
-    heap_forget_empty_ports(ctx, allocation);
+    /* A retiring shared IDCMP port can free its outstanding message
+       mirrors in that hook. Their coalescing may replace either neighbor. */
+    previous = heap_free_neighbor(allocation, FALSE);
+    following = heap_free_neighbor(allocation, TRUE);
+    if (!heap_span_valid(ctx, allocation) || !heap_free_valid(ctx, previous) ||
+        !heap_free_valid(ctx, following)) return FALSE;
+    if (!unpublished) heap_forget_empty_ports(ctx, allocation);
     if (pool)
     {
         if (allocation->prev) allocation->prev->next = allocation->next;
@@ -619,6 +656,12 @@ static BOOL heap_release(struct KaffeineContext *ctx, struct M68KHeapAllocation 
     heap_write_free(ctx, kept);
     ctx->heap_free = ctx->heap_first_free ? ctx->heap_first_free->block : 0;
     return TRUE;
+}
+
+static BOOL heap_release(struct KaffeineContext *ctx, struct M68KHeapAllocation *allocation,
+                          struct M68KHeapAllocation *pool)
+{
+    return heap_release_impl(ctx, allocation, pool, FALSE);
 }
 
 void Kaffeine_HeapFree(struct KaffeineContext *ctx, ULONG addr, ULONG size)
@@ -677,7 +720,8 @@ BOOL Kaffeine_HeapGuestRange(struct KaffeineContext *ctx, ULONG addr, ULONG size
                 n = n->left;
         if (!node || cur - node->block >= node->size ||
             (node->kind != HEAP_ALLOCATION && node->kind != HEAP_ABSOLUTE &&
-             node->kind != HEAP_ENTRY))
+             node->kind != HEAP_ENTRY && node->kind != HEAP_DOMAIN &&
+             node->kind != HEAP_REMEMBER))
             return FALSE;
         payload = node->block + (node->kind == HEAP_ABSOLUTE ? 0 : KAFFEINE_HEAP_HDR);
         available = node->size - (payload - node->block);
@@ -834,6 +878,26 @@ ULONG Kaffeine_TagItemsCapacity(struct KaffeineContext *ctx, ULONG addr)
     return allocation->requested / 8;
 }
 
+/* Writable classic tag storage: ordinary guest memory or part of an
+ * AllocateTagItems-owned payload. Read-only mirrors and private headers stay
+ * excluded. The interval comes from native metadata, never guest headers. */
+BOOL Kaffeine_TagItemsRange(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    struct M68KHeapAllocation *a = NULL, *n;
+    ULONG payload;
+    if (!ctx || !size || (addr >= ctx->heap_start && addr < ctx->heap_end &&
+                          size > ctx->heap_end - addr)) return FALSE;
+    if (Kaffeine_HeapGuestRange(ctx, addr, size)) return TRUE;
+    if (!heap_ready(ctx)) return FALSE;
+    for (n = ctx->heap_allocations; n; )
+        if (n->block <= addr) { a = n; n = n->right; }
+        else n = n->left;
+    if (!a || a->kind != HEAP_TAGITEMS || !heap_span_valid(ctx, a)) return FALSE;
+    payload = a->block + KAFFEINE_HEAP_HDR;
+    return addr >= payload && addr - payload <= a->requested &&
+           size <= a->requested - (addr - payload);
+}
+
 void Kaffeine_TagItemsFree(struct KaffeineContext *ctx, ULONG addr)
 {
     struct M68KHeapAllocation *allocation;
@@ -896,6 +960,66 @@ ULONG Kaffeine_MirrorAlloc(struct KaffeineContext *ctx, ULONG size)
 void Kaffeine_MirrorRelease(struct KaffeineContext *ctx, ULONG addr)
 {
     owned_free(ctx, addr, HEAP_MIRROR);
+}
+
+/* Only a fresh unpublished mirror may bypass reference hooks on rollback. */
+BOOL Kaffeine_MirrorAbort(struct KaffeineContext *ctx, ULONG addr)
+{
+    struct M68KHeapAllocation *a;
+    if (!addr || !heap_ready(ctx)) return FALSE;
+    a = heap_find(ctx, addr);
+    return a && a->kind == HEAP_MIRROR && heap_release_valid(ctx, a) &&
+           heap_release_impl(ctx, a, NULL, TRUE);
+}
+
+/* Remember blocks remain private owners until FreeRemember(FALSE) transfers
+ * a data interval to ordinary guest ownership. The caller supplies trusted
+ * native descriptors; no guest node/header is used to infer ownership. */
+static struct M68KHeapAllocation *remember_block(struct KaffeineContext *ctx,
+                                                ULONG addr, ULONG size)
+{
+    struct M68KHeapAllocation *a;
+    if (!addr || !size || !heap_ready(ctx)) return NULL;
+    a = heap_find(ctx, addr);
+    return a && a->kind == HEAP_REMEMBER && !a->pool &&
+           a->requested == size && heap_span_valid(ctx, a) ? a : NULL;
+}
+
+ULONG Kaffeine_RememberMemoryAlloc(struct KaffeineContext *ctx, ULONG size,
+                                  ULONG requirements)
+{
+    struct M68KHeapAllocation *a;
+    if (!size) return 0;
+    a = heap_allocate(ctx, size, requirements);
+    if (!a) return 0;
+    a->kind = HEAP_REMEMBER;
+    return a->block + KAFFEINE_HEAP_HDR;
+}
+
+BOOL Kaffeine_RememberMemoryCheck(struct KaffeineContext *ctx, ULONG addr,
+                                 ULONG size, BOOL releasing)
+{
+    struct M68KHeapAllocation *a = remember_block(ctx, addr, size);
+    return a && (!releasing || (heap_release_valid(ctx, a) &&
+                                !heap_io_keeps(ctx, a, FALSE)));
+}
+
+BOOL Kaffeine_RememberMemoryRelease(struct KaffeineContext *ctx, ULONG addr,
+                                   ULONG size, BOOL unpublished)
+{
+    struct M68KHeapAllocation *a = remember_block(ctx, addr, size);
+    if (!a || !heap_release_valid(ctx, a) ||
+        (!unpublished && heap_io_keeps(ctx, a, FALSE))) return FALSE;
+    return heap_release_impl(ctx, a, NULL, unpublished);
+}
+
+BOOL Kaffeine_RememberMemoryForget(struct KaffeineContext *ctx, ULONG addr,
+                                  ULONG size)
+{
+    struct M68KHeapAllocation *a = remember_block(ctx, addr, size);
+    if (!a) return FALSE;
+    a->kind = HEAP_ALLOCATION;
+    return TRUE;
 }
 
 ULONG Kaffeine_HeapAvail(struct KaffeineContext *ctx, ULONG requirements)
@@ -1006,7 +1130,7 @@ void Kaffeine_PoolDelete(struct KaffeineContext *ctx, ULONG pool)
  */
 static ULONG copy_seglist(struct KaffeineContext *ctx, BPTR segList,
                           const struct HunkRelocTable *relocs, BOOL headers,
-                          ULONG *seglist)
+                          ULONG *seglist, struct KaffeineDomainBlock *owned)
 {
     ULONG extra = headers ? sizeof(ULONG) + sizeof(ULONG) : 0;
     BPTR seg;
@@ -1045,10 +1169,12 @@ static ULONG copy_seglist(struct KaffeineContext *ctx, BPTR segList,
             goto done;
         sizes[i] = alloc_size - sizeof(ULONG) - sizeof(BPTR);
 
-        block = Kaffeine_HeapAlloc(ctx, sizes[i] + extra, 0);
+        block = owned ? owned_alloc(ctx, sizes[i] + extra, HEAP_DOMAIN) :
+                        Kaffeine_HeapAlloc(ctx, sizes[i] + extra, 0);
         if (!block)
             goto done;
         guest[i] = block + extra;
+        if (owned) { owned[i].base = block; owned[i].size = sizes[i] + extra; }
 
         CopyMem(src, m68k_to_host(ctx, guest[i]), sizes[i]);
         native[i] = (ULONG)(IPTR)src;
@@ -1092,9 +1218,9 @@ static ULONG copy_seglist(struct KaffeineContext *ctx, BPTR segList,
 done:
     if (!entry_point && guest)
     {
-        for (i = 0; i < num_hunks; i++)
-            if (guest[i])
-                Kaffeine_HeapFree(ctx, guest[i] - extra, sizes[i] + extra);
+        if (owned) Kaffeine_AbortDomainHunks(ctx, owned, num_hunks);
+        else for (i = 0; i < num_hunks; i++)
+            if (guest[i]) Kaffeine_HeapFree(ctx, guest[i] - extra, sizes[i] + extra);
     }
     if (native) FreeMem(native, num_hunks * sizeof(ULONG));
     if (guest)  FreeMem(guest,  num_hunks * sizeof(ULONG));
@@ -1105,7 +1231,7 @@ done:
 ULONG Kaffeine_LoadHunks(struct KaffeineContext *ctx, BPTR segList,
                         const struct HunkRelocTable *relocs)
 {
-    ULONG entry_point = copy_seglist(ctx, segList, relocs, FALSE, NULL);
+    ULONG entry_point = copy_seglist(ctx, segList, relocs, FALSE, NULL, NULL);
 
     if (entry_point)
     {
@@ -1120,7 +1246,66 @@ ULONG Kaffeine_LoadLibraryHunks(struct KaffeineContext *ctx, BPTR segList,
 {
     ULONG seglist = 0;
 
-    return copy_seglist(ctx, segList, relocs, TRUE, &seglist) ? seglist : 0;
+    return copy_seglist(ctx, segList, relocs, TRUE, &seglist, NULL) ? seglist : 0;
+}
+
+/* A bounded domain import passes native descriptors to the same copier.
+   Both storage and capacity are private, never taken from guest headers. */
+ULONG Kaffeine_LoadDomainHunks(struct KaffeineContext *ctx, BPTR native,
+                              const struct HunkRelocTable *relocs,
+                              struct KaffeineDomainBlock *blocks, ULONG capacity)
+{
+    ULONG seglist = 0, i;
+    if (!blocks || !relocs || !relocs->hrt_NumHunks ||
+        relocs->hrt_NumHunks > capacity) return 0;
+    for (i = 0; i < relocs->hrt_NumHunks; ++i) blocks[i].base = 0;
+    return copy_seglist(ctx, native, relocs, TRUE, &seglist, blocks) ? seglist : 0;
+}
+
+static BOOL release_domain_hunks(struct KaffeineContext *ctx,
+                                 struct KaffeineDomainBlock *blocks, ULONG count,
+                                 BOOL unpublished)
+{
+    ULONG i;
+    if (!blocks || !heap_ready(ctx)) return FALSE;
+    /* A queued message/request can keep a module alive. Probe every member
+       before releasing any; the single context driver cannot resume guest
+       code between this probe and the native allocator operations. */
+    for (i = 0; i < count; ++i)
+    {
+        struct M68KHeapAllocation *a;
+        if (!blocks[i].base) continue;
+        a = heap_find(ctx, blocks[i].base);
+        if (!a || a->kind != HEAP_DOMAIN || a->pool ||
+            a->requested != blocks[i].size || !heap_release_valid(ctx, a) ||
+            (!unpublished && heap_io_keeps(ctx, a, FALSE))) return FALSE;
+    }
+    if (!unpublished) ++ctx->jit_generation;
+    for (i = 0; i < count; ++i)
+    {
+        struct M68KHeapAllocation *a;
+        if (!blocks[i].base) continue;
+        a = heap_find(ctx, blocks[i].base);
+        if (!unpublished) Kaffeine_FlushCode(ctx->cpu, blocks[i].base, blocks[i].size);
+        if (!heap_release_impl(ctx, a, NULL, unpublished)) return FALSE;
+        blocks[i].base = 0; /* retained record tracks any deferred remainder */
+    }
+    return TRUE;
+}
+
+BOOL Kaffeine_ReleaseDomainHunks(struct KaffeineContext *ctx,
+                                struct KaffeineDomainBlock *blocks, ULONG count)
+{
+    return release_domain_hunks(ctx, blocks, count, FALSE);
+}
+
+/* Only the synchronous importer calls this, before publishing any guest
+   address. No message/I/O can own these fresh allocations. Bypass generic
+   reference hooks so an unrelated malformed queue cannot break OOM rollback. */
+BOOL Kaffeine_AbortDomainHunks(struct KaffeineContext *ctx,
+                              struct KaffeineDomainBlock *blocks, ULONG count)
+{
+    return release_domain_hunks(ctx, blocks, count, TRUE);
 }
 
 static ULONG setup_base(struct KaffeineContext *ctx, UWORD lib_id,
@@ -1188,6 +1373,18 @@ static ULONG setup_base(struct KaffeineContext *ctx, UWORD lib_id,
     }
 
     return base_addr;
+}
+
+/* The compiled owner chooses its public positive-area size explicitly.
+ * No native pointer or library-specific field is interpreted by the heap. */
+ULONG Kaffeine_SetupLibBaseSized(struct KaffeineContext *ctx, UWORD lib_id,
+                                 const char *name, UWORD num_vectors, UWORD pos_size,
+                                 const struct M68KThunkEntry *thunks, ULONG num_thunks,
+                                 const struct M68KThunkEntry *gen_thunks, ULONG num_gen_thunks)
+{
+    if (pos_size < 4) return 0;
+    return setup_base(ctx, lib_id, name, num_vectors, pos_size,
+                      thunks, num_thunks, gen_thunks, num_gen_thunks, TRUE);
 }
 
 ULONG Kaffeine_SetupLibBase(struct KaffeineContext *ctx, UWORD lib_id,

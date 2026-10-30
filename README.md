@@ -60,12 +60,22 @@ are shortened and drawing remains at its original speed. This is an AROS
 ARM64/QEMU compatibility demonstration using Moira, rather than a JIT or
 physical hardware benchmark.
 
+## TurboText opening and input — 30 October 2026
+
+The original 68k TurboText 2.0 now opens its editor, loads a text document and
+visibly inserts a test character on AROS ARM64 with the Kaffeine JIT and a
+24-bit Workbench. See the [framebuffer captures and checked scope](docs/kaffeine/media/turbotext-2026-10-30/README.md).
+Native AROS screen-position and indexed-color conversion issues remain;
+saving, reopening and broader editor behavior have not been accepted.
+
 ## Documentation and tests
 
 - [Upstream m68kemu comparison and contribution candidates](docs/kaffeine/upstream-pr1905-comparison.md).
 - [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
 - [Current behavior, architecture and verified limits](README.KAFFEINE.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
+- [Bounded native backfill hooks](docs/kaffeine/native-backfill.md).
+- [Tracked window refresh](docs/kaffeine/window-refresh.md) and [typed keyboard mapping](docs/kaffeine/keymap.md).
 - [Standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).
 - [AROS target programs and QEMU runner](developer/debug/test/kaffeine_target/README.md).
 - [Library implementation](rom/kaffeine/README.md), [internals reference](rom/kaffeine/INTERNALS.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).

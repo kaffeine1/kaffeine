@@ -41,6 +41,8 @@ IPTR kaffeine_dos_Execute(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_dos_RunCommand(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_dos_LoadSeg(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_dos_NewLoadSeg(struct KaffeineContext *ctx, void *cpu);
+IPTR kaffeine_dos_UnLoadSeg(struct KaffeineContext *ctx, void *cpu);
+IPTR kaffeine_dos_SegmentUnsupported(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_dos_CliInitNewcli(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_dos_CliInitRun(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_dos_VPrintf(struct KaffeineContext *ctx, void *cpu);
@@ -127,6 +129,11 @@ void Kaffeine_ExAllCleanup(struct KaffeineContext *ctx);
     { 342, kaffeine_dos_FPuts }, \
     { 504, kaffeine_dos_RunCommand }, \
     { 768, kaffeine_dos_NewLoadSeg }, \
+    { 156, kaffeine_dos_UnLoadSeg }, \
+    { 774, kaffeine_dos_SegmentUnsupported }, \
+    { 780, kaffeine_dos_SegmentUnsupported }, \
+    { 786, kaffeine_dos_SegmentUnsupported }, \
+    { 1176, kaffeine_dos_SegmentUnsupported }, \
     { 930, kaffeine_dos_CliInitNewcli }, \
     { 936, kaffeine_dos_CliInitRun }, \
     { 948, kaffeine_dos_PutStr }, \

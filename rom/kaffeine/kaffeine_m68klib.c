@@ -37,6 +37,8 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_callback.h"
+#include "kaffeine_layers.h"
+#include "kaffeine_paint_memory.h"
 
 #define NT_LIBRARY    9
 /* Longer tables than these are none that a library means. */
@@ -71,9 +73,28 @@ static BPTR load(const char *path)
 
 /* The guest hunks of a seglist that Kaffeine_LoadLibraryHunks() made go
    back to the heap. */
-static void free_seglist(struct KaffeineContext *ctx, ULONG seglist)
+static BOOL paint_seglist_releasable(struct KaffeineContext *ctx, ULONG seglist)
 {
     ULONG n;
+    if (Kaffeine_LayerMemoryReleasable(ctx, 0, ctx->mem_size)) return TRUE;
+    for (n = 0; seglist && n < MAX_HUNKS; ++n)
+    {
+        ULONG link, block, bytes;
+        if (seglist > 0x3fffffffUL || (link = seglist << 2) < 4 ||
+            !in_guest(ctx, link - 4, 8)) return FALSE;
+        block = link - 4; bytes = m68k_read32(ctx, block);
+        if (bytes < 8 || !in_guest(ctx, block, bytes) ||
+            !Kaffeine_LayerMemoryReleasable(ctx, block, bytes)) return FALSE;
+        seglist = m68k_read32(ctx, link);
+    }
+    return !seglist;
+}
+
+static BOOL free_seglist(struct KaffeineContext *ctx, ULONG seglist)
+{
+    ULONG n;
+    if (!paint_seglist_releasable(ctx, seglist))
+    { Kaffeine_StopGuest(ctx, ctx->cpu, 20); return FALSE; }
 
     for (n = 0; seglist && n < MAX_HUNKS; n++)
     {
@@ -82,6 +103,7 @@ static void free_seglist(struct KaffeineContext *ctx, ULONG seglist)
         Kaffeine_HeapFree(ctx, block, m68k_read32(ctx, block));
         seglist = next;
     }
+    return TRUE;
 }
 
 /* Whether addr lies in the hunks of seglist */
@@ -336,6 +358,13 @@ static BOOL call_library(struct KaffeineContext *ctx, void *cpu, int i, ULONG ba
     struct KaffeineGuestCall call;
     ULONG library = ctx->m68klibs[i].base, seglist = ctx->m68klibs[i].seglist;
 
+    /* No guest Close/Expunge runs while this library's code/data is a
+       native callback dependency, even if this call would only decrement
+       an open count. Query all hunks before any guest state can change. */
+    if (!paint_seglist_releasable(ctx, seglist) ||
+        !Kaffeine_HeapPaintReleasable(ctx, library) ||
+        !Kaffeine_HeapPaintReleasable(ctx, base))
+    { Kaffeine_StopGuest(ctx, cpu, 20); return FALSE; }
     memset(&call, 0, sizeof(call));
     call.a[6] = base;
     call.a_mask = 1u << 6;
@@ -344,7 +373,7 @@ static BOOL call_library(struct KaffeineContext *ctx, void *cpu, int i, ULONG ba
     if (call.d[0] && call.d[0] == seglist && ctx->m68klibs[i].base == library &&
         ctx->m68klibs[i].seglist == seglist)
     {
-        free_seglist(ctx, seglist);
+        if (!free_seglist(ctx, seglist)) return FALSE;
         memset(&ctx->m68klibs[i], 0, sizeof(ctx->m68klibs[i]));
         ctx->num_m68klibs--;
     }

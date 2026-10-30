@@ -2,10 +2,15 @@
 #ifndef KAFFEINE_FILEHANDLE_H
 #define KAFFEINE_FILEHANDLE_H
 #include "kaffeine_intern.h"
+
 #include <dos/dos.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* Retire associations before their native Process/caller releases the FH.
+   These functions never close the native handle. Identities stay quarantined. */
+void Kaffeine_FileDropNative(struct KaffeineContext *, BPTR, BOOL borrowed_only);
+void Kaffeine_FileDropBorrowed(struct KaffeineContext *, ULONG token);
 ULONG Kaffeine_FileImport(struct KaffeineContext *, BPTR, BOOL);
 BOOL Kaffeine_FileResolve(struct KaffeineContext *, ULONG, BPTR *);
 BOOL Kaffeine_FileBufferPrepare(struct KaffeineContext *, ULONG);

@@ -13,6 +13,9 @@ extern "C" {
 #define KAFFEINE_LOCK_VOLUME_LIMIT 32
 #define KAFFEINE_LOCK_BORROW_LIMIT 128
 #define KAFFEINE_LOCK_IDENTITY_LIMIT 4096
+#define KAFFEINE_LOCK_OWNER_LIMIT 17
+
+struct Task;
 
 enum KaffeineLockScope
 {
@@ -70,6 +73,7 @@ void Kaffeine_LockTransferEnd(struct KaffeineContext *, struct KaffeineLockTrans
    returns its installed token without inventing a caller-owned reference;
    any existing caller ref remains, exchanging with the displaced reference. */
 BOOL Kaffeine_LockGetInstalled(struct KaffeineContext *, enum KaffeineLockInstalled, ULONG *token);
+void Kaffeine_LockOwnerDrop(struct KaffeineContext *, struct Task *);
 BOOL Kaffeine_LockSwapInstalled(struct KaffeineContext *, enum KaffeineLockInstalled,
                                  ULONG token, ULONG *previous);
 

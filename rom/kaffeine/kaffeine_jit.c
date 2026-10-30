@@ -3289,7 +3289,8 @@ static void dispatch_linea(struct HJBackend *b, uint32_t pc)
     if (!ctx->running)
     {
         if (ctx->callback_depth || ctx->callback_failed)
-            Kaffeine_StopGuest(ctx, &b->handle, (LONG)b->st.d[0]);
+            Kaffeine_StopGuest(ctx, &b->handle, ctx->callback_failed ?
+                               ctx->exit_code : (LONG)b->st.d[0]);
         return;
     }
     if (result.supervisor)
@@ -3335,6 +3336,9 @@ static void hj_execute(void *state)
     }
     if (pc >= SENTINEL_ADDR && pc < SENTINEL_ADDR + 2)
     {
+        if (!ctx->callback_depth && ctx->sched && ctx->task_ops->root_exit &&
+            ctx->task_ops->root_exit(ctx, &b->handle, (LONG)b->st.d[0]))
+            return;
         ctx->running = FALSE;
         if (ctx->callback_depth)
         {

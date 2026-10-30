@@ -1,12 +1,14 @@
 #pragma once
 #include <exec/nodes.h>
 #include <exec/tasks.h>
+#include <exec/lists.h>
 struct MsgPort
 {
     struct Node mp_Node;
     UBYTE mp_Flags;
     UBYTE mp_SigBit;
     struct Task *mp_SigTask;
+    struct List mp_MsgList;
 };
 struct Message
 {

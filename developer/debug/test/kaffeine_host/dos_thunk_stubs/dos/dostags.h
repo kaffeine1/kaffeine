@@ -1,5 +1,9 @@
 #pragma once
 #include <utility/tagitem.h>
+#define GSLI_Dummy (TAG_USER + 4000)
+#define GSLI_ElfHandle (GSLI_Dummy + 4)
+#define GSLI_68KHUNK (GSLI_Dummy + 5)
+#define GSLI_68KRelocs (GSLI_Dummy + 7)
 
 #define SYS_Dummy       (TAG_USER + 32)
 #define SYS_Input       (SYS_Dummy + 1)

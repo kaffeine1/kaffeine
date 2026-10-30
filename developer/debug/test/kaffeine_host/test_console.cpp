@@ -1,9 +1,9 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    console.device through literal Exec and Device LVOs, the production CPU
-    accessors, dispatcher, heap and adapters. Native collaborators record
-    calls and allocations; guest layouts use independent literal bytes.
+    console.device and keymap.library through literal LVOs, the production
+    CPU accessors, dispatcher, heap and adapters. Native collaborators
+    record calls and allocations; guest layouts use independent literal bytes.
 */
 #ifdef NDEBUG
 #undef NDEBUG
@@ -25,6 +25,8 @@
 #include "kaffeine_dispatch.h"
 #include "kaffeine_exec_io.h"
 #include "kaffeine_intern.h"
+#include "kaffeine_keymap.h"
+#include "kaffeine_messages.h"
 #include "kaffeine_thunks_console.h"
 
 static unsigned checks;
@@ -205,6 +207,25 @@ struct KeyCall
 static KeyCall key_call;
 static std::vector<UBYTE> key_bytes;
 static WORD key_result;
+struct KeyMap { ULONG private_cookie; };
+static KeyMap default_keymap = {0x1234ABCD}, *native_default_keymap = &default_keymap;
+static unsigned set_keymap_calls, ask_keymap_calls, mapansi_calls;
+extern "C" void SetKeyMapDefault(KeyMap *keymap)
+{
+    ++set_keymap_calls;
+    native_default_keymap = keymap;
+}
+extern "C" KeyMap *AskKeyMapDefault()
+{
+    ++ask_keymap_calls;
+    return native_default_keymap;
+}
+extern "C" LONG MapANSI(STRPTR, LONG, STRPTR buffer, LONG length, KeyMap *)
+{
+    ++mapansi_calls;
+    if (buffer && length > 0) buffer[0] = '#';
+    return 1;
+}
 extern "C" WORD MapRawKey(InputEvent *event, STRPTR buffer, LONG length, KeyMap *keymap)
 {
     ++key_calls;
@@ -234,6 +255,11 @@ static const M68KThunkEntry device_poison[] = {
     {6, poison}, {12, poison}, {18, poison}, {24, poison}, {30, poison}, {36, poison},
     {42, poison}, {48, poison}, {54, poison}, {60, poison}, {66, poison}, {72, poison}
 };
+static const M68KThunkEntry keymap_manual[] = { KAFFEINE_KEYMAP_THUNKS };
+extern "C" {
+extern const M68KThunkEntry kaffeine_thunks_keymap_gen[];
+extern const ULONG kaffeine_thunks_keymap_gen_count;
+}
 
 struct Fixture
 {
@@ -245,11 +271,13 @@ struct Fixture
     State state = {};
     KaffeineCPU cpu = {&ops, &state};
     UWORD sr = 0xA71F;
+    ULONG keymap_base = 0;
 
-    Fixture() : ctx(*static_cast<KaffeineContext *>(AllocMem(sizeof(KaffeineContext), MEMF_CLEAR))),
-                memory(static_cast<UBYTE *>(AllocMem(arena_size + KAFFEINE_MEM_GUARD, 0)))
+    Fixture(ULONG size = arena_size)
+        : ctx(*static_cast<KaffeineContext *>(AllocMem(sizeof(KaffeineContext), MEMF_CLEAR))),
+          memory(static_cast<UBYTE *>(AllocMem(size + KAFFEINE_MEM_GUARD, 0)))
     {
-        ctx.mem = memory; ctx.mem_size = arena_size; ctx.cpu = &cpu;
+        ctx.mem = memory; ctx.mem_size = size; ctx.cpu = &cpu;
         ctx.heap_start = 0x11000; ctx.heap_end = 0x1F000;
         require(Kaffeine_HeapInit(&ctx), "production heap initializes");
         ctx.m68k_sysbase = Kaffeine_SetupLibBase(&ctx, 0, "exec.library", 512,
@@ -303,6 +331,15 @@ struct Fixture
         require(lib.m68k_addr == ctx.console_base, "console is the last base in this fixture");
         lib.gen_thunks = device_poison; lib.num_gen_thunks = std::size(device_poison);
         return call_at(ctx.console_base, lvo, a0, a1, 0xD0123456, length, keymap);
+    }
+    ULONG keymap(ULONG a0 = event, ULONG a1 = output, ULONG length = 8, ULONG map = 0)
+    {
+        if (!keymap_base)
+            keymap_base = Kaffeine_SetupLibBase(&ctx, ctx.num_libs, "keymap.library", 48,
+                keymap_manual, std::size(keymap_manual),
+                kaffeine_thunks_keymap_gen, kaffeine_thunks_keymap_gen_count);
+        require(keymap_base != 0, "keymap base has manual overrides before the actual generated fallbacks");
+        return call_at(keymap_base, 42, a0, a1, 0xD0123456, length, map);
     }
     bool stopped() const { return !ctx.running && ctx.exit_code == 20; }
 };
@@ -591,21 +628,24 @@ static const std::array<UBYTE, 22> event_bytes = {
     0x11, 0x22, 0x33, 0x44, 0xA1, 0xB2, 0xC3, 0xD4
 };
 
-static void test_event_marshalling()
+static void test_event_marshalling(bool keymap = false)
 {
     static_assert(sizeof(InputEvent) > 22 && offsetof(InputEvent, ie_Class) != 4);
     static_assert(offsetof(InputEvent, ie_TimeStamp) != 14);
     Fixture f;
-    require(f.open() == 0, "console opens for event marshalling");
-    std::memcpy(f.memory + Fixture::event, event_bytes.data(), event_bytes.size());
+    if (!keymap) require(f.open() == 0, "console opens for event marshalling");
+    auto convert = [&]() { return keymap ? f.keymap() : f.console(48); };
+    auto input = event_bytes;
+    if (keymap) input[0] = input[1] = input[2] = input[3] = 0xFF;
+    std::memcpy(f.memory + Fixture::event, input.data(), input.size());
     std::memset(f.memory + Fixture::output - 1, 0xA5, 11);
     key_bytes = {0x9B, 0x41}; key_result = 2;
     const unsigned calls = key_calls;
     for (UWORD sr : {0u, 0x001Fu, 0xA700u, 0xFFFFu})
     {
         f.sr = sr;
-        require(f.console(48) == 2 && key_calls > calls && f.ctx.running,
-                "RawKeyConvert delegates its result without changing guest SR or other registers");
+        require(convert() == 2 && key_calls > calls && f.ctx.running,
+                "typed event conversion delegates its result and preserves registers");
     }
     const auto &ie = key_call.event;
     require(!ie.ie_NextEvent && ie.ie_Class == 1 && ie.ie_SubClass == 0x7B &&
@@ -622,26 +662,26 @@ static void test_event_marshalling()
             (key_call.event_address < arena || key_call.event_address - arena >= Fixture::arena_size) &&
             key_call.output_address == arena + Fixture::output && key_call.length == 8 && !key_call.keymap,
             "native MapRawKey gets an aligned native event copy, the validated output and a NULL map");
-    require(!std::memcmp(event_bytes.data(), f.memory + Fixture::event, event_bytes.size()) &&
+    require(!std::memcmp(input.data(), f.memory + Fixture::event, input.size()) &&
             f.memory[Fixture::output - 1] == 0xA5 && f.memory[Fixture::output] == 0x9B &&
             f.memory[Fixture::output + 1] == 0x41 && f.memory[Fixture::output + 2] == 0xA5 &&
             f.memory[Fixture::output + 8] == 0xA5, "input bytes and output guards survive without an added terminator");
 
     key_bytes.clear(); key_result = -1;
-    require(f.console(48) == 0xFFFFFFFF, "native WORD overflow is sign-extended to all of guest D0");
+    require(convert() == 0xFFFFFFFF, "native WORD overflow is sign-extended to all of guest D0");
     key_result = -32768;
-    require(f.console(48) == 0xFFFF8000, "native signed WORD return width is preserved");
+    require(convert() == 0xFFFF8000, "native signed WORD return width is preserved");
     /* A backend may report an error after writing bytes. The adapter must
        preserve those actual buffer effects, never synthesize success. */
     key_bytes = {0x23}; key_result = -1;
-    require(f.console(48) == 0xFFFFFFFF && f.memory[Fixture::output] == 0x23,
+    require(convert() == 0xFFFFFFFF && f.memory[Fixture::output] == 0x23,
             "backend error and any backend buffer effects are returned coherently");
 }
 
-static void test_single_event_results()
+static void test_single_event_results(bool keymap = false)
 {
     Fixture f;
-    require(f.open() == 0, "console opens for measured single-event results");
+    if (!keymap) require(f.open() == 0, "console opens for measured single-event results");
     struct Case { UWORD code, qualifier; UBYTE cls; ULONG length; WORD result; std::vector<UBYTE> bytes; };
     /* The collaborator supplies measured answers, not a second conversion
        algorithm. Actual country-specific mapping remains native backend work. */
@@ -665,7 +705,9 @@ static void test_single_event_results()
         std::memset(f.memory + Fixture::output - 1, 0xA5, 11);
         key_bytes = c.bytes; key_result = c.result;
         unsigned calls = key_calls;
-        require(f.console(48, Fixture::event, Fixture::output, c.length) == static_cast<ULONG>(static_cast<LONG>(c.result)) &&
+        ULONG result = keymap ? f.keymap(Fixture::event, Fixture::output, c.length) :
+                               f.console(48, Fixture::event, Fixture::output, c.length);
+        require(result == static_cast<ULONG>(static_cast<LONG>(c.result)) &&
                 key_calls == calls + 1 && f.ctx.running, "single-event scalar, zero and overflow results come from native MapRawKey");
         require(key_call.event.ie_Code == c.code && key_call.event.ie_Qualifier == c.qualifier &&
                 key_call.event.ie_Class == c.cls && key_call.length == static_cast<LONG>(c.length),
@@ -737,6 +779,155 @@ static void test_conversion_refusals()
             "validation uses the exact remaining arena length without overflow addition");
 }
 
+static BOOL protected_output(KaffeineContext *, ULONG addr, ULONG size)
+{
+    return Kaffeine_Overlap(addr, size, 0x3900, 8);
+}
+
+static void test_keymap_storage()
+{
+    Fixture f;
+    std::memcpy(f.memory + Fixture::event, event_bytes.data(), event_bytes.size());
+    key_bytes.clear(); key_result = 0;
+    require(f.keymap() == 0 && f.ctx.running, "manual MapRawKey overrides the generated raw-pointer vector");
+    key_bytes = {0x6A}; key_result = 1;
+
+    auto refused = [&](ULONG event, ULONG output, ULONG length = 8, ULONG map = 0) {
+        std::vector<UBYTE> before(f.memory, f.memory + Fixture::arena_size + KAFFEINE_MEM_GUARD);
+        unsigned calls = key_calls, allocs = allocation_calls;
+        require(f.keymap(event, output, length, map) == 20 && f.stopped() &&
+                key_calls == calls && allocation_calls == allocs,
+                "invalid keymap boundary stops before native conversion or allocation");
+        require(!std::memcmp(before.data(), f.memory, before.size()),
+                "keymap refusal leaves every guest byte and arena guard unchanged");
+    };
+    for (ULONG map : {Fixture::output, 0xFFFFFFFFu, Fixture::arena_size})
+        refused(Fixture::event, Fixture::output, 8, map);
+    for (ULONG event : {0u, Fixture::event + 1, Fixture::arena_size - 20,
+                        Fixture::arena_size, 0xFFFFFFFEu})
+        refused(event, Fixture::output);
+    for (ULONG output : {0u, Fixture::arena_size, 0xFFFFFFFFu})
+        refused(Fixture::event, output);
+    refused(Fixture::event, Fixture::arena_size - 1, 2);
+    for (ULONG length : {0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu})
+        refused(Fixture::event, Fixture::output, length);
+    refused(Fixture::event, 0, 0);
+    for (auto [output, length] : {std::pair{Fixture::event, 1u},
+                                 {Fixture::event + 21, 1u},
+                                 {Fixture::event - 1, 2u},
+                                 {Fixture::event - 8, 9u}})
+        refused(Fixture::event, output, length);
+
+    /* AROS MapRawKey ignores this link, unlike the console contract.
+       Even an inaccessible link remains opaque and unchanged. */
+    for (ULONG next : {Fixture::event, Fixture::arena_size, 0xFFFFFFFFu})
+    {
+        m68k_write32(&f.ctx, Fixture::event, next);
+        require(f.keymap() == 1 && f.ctx.running && !key_call.event.ie_NextEvent &&
+                m68k_read32(&f.ctx, Fixture::event) == next,
+                "MapRawKey ignores guest NextEvent without dereferencing or rewriting it");
+    }
+    m68k_write32(&f.ctx, Fixture::event, 0);
+
+    /* Ordinary buffers are byte-aligned; only the classic struct needs
+       word alignment. Empty spans write nothing and may touch the input. */
+    require(f.keymap(Fixture::event, Fixture::output + 1, 1) == 1 &&
+            f.memory[Fixture::output + 1] == 0x6A, "an odd byte buffer is valid");
+    require(f.keymap(Fixture::event, Fixture::event - 1, 1) == 1 &&
+            f.keymap(Fixture::event, Fixture::event + 22, 1) == 1,
+            "adjacent output spans do not overlap the event");
+    key_bytes.clear(); key_result = -1;
+    require(f.keymap(Fixture::event, Fixture::event, 0) == 0xFFFFFFFF && f.ctx.running &&
+            key_call.length == 0, "zero output length delegates native overflow without writes");
+    key_bytes = {0x6A}; key_result = 1;
+    require(f.keymap(Fixture::event, Fixture::arena_size - 1, 1) == 1 &&
+            f.memory[Fixture::arena_size - 1] == 0x6A && f.memory[Fixture::arena_size] == 0xA5,
+            "the last arena byte is valid and its external guard survives");
+    ULONG final_event = Fixture::arena_size - 22;
+    std::memcpy(f.memory + final_event, event_bytes.data(), event_bytes.size());
+    require(f.keymap(final_event) == 1 && key_call.event.ie_Code == 0x1234,
+            "the full classic event may end exactly at the arena boundary");
+
+    for (const auto &lib : {f.ctx.libs[0], f.ctx.libs[1]})
+    {
+        refused(Fixture::event, lib.jt_start, 1);
+        refused(Fixture::event, lib.m68k_addr, 1);
+    }
+    f.ctx.memory_info = 0x3800;
+    refused(Fixture::event, 0x3800, 1);
+    f.ctx.memory_info = 0;
+    f.ctx.fonts[0].guest = 0x3800; f.ctx.fonts[0].allocation_size = 52;
+    refused(Fixture::event, 0x3801, 1);
+    f.ctx.fonts[0].guest = f.ctx.fonts[0].allocation_size = 0;
+    f.ctx.shadow_map[0].m68k_addr = 0x3800; f.ctx.shadow_map[0].type = 3;
+    f.ctx.num_shadows = 1;
+    refused(Fixture::event, 0x3863, 1);
+    f.ctx.num_shadows = 0;
+    f.ctx.video_protected = protected_output;
+    refused(Fixture::event, 0x3900, 1);
+    f.ctx.video_protected = nullptr;
+    f.ctx.io_requests[0].guest = 0x3800; f.ctx.io_requests[0].capacity = 48;
+    refused(Fixture::event, 0x382F, 1);
+    f.ctx.io_requests[0].guest = f.ctx.io_requests[0].capacity = 0;
+
+    ULONG input = Kaffeine_HeapAlloc(&f.ctx, 22, MEMF_PUBLIC);
+    ULONG output = Kaffeine_HeapAlloc(&f.ctx, 8, MEMF_PUBLIC);
+    ULONG mirror = Kaffeine_MirrorAlloc(&f.ctx, 32);
+    require(input && output && mirror, "real heap owns separate event, output and bridge mirror blocks");
+    std::memcpy(f.memory + input, event_bytes.data(), event_bytes.size());
+    require(f.keymap(input, output, 8) == 1 && f.ctx.running && f.memory[output] == 0x6A,
+            "a live ordinary heap event and buffer reach the native mapper");
+    refused(input, output, 9);
+    refused(input, output - 1, 1);
+    refused(input, mirror, 1);
+    refused(mirror, output, 1);
+    require(Kaffeine_HeapFreeExact(&f.ctx, output, 8), "ordinary output is released by the real heap");
+    refused(input, output, 1);
+    require(Kaffeine_HeapFreeExact(&f.ctx, input, 22), "ordinary event is released by the real heap");
+    refused(input, Fixture::output, 1);
+    require(Kaffeine_MirrorAbort(&f.ctx, mirror), "unpublished mirror is released by its typed owner");
+}
+
+static void test_keymap_long_length()
+{
+    Fixture f(0x40000);
+    std::memcpy(f.memory + Fixture::event, event_bytes.data(), event_bytes.size());
+    constexpr ULONG output = 0x20000, length = 0x10001;
+    f.memory[output - 1] = f.memory[output + length] = 0xA5;
+    key_bytes = {0x6A}; key_result = 1;
+    require(f.keymap(Fixture::event, output, length) == 1 && f.ctx.running &&
+            key_call.length == static_cast<LONG>(length) && f.memory[output] == 0x6A &&
+            f.memory[output - 1] == 0xA5 && f.memory[output + length] == 0xA5,
+            "MapRawKey preserves the full positive LONG length above 65536");
+}
+
+static void test_unsupported_keymap_tables()
+{
+    Fixture f;
+    std::memcpy(f.memory + Fixture::event, event_bytes.data(), event_bytes.size());
+    std::memset(f.memory + Fixture::output, 0xA5, 8);
+    key_bytes.clear(); key_result = 0;
+    require(f.keymap() == 0 && f.ctx.running && kaffeine_thunks_keymap_gen_count == 4,
+            "typed conversion coexists with all four real generated keymap fallbacks");
+    require(!set_keymap_calls && !ask_keymap_calls && !mapansi_calls &&
+            native_default_keymap == &default_keymap,
+            "no previous conversion has changed or exposed the native system keymap");
+    for (ULONG vector : {30u, 36u, 48u})
+    {
+        std::vector<UBYTE> before(f.memory, f.memory + Fixture::arena_size + KAFFEINE_MEM_GUARD);
+        unsigned calls = key_calls, allocs = allocation_calls;
+        ULONG result = f.call_at(f.keymap_base, vector, Fixture::event, Fixture::output,
+                                 4, 8, Fixture::name);
+        require(!set_keymap_calls && !ask_keymap_calls && !mapansi_calls && key_calls == calls &&
+                native_default_keymap == &default_keymap && allocation_calls == allocs,
+                "no native SetKeyMapDefault, AskKeyMapDefault, MapANSI or conversion is called");
+        require(result == 20 && f.stopped(),
+                "unsupported keymap table vectors stop before the generated fallback");
+        require(!std::memcmp(before.data(), f.memory, before.size()),
+                "unsupported table operations leave input, output and every guest guard untouched");
+    }
+}
+
 int main()
 {
     test_library_opens();
@@ -748,7 +939,12 @@ int main()
     test_event_marshalling();
     test_single_event_results();
     test_conversion_refusals();
+    test_event_marshalling(true);
+    test_single_event_results(true);
+    test_keymap_storage();
+    test_keymap_long_length();
+    test_unsupported_keymap_tables();
     require(blocks.empty() && requests.empty() && ports.empty() && !signals, "all fixtures leave no native allocations, opens, ports or signals");
-    std::printf("console.device: %u checks passed\n", checks);
+    std::printf("console.device/keymap.library: %u checks passed\n", checks);
     return 0;
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include <exec/types.h>
+#include <exec/semaphores.h>
 #include <graphics/gfx.h>
 /* The native Layer of AROS (compiler/include/graphics/clip.h): field names,
    order and types, with host pointer width; the semaphore and the private
@@ -26,7 +27,7 @@ struct Layer
     WORD Scroll_Y;
     struct ClipRect *cr, *cr2, *crnew, *SuperSaveClipRects, *_cliprects;
     struct Layer_Info *LayerInfo;
-    struct { APTR opaque[8]; } Lock;
+    struct SignalSemaphore Lock;
     struct Hook *BackFill;
     struct Region *VisibleRegion;
     struct Region *ClipRegion;

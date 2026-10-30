@@ -122,6 +122,7 @@ static int allocations_before_failure = -1;
 static void assert_block_unlinked(APTR block);
 /* workbench.library is not linked here: no port has App objects. */
 extern "C" BOOL Kaffeine_AppPortFill(KaffeineContext *, ULONG, BOOL) { return FALSE; }
+extern "C" BOOL Kaffeine_AppPortMatches(KaffeineContext *, ULONG, Task *, UBYTE) { return TRUE; }
 extern "C" BOOL Kaffeine_AppReplyMsg(KaffeineContext *, ULONG) { return FALSE; }
 
 extern "C" APTR AllocVec(ULONG size, ULONG)

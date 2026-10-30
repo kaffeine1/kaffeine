@@ -261,6 +261,8 @@ static void screen_fill(struct KaffeineContext *ctx, ULONG guest, ULONG font, UL
         ctx->mem[colormap] = cm->Flags;
         ctx->mem[colormap + 1] = cm->Type;
         m68k_write16(ctx, colormap + 2, cm->Count);
+        if (ctx->video_extra_guest)
+            m68k_write32(ctx, colormap + 8, ctx->video_extra_guest(ctx, scr, colormap));
         m68k_write32(ctx, colormap + 20, vp);
         m68k_write32(ctx, colormap + 36, cm->VPModeID);
     }
@@ -519,6 +521,8 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
     ULONG guest = ctx->pubscreens[i].guest;
     UWORD type = ctx->pubscreens[i].owned ? KAFFEINE_SHADOW_SCREEN : KAFFEINE_SHADOW_PUBSCREEN;
 
+    if (ctx->video_screen_retire)
+        ctx->video_screen_retire(ctx, ctx->pubscreens[i].native);
     /* the layer snapshot of the screen goes with its last holder, before
        the 68k Screen that holds its LayerInfo */
     if (ctx->layer_ops)
@@ -692,8 +696,9 @@ IPTR Kaffeine_UnlockPubScreen(struct KaffeineContext *ctx, void *cpu)
     }
     scr = ctx->pubscreens[i].native;
     ctx->pubscreens[i].locks--;
-    UnlockPubScreen(NULL, scr);
+    /* Retire borrowed snapshots while this last native visitor is alive. */
     screen_release(ctx, scr);
+    UnlockPubScreen(NULL, scr);
     return 0;
 }
 
@@ -1554,6 +1559,11 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
     ULONG left = 0;
     int i;
 
+    /* End read-only VPE borrows before any final native screen hold goes. */
+    if (ctx->video_screen_retire)
+        for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; ++i)
+            if (ctx->pubscreens[i].native)
+                ctx->video_screen_retire(ctx, ctx->pubscreens[i].native);
     /* the pens first, while every ColorMap of them is still there: the
        program's own screens and locks, and the visitor locks of the leases,
        go back only after them */

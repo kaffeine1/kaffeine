@@ -4,7 +4,9 @@
     Bounded classic Exec queues. Native objects never enter these lists.
 */
 #include "kaffeine_messages.h"
+#include "kaffeine_async.h"
 #include "kaffeine_locks.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_sched.h"
 #include <aros/debug.h>
@@ -24,7 +26,8 @@ static BOOL arena(struct KaffeineContext *ctx, ULONG a, ULONG n)
 BOOL Kaffeine_GuestBytes(struct KaffeineContext *ctx, ULONG a, ULONG n)
 {
     unsigned i;
-    if (!arena(ctx, a, n) || Kaffeine_LockProtected(ctx, a, n)) return FALSE;
+    if (!arena(ctx, a, n) || Kaffeine_LockProtected(ctx, a, n) ||
+        (ctx->video_protected && ctx->video_protected(ctx, a, n))) return FALSE;
     for (i = 0; i < ctx->num_shadows; ++i)
     {
         ULONG size = 20;
@@ -78,14 +81,15 @@ static BOOL ordinary(struct KaffeineContext *ctx, ULONG port, ULONG size,
              (ctx->files[i].mirror && Kaffeine_Overlap(port, size, ctx->files[i].mirror, KAFFEINE_FILE_BUFFER_LIMIT))))
             return FALSE;
     for (i = 0; i < KAFFEINE_MAX_APP_PORTS; ++i)
-        if (ctx->app_ports[i].guest && Kaffeine_Overlap(port, size, ctx->app_ports[i].guest, 34)) return FALSE;
+        if (ctx->app_ports[i].guest && Kaffeine_Overlap(port, size, ctx->app_ports[i].guest, 34) &&
+            !(on_port == port && port == ctx->app_ports[i].guest && size == 34)) return FALSE;
     for (i = 0; i < KAFFEINE_MAX_HANDLERS; ++i)
         if (ctx->handlers[i].guest && Kaffeine_Overlap(port, size, ctx->handlers[i].guest, 34)) return FALSE;
     for (i = 0; i < KAFFEINE_MAX_IO_REQUESTS; ++i)
     {
         const struct KaffeineIORequest *e = &ctx->io_requests[i];
         if (!e->guest || e->orphan || e == self || (releasing && (e->copy || (!e->native && e->stack_message)))) continue;
-        if (on_port && !e->pending && e->replied && e->port == on_port && port == e->guest &&
+        if (on_port && port != on_port && !e->pending && e->replied && e->port == on_port && port == e->guest &&
             size <= request_span(e)) continue;
         if (Kaffeine_Overlap(port, size, e->guest, request_span(e))) return FALSE;
     }
@@ -135,7 +139,9 @@ BOOL Kaffeine_QueueDisjoint(const struct KaffeineQueue *q, ULONG a, ULONG n)
    process, which the bridge neither allocates nor frees. */
 static BOOL process_port(struct KaffeineContext *ctx, ULONG port)
 {
-    return ctx->guest_exec_task && port == ctx->guest_exec_task + M68K_PR_MSGPORT;
+    ULONG task = ctx->sched && ctx->task_ops->root_task ?
+        ctx->task_ops->root_task(ctx) : ctx->guest_exec_task;
+    return task && port == task + M68K_PR_MSGPORT;
 }
 
 /* Arrival permissions are needed only when adding a message. Inspecting or
@@ -159,7 +165,9 @@ static BOOL queue_arrival(struct KaffeineContext *ctx, ULONG port)
         bit = ctx->mem[port + 15];
         /* SIGB_DOS: pr_MsgPort of the root, natively, or of a CreateProc()
            child, a guest signal of that child alone */
-        if (bit > 31 || (!(process_port(ctx, port) && bit == SIGB_DOS && owner == ctx->guest_exec_task) &&
+        if (bit > 31 || (Kaffeine_AsyncSignalMask(ctx) & (1UL << bit)) || (!(process_port(ctx, port) && bit == SIGB_DOS &&
+                           owner == (ctx->task_ops->root_task ? ctx->task_ops->root_task(ctx) :
+                                     ctx->guest_exec_task) && ctx->task_ops->known_task(ctx, owner)) &&
                          !(bit == SIGB_DOS && ctx->task_ops->process_port &&
                            ctx->task_ops->process_port(ctx, port, owner)) &&
                          !ctx->task_ops->owns_signal(ctx, owner, 1UL << bit))) return FALSE;
@@ -181,6 +189,7 @@ static BOOL queue_arrival(struct KaffeineContext *ctx, ULONG port)
         task = m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK);
         if ((ctx->guest_exec_task && task != ctx->guest_exec_task) || !task || !arena(ctx, task, 92) ||
             m68k_read32(ctx, port + 16) != task || bit > 31 ||
+            (Kaffeine_AsyncSignalMask(ctx) & (1UL << bit)) ||
             (!(ctx->guest_signals & (1UL << bit)) && !(process_port(ctx, port) && bit == SIGB_DOS)))
             return FALSE;
         for (i = 0; i < KAFFEINE_MAX_IO_PORTS; ++i)
@@ -198,7 +207,7 @@ BOOL Kaffeine_QueueRead(struct KaffeineContext *ctx, ULONG port, struct Kaffeine
     q->port = port;
     q->count = 0;
     if ((port & 1) || !(process_port(ctx, port) ? arena(ctx, port, 34) : Kaffeine_GuestBytes(ctx, port, 34)) ||
-        !ordinary(ctx, port, 34, NULL, 0, FALSE) || ctx->mem[port + 8] != 4)
+        !ordinary(ctx, port, 34, NULL, port, FALSE) || ctx->mem[port + 8] != 4)
         return FALSE;
     if (m68k_read32(ctx, list + 4))
         return FALSE;
@@ -322,7 +331,7 @@ IPTR Kaffeine_GuestGetMsg(struct KaffeineContext *ctx, ULONG port, BOOL wait)
        waits while a request in flight replies to it. */
     for (;;)
     {
-        if (ctx->io_poll && !ctx->io_poll(ctx))
+        if (!Kaffeine_AsyncPoll(ctx))
             return 20;
         if (!wait || ctx->sched || !ctx->io_wait || !Kaffeine_QueueRead(ctx, port, &q) || q.count ||
             !ctx->io_wait(ctx, port))
@@ -428,6 +437,7 @@ static BOOL memory(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL rel
 {
     struct KaffeineQueue q;
     unsigned i;
+    if (releasing && !Kaffeine_LayerMemoryReleasable(ctx, addr, size)) return FALSE;
     if (size && (!Kaffeine_GuestBytes(ctx, addr, size) || !ordinary(ctx, addr, size, NULL, 0, releasing))) return FALSE;
     for (i = 0; i < KAFFEINE_MAX_MESSAGE_PORTS; ++i)
         if (ctx->message_ports[i] &&

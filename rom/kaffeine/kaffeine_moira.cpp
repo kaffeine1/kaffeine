@@ -203,7 +203,10 @@ public:
         if (Kaffeine_IsCallbackReturn(addr)) return M68K_OP_NOP;
         if (addr >= SENTINEL_ADDR && addr < SENTINEL_ADDR + 2)
         {
-            const_cast<AROSMoira*>(this)->ctx->running = FALSE;
+            if (!ctx->callback_depth && ctx->sched && ctx->task_ops->root_exit &&
+                ctx->task_ops->root_exit(ctx, const_cast<struct KaffeineCPU *>(&cpu_handle), (LONG)getD(0)))
+                return M68K_OP_STOP;
+            ctx->running = FALSE;
             if (ctx->callback_depth)
             {
                 ctx->callback_failed = TRUE;
@@ -305,7 +308,8 @@ public:
             if (!ctx->running)
             {
                 if (ctx->callback_depth || ctx->callback_failed)
-                    Kaffeine_StopGuest(ctx, &cpu_handle, (LONG)getD(0));
+                    Kaffeine_StopGuest(ctx, &cpu_handle, ctx->callback_failed ?
+                                       ctx->exit_code : (LONG)getD(0));
                 return;
             }
             reg.usp = savedReg.usp;

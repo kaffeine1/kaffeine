@@ -355,7 +355,7 @@ static void test_bad_inputs_and_async()
         Fixture f;
         f.initialized(f.sem);
         f.ctx.num_shadows = 1;
-        f.ctx.shadow_map[0] = {f.sem, reinterpret_cast<void *>(1), 0};
+        f.ctx.shadow_map[0] = {f.sem, reinterpret_cast<void *>(1), 0, 0 };
         m68k_write32(&f.ctx, f.stack, 0x76543210);
         const auto before = f.memory;
         const bool attempt = lvo == 576 || lvo == 720;

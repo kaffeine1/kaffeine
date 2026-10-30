@@ -8,10 +8,12 @@ private test disk images are not distributed here.
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
-| TurboText 2.0 | Original Aminet launcher and support libraries tested with both Moira and JIT; Shell and Run return 20 with `Could not start TurboText - function not implemented` after `CreateNewProc()`. A bounded trace identifies the requested CLI process and its loaded-program handle | Startup is blocked; no editor window, editing or save/reopen acceptance. Needs typed process startup, module ownership and Process identity support |
+| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT opens the main editor, loads the sample document and visibly inserts a typed character | Opening, document loading and a single-character input smoke check accepted. Native screen-position and indexed-composition defects remain; save/reopen and broader editing are unverified |
 | AmiPixelShop 0.6.1-beta | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; P96 and screen-mode requester requirements are additional source-level gaps |
 
 ## Additional startup checks (2026-10-29)
+
+### TurboText progress (2026-10-30)
 
 [TurboText 2.0](https://aminet.net/package/text/edit/TurboText20) is the
 original freeware distribution by Martin Taillefer, written using M2Sprint
@@ -32,31 +34,32 @@ TTX RAM:document.txt
 The bundled `asl.library` and `amigaguide.library` were left in the original
 drawer; the test system's native system libraries were retained. The
 bridge successfully opens `TurboText:Libs/ttxsupport.library` as 68k code.
-Its startup then calls DOS `LoadSeg()` and `CreateNewProc()` (LVO -498),
-which currently returns `ERROR_NOT_IMPLEMENTED`. Both backends produce
-the same result in each invocation mode.
+Initial Shell and Run trials with both Moira and JIT stopped at DOS
+`CreateNewProc()` (LVO -498) with `ERROR_NOT_IMPLEMENTED`. That boundary now
+has a typed implementation; the latest original-application follow-up uses
+the Kaffeine JIT.
 
-`CreateNewProc()` requires more than translating its tags. Guest entry
-points cannot execute as ARM code. Existing `CreateProc()` children have
-their own CPU and Process, but DOS calls other than `Exit()` are refused:
-streams, directories, locks, CLI and packet state currently belong to the
-root DOS owner. Root termination also destroys the children and their shared
-arena. A DOS-using helper needs ownership, rollback and group-lifetime
-rules before it can safely run.
+The [shared guest Process route](guest-processes.md) imports an owned 68k
+HUNK with trusted relocation metadata into the same guest arena as its
+parent. Each child has its own CPU, stack and guest Process, with a private
+native DOS broker for streams, directories, CLI state and IoErr. The domain
+keeps children and their shared data alive after the launcher returns.
+Guest code remains 68k code; native workers enter only compiled bridge code.
 
-The bounded startup trace now identifies ten active tags in the original
-launcher's Shell and Run calls:
+The bounded startup trace identified ten active tags in the original
+launcher's Shell and Run calls. Loaded modules and directory locks now use
+typed guest identities rather than exposed native BPTR values:
 
 | Tag | Observed value or relationship |
 | --- | --- |
 | `NP_StackSize` | 5000 bytes |
-| `NP_Seglist` | The exact D0 returned by the preceding native `LoadSeg()` |
+| `NP_Seglist` | The opaque guest token returned by the preceding `LoadSeg()`; the registry retains the full native BPTR privately |
 | `NP_FreeSeglist` | `TRUE` |
 | `NP_Name`, `NP_CommandName` | The same nonzero pointer; strings are not printed or followed by the trace |
 | `NP_ConsoleTask`, `NP_WindowPtr` | `NULL` |
 | `NP_CopyVars` | `FALSE` |
 | `NP_Cli` | `TRUE` |
-| `NP_HomeDir` | A nonzero BPTR; the trace does not dereference it |
+| `NP_HomeDir` | A nonzero typed directory-lock token; the trace does not dereference it |
 
 No `NP_Entry` or `NP_Arguments` tag is present. Each list terminates after
 ten items, within the diagnostic's 64-step and 16-output-item limits.
@@ -64,15 +67,54 @@ The loader trace records its native BPTR at full width and the delivered
 32-bit D0 without reading segment contents or printing filenames. Logging
 and converted-tag cleanup preserve the loader's IoErr.
 
-This establishes a request to start the program loaded by native DOS.
-It does not make the native
-BPTR a safe guest process handle. The next implementation needs a trusted
-loaded-module registry, explicit transfer/unload ownership, typed directory
-and CLI setup, and a guest representation of the resulting Process. A
-native 68k-module route must also guarantee emulator entry without a native
-code fallback. These are separate from the existing shared-arena service
-processes. The startup trace does not enable either process route, and
-TurboText still returns 20 without opening an editor window.
+The accepted 2026-10-30 application run uses the primary Kaffeine JIT on a
+uniprocessor AROS ARM64 kernel in QEMU's Raspberry Pi 3 model. Workbench was
+confirmed through native bitmap attributes as 1024x768, 24-bit. The original
+launcher opens `document.txt`, displays both sample lines, and inserts a
+delivered `j` at the cursor. The modified indicator and cursor column change
+with the visible text. This is an opening/loading/input smoke check; saving,
+reopening and broader editor features have not been accepted.
+
+![Original 68k TurboText displaying the sample document on AROS ARM64](media/turbotext-2026-10-30/document.png)
+
+[The input frame and run scope](media/turbotext-2026-10-30/README.md) record the
+single-character check. Application and support-library binaries remain
+unmodified; after shutdown, the installed application, emulator library and
+native observation helpers matched their original artifacts. The run contains
+no earlier bridge refusal or CPU fault.
+
+The application now passes shared Process/IPC setup, ViewPortExtra and default
+font queries, shared IDCMP ports, copied-RastPort `RectFill()` and `Text()` with
+a translated classic TmpRas, and integer arithmetic inside LayerInfo scopes.
+Its window-backfill Hook uses the [bounded native adapter](native-backfill.md).
+File packets run in the [typed Process's DOS broker](guest-processes.md#typed-dos-packets).
+The [tracked refresh scope](window-refresh.md) balances native window/update
+locks, and [typed keymap conversion](keymap.md) translates classic keyboard
+events before native mapping. Focused layer tests pass 37 groups and private
+layer tests pass 31 groups, both normally and with ASan/UBSan. Native execution,
+host regression and application acceptance remain separate evidence lanes.
+
+Two native AROS display limitations remain. The current
+[`ScreenPosition()` implementation](../../rom/intuition/screenposition.c)
+treats `SPOS_MAKEVISIBLE` rectangle coordinates as a relative move. An already
+visible caret therefore moves Workbench down, repeatedly during input; the
+screenshots retain that behavior. Separately, an original native LUT8-to-truecolor
+blit probe with distinct palettes copies the destination palette's colors
+instead of the source's. The optimized
+[CopyBox conversion](../../rom/hidds/gfx/gfx_hiddclass.c) selects the destination
+bitmap's color map. The compositor uses that conversion for an indexed screen;
+a separate native framebuffer probe observes black pixels after a screen move.
+The 24-bit desktop permits the observed editor
+check; neither native display defect is fixed by this application milestone.
+
+The original foreign-backfill controller passed **20 checks with zero failures**
+through each of Moira and JIT on AROS ARM64. A separate native Process invoked
+an installed Hook while the guest owner was blocked on CTRL_D. Both runs
+changed a seeded pixel to the native reference value, delivered exactly the
+guest signal, and completed observer retirement and cleanup. After VM shutdown,
+the installed controller and library matched the host artifacts. These checks
+validate the bounded callback and wake path; application editor acceptance
+remains a separate gate.
 
 ### Independent-process prerequisite (2026-10-30)
 
@@ -88,11 +130,17 @@ disk image; their bytes match the expected records and agree between backends.
 This validates overlapping process contexts on the current uniprocessor
 guest. The parent keeps the emulator library open and waits for the native
 owners to retire. The test deliberately uses native `CreateNewProc()`;
-the guest thunk used by TurboText remains refused. Module-handle ownership
-and a stable guest Process identity still need their typed implementation.
-The separate DOS fix for an unavailable emulator has host control-flow and
-cleanup regressions plus an ARM64 module build; that failure path was not
-exercised by these VM runs.
+the supported guest route is covered separately by the original
+[domain controller](../../developer/debug/test/kaffeine_target/domain_fixture_native.c)
+and [68k HUNK generator](../../developer/debug/test/kaffeine_target/domain_fixture_hunks.c).
+On the runtime containing the shared-port and default-font changes, this
+controller passed **148 checks with zero failures**: 37 each through Moira
+and JIT, from Shell and Run. After VM shutdown, all four 128-byte proof
+records and eight original-HUNK comparisons were validated. These checks
+exercise typed module transfer, guest Process identity and shared-domain
+lifetime; they do not establish TurboText editor or UI acceptance.
+The unavailable-emulator failure path remains separate from these successful
+native launches.
 
 ### AmiPixelShop startup
 

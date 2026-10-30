@@ -22,6 +22,7 @@ static int allocation_failure = -1;
 static bool duplicate_failure, duplicate_same, handler_failure;
 static SIPTR last_error;
 static Process process;
+static Process *native_process = &process;
 static std::map<APTR, ULONG> allocations;
 struct NativeLock { FileLock lock = {}; unsigned references = 1; ULONG object; };
 static std::vector<std::unique_ptr<NativeLock>> natives;
@@ -44,7 +45,7 @@ extern "C" void FreeMem(APTR p, ULONG size)
 { assert(allocations.count(p) && allocations[p] == size); allocations.erase(p); std::free(p); }
 extern "C" APTR AllocVec(ULONG n, ULONG f) { return AllocMem(n, f); }
 extern "C" void FreeVec(APTR p) { if (p) FreeMem(p, allocations.at(p)); }
-extern "C" Task *FindTask(CONST_STRPTR n) { assert(!n); return &process.pr_Task; }
+extern "C" Task *FindTask(CONST_STRPTR n) { assert(!n); return &native_process->pr_Task; }
 extern "C" SIPTR IoErr(void) { return last_error; }
 extern "C" SIPTR SetIoErr(SIPTR e) { SIPTR old = last_error; last_error = e; return old; }
 extern "C" DosList *LockDosList(ULONG f) { assert(f == (LDF_READ | LDF_VOLUMES)); return nullptr; }
@@ -87,10 +88,10 @@ extern "C" LONG SameLock(BPTR a, BPTR b)
     return x->object == y->object ? LOCK_SAME : LOCK_SAME_VOLUME;
 }
 extern "C" BPTR CurrentDir(BPTR p)
-{ ++setters; BPTR old = process.pr_CurrentDir; process.pr_CurrentDir = p; return old; }
-extern "C" BPTR GetProgramDir(void) { return process.pr_HomeDir; }
+{ ++setters; BPTR old = native_process->pr_CurrentDir; native_process->pr_CurrentDir = p; return old; }
+extern "C" BPTR GetProgramDir(void) { return native_process->pr_HomeDir; }
 extern "C" BPTR SetProgramDir(BPTR p)
-{ ++setters; BPTR old = process.pr_HomeDir; process.pr_HomeDir = p; return old; }
+{ ++setters; BPTR old = native_process->pr_HomeDir; native_process->pr_HomeDir = p; return old; }
 extern "C" ULONG Kaffeine_HandlerPort(KaffeineContext *ctx, MsgPort *p)
 {
     if (handler_failure) { SetIoErr(ERROR_NO_FREE_STORE); return 0; }
@@ -111,7 +112,7 @@ struct Fixture
     {
         allocation_failure = -1; duplicate_failure = duplicate_same = handler_failure = false;
         unlocks = duplicates = setters = comparisons = 0; last_error = 901;
-        natives.clear(); native_map.clear(); process = {}; process.pr_Task.tc_Node.ln_Type = NT_PROCESS;
+        natives.clear(); native_map.clear(); native_process = &process; process = {}; process.pr_Task.tc_Node.ln_Type = NT_PROCESS;
         volumes = {};
         for (unsigned i = 0; i < volumes.size(); ++i)
         {
@@ -337,12 +338,87 @@ static void access_refresh()
     check(!Kaffeine_LockRefreshAccess(f.ctx,t) && !std::memcmp(before.data(),f.ctx->mem+t*4,20), "refresh refuses an edited token without laundering its modified fields");
 }
 
+static void separate_process_owners()
+{
+    Fixture f;
+    Process child = {};
+    child.pr_Task.tc_Node.ln_Type = NT_PROCESS;
+    process.pr_CurrentDir = acquire(0, 401);
+    child.pr_CurrentDir = acquire(0, 402);
+    ULONG startup = 0;
+    check(Kaffeine_LockGetInstalled(f.ctx, KAFFEINE_LOCK_CURRENT, &startup),
+          "initial native directory can be captured before the root TCB exists");
+    f.ctx->m68k_sysbase = 0x4000;
+    auto view = [&](Process *native, ULONG guest) {
+        native_process = native;
+        f.ctx->guest_exec_task = guest;
+        f.ctx->broker_call = native != &process;
+        f.ctx->broker_owner = f.ctx->broker_call ? &native->pr_Task : nullptr;
+        m68k_write32(f.ctx, 0x4000 + M68K_EXECBASE_THISTASK, guest);
+    };
+    ULONG root = 0, peer = 0, again = 0;
+    view(&process, 0x6000);
+    check(Kaffeine_LockGetInstalled(f.ctx, KAFFEINE_LOCK_CURRENT, &root) && root == startup,
+          "root TCB publication binds the initial native owner without changing its token");
+    view(&child, 0x6100);
+    check(Kaffeine_LockGetInstalled(f.ctx, KAFFEINE_LOCK_CURRENT, &peer) && peer != root,
+          "another DOS owner has independent installed state in one arena");
+    check(f.resolves(root, process.pr_CurrentDir) && f.resolves(peer, child.pr_CurrentDir),
+          "publishing a child directory does not retire the parent's token");
+    ULONG caller = Kaffeine_LockAdopt(f.ctx, acquire(0, 403));
+    unsigned before = unlocks;
+    last_error = static_cast<SIPTR>(0x123456789ABCULL);
+    Kaffeine_LockOwnerDrop(f.ctx, &child.pr_Task);
+    check(unlocks == before && last_error == static_cast<SIPTR>(0x123456789ABCULL),
+          "dropping installed metadata neither unlocks native DOS owners nor narrows IoErr");
+    check(!f.resolves(peer, child.pr_CurrentDir), "dead owner's installed-only token is retired");
+    f.ctx->running = TRUE;
+    check(Kaffeine_LockRelease(f.ctx, caller), "caller-owned reference survives owner retirement");
+    view(&process, 0x6000);
+    check(Kaffeine_LockGetInstalled(f.ctx, KAFFEINE_LOCK_CURRENT, &again) && again == root,
+          "returning to the root reuses its original directory identity");
+    view(&child, 0x6200);
+    check(Kaffeine_LockGetInstalled(f.ctx, KAFFEINE_LOCK_CURRENT, &again) && again != peer,
+          "a retired native task address can acquire a fresh quarantined identity");
+    Kaffeine_LockOwnerDrop(f.ctx, &child.pr_Task);
+    f.ctx->broker_owner = &process.pr_Task;
+    before = comparisons;
+    check(!Kaffeine_LockGetInstalled(f.ctx, KAFFEINE_LOCK_CURRENT, &again) &&
+          !f.ctx->running && comparisons == before,
+          "an RPC on an unexpected native task fails before comparing native locks");
+    view(&process, 0x6000);
+    f.ctx->running = TRUE;
+}
+
+static void bounded_process_owners()
+{
+    Fixture f;
+    std::array<Process, KAFFEINE_LOCK_OWNER_LIMIT + 1> owners = {};
+    f.ctx->m68k_sysbase = 0x4000;
+    for (unsigned i = 0; i < owners.size(); ++i)
+    {
+        auto &p = owners[i]; p.pr_Task.tc_Node.ln_Type = NT_PROCESS;
+        p.pr_CurrentDir = acquire(0, 500 + i); native_process = &p;
+        f.ctx->guest_exec_task = 0x6000 + i * 0x100;
+        f.ctx->broker_call = TRUE; f.ctx->broker_owner = &p.pr_Task;
+        m68k_write32(f.ctx, 0x4000 + M68K_EXECBASE_THISTASK, f.ctx->guest_exec_task);
+        ULONG token = 0;
+        BOOL ok = Kaffeine_LockGetInstalled(f.ctx, KAFFEINE_LOCK_CURRENT, &token);
+        check(i < KAFFEINE_LOCK_OWNER_LIMIT ? ok && token : !ok && !token && last_error == ERROR_NO_FREE_STORE,
+              "installed owner table has a bounded capacity and atomic refusal");
+    }
+    for (auto &p : owners) Kaffeine_LockOwnerDrop(f.ctx, &p.pr_Task);
+    native_process = &process;
+    f.ctx->broker_call = FALSE; f.ctx->broker_owner = nullptr; f.ctx->guest_exec_task = 0;
+}
+
 int main()
 {
     snapshots_and_identity(); scopes_and_refcounts(); edited_and_invalid_views();
     transfers_and_cleanup(); installed_lifetimes(); borrowed_install_and_failures();
     native_process_field_changes();
     publication_failures_and_limits(); access_refresh();
+    separate_process_owners(); bounded_process_owners();
     std::printf("Typed guest lock regressions: %u/%u checks passed\n",checks-failures,checks);
     return failures ? 1 : 0;
 }

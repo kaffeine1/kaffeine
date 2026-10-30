@@ -397,7 +397,7 @@ static void test_shadow_and_overlap_rejection()
         Fixture f;
         f.ctx.num_shadows = 1;
         const ULONG shadow = kind == 0 ? f.header : kind == 1 ? f.pool : f.pool + 8;
-        f.ctx.shadow_map[0] = { shadow, &native_object, 1 };
+        f.ctx.shadow_map[0] = { shadow, &native_object, 1, 0 };
         f.reject(186, 8); /* Third case is the new split-chunk address. */
         if (kind != 2)
             f.reject(192, 8, f.pool + 192);
@@ -414,7 +414,7 @@ static void test_shadow_and_overlap_rejection()
     Fixture shadow_free;
     shadow_free.set_free({});
     shadow_free.ctx.num_shadows = 1;
-    shadow_free.ctx.shadow_map[0] = { shadow_free.pool, &native_object, 1 };
+    shadow_free.ctx.shadow_map[0] = { shadow_free.pool, &native_object, 1, 0 };
     shadow_free.reject(192, 8, shadow_free.pool);
     assert(native_object == 0x12345678);
 }
