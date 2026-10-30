@@ -31,7 +31,8 @@ static unsigned checks, failures;
 #define CHECK(x) do { ++checks; if (!(x)) { ++failures; std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); } } while (0)
 static Task *const driver = reinterpret_cast<Task *>(0x100000UL);
 static Task *const foreign = reinterpret_cast<Task *>(0x200000UL);
-static thread_local Task *native_task = driver;
+/* Keep TLS constant-initialized; each simulated native entry sets its Task. */
+static constinit thread_local Task *native_task = nullptr;
 static thread_local unsigned forbidden;
 static std::recursive_mutex up;
 static std::map<APTR, ULONG> allocations;
@@ -187,6 +188,7 @@ struct Fixture {
     BackFillMessage message{};
     ULONG pc=CODE, code_base=CODE, data_base=DATA, code_end{}, mask=1u<<13;
     Fixture() {
+        native_task=driver;
         assert(allocations.empty()); allocation_calls=fail_allocation=0; no_signal=lock_busy=false;
         cpu_count=1; no_kernel=false; signal_alloc=0xffff|(1u<<20); native_signals=0; native_signal_calls=graphics_calls=paints=stop_calls=0;
         guest_delivered=delivered_calls=signal_freeable_calls=app_port_gone=app_signal_gone=guest_calls=can_signal_calls=0; pause_fill=false; fill_entered=false; finish_fill=false; reenter_fill=false;
