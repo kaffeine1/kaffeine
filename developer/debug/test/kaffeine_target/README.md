@@ -531,6 +531,39 @@ that `mulu.l` leaves as it is. `mbedtls_config.h` leaves out the entropy
 module: AmigaOS has none of the sources of entropy that mbed TLS knows,
 and its self-test fails without one.
 
+Under QEMU it gives that output from the Shell and with Run, in about 23
+minutes a run under Moira and in about four and a half under the Kaffeine
+JIT. The four long tests of SHA-3 hash a million bytes each without calling
+the system, which takes more than five minutes under Moira: with an
+`--idle-timeout`, give the step more than that. On AmigaOS 3.2.3 under
+FS-UAE, on an A1200 with 2 MB of chip and 8 MB of fast memory, it gives the
+same output too, in about 23 minutes.
+
+## The CLI programs under the Kaffeine JIT
+
+I ran the 48 steps of zlib, pngtest, xmlwf, xz and the mbed TLS self-test
+twice in QEMU, with the same binaries and the library of master `a58f9a8`:
+once with `--cpu jit` and once with `--cpu moira`, with a boot for each
+step. Under the JIT every step gives the output of the host build byte for
+byte, from the Shell and with Run, the 29 steps with a reference for the
+error output give that too, and `png_badpal`, `xmlwf_errors` and `xz_bad1`
+to `xz_bad6` end with the exit codes of the table in the next section, as
+under Moira. Under Moira the self-test of mbed TLS needed a run of its own
+with a longer idle timeout, as the previous section says, and gives the
+same output.
+
+The times are rough: the runner sees them in steps of 5 seconds, each boot
+takes about 45 seconds, and the host was not idle during the runs. Without
+the boots, the 25 xz steps took 923 seconds under the JIT against 1390
+under Moira, and the 7 xmlwf steps 187 against 307, about one and a half
+times as fast. The xz steps that compress gain 1.5 to 2.3 times,
+`xmlwf_canon` 1.6 and `xz_unpack` almost nothing. The self-test of mbed
+TLS, which computes for minutes without calling the system, took 557
+seconds under the JIT against 2755 under Moira, about five times as fast.
+At the end of each run the JIT writes its counters to `serial-aux.log`:
+the 6501 blocks of `mbedtls_selftest` hold 51421 instructions, about eight
+each, and it enters them about 204 million times a run.
+
 ## Expected containment and exit probes
 
 | Program or alias | Argument | Expected exit |
