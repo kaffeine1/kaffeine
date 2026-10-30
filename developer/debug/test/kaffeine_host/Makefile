@@ -47,6 +47,7 @@ TASK_CPPFLAGS := -I$(TEST_DIR)/task_stubs $(TEST_CPPFLAGS)
 IO_CPPFLAGS := -I$(TEST_DIR)/io_stubs $(TEST_CPPFLAGS)
 IO_OBJS := $(addprefix $(BUILD_DIR)/io_,cpu.o dispatch.o exec_io.o thunks_timer.o thunks_console.o memory.o)
 IO_OBJS += $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o
+KEYMAP_OBJS := $(BUILD_DIR)/io_keymap.o $(BUILD_DIR)/keymap_generated.o
 # Disposable bridge sources can be supplied for the mutation checks.
 WORKBENCH_SOURCE_DIR ?= $(KAFFEINE_DIR)
 WORKBENCH_CPPFLAGS := -I$(TEST_DIR)/workbench_stubs -I$(TEST_DIR)/gfx_stubs -I$(TEST_DIR)/io_stubs $(TEST_CPPFLAGS)
@@ -288,8 +289,17 @@ $(BUILD_DIR)/io_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 $(BUILD_DIR)/test_exec_io: $(TEST_DIR)/test_exec_io.cpp $(IO_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(IO_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(IO_OBJS) $(LDLIBS)
 
-$(BUILD_DIR)/test_console: $(TEST_DIR)/test_console.cpp $(IO_OBJS) | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) $(IO_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(IO_OBJS) $(LDLIBS)
+$(BUILD_DIR)/keymap_generated.c: $(TEST_DIR)/keymap_generated_extract.py $(KAFFEINE_DIR)/kaffeine_thunks_gen.c | $(BUILD_DIR)
+	$(PYTHON) $(TEST_DIR)/keymap_generated_extract.py $(KAFFEINE_DIR)/kaffeine_thunks_gen.c $@
+
+# The unchanged generated wrappers contain const output-pointer warnings;
+# keep the actual adapter and fixture under -Werror, not this fallback oracle.
+$(BUILD_DIR)/keymap_generated.o: $(BUILD_DIR)/keymap_generated.c
+	$(CC) $(CPPFLAGS) $(IO_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-error -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_console: $(TEST_DIR)/test_console.cpp $(IO_OBJS) $(KEYMAP_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(IO_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(IO_OBJS) $(KEYMAP_OBJS) $(LDLIBS)
+-include $(KEYMAP_OBJS:.o=.d)
 
 # The task tests use the real shadow engine, including ExecBase initialization.
 $(BUILD_DIR)/task_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
@@ -439,6 +449,7 @@ diagnose-seglist: $(BUILD_DIR)/test_hunk_loading
 	$(RUNNER) $< --diagnose-seglist
 
 clean:
+	rm -f $(KEYMAP_OBJS) $(KEYMAP_OBJS:.o=.d) $(BUILD_DIR)/keymap_generated.c
 	rm -f $(PROCESS_TAG_OBJS) $(PROCESS_TAG_OBJS:.o=.d)
 	rm -f $(LOCK_OBJS) $(LOCK_OBJS:.o=.d)
 	rm -f $(MESSAGE_OBJS) $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_boundary_sched.o $(BUILD_DIR)/message_boundary_sched.d $(BUILD_DIR)/message_entries.c $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_messages.d $(BUILD_DIR)/message_native_unused.o $(BUILD_DIR)/message_native_unused.d $(BUILD_DIR)/file_boundary_unit.o $(BUILD_DIR)/file_boundary_unit.d

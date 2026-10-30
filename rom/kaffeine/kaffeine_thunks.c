@@ -58,6 +58,7 @@
 #include "kaffeine_layers.h"
 #include "kaffeine_regions.h"
 #include "kaffeine_remember.h"
+#include "kaffeine_keymap.h"
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -138,6 +139,9 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
             } else if (strcmp(name, "layers.library") == 0) {
                 manual = kaffeine_thunks_layers_manual;
                 manual_count = kaffeine_thunks_layers_manual_count;
+            } else if (strcmp(name, "keymap.library") == 0) {
+                manual = kaffeine_thunks_keymap_manual;
+                manual_count = kaffeine_thunks_keymap_manual_count;
             }
             if (strcmp(name, "graphics.library") == 0)
                 return Kaffeine_SetupGraphicsBase(ctx, manual, manual_count,
@@ -661,6 +665,14 @@ const struct M68KThunkEntry kaffeine_thunks_gadtools_manual[] = {
 };
 const ULONG kaffeine_thunks_gadtools_manual_count =
     sizeof(kaffeine_thunks_gadtools_manual) / sizeof(kaffeine_thunks_gadtools_manual[0]) - 1;
+
+/* Typed InputEvent conversion overrides the generated raw-pointer call. */
+const struct M68KThunkEntry kaffeine_thunks_keymap_manual[] = {
+    KAFFEINE_KEYMAP_THUNKS,
+    { 0, NULL }
+};
+const ULONG kaffeine_thunks_keymap_manual_count =
+    sizeof(kaffeine_thunks_keymap_manual) / sizeof(kaffeine_thunks_keymap_manual[0]) - 1;
 
 /* ── Graphics manual thunks (shadow RastPort) ── */
 const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {

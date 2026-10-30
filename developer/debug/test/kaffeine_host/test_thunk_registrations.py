@@ -3,10 +3,10 @@
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-The C preprocessor expands the production header macros for all twenty manual
+The C preprocessor expands the production header macros for all twenty-one manual
 thunk tables (exec, dos, intuition, graphics, utility, locale, mathieeedoubbas,
 mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, keyboard, input,
-diskfont, gadtools, icon, workbench, cybergraphics and layers). Expected
+diskfont, gadtools, icon, workbench, cybergraphics, layers and keymap). Expected
 vector numbers come independently from the native AROS entry points and from
 the NDK 3.2 fd files (or AROS fd / .conf files for
 AROS-only AVL functions and explicitly listed extensions). Each manual handler and the helpers it delegates to
@@ -47,6 +47,7 @@ TABLES = (
     ("mathffp", "kaffeine_thunks.c", "kaffeine_thunks_mathffp"),
     ("timer", "kaffeine_thunks_timer.c", "kaffeine_thunks_timer"),
     ("console", "kaffeine_thunks_console.c", "kaffeine_thunks_console"),
+    ("keymap", "kaffeine_thunks.c", "kaffeine_thunks_keymap_manual"),
     ("keyboard", "kaffeine_exec_io.c", "kaffeine_thunks_keyboard"),
     ("input", "kaffeine_exec_io.c", "kaffeine_thunks_input"),
     ("gadtools", "kaffeine_thunks.c", "kaffeine_thunks_gadtools_manual"),
@@ -83,6 +84,9 @@ DEVICES = ("timer", "console", "keyboard", "input")
 
 # These device slots deliberately stop the guest; they claim no native API.
 CONSOLE_REFUSED = frozenset((6, 12, 18, 24, 30, 36, 42, 54, 60, 66, 72))
+# The supported keymap profile uses only MapRawKey with the native default.
+# No guest pointer may replace or expose the system's native KeyMap tables.
+KEYMAP_REFUSED = frozenset((30, 36, 48))
 # Every vector of keyboard.device and input.device: Open, Close, Expunge and
 # the reserved one, then BeginIO, AbortIO and the .conf function list
 # (input's PeekQualifier), which main() checks against the native .conf.
@@ -139,6 +143,7 @@ CASES = (
 
     ("diskfont", "opendiskfont.c", "OpenDiskFont", "thunk_diskfont_OpenDiskFont"),
     ("console", "rawkeyconvert.c", "RawKeyConvert", "kaffeine_console_RawKeyConvert"),
+    ("keymap", "maprawkey.c", "MapRawKey", "Kaffeine_MapRawKey"),
     ("mathffp", "spfix.c", "SPFix", "kaffeine_mathffp_SPFix"),
     ("mathffp", "spflt.c", "SPFlt", "kaffeine_mathffp_SPFlt"),
     ("mathffp", "spcmp.c", "SPCmp", "kaffeine_mathffp_SPCmp"),
@@ -1166,7 +1171,7 @@ def main():
             r"Device|TimerBase|WorkbenchBase|IconBase|LayersBase)"
             r"\s*\*,\s*\w+\s*,\s*(\d+)\s*,\s*"
             r"(?:Dos|Exec|Intuition|Graphics|Utility|Locale|GadTools|"
-            r"MathIeeeDoubBas|MathIeeeDoubTrans|Mathieeesingbas|Mathffp|Timer|Console|Diskfont|Workbench|Icon|"
+            r"MathIeeeDoubBas|MathIeeeDoubTrans|Mathieeesingbas|Mathffp|Timer|Console|Keymap|Diskfont|Workbench|Icon|"
             r"Layers)\s*\)"
         )
         location = re.search(pattern, native, re.DOTALL)
@@ -1195,6 +1200,7 @@ def main():
     total_manual = 0
     seen_ignored = set()
     seen_console_refusals = set()
+    seen_keymap_refusals = set()
     seen_icon_refusals = set()
     seen_layers_refusals = set()
     seen_graphics_layer_refusals = set()
@@ -1244,6 +1250,14 @@ def main():
             r'\s*\(void\)cpu;\s*return Kaffeine_IORefuse\(ctx,\s*"[^"\n]*"\);\s*',
             refused_body[0]):
         raise ValueError("console unsupported slots must only call Kaffeine_IORefuse")
+    keymap_refused = re.findall(r"IPTR Kaffeine_KeymapUnsupported\([^\n]*\n\{(.*?)\n\}",
+                               (core / "kaffeine_keymap.c").read_text(), re.DOTALL)
+    if len(keymap_refused) != 1 or not re.fullmatch(
+            r'\s*\(void\)cpu;\s*return Kaffeine_IORefuse\(ctx,\s*"[^"\n]*"\);\s*',
+            keymap_refused[0]):
+        raise ValueError("keymap unsupported slots must only call Kaffeine_IORefuse")
+    if set(parse_conf_file(library_source_dir(root, "keymap") / "keymap.conf")) != KEYMAP_REFUSED | {42}:
+        raise ValueError("keymap manual profile does not cover its exact native vectors")
     device_refused_body = re.findall(r"static IPTR device_unsupported\([^\n]*\n\{(.*?)\n\}",
                                      sources["kaffeine_exec_io.c"], re.DOTALL)
     if len(device_refused_body) != 1 or not re.fullmatch(
@@ -1307,6 +1321,13 @@ def main():
                     failures += 1
                     print("FAIL console.device", -vector, "unexpected refusal slot")
                 seen_console_refusals.add(vector)
+                continue
+            if handler == "Kaffeine_KeymapUnsupported":
+                if library != "keymap" or vector not in KEYMAP_REFUSED:
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, "unexpected keymap refusal slot")
+                else:
+                    seen_keymap_refusals.add(vector)
                 continue
             if library == "icon" and handler == "kaffeine_icon_Unsupported":
                 if vector not in ICON_REFUSED:
@@ -1421,6 +1442,9 @@ def main():
     if seen_console_refusals != CONSOLE_REFUSED:
         failures += 1
         print("FAIL console.device explicit refusal slots changed")
+    if seen_keymap_refusals != KEYMAP_REFUSED:
+        failures += 1
+        print("FAIL keymap.library explicit refusal slots changed")
     for library, vectors in DEVICE_REFUSED.items():
         if seen_device_refusals[library] != vectors:
             failures += 1

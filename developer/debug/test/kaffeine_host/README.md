@@ -55,6 +55,15 @@ add new standalone runners to its explicit suite list.
 These are host checks. Native AROS and application acceptance still require
 their separate target tests.
 
+The typed `keymap.library` profile supports `MapRawKey` with the native
+default keymap (`A2 == NULL`). Custom guest KeyMap tables, `SetKeyMapDefault`,
+`AskKeyMapDefault` and `MapANSI` refuse before any native call. The console
+fixture checks the generated fallback table against these manual overrides.
+See the [typed keymap boundary](../../../../docs/kaffeine/keymap.md) for the
+classic/native event conversion, protected-buffer contract and focused
+`test_console` normal/sanitizer commands. Its native mapper is a recording
+collaborator; these checks do not establish target keyboard typing.
+
 ## AArch64 Linux under QEMU user mode
 
 With an AArch64 GNU C++ toolchain and QEMU user mode installed:
@@ -85,7 +94,7 @@ has 49 test executables and a thunk-registration audit.
 | Exec | Heap and pools, lists, signals, task snapshots, embedded ExecBase list headers and bounded Moira callback traversal, semaphores, public ports, guest message queues, I/O requests and timer boundaries |
 | DOS | Handle identities and lifetimes, buffers, packet thunks and FileHandle actions, handler ports (`DeviceProc`/`GetDeviceProc`), formatting, CLI state, argument parsing, data structures and directory traversal (`ExAll`/`ExAllEnd`) |
 | Graphics, Layers and Intuition | RastPorts, fonts, display and monitor metadata, owned and public screens, `DrawInfo`, live and offscreen planar layers and backfill hooks, clip regions, bitmaps (`InitBitMap`/`BltBitMap`/`GetBitMapAttr`), windows, IDCMP, requests, menus, gadgets and Workbench objects |
-| Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, `icon.library` metadata snapshots, no-window console calls and diskfont snapshots |
+| Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, `icon.library` metadata snapshots, no-window console calls, typed default-keymap InputEvents and diskfont snapshots |
 | CPU backend extension | Production AArch64 translator, hosted differential tests and library mode contracts |
 | Guest scheduling | Separate Moira and JIT CPUs, task identity/priority, deferred Wait/WaitPort, Forbid/Disable, message exchange, native signal routing, removal, bounds, allocation rollback and cleanup |
 

@@ -81,6 +81,7 @@ KAFFEINE_FILES := \
     kaffeine_exec_io \
     kaffeine_thunks_timer \
     kaffeine_thunks_console \
+    kaffeine_keymap \
     kaffeine_shadow \
     kaffeine_m68klib \
     kaffeine_workbench \
