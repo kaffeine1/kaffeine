@@ -13,6 +13,7 @@ on:
       - '.github/workflows/kaffeine-host-suite.yml'
       - 'rom/kaffeine/**'
       - 'developer/debug/test/kaffeine_host/**'
+      - 'developer/debug/test/dos_process_host/**'
       - 'compiler/include/dos/**'
       - 'rom/dos/**'
       - 'rom/exec/**'
@@ -31,6 +32,7 @@ on:
       - '.github/workflows/kaffeine-host-suite.yml'
       - 'rom/kaffeine/**'
       - 'developer/debug/test/kaffeine_host/**'
+      - 'developer/debug/test/dos_process_host/**'
       - 'compiler/include/dos/**'
       - 'rom/dos/**'
       - 'rom/exec/**'
@@ -77,3 +79,8 @@ jobs:
       # Line-buffered output keeps the last lines of a test that crashes.
       - name: Run the host tests
         run: make -C developer/debug/test/kaffeine_host test RUNNER="stdbuf -oL -eL"
+
+      - name: Check native DOS hunk dispatch and cleanup
+        run: |
+          make -C developer/debug/test/dos_process_host
+          make -C developer/debug/test/dos_process_host test-sanitize
