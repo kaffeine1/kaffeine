@@ -439,7 +439,7 @@ diagnose-seglist: $(BUILD_DIR)/test_hunk_loading
 clean:
 	rm -f $(PROCESS_TAG_OBJS) $(PROCESS_TAG_OBJS:.o=.d)
 	rm -f $(LOCK_OBJS) $(LOCK_OBJS:.o=.d)
-	rm -f $(MESSAGE_OBJS) $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_entries.c $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_messages.d $(BUILD_DIR)/message_native_unused.o $(BUILD_DIR)/message_native_unused.d $(BUILD_DIR)/file_boundary_unit.o $(BUILD_DIR)/file_boundary_unit.d
+	rm -f $(MESSAGE_OBJS) $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_boundary_sched.o $(BUILD_DIR)/message_boundary_sched.d $(BUILD_DIR)/message_entries.c $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_messages.d $(BUILD_DIR)/message_native_unused.o $(BUILD_DIR)/message_native_unused.d $(BUILD_DIR)/file_boundary_unit.o $(BUILD_DIR)/file_boundary_unit.d
 	rm -f $(DISKFONT_OBJS) $(DISKFONT_OBJS:.o=.d)
 	rm -f $(LIBRARY_PATHS_OBJS) $(LIBRARY_PATHS_OBJS:.o=.d) $(BUILD_DIR)/library_paths_lookup.c
 	rm -f $(MATHFFP_THUNK_OBJS) $(MATHFFP_THUNK_OBJS:.o=.d)
@@ -488,13 +488,13 @@ $(BUILD_DIR)/message_entries.o: $(BUILD_DIR)/message_entries.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
 $(BUILD_DIR)/test_exec_messages: $(TEST_DIR)/test_exec_messages.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
-$(BUILD_DIR)/test_dos_packets: $(TEST_DIR)/test_dos_packets.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
+$(BUILD_DIR)/test_dos_packets: $(TEST_DIR)/test_dos_packets.cpp $(MESSAGE_OBJS) $(BUILD_DIR)/message_boundary_sched.o | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(BUILD_DIR)/message_boundary_sched.o $(LDLIBS)
 $(BUILD_DIR)/test_dos_packet_thunks: $(TEST_DIR)/test_dos_packet_thunks.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
 $(BUILD_DIR)/test_dos_handlers: $(TEST_DIR)/test_dos_handlers.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
--include $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_messages.d
+-include $(MESSAGE_OBJS:.o=.d) $(BUILD_DIR)/message_boundary_sched.d $(BUILD_DIR)/message_messages.d
 .PHONY: test_exec_messages test_dos_packets
 
 $(BUILD_DIR)/icon_boundary_icon.o: $(KAFFEINE_DIR)/kaffeine_icon.c | $(BUILD_DIR)

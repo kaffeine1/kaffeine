@@ -29,6 +29,33 @@ classic-only `CreateProc()` has no native DOS context and refuses DOS calls
 other than `Exit()`.
 Typed children enable persistent Process lifetime.
 
+## Typed DOS packets
+
+`PutMsg()` to a registered file or handler port uses the same validated
+[FileHandle](../../rom/kaffeine/kaffeine_filehandle.c) and
+[handler](../../rom/kaffeine/kaffeine_handlers.c) packet adapters as the root.
+The supported actions, StandardPacket layout, buffer bounds, private handle
+identities and reply-queue checks remain in those adapters. An ordinary guest
+port or unrecognized packet cannot select a native DOS route.
+
+For a typed Process, the scheduler stages only the guest port, message address
+and adapter family in private native metadata. A fixed compiled helper executes
+the adapter in that Process's broker, with its native directory and `IoErr()`
+state. No guest function pointer or CPU instruction runs there. `SendPkt()` and
+`DoPkt()` already inside that same selected broker call reuse its owner without
+submitting another RPC. The driver stays paused until acknowledgement.
+
+Packets from a guest callback, inside a held LayerInfo scope or with a mismatched
+Process/CPU/native owner are refused. Classic `CreateProc()` still has no DOS
+packet context; root and ordinary `AddTask()` behavior is unchanged. LVO zero
+remains an internal refusal sentinel, not a general DOS capability.
+
+Replies keep the original guest message address and big-endian queue links.
+Child notifications update that child's virtual signals. A reply addressed to
+the live root signals the fixed native driver, even when the packet adapter is
+running on a broker. Staged arguments clear on completion or failure and before
+Process teardown; a transport failure never permits execution on the driver.
+
 ## Loader and startup transaction
 
 [`LoadSeg()` / `NewLoadSeg()`](../../rom/kaffeine/kaffeine_thunks_dos.c) reserve a
@@ -147,5 +174,23 @@ Each suite documents its ordinary and ASan/UBSan runner with an explicit build
 directory. The main host suite also covers the
 [tag parser](../../developer/debug/test/kaffeine_host/test_process_tags.cpp) and
 [real scheduler/backends](../../developer/debug/test/kaffeine_host/test_guest_tasks.cpp).
+Its [DOS packet fixture](../../developer/debug/test/kaffeine_host/process_packet_fixture.h)
+links the real scheduler, dispatcher, heap, file/handler adapters and queues to
+recording CPUs/native transport. It checks child Process/directory/error
+identity, file reads and packet errors, direct and nested routes, root/child
+reply ownership, malformed or mixed inputs, callback refusal, staged-request clearing,
+classic-task limits and authoritative return code 20 through the real CPU loop.
+
+```sh
+make -C developer/debug/test/kaffeine_host BUILD_DIR=/tmp/kaffeine-packets -j1 test_dos_packets
+/tmp/kaffeine-packets/test_dos_packets
+make -C developer/debug/test/kaffeine_host BUILD_DIR=/tmp/kaffeine-packets-san -j1 \
+    CFLAGS="-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer" \
+    CXXFLAGS="-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer" \
+    LDFLAGS="-fsanitize=address,undefined" test_dos_packets
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+    /tmp/kaffeine-packets-san/test_dos_packets
+```
+
 Host, native target and application GUI acceptance are separate evidence lanes;
 this document does not claim a current application probe or editor UI result.

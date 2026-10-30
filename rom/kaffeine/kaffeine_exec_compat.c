@@ -519,6 +519,9 @@ IPTR Kaffeine_RoutePutMsg(struct KaffeineContext *ctx, ULONG gp, ULONG gm, ULONG
                     Kaffeine_StopGuest(ctx, ctx->cpu, 20);
                     return 20;
                 }
+                if (ctx->sched && ctx->task_ops->packet_call &&
+                    ctx->task_ops->packet_call(ctx, gp, gm, TRUE, &refusal))
+                    return ctx->running ? d0 : refusal;
                 if (ctx->sched && ctx->task_ops->process_dos &&
                     ctx->task_ops->process_dos(ctx, ctx->cpu, 0, &refusal))
                     return refusal;
@@ -535,6 +538,9 @@ IPTR Kaffeine_RoutePutMsg(struct KaffeineContext *ctx, ULONG gp, ULONG gm, ULONG
                     Kaffeine_StopGuest(ctx, ctx->cpu, 20);
                     return 20;
                 }
+                if (ctx->sched && ctx->task_ops->packet_call &&
+                    ctx->task_ops->packet_call(ctx, gp, gm, FALSE, &refusal))
+                    return ctx->running ? d0 : refusal;
                 if (ctx->sched && ctx->task_ops->process_dos &&
                     ctx->task_ops->process_dos(ctx, ctx->cpu, 0, &refusal))
                     return refusal;

@@ -115,6 +115,8 @@ struct GuestTask
     struct KaffeineDomainModule *module;
     ULONG dos_lvo;
     BOOL dos_pending;
+    ULONG packet_port, packet_msg; /* private synchronous broker arguments */
+    BOOL packet_file, packet_pending;
     ULONG cli;                  /* guest CLI cache of this DOS owner */
     ULONG argptr, argsize;
     ULONG startup_entry;        /* private staged MemList; never read from guest links */
@@ -131,6 +133,8 @@ struct KaffeineScheduler
     BOOL root_done, root_drained;
     LONG root_result;
 };
+
+static void packet_clear(struct GuestTask *);
 
 static BOOL arena(struct KaffeineContext *ctx, ULONG addr, ULONG size)
 {
@@ -311,6 +315,7 @@ static BOOL finish_process(struct KaffeineContext *ctx, struct KaffeineScheduler
 {
     struct DosScope scope;
     BOOL okay;
+    packet_clear(t); /* no packet RPC survives its synchronous acknowledgement */
     if (!t->broker) return TRUE;
     dos_scope_begin(ctx, s, t, NULL, &scope);
     okay = Kaffeine_DosBrokerFinish(t->broker, ctx, Kaffeine_ProcessDropGuestDos);
@@ -1765,7 +1770,9 @@ static void sched_send_signal(struct KaffeineContext *ctx, ULONG task, ULONG set
 
         set &= ~Kaffeine_AsyncSignalMask(ctx);
         if (set & ~owned)
-            Signal(FindTask(NULL), set & ~owned);
+            /* A packet reply may be appended by a DOS broker while the
+               driver waits. The root's native signals still belong here. */
+            Signal(ctx->exec_task ? ctx->exec_task : FindTask(NULL), set & ~owned);
         t->recvd |= set & owned;
         if (t->state == SLOT_WAIT)
         {
@@ -2071,6 +2078,101 @@ static BOOL sched_dos_call(struct KaffeineContext *ctx, void *cpu,
     return TRUE;
 }
 
+static void packet_clear(struct GuestTask *t)
+{
+    t->packet_port = t->packet_msg = 0;
+    t->packet_file = t->packet_pending = FALSE;
+}
+
+static IPTR packet_refuse(struct KaffeineContext *ctx, const char *why)
+{
+    Kaffeine_StopGuest(ctx, ctx->cpu, 20);
+    return refuse(ctx, why);
+}
+
+/* Only private registry identities choose either adapter. Its existing
+   StandardPacket/queue/handle validation still runs before native DOS. */
+static BOOL packet_adapter(struct KaffeineContext *ctx, ULONG port, BOOL file)
+{
+    unsigned i;
+    if (!port) return FALSE;
+    if (file && ctx->file_packet)
+        for (i = 0; i < KAFFEINE_MAX_FILES; i++)
+            if (ctx->files[i].guest && ctx->files[i].handler == port) return TRUE;
+    if (!file && ctx->handler_packet)
+        for (i = 0; i < KAFFEINE_MAX_HANDLERS; i++)
+            if (ctx->handlers[i].guest == port) return TRUE;
+    return FALSE;
+}
+
+/* Fixed native code, never a callback supplied by guest memory. No guest CPU
+   instruction, dispatcher, guest Wait or scheduler switch runs here. Native
+   DOS may wait synchronously while the driver waits for its acknowledgement. */
+static IPTR packet_thunk(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s ? s->current : NULL;
+    IPTR result;
+    if (!t || !t->broker || !t->packet_pending || t->state != SLOT_RUN ||
+        ctx->cpu != t->cpu || cpu != t->cpu || ctx->guest_exec_task != t->tcb ||
+        this_task(ctx) != t->tcb || ctx->callback_depth || !ctx->broker_call ||
+        !ctx->broker_owner || ctx->broker_owner != FindTask(NULL) ||
+        ctx->broker_owner == ctx->exec_task || Kaffeine_LayerInfoLocked(ctx) ||
+        !packet_adapter(ctx, t->packet_port, t->packet_file))
+        return packet_refuse(ctx, "a Process packet has no safe broker owner");
+    result = t->packet_file ? ctx->file_packet(ctx, t->packet_port, t->packet_msg)
+                            : ctx->handler_packet(ctx, t->packet_port, t->packet_msg);
+    if (!ctx->running && ctx->exit_code == 20)
+        Kaffeine_StopGuest(ctx, t->cpu, 20);
+    return result;
+}
+
+static BOOL sched_packet_call(struct KaffeineContext *ctx, ULONG port, ULONG msg,
+                              BOOL file, IPTR *result)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s ? s->current : NULL;
+    SIPTR error = 0;
+    BOOL okay;
+    if (!s || !is_process(s, t)) return FALSE;
+    if (!t->broker || t->packet_pending || !ctx->running || ctx->callback_depth ||
+        ctx->cpu != t->cpu || t->state != SLOT_RUN ||
+        ctx->guest_exec_task != t->tcb || this_task(ctx) != t->tcb ||
+        Kaffeine_LayerInfoLocked(ctx) || !packet_adapter(ctx, port, file) ||
+        !ctx->exec_task ||
+        (ctx->broker_call ? (!ctx->broker_owner || ctx->broker_owner != FindTask(NULL) ||
+                             ctx->broker_owner == ctx->exec_task)
+                          : (ctx->broker_owner || FindTask(NULL) != ctx->exec_task)))
+    {
+        *result = packet_refuse(ctx, "a Process packet has no safe broker route");
+        return TRUE;
+    }
+    t->packet_port = port;
+    t->packet_msg = msg;
+    t->packet_file = file;
+    t->packet_pending = TRUE;
+    if (ctx->broker_call)
+    {
+        /* SendPkt/DoPkt is already inside this Process's selected DOS call.
+           Reuse that exact native owner instead of submitting to itself. */
+        *result = packet_thunk(ctx, t->cpu);
+    }
+    else
+    {
+        ctx->broker_call = TRUE;
+        okay = Kaffeine_DosBrokerCall(t->broker, ctx, t->cpu, 0,
+                                      packet_thunk, result, &error);
+        ctx->broker_call = FALSE;
+        if (!okay)
+        {
+            bug("[kaffeine] packet broker transport failed (%ld)\n", (long)error);
+            *result = packet_refuse(ctx, "a Process packet broker call failed");
+        }
+    }
+    packet_clear(t);
+    return TRUE;
+}
+
 /* Queue geometry is checked by Kaffeine_GuestGetMsg before it calls here.
    Only the receiving task can wait for its empty PA_SIGNAL port; a child
    Process also for its pr_MsgPort, on its own SIGB_DOS. */
@@ -2170,5 +2272,5 @@ const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
     Kaffeine_ProcCreate, sched_process_port, sched_process_dos,
     sched_is_root, sched_caller_task, sched_block_io, sched_io_completed,
     sched_dos_call, Kaffeine_SchedFinishRoot, sched_root_result,
-    sched_root_task, sched_can_signal
+    sched_root_task, sched_can_signal, sched_packet_call
 };

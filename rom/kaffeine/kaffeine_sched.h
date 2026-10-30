@@ -130,6 +130,14 @@ struct KaffeineTaskOps
        pending records must retire before a TCB address can be reused.
        Without a scheduler only the exact private root is accepted. */
     BOOL  (*can_signal)(struct KaffeineContext *ctx, ULONG task, ULONG bits);
+    /* An already matched private file/handler port in RoutePutMsg. A typed
+       Process executes the existing validated adapter in its own DOS broker,
+       using only native staged scalar arguments and a fixed compiled helper.
+       TRUE consumes/refuses the route; FALSE keeps root/AddTask behavior.
+       file selects ctx->file_packet, otherwise ctx->handler_packet. Neither
+       this hook nor its helper accepts a guest/native function pointer. */
+    BOOL  (*packet_call)(struct KaffeineContext *ctx, ULONG port, ULONG msg,
+                         BOOL file, IPTR *result);
 };
 
 #ifdef __cplusplus

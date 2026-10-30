@@ -68,6 +68,9 @@ extern "C" APTR AllocVec(ULONG size, ULONG flags) { return AllocMem(size, flags)
 extern "C" void FreeVec(APTR p) { if (p) FreeMem(p, native_blocks.at(p)); }
 static Process native_process;
 static Task &native_task = native_process.pr_Task;
+/* Optional owner/effect observers used by the real scheduler packet lane. */
+static Task *native_caller;
+static void (*packet_native_observer)(void);
 static BPTR close_frees;
 static ULONG allocated_signals, pending_signals, signalled_mask;
 static unsigned signals, freed_signals, reads, writes, closes, seeks, buffer_calls, scalar_calls;
@@ -213,7 +216,7 @@ extern "C" BYTE AllocSignal(LONG requested)
     return -1;
 }
 extern "C" void FreeSignal(LONG bit) { ++freed_signals; allocated_signals &= ~(1U << bit); }
-extern "C" Task *FindTask(CONST_STRPTR name) { assert(!name); return &native_task; }
+extern "C" Task *FindTask(CONST_STRPTR name) { assert(!name); return native_caller ? native_caller : &native_task; }
 extern "C" void Signal(Task *task, ULONG mask)
 { assert(task == &native_task); ++signals; signalled_mask = mask; pending_signals |= mask; }
 extern "C" void RawPutChar(UBYTE) { std::abort(); }
@@ -239,6 +242,7 @@ extern "C" LONG Close(BPTR handle)
 }
 extern "C" LONG Read(BPTR handle, APTR buffer, LONG length)
 {
+    if (packet_native_observer) packet_native_observer();
     ++reads; seen_handle = handle; read_buffer = buffer; read_length = length;
     assert(handle && length >= 0);
     ioerr = read_override == -1 ? -123 : 909;
@@ -260,6 +264,7 @@ extern "C" LONG Read(BPTR handle, APTR buffer, LONG length)
 }
 extern "C" LONG Write(BPTR handle, const void *buffer, LONG length)
 {
+    if (packet_native_observer) packet_native_observer();
     ++writes; seen_handle = handle; read_buffer = const_cast<void *>(buffer); read_length = length;
     assert(handle && length >= 0);
     written_bytes.assign(static_cast<const UBYTE *>(buffer), static_cast<const UBYTE *>(buffer) + length);
@@ -286,6 +291,7 @@ extern "C" LONG Seek(BPTR handle, LONG position, LONG mode)
 }
 extern "C" SIPTR DoPkt(MsgPort *handler, LONG action, SIPTR a1, SIPTR a2, SIPTR a3, SIPTR a4, SIPTR a5)
 {
+    if (packet_native_observer) packet_native_observer();
     ++native_packets; packet_handler=handler; packet_action=action; packet_args={a1,a2,a3,a4,a5};
     assert(handler);
     if (action == ACTION_DISK_INFO)
@@ -440,6 +446,7 @@ struct Fixture
     static constexpr ULONG port=0x8000,reply=0x8100,msg=0x9000,buffer=0xA001;
     Fixture():ctx(*make_context())
     {
+        native_caller=nullptr;packet_native_observer=nullptr;
         allocated_signals=pending_signals=signals=freed_signals=signalled_mask=0;
         reads=writes=closes=seeks=buffer_calls=scalar_calls=0;
         read_override=INT_MIN; read_override_bytes.clear(); signal_failure=false; generated_calls=0; ioerr=137;

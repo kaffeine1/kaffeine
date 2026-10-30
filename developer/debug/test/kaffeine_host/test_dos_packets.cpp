@@ -744,8 +744,11 @@ static void process_stream_retirement()
     }
 }
 
+#include "process_packet_fixture.h"
+
 int main()
 {
+    typed_process_packets();
     process_stream_retirement();
     cleared_file_packets();cleared_handler_packets();cleared_packet_failures();
     measured_reads();unused_message_reply_port();packet_failures();identities();buffering();ownership_failures();sequential_handles_and_selected_close();all_handle_entry_points();packet_reply_queue_preflight();bounded_packet_diagnostics();application_read_then_reserved_waitport();

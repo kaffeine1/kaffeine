@@ -217,6 +217,17 @@ handler actions, classic InfoData conversion and buffer checks, unknown
 actions and FileHandles with no native handler. The task and scheduler
 suites check the Process port layout and reserved DOS signal ownership.
 
+Three typed-Process packet groups also link the real scheduler into
+`test_dos_packets`. They exercise direct `PutMsg()` and nested `SendPkt()`/`DoPkt()`
+through the existing file/handler adapters on a recording child broker, with
+separate native Process, directory and IoErr state. Root and child reply signals,
+original message/FIFO identity, file-read errors, malformed/mixed packets,
+callback/LayerInfo/owner refusals, transport retry and unchanged classic-task
+limits are checked. A real `Kaffeine_RunCPU()` case preserves a marked return
+code 20 after a refused worker callback and a subsequent void result of zero.
+The broker and CPUs in this lane are collaborators; it does not claim native
+thread scheduling, target execution or application GUI acceptance.
+
 The Process packet port lives inside the registered Task shadow: guest queues
 take exactly that port, and the SIGB_DOS exception holds for it alone, with
 and without the scheduler.

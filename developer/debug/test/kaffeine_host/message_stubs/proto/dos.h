@@ -27,6 +27,7 @@ struct DosList *NextDosEntry(struct DosList *, ULONG);
 struct MsgPort *DeviceProc(CONST_STRPTR);
 struct DevProc *GetDeviceProc(CONST_STRPTR, struct DevProc *);
 void FreeDeviceProc(struct DevProc *);
+void Delay(LONG);
 struct MsgPort *GetConsoleTask(void);
 struct MsgPort *SetConsoleTask(struct MsgPort *);
 struct MsgPort *GetFileSysTask(void);
