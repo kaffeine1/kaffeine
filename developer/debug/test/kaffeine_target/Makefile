@@ -16,6 +16,8 @@ PYTHON ?= python3
 
 C_PROGRAMS := cpu_full_index exec_io_signal_budget dos_packet_zero dos_locks exec_timer_children exec_timer_stack gfx_gels_init gfx_screen_pens gfx_rastport_state gfx_classic_rastport gfx_copied_rastport intui_classic_draw exec_keyboard exec_timer_async exec_createproc gfx_askfont exec_process_stack gfx_window_clip gfx_classic_request gfx_requester_init gfx_intuitext_width gfx_blit_clip file_packet_reply dos_fileio dos_strings dos_readargs dos_lvo dos_exall dos_packets dos_handlers exec_memory exec_public exec_lists exec_syslists exec_memheader exec_timer exec_console exec_diskfont exec_libraries exec_library_paths gfx_window gfx_idcmp gfx_request gfx_menus gfx_bevel gfx_gadgets gfx_gadget_attrs gfx_gadget_setattrs gfx_gadget_listview gfx_gadget_window gfx_gadget_links gfx_gadget_keys gfx_classic_menus gfx_pubscreen gfx_classic_bool gfx_classic_string gfx_classic_prop gfx_mouse gfx_workbench utility_tags utility_dates locale math_ieee math_ffp c_stdio c_compute c_time cpu_faults hooks
 PROGRAMS := hello_short hello_long $(C_PROGRAMS) c_stdio_vec c_compute_fpu
+C_PROGRAMS += cpu_dbcc
+PROGRAMS += cpu_dbcc
 C_PROGRAMS += exec_messages exec_message_lifetime exec_packets gfx_planar_read icon_objects gfx_display_info
 C_PROGRAMS += gfx_owned_screen gfx_layer_topology gfx_layer_resources
 PROGRAMS += gfx_owned_screen gfx_layer_topology gfx_layer_resources

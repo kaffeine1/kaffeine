@@ -943,9 +943,11 @@ static int decode_insn(struct KaffeineContext *ctx, uint32_t pc, struct HJInsn *
             in->use = cond_use[in->cond];
             if (mode == 1)
             {
+                uint32_t base = d.at;
+
                 in->kind = K_DBCC; in->dst.reg = (uint8_t)reg;
-                in->next = d.at + 2;
-                in->target = d.at + (uint32_t)(int32_t)(int16_t)fetch16(&d);
+                in->next = base + 2;
+                in->target = base + (uint32_t)(int32_t)(int16_t)fetch16(&d);
                 in->use = HJF_ALL;
                 break;
             }
