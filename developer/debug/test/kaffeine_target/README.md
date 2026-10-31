@@ -76,8 +76,12 @@ at the end.
 | `xz_config.h` | The `config.h` of XZ Utils 5.8.3, the same for `xz` and for its host build: what the configure of XZ Utils finds on both, without threads, the CRC instructions of some processors and the ways to find the memory and the processors of the machine. |
 | `xz_libnix.c` | What `xz` needs beyond libnix: `sigaction()` on `signal()`, `sigprocmask()` with nothing to block, `fcntl()` that gives no flags and sets none, `poll()` that finds every descriptor ready, and `fchmod()` and `fchown()`, which succeed without doing anything. |
 | `mbedtls_config.h` | The configuration of mbed TLS 3.6.7 for `mbedtls_selftest`, the same for its host build: the modules whose self-tests it runs, with every cipher mode and elliptic curve, without the network, the clock, files and entropy. |
+| `lua_config.h` | The configuration header of Lua 5.4.7, included in front of each file for both `lua` and its host build: sets `LUA_PATH_DEFAULT` to `"EMU68/?.lua;?.lua"`, fixes the decimal point to `'.'` and restricts `setlocale()` to the C locale, leaves `lua_strx2number` and `lua_number2strx` undefined so that both builds use Lua's own hexadecimal float parser and formatter, and on m68k routes `l_sprintf` and `lua_str2number` to `lua_libnix.c`. |
+| `lua_libnix.c` | What `lua` needs beyond libnix: `lua_libnix_snprintf()`, which moves a sign in front of leading zero padding and clears integer digits past `DBL_DIG` on `%f` and `%F`, and `lua_libnix_strtod()`, which parses decimal floats with a 64-bit integer mantissa of up to 19 significant digits and leaves `*endptr` at `nptr` when no digits match. |
+| `lua_stdin.lua` | The script that `lua_stdin` reads from standard input: exercises `pcall` and `xpcall` (`setjmp`/`longjmp`), IEEE 754 `double` math and `table.sort`, `string.format` with `%g` and `%a`, file I/O on `EMU68/` and a temporary file, `os.clock()` and `os.time()`. |
+| `lua_bad.lua` | The script of `lua_bad`: flushes a line to standard output and raises an unhandled error in `fail_step()`, ending with return code 1 and a stack traceback on standard error. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `zstd` of Zstandard 1.5.7 when `ZSTD_SRC` names its source, with its references from `make zstd-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, and `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `zstd` of Zstandard 1.5.7 when `ZSTD_SRC` names its source, with its references from `make zstd-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`, and `lua` of Lua 5.4.7 when `LUA_SRC` names its source, with its references from `make lua-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -216,6 +220,19 @@ for its Ports to include `mbedtls_selftest`. The Makefile compiles every
 file of its `library` drawer with `mbedtls_config.h` as the configuration,
 which leaves the modules that it does not name empty, and
 `make mbedtls-refs` writes the reference output to `build/mbedtls-refs`.
+
+Set `LUA_SRC` to an unpacked `lua-5.4.7` directory, with `lua-5.4.7-tests`
+next to it (or named by `LUA_TESTS_SRC`), to include `lua`. The Makefile
+builds every file of `src/` except `luac.c` with `lua_config.h` in front of
+each file, and for the m68k links `lua_libnix.c` and the `libm.a` of
+libnix. It collects the twelve deterministic scripts of `lua-5.4.7-tests`,
+`bwcoercion.lua`, `stdin.lua` and `bad.lua` in `build/lua-files`, and
+`make lua-refs` writes the reference outputs and error streams to
+`build/lua-refs`. A second binary built with `-m68020 -m68881` is not worth
+a step: neither Moira nor the Kaffeine JIT executes 68881 Line-F
+instructions and `SysBase->AttnFlags` leaves the FPU flags clear, so the
+FPU check in the startup code of libnix exits with return code 20 before
+`main()`, as `c_compute_fpu` already tests.
 
 ## Running on AROS AArch64
 
@@ -408,6 +425,7 @@ compile and evaluate this emitted Hook; see that directory's README.
 | each step of `pngtest` | `--files NAME build/pngtest-files` |
 | each step of `xmlwf` | `--files NAME build/xmlwf-files` |
 | each step of `xz` | `--files NAME build/xz-files` |
+| each step of `lua` | `--files NAME build/lua-files` |
 
 The bitmap font is generated from original fixture data by the Makefile.
 The packet fixture is an original 12-byte file. Requests of 5, 9 and 4 bytes
@@ -718,6 +736,64 @@ the system, which takes more than five minutes under Moira: with an
 FS-UAE, on an A1200 with 2 MB of chip and 8 MB of fast memory, it gives the
 same output too, in about 23 minutes.
 
+## The Lua 5.4.7 steps
+
+`lua` is the stand-alone interpreter of Lua 5.4.7. Fourteen programs run it
+on the twelve deterministic scripts of `lua-5.4.7-tests` that need no C
+test library (`ltests`), on a script read from standard input and on a
+script that ends with an unhandled error. Each step passes only if its
+standard output and standard error are byte for byte those of the same
+program built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `lua_strings` | `-e "_port=true _soft=true" EMU68/strings.lua` | `strings.lua`: `string.format` (`%d`, `%x`, `%f`, `%g`, `%a`, `%q`), `tonumber`, `string.sub`, `string.gsub`, comparisons and buffers | 0 |
+| `lua_nextvar` | `-e "_port=true _soft=true" EMU68/nextvar.lua` | `nextvar.lua`: tables, array and hash parts, `next`, `pairs`, `ipairs`, `#` and numeric and generic `for` loops | 0 |
+| `lua_closure` | `-e "_port=true _soft=true" EMU68/closure.lua` | `closure.lua`: lexical scoping, upvalues, `debug.upvalueid` and `debug.upvaluejoin` | 0 |
+| `lua_calls` | `-e "_port=true _soft=true" EMU68/calls.lua` | `calls.lua`: function calls, tail calls, `pcall`, `load`, `string.dump` and undump of binary chunks | 0 |
+| `lua_events` | `-e "_port=true _soft=true" EMU68/events.lua` | `events.lua`: metatables and metamethods for arithmetic, bitwise, comparison, indexing and call operations | 0 |
+| `lua_vararg` | `-e "_port=true _soft=true" EMU68/vararg.lua` | `vararg.lua`: `...`, `select`, `table.pack` and `table.unpack` | 0 |
+| `lua_pm` | `-e "_port=true _soft=true" EMU68/pm.lua` | `pm.lua`: pattern matching (`string.find`, `string.match`, `string.gmatch`, `string.gsub`), frontier and balanced patterns | 0 |
+| `lua_utf8` | `-e "_port=true _soft=true" EMU68/utf8.lua` | `utf8.lua`: `utf8.char`, `utf8.codepoint`, `utf8.codes`, `utf8.len` and `utf8.offset` | 0 |
+| `lua_bitwise` | `-e "_port=true _soft=true" EMU68/bitwise.lua` | `bitwise.lua`: 64-bit bitwise operators, string-to-integer coercion (`bwcoercion.lua`) and the `bit32` preload library | 0 |
+| `lua_literals` | `-e "_port=true _soft=true" EMU68/literals.lua` | `literals.lua`: lexer, short and long strings, escape sequences, decimal and hexadecimal numerals and `load` errors | 0 |
+| `lua_goto` | `-e "_port=true _soft=true" EMU68/goto.lua` | `goto.lua`: labels, visibility scopes, upvalue closing across jumps and compile-time label errors | 0 |
+| `lua_errors` | `-e "_port=true _soft=true" EMU68/errors.lua` | `errors.lua`: `error`, `pcall`, `xpcall`, `debug.traceback` and runtime and syntax diagnostics | 0 |
+| `lua_stdin` | `-`, with `--input` of `stdin.lua` | `lua_stdin.lua`: nested `pcall`/`xpcall` and coroutine error recovery, `double` math and `table.sort`, `string.format` with `%g` and `%a`, file I/O on `EMU68/` and a temporary file, `os.clock()` and `os.time()` | 0 |
+| `lua_bad` | `EMU68/bad.lua` | `testing unhandled error` on stdout, and the `SYS:EMU68/lua_bad` stack traceback on stderr | 1 |
+
+Of the seventeen scripts in `lua-5.4.7-tests` that run without the `ltests`
+C module, five are left out because their output varies across runs or
+between a 64-bit little-endian host and the 32-bit big-endian 68k target:
+
+- `math.lua` calls `math.randomseed()` with no arguments (seeding from
+  `time(NULL)` and the `lua_State` pointer) and prints the seeds and the
+  sampled minimum and maximum over 6400 random calls.
+- `sort.lua` measures `table.sort` on random arrays with `os.clock()` and
+  prints the elapsed times in milliseconds and the comparison counts.
+- `constructs.lua` sets `_ENV.GLOB1 = math.random(0, 1)` from the default
+  time-and-address seed and prints `testing short-circuit optimizations (0)`
+  or `(1)`.
+- `tpack.lua` prints the platform's C `long` and `size_t` sizes, byte order
+  and alignment (`long 8, size_t 8`, `little endian`, `alignment: 8` on the
+  64-bit host against `long 4, size_t 4`, `big endian`, `alignment: 2` on
+  68k).
+- `locals.lua` loads `tracegc.lua` and calls `tracegc.start()` at line 608
+  without stopping it, so its `__gc` finalizer writes a `.` to standard
+  error on every garbage-collection cycle for the rest of the script, a
+  count that varies with 32-bit and 64-bit object sizes.
+
+The steps in `LUA_STEPS` and their arguments in `LUA_ARGS_<step>` cover what
+`math.lua` and `sort.lua` exercise deterministically through `lua_stdin.lua`.
+`lua_bad` flushes a line to standard output before raising its uncaught
+error so that its output stream is not empty, and `make lua-refs` runs each
+step as `SYS:EMU68/lua_<step>` next to an `EMU68` that names
+`build/lua-files`. For example, `lua_strings` is `--files lua_strings
+build/lua-files --args lua_strings '-e "_port=true _soft=true"
+EMU68/strings.lua' --expect lua_strings build/lua-refs/lua_strings.out
+lua_strings=build/lua`, and `lua_stdin` adds `--input lua_stdin
+build/lua-files/stdin.lua`.
+
 ## The CLI programs under the Kaffeine JIT
 
 I ran the 48 steps of zlib, pngtest, xmlwf, xz and the mbed TLS self-test
@@ -760,8 +836,9 @@ each, and it enters them about 204 million times a run.
 | `png_badpal=pngtest` | `-m` and the nine `badpal` images | 1, as `tests/pngtest-all` expects |
 | `xmlwf_errors=xmlwf` | `-k -s` and three of the documents | 2 for the two that are not well formed or not standalone |
 | `xz_bad1=xz` to `xz_bad6=xz` | `-dc`, bad and unsupported files and a good one | 1, as `tests/test_files.sh` expects of each bad file |
+| `lua_bad=lua` | `EMU68/bad.lua` | 1 for the unhandled Lua error |
 
-These forty Shell/Run executions are deliberate nonzero cases. They must
+These forty-two Shell/Run executions are deliberate nonzero cases. They must
 be checked against their expected behavior; raw nonzero status alone is
 not a regression verdict. Valid ordinary queues are positive tests in
 `exec_messages`.

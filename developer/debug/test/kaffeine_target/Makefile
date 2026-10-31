@@ -293,6 +293,31 @@ MBEDTLS_FLAGS := -DMBEDTLS_CONFIG_FILE='"$(TEST_DIR)/mbedtls_config.h"' \
 ifneq ($(MBEDTLS_SRC),)
 PROGRAMS += mbedtls_selftest
 endif
+
+# lua of Lua 5.4.7: set LUA_SRC to its lua-5.4.7 directory (with
+# lua-5.4.7-tests next to it or in $(LUA_TESTS_SRC)) to build it, with
+# lua_config.h in front of each file and, for the m68k, lua_libnix.c for
+# the floating-point snprintf() and strtod() cases where libnix differs from
+# ISO C. The battery runs it on the twelve deterministic scripts of
+# lua-5.4.7-tests that need no C test library, a standard-input step and an
+# unhandled-error step, which $(LUA_FILES) collects under EMU68/, and
+# compares its output with the one of the same program built for the host,
+# which "make lua-refs" writes to $(LUA_REFS).
+LUA_SRC ?=
+LUA_TESTS_SRC ?= $(firstword $(wildcard $(LUA_SRC)-tests $(LUA_SRC)/lua-5.4.7-tests $(LUA_SRC)/tests))
+LUA_FILES := $(BUILD_DIR)/lua-files
+LUA_REFS := $(BUILD_DIR)/lua-refs
+LUA_SOURCES := $(filter-out %/luac.c,$(sort $(wildcard $(LUA_SRC)/src/*.c)))
+LUA_FLAGS := -I$(LUA_SRC)/src -include $(TEST_DIR)/lua_config.h
+LUA_TESTS := strings nextvar closure calls events vararg pm utf8 bitwise literals goto errors
+LUA_STEPS := $(LUA_TESTS) stdin bad
+LUA_INIT := -e "_port=true _soft=true"
+$(foreach s,$(LUA_TESTS),$(eval LUA_ARGS_$(s) := $(LUA_INIT) EMU68/$(s).lua))
+LUA_ARGS_stdin := -
+LUA_ARGS_bad := EMU68/bad.lua
+ifneq ($(LUA_SRC),)
+PROGRAMS += lua
+endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
@@ -625,6 +650,40 @@ $(MBEDTLS_REFS)/stamp: $(MBEDTLS_SRC)/programs/test/selftest.c $(MBEDTLS_SOURCES
 
 mbedtls-refs: $(MBEDTLS_REFS)/stamp
 
+$(LUA_FILES).stamp: $(patsubst %,$(LUA_TESTS_SRC)/%.lua,$(LUA_TESTS) bwcoercion) \
+                    $(TEST_DIR)/lua_stdin.lua $(TEST_DIR)/lua_bad.lua | $(BUILD_DIR)
+	rm -rf $(LUA_FILES)
+	mkdir -p $(LUA_FILES)
+	cp $(patsubst %,$(LUA_TESTS_SRC)/%.lua,$(LUA_TESTS) bwcoercion) $(LUA_FILES)/
+	cp $(TEST_DIR)/lua_stdin.lua $(LUA_FILES)/stdin.lua
+	cp $(TEST_DIR)/lua_bad.lua $(LUA_FILES)/bad.lua
+	touch $@
+
+# -lm brings the IEEE double helpers and the floating-point printf() of libnix
+$(BUILD_DIR)/lua: $(LUA_SOURCES) $(TEST_DIR)/lua_libnix.c $(TEST_DIR)/lua_config.h | $(BUILD_DIR) \
+                  $(LUA_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) $(LUA_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $(LUA_SOURCES) $(TEST_DIR)/lua_libnix.c -lm
+
+# The lua references: the outputs of the steps through lua built for the
+# host, run where EMU68 names $(LUA_FILES). lua begins its error messages
+# with its name as it was started, SYS:EMU68/NAME in the guest, so each step
+# runs as that here too, and writes its error output to NAME.err. lua_stdin
+# reads EMU68/stdin.lua from its input, and lua_bad ends with 1.
+$(LUA_REFS)/stamp: $(LUA_SOURCES) $(TEST_DIR)/lua_config.h $(LUA_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 -Wno-deprecated-declarations $(LUA_FLAGS) -o $(@D)/lua $(LUA_SOURCES) -lm
+	ln -s $(LUA_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(filter-out stdin,$(LUA_STEPS)),cp lua SYS:EMU68/lua_$(s) && \
+	    { TZ=UTC0 SYS:EMU68/lua_$(s) $(LUA_ARGS_$(s)) > lua_$(s).out 2> lua_$(s).err; \
+	    test $$? = $(if $(filter bad,$(s)),1,0); } &&) true
+	cd $(@D) && cp lua SYS:EMU68/lua_stdin && \
+	    TZ=UTC0 SYS:EMU68/lua_stdin $(LUA_ARGS_stdin) < EMU68/stdin.lua > lua_stdin.out 2> lua_stdin.err
+	touch $@
+
+lua-refs: $(LUA_REFS)/stamp
+
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
 $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
@@ -640,25 +699,25 @@ $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LI
 $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
-# bzip2, zstd, the JPEG programs, the zlib ones, pngtest, xmlwf, xz and
-# mbedtls_selftest too, also when they were built with a BZIP2_SRC,
-# ZSTD_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC or MBEDTLS_SRC
-# that this make lacks
+# bzip2, zstd, the JPEG programs, the zlib ones, pngtest, xmlwf, xz,
+# mbedtls_selftest and lua too, also when they were built with a BZIP2_SRC,
+# ZSTD_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC, MBEDTLS_SRC or
+# LUA_SRC that this make lacks
 clean:
 	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BZIP2_FILES).stamp $(BUILD_DIR)/zstd $(ZSTD_FILES).stamp $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
 	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
 	rm -f $(BUILD_DIR)/xmlwf $(XMLWF_FILES).stamp $(BUILD_DIR)/xz $(XZ_FILES).stamp
-	rm -f $(BUILD_DIR)/mbedtls_selftest
+	rm -f $(BUILD_DIR)/mbedtls_selftest $(BUILD_DIR)/lua $(LUA_FILES).stamp
 	rm -rf $(BZIP2_FILES) $(BZIP2_REFS) $(ZSTD_FILES) $(ZSTD_REFS) $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
 	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS) $(XZ_BUILD) $(XZ_FILES) $(XZ_REFS)
-	rm -rf $(MBEDTLS_REFS)
+	rm -rf $(MBEDTLS_REFS) $(LUA_FILES) $(LUA_REFS)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs
+.PHONY: all clean check-runner bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs lua-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)
