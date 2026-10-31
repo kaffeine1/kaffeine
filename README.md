@@ -16,7 +16,14 @@ architectural boundaries and observable milestones.
 <!-- patreon-support:start -->
 ## Support development
 
-If you would like to support my work on Kaffeine, you can [join my Patreon](https://www.patreon.com/c/kaffeine1). Voluntary contributions help me dedicate time to development, testing and documentation. Kaffeine remains open source, with public code, releases and articles available to everyone. This supports my development work; AROS and other upstream components retain their respective authors and licenses.
+If you would like to support my work on Kaffeine, you can
+[join my Patreon](https://www.patreon.com/c/kaffeine1). Contributions are
+voluntary; no subscription is required to use this software. They help me
+dedicate time to development, testing and documentation. Kaffeine remains
+open source, and its code and documentation are public for everyone. This
+supports my development work; AROS and the other upstream components,
+including the original `m68kemu.library`, retain their respective authors
+and licenses.
 <!-- patreon-support:end -->
 
 ## Current implementation
@@ -53,12 +60,12 @@ the published video uses Moira.
 PPC guests, RISC-V hosting, a general hybrid CPU backend and multicore
 execution are future work. The manifesto does not claim them as implemented.
 
-## Personal Paint demonstration  -  28 October 2026
+## Personal Paint demonstration, 28 October 2026
 
 [![Original Personal Paint 68k running on AROS ARM64, with a drawing made in the application](docs/kaffeine/media/personal-paint-2026-10-28/drawing.png)](docs/kaffeine/personal-paint-demo.md)
 
 **[Watch the video (MP4, 3:41)](docs/kaffeine/media/personal-paint-2026-10-28/personal-paint-68k-aros-arm64.mp4)**
- -  [screenshots, saved drawing, setup and verified limits](docs/kaffeine/personal-paint-demo.md).
+or see the [screenshots, saved drawing, setup and verified limits](docs/kaffeine/personal-paint-demo.md).
 
 The capture starts directly in AROS and shows icon launch, drawing, saving
 and return to the desktop. It contains only the guest display; idle waits
@@ -66,7 +73,7 @@ are shortened and drawing remains at its original speed. This is an AROS
 ARM64/QEMU compatibility demonstration using Moira, rather than a JIT or
 physical hardware benchmark.
 
-## TurboText opening and input  -  30 October 2026
+## TurboText opening and input, 30 October 2026
 
 The original 68k TurboText 2.0 now opens its editor, loads a text document and
 visibly inserts a test character on AROS ARM64 with the Kaffeine JIT and a
