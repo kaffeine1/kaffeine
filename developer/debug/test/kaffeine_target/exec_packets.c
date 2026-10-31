@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Read an original fixture through valid public DOS packets and file APIs.
     This program never writes a file or sends malformed packets to native DOS.

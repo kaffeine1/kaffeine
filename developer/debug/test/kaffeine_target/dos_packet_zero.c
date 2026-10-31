@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original cleared StandardPackets sent directly to filesystem handlers. */
 #include <dos/dosextens.h>
 #include <exec/ports.h>

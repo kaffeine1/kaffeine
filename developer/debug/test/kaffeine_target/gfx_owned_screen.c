@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Owned-screen lifecycle through the classic 68k Intuition ABI. */
 #include <exec/types.h>
 #include <graphics/displayinfo.h>

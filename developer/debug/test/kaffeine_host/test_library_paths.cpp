@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Production lookup, wrappers, cache lookup, generated registrations,
     CPU accessors and dispatcher. Only setup and disk loading are controlled.

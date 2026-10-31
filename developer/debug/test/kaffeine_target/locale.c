@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     locale.library target test: catalog fallback (OpenCatalogA, GetCatalogStr,
     CloseCatalog), OpenLocale(NULL) guest struct Locale fields and strings,

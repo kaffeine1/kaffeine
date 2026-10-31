@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     A GadTools gadget list on a window, with no input needed. A VisualInfo of
     the default public screen; a context and four gadgets with a topaz 8

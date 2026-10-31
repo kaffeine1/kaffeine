@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  * Bounded native backfill recipes. Guest code is compiled on the owner;
  * a foreign native callback never enters a guest CPU or a guest service. */
 #include <aros/asmcall.h>

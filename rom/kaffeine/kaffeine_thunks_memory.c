@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Keep guest memory requirements and pool handles inside the guest arena.
 */

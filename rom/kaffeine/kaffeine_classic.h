@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Gadgets that a 68k program builds itself, without GadTools, on its
     windows: a native copy of each for Intuition, the Flags and the

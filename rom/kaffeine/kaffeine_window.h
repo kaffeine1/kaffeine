@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Windows of 68k code: their screens, their fields, their IDCMP ports and
     the IDCMP messages that come through them.

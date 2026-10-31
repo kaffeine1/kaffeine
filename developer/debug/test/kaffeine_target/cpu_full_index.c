@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original 68020 full-format, non-indirect indexed bytecode. */
 #include <exec/memory.h>
 #include <proto/exec.h>

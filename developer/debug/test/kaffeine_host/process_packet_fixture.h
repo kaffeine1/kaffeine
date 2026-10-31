@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Production scheduler, packet adapters, queues and heap. Only backend CPUs
    and synchronous native Process transport are recording collaborators. */
 #pragma once

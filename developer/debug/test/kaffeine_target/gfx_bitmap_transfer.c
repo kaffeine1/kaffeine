@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original standalone planar/owned-screen bitmap transfer oracle. */
 #include <exec/types.h>
 #include <exec/memory.h>

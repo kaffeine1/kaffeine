@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Independent widened-integer oracle for emitted DIVU.W / DIVS.W. */
 #include <stdint.h>
 #include <stdio.h>

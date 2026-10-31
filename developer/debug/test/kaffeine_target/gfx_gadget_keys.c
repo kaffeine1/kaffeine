@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Keys typed into a GadTools string gadget. A window opened active, with a
     context and an empty string gadget in WA_Gadgets, is waited for until

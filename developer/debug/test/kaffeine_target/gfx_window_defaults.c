@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original OpenWindowTagList NewWindow/default and override regression. */
 #include <exec/types.h>
 #include <intuition/intuition.h>

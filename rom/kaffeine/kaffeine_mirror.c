@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     68k mirrors of native Intuition objects that GadTools builds, such as
     menu strips and gadget lists. A mirror keeps its own table of native

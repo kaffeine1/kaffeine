@@ -1,4 +1,5 @@
-/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1) */
 #ifndef KAFFEINE_DISPLAY_H
 #define KAFFEINE_DISPLAY_H
 #include "kaffeine_thunks.h"

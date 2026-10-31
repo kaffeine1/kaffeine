@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Poison collaborators of the private layers of the layer bridge, for
    tests that never create one. Tests exercising them supply strong
    recording definitions instead. */

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Regions of 68k code and the clip Regions of private, window and
     requester layers through literal LVOs, with the real dispatcher,

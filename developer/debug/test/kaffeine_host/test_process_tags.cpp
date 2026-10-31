@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Production typed parser with recording lease/startup collaborators. */
 #include <cstdio>
 #include <cstring>

@@ -1,4 +1,5 @@
-/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1) */
 #pragma once
 #include "../../../kaffeine_host/memory_stubs/proto/exec.h"
 #include <exec/libraries.h>

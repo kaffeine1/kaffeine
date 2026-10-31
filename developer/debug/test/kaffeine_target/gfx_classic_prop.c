@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Classic Intuition proportional gadgets built in the program's own
     memory, without GadTools, with no input needed (298 checks). Four

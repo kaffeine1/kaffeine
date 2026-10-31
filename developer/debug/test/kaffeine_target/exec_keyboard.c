@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original keyboard matrix probe; the same valid operations run natively
    on ARM as a reference. Input comes from the runner's USB keyboard. */
 #include <exec/types.h>

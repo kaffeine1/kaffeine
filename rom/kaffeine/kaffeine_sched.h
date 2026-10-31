@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Cooperative scheduler for classic 68k tasks that a program adds with
     AddTask(), CreateProc(), and typed CreateNewProc(). See

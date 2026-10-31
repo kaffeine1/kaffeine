@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original classic Requester storage, stacking and cleanup probe. */
 #include <exec/types.h>
 #include <intuition/intuition.h>

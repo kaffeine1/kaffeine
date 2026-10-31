@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Public 68k diskfont/graphics LVOs through the production C dispatcher,
     thunks, font bookkeeping and heap. Inputs and expected BE output bytes

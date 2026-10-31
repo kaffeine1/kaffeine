@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     ReadArgs(), FreeArgs() and GetProgramName() for 68k callers: the
     arguments and the name that the Shell gave the command.

@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original probe of the guest Process stack description. */
 #include <exec/types.h>
 #include <exec/execbase.h>

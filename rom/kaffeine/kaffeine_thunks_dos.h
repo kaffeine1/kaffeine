@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Private declarations and LVO registrations for DOS data, buffer, string,
     formatter, object and process thunks. Keep registrations shared with the host

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 """Compile public entry points verbatim with poisoned native collaborators.
 
 The complete window, Workbench and I/O modules retain their own independent

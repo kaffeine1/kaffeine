@@ -1,4 +1,5 @@
-/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1) */
 #ifndef KAFFEINE_ASYNC_WAIT_H
 #define KAFFEINE_ASYNC_WAIT_H
 

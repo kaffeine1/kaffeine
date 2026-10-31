@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     States, flags and buffers of classic Intuition string gadgets, as on
     AmigaOS 3.2.3. OpenWindowTags() sets NumChars of each string gadget to

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 #
 # Print the case table of math_ieee.c: the arguments and the expected results
 # of every IEEE double vector and of the single precision basic vectors, as

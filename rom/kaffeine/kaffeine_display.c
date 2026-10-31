@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Read-only display metadata, queried by mode ID. Native handles and the
     backend's reserved pointer fields never enter the guest arena.

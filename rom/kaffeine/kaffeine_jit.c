@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Experimental AArch64 translation backend for kaffeine, behind struct
     KaffeineCPUOps (docs/kaffeine/hosted-jit-probe.md). It translates a

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The editing keys of string gadgets keep the cursor and the text within
     the buffer, and Ctrl-W deletes the word before the cursor, back to the

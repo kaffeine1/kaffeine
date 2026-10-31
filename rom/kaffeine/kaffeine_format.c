@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     RawDoFmt rules from rom/exec/rawdofmt.c, using checked big-endian guest
     arguments. Keep the separate DOS argument converters unchanged.

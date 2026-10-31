@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  * Original synthetic 68000 programs: no application input or signatures. */
 #include "kaffeine_paint_compile.h"
 #include <stdio.h>

@@ -1,4 +1,5 @@
-/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1) */
 #include "message_fixture.h"
 static void be32(std::vector<UBYTE> &b,ULONG a,ULONG v)
 { for(unsigned i=0;i<4;++i)b[a+i]=static_cast<UBYTE>(v>>(24-8*i)); }

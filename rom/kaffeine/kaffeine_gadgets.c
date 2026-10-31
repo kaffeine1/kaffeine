@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     GadTools gadgets of 68k code. CreateContext() and CreateGadgetA() let
     native GadTools build the gadgets from a native NewGadget and native

@@ -1,6 +1,7 @@
 """Compile selected production generated RastPort thunks verbatim in the host suite.
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
+Author: Michele Dipace (@kaffeine1)
 """
 from pathlib import Path
 import re

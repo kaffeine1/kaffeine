@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Run the hosted translation probe on native AROS AArch64, with the
     production CPU loop, library dispatcher and guest-call primitive.

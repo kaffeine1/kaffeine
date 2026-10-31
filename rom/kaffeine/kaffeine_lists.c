@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Exec lists owned by the 68k guest. Links remain guest addresses, including
     the overlapping head and tail sentinels. No host structure is overlaid on

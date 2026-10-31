@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Native byte algorithms used as collaborators by test_dos_thunks.cpp.
     Compile as C with unsigned char, like AROS C STRPTR (UBYTE *), so the

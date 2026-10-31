@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Handler ports of dos.library: DeviceProc(), GetDeviceProc(),
     GetConsoleTask(), GetFileSysTask(), SetConsoleTask() and

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Experimental AArch64 block translator behind struct KaffeineCPUOps.
     The HJ prefix is retained from the original hosted translation probe.

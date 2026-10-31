@@ -1,4 +1,5 @@
-/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1) */
 /* Minimal native collaborators. The complete production source is compiled. */
 #ifndef KAFFEINE_INTERN_H
 #define KAFFEINE_INTERN_H

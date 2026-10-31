@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Every vector of mathieeedoubbas.library, mathieeedoubtrans.library and
     mathieeesingbas.library, called from 68k code. The program is built for the 68000 without FPU

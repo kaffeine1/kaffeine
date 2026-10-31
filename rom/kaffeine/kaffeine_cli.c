@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Keep Cli() and the guest Process.pr_CLI fields on the same partial CLI.
     Its strings and BPTRs must stay entirely within guest memory.

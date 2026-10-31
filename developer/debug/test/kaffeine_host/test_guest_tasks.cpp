@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Guest tasks of AddTask() and guest processes of CreateProc() through
     literal Exec and DOS LVOs, with the production scheduler, run loop and

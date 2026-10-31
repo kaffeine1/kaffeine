@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     68k test library for the kaffeine disk-library loader and MakeLibrary()
     path. Built twice: as emu68test.library with a WORD offset function

@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Verbatim production Init/Drop, real FileRecords/Close and heap. The native
    exit collaborator saves identities before Init and closes those saved
    values using live flags, as DosEntry does, never the later selections. */

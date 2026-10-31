@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Literal locale/utility LVOs through the dispatcher and real Moira guest
     hooks. Native stubs invoke the native Hook with AROS's argument order.

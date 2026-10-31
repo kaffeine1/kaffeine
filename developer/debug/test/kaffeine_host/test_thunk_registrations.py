@@ -2,6 +2,7 @@
 """Check manual registrations and register conventions in the production thunk tables.
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
+Author: Michele Dipace (@kaffeine1)
 
 The C preprocessor expands the production header macros for all twenty-one manual
 thunk tables (exec, dos, intuition, graphics, utility, locale, mathieeedoubbas,

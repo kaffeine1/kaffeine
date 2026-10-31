@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     timer.device through Exec, the way C programs use it: CreateMsgPort(),
     CreateIORequest() of a timerequest, OpenDevice(), DoIO() with

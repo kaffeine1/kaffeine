@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     GadTools menus of 68k code. CreateMenusA() reads the 68k NewMenu array
     and its tags, lets native GadTools build the strip from native entries

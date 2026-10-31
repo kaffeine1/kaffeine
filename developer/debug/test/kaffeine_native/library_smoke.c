@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Native client of the actual library, including deliberate JIT refusal.
     The tiny original 68k HUNKs are written in big-endian order at runtime.

@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original owned-window RastPort bitmap identity and metadata oracle. */
 #include <exec/types.h>
 #include <graphics/displayinfo.h>

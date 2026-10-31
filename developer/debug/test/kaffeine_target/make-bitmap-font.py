@@ -2,6 +2,7 @@
 """Build an original, redistributable 68k bitmap-font test fixture.
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
+Author: Michele Dipace (@kaffeine1)
 
 The files use the public DiskFontHeader, FontContents and Amiga HUNK
 formats. No installed font, program, ROM or private font data is read.

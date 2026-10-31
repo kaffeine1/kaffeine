@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     HUNK loader regression tests using the production memory manager.
     The seglist tests load an image with the DOS HUNK loader

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Guest public ports, refused native objects and Exec allocation vectors.
     Compile the optional fixture with a native AROS compiler, never as 68k.

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 """Run 68k test programs through kaffeine.library in an AROS raspi-aarch64 VM.
 
 The VM boots the given kernel and BSP package with a copy of an AROS

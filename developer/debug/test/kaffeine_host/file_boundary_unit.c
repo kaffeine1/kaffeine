@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
 
    Legacy DOS buffer and Task snapshot unit fixtures use numeric native tokens
    and a synthetic heap. Keep their collaborators at that boundary. The new

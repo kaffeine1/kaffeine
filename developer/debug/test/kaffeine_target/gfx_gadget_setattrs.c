@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Changing the attributes of GadTools gadgets with GT_SetGadgetAttrsA(),
     with no input needed. For a gadget of every kind but LISTVIEW_KIND and

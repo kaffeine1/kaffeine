@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     EasyRequests of 68k code. The bridge formats the text and the gadget
     labels of a 68k EasyStruct with its 68k arguments itself, with the

@@ -1,4 +1,5 @@
 ; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; Author: Michele Dipace (@kaffeine1)
 ;
 ; 68k HUNK test program for the transparent kaffeine path on non-m68k AROS:
 ; LoadSeg() relocates it for its native addresses, RunCommand() hands it to

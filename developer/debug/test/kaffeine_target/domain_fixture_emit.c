@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Optional host emitter for structural/disassembly review. It reads no
    executable; the native controller uses the identical original builder. */
 #include "domain_fixture_hunks.h"

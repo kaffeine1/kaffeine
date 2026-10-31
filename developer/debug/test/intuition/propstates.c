@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     States, flags, geometry and messages of classic Intuition proportional
     gadgets that a program builds itself (GTYP_PROPGADGET with a PropInfo

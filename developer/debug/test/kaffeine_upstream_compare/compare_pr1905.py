@@ -7,6 +7,7 @@ were reproduced, including failures in the original upstream revision.
 Requires Python 3.9+, a POSIX host and a C++ compiler with ASan/UBSan.
 """
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 # Source functions retain their original AROS provenance. See README.md.
 
 from pathlib import Path

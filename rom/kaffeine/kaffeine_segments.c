@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Owned native loader modules. Guest numbers are never native addresses. */
 #include <exec/memory.h>
 #include <dos/dos.h>

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Workbench calls through literal 68k LVOs, the production dispatcher,
     heap, shadow engine, window hooks, Exec I/O hooks and icon.library

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Guest FileHandle identities and the synchronous ACTION_READ boundary.
     Native BPTR width and all native handler pointers remain private.

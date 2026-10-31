@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Several native I/O opens must not consume one hidden signal per open. */
 #include <devices/timer.h>
 #include <exec/io.h>
