@@ -17,6 +17,11 @@ Writes three archives to the directory given on the command line:
   - bad_crc.zip: a two-member archive whose second member carries a
     deliberately corrupted CRC-32 in its local and central headers (exit
     code 2, PK_ERR).
+
+The archives are left with mode 0755: on AmigaOS and on the FAT volume of
+the AROS image every file is executable, so UnZip notes that bad_trunc.zip
+"may be a plain executable", and the host build of the references has to
+see the same.
 """
 
 from pathlib import Path
@@ -136,9 +141,13 @@ def main():
     out_dir = Path(sys.argv[1])
     out_dir.mkdir(parents=True, exist_ok=True)
     tree_path = out_dir / "tree.zip"
+    bad_trunc_path = out_dir / "bad_trunc.zip"
+    bad_crc_path = out_dir / "bad_crc.zip"
     build_tree_zip(tree_path)
-    build_bad_trunc_zip(tree_path, out_dir / "bad_trunc.zip")
-    build_bad_crc_zip(out_dir / "bad_crc.zip")
+    build_bad_trunc_zip(tree_path, bad_trunc_path)
+    build_bad_crc_zip(bad_crc_path)
+    for archive in (tree_path, bad_trunc_path, bad_crc_path):
+        archive.chmod(0o755)
 
 
 if __name__ == "__main__":

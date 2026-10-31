@@ -839,6 +839,13 @@ with libnix. `make-unzip-files.py` builds three deterministic archives in
   `corrupt.txt` deflated) whose CRC-32 for `corrupt.txt` is XORed with
   `0xDEADBEEF` in both the local and central headers (`PK_ERR`, exit code 2).
 
+`make-unzip-files.py` leaves the three archives with mode `0755`. On
+AmigaOS and on the FAT volume of the AROS image every file is executable
+(`FIBF_EXECUTE` clear), so libnix's `stat()` gives `S_IXUSR` and UnZip adds
+`note:  EMU68/bad_trunc.zip may be a plain executable, not an archive` to
+the error output of `unzip_bad_trunc` (`maybe_exe` in `process.c`); with mode
+`0755` the host build of `make unzip-refs` writes the same note.
+
 The nine steps are listed in `UNZIP_STEPS`, with their arguments in
 `UNZIP_ARGS_<step>`, and pass only if their output (and error output in
 `NAME.err`) is byte for byte the one that `make unzip-refs` writes to
