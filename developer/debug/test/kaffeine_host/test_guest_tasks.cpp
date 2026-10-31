@@ -159,7 +159,6 @@ extern "C" void Delay(LONG ticks)
 
 /* ── The native side: one native task runs every guest task ─────── */
 
-struct Task { UBYTE pad[16]; };
 static Task native_task;
 static ULONG native_alloc, native_recvd, native_wait_mask;
 static BYTE native_pri;

@@ -344,6 +344,9 @@ extern "C" DiskObject *GetDefDiskObject(LONG) { require(false, "unexpected GetDe
 extern "C" DiskObject *NewDiskObject(ULONG) { require(false, "unexpected NewDiskObject"); return nullptr; }
 extern "C" DiskObject *DupDiskObjectA(DiskObject *, TagItem *) { require(false, "unexpected global DupDiskObjectA"); return nullptr; }
 extern "C" BOOL PutDiskObject(CONST_STRPTR, DiskObject *) { require(false, "unexpected global PutDiskObject"); return FALSE; }
+/* The disk writer's error APIs must never be used by this AppIcon fixture. */
+extern "C" SIPTR IoErr(void) { std::abort(); }
+extern "C" SIPTR SetIoErr(SIPTR) { std::abort(); }
 extern "C" UBYTE *FindToolType(const STRPTR *, const STRPTR) { require(false, "unexpected FindToolType"); return nullptr; }
 extern "C" BOOL MatchToolValue(UBYTE *, UBYTE *) { require(false, "unexpected MatchToolValue"); return FALSE; }
 extern "C" Library *OpenLibrary(CONST_STRPTR name, ULONG version)
