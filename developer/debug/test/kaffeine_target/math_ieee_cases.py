@@ -12,7 +12,9 @@
 # in workbench/libs/mathieeedoubbas, mathieeedoubtrans and mathieeesingbas,
 # and the V that
 # ieeedpsin.c and ieeedpcos.c set for an infinite argument. Comparisons follow
-# the RESULT sections: -0.0 and +0.0 are equal.
+# the RESULT sections: -0.0 and +0.0 are equal. NaNs order by sign and
+# magnitude, above +Inf or below -Inf, as "math_ieee probe" measures on
+# AmigaOS 3.2.3.
 #
 #   python3 math_ieee_cases.py          the case table
 #   python3 math_ieee_cases.py sincos   the IEEEDPSincos(0.5) results
@@ -54,9 +56,16 @@ add(B, 42, "IEEEDPCmp", "2 > 1", [d(2.0), d(1.0)], "L", 1, 0)
 add(B, 42, "IEEEDPCmp", "2 = 2", [d(2.0), d(2.0)], "L", 0, Z)
 add(B, 42, "IEEEDPCmp", "-0.0 = +0.0", [d(-0.0), d(0.0)], "L", 0, Z)
 add(B, 42, "IEEEDPCmp", "-Inf < +Inf", [d(-INF), d(INF)], "L", 0xFFFFFFFF, N)
+add(B, 42, "IEEEDPCmp", "-2 < -0.5", [d(-2.0), d(-0.5)], "L", 0xFFFFFFFF, N)
+add(B, 42, "IEEEDPCmp", "1 < +NaN, above +Inf", [d(1.0), d(NAN)], "L", 0xFFFFFFFF, N)
+add(B, 42, "IEEEDPCmp", "1 > -NaN, below -Inf", [d(1.0), d(-NAN)], "L", 1, 0)
+add(B, 42, "IEEEDPCmp", "+Inf < +NaN", [d(INF), d(NAN)], "L", 0xFFFFFFFF, N)
+add(B, 42, "IEEEDPCmp", "+NaN = +NaN", [d(NAN), d(NAN)], "L", 0, Z)
 add(B, 48, "IEEEDPTst", "-3 is negative", [d(-3.0)], "L", 0xFFFFFFFF, N)
 add(B, 48, "IEEEDPTst", "0 is zero", [d(0.0)], "L", 0, Z)
 add(B, 48, "IEEEDPTst", "5 is positive", [d(5.0)], "L", 1, 0)
+add(B, 48, "IEEEDPTst", "+NaN is positive", [d(NAN)], "L", 1, 0)
+add(B, 48, "IEEEDPTst", "-NaN is negative", [d(-NAN)], "L", 0xFFFFFFFF, N)
 add(B, 54, "IEEEDPAbs", "-4", [d(-4.0)], "D", d(4.0), 0)
 add(B, 54, "IEEEDPAbs", "-0.0 gives +0.0", [d(-0.0)], "D", d(0.0), Z)
 add(B, 60, "IEEEDPNeg", "4", [d(4.0)], "D", d(-4.0), N)
@@ -155,7 +164,10 @@ add(S, 36, "IEEESPFlt", "-2^31", [(0x80000000, 0)], "S", sbits(-2147483648.0), N
 add(S, 42, "IEEESPCmp", "1 < 2", s(1.0, 2.0), "L", 0xFFFFFFFF, N)
 add(S, 42, "IEEESPCmp", "2 > 1", s(2.0, 1.0), "L", 1, 0)
 add(S, 42, "IEEESPCmp", "-0.0 = +0.0", s(-0.0, 0.0), "L", 0, Z)
+add(S, 42, "IEEESPCmp", "1 < +NaN", s(1.0, NAN), "L", 0xFFFFFFFF, N)
+add(S, 42, "IEEESPCmp", "1 > -NaN", s(1.0, -NAN), "L", 1, 0)
 add(S, 48, "IEEESPTst", "-3 is negative", s(-3.0), "L", 0xFFFFFFFF, N)
+add(S, 48, "IEEESPTst", "+NaN is positive", s(NAN), "L", 1, 0)
 add(S, 54, "IEEESPAbs", "-4", s(-4.0), "S", sbits(4.0), 0)
 add(S, 60, "IEEESPNeg", "4", s(4.0), "S", sbits(-4.0), N)
 add(S, 66, "IEEESPAdd", "1.5 + 2.25", s(1.5, 2.25), "S", sbits(3.75), 0)

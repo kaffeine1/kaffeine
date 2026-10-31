@@ -66,6 +66,23 @@ static void set_math_ccr(void *cpu, int zero, int negative, int overflow)
     Kaffeine_SetSR(cpu, sr);
 }
 
+/* The order of IEEEDPCmp() and IEEEDPTst() (and of their single precision
+   twins, with width 32), as measured on AmigaOS 3.2.3: the two zeros are
+   equal, and every other bit pattern, NaNs included, orders by sign and
+   magnitude, so that a positive NaN is above +Inf and a negative one below
+   -Inf, rather than unordered. */
+static LONG amiga_compare(uint64_t left, uint64_t right, unsigned width)
+{
+    uint64_t sign = (uint64_t)1 << (width - 1);
+    int64_t a = (int64_t)(left & (sign - 1)), b = (int64_t)(right & (sign - 1));
+
+    if (left & sign)
+        a = -a;
+    if (right & sign)
+        b = -b;
+    return a > b ? 1 : a < b ? -1 : 0;
+}
+
 /* mathieeedoubbas.library */
 
 /* -30: IEEEDPFix(D0/D1=parm) -> D0=integer */
@@ -100,39 +117,26 @@ IPTR kaffeine_mathieeedoubbas_IEEEDPFlt(struct KaffeineContext *ctx, void *cpu)
     return return_double(cpu, res);
 }
 
-/* -42: IEEEDPCmp(D0/D1=leftParm, D2/D3=rightParm) -> D0=-1/0/+1, sets CCR */
+/* -42: IEEEDPCmp(D0/D1=leftParm, D2/D3=rightParm) -> D0=-1/0/+1, sets CCR,
+   in the order of amiga_compare() */
 IPTR kaffeine_mathieeedoubbas_IEEEDPCmp(struct KaffeineContext *ctx, void *cpu)
 {
-    double left = bits_to_double(THUNK_D(0), THUNK_D(1));
-    double right = bits_to_double(THUNK_D(2), THUNK_D(3));
-    LONG cmp;
+    uint64_t left = ((uint64_t)THUNK_D(0) << 32) | THUNK_D(1);
+    uint64_t right = ((uint64_t)THUNK_D(2) << 32) | THUNK_D(3);
+    LONG cmp = amiga_compare(left, right, 64);
 
     (void)ctx;
-    if (left > right)
-        cmp = 1;
-    else if (left < right)
-        cmp = -1;
-    else
-        cmp = 0;
-
     set_math_ccr(cpu, cmp == 0, cmp < 0, 0);
     return (IPTR)(ULONG)cmp;
 }
 
-/* -48: IEEEDPTst(D0/D1=parm) -> D0=-1/0/+1, sets CCR */
+/* -48: IEEEDPTst(D0/D1=parm) -> D0=-1/0/+1, sets CCR: the sign of a NaN
+   too, in the order of amiga_compare() */
 IPTR kaffeine_mathieeedoubbas_IEEEDPTst(struct KaffeineContext *ctx, void *cpu)
 {
-    double parm = bits_to_double(THUNK_D(0), THUNK_D(1));
-    LONG cmp;
+    LONG cmp = amiga_compare(((uint64_t)THUNK_D(0) << 32) | THUNK_D(1), 0, 64);
 
     (void)ctx;
-    if (parm > 0.0)
-        cmp = 1;
-    else if (parm < 0.0)
-        cmp = -1;
-    else
-        cmp = 0;
-
     set_math_ccr(cpu, cmp == 0, cmp < 0, 0);
     return (IPTR)(ULONG)cmp;
 }
@@ -293,39 +297,25 @@ IPTR kaffeine_mathieeesingbas_IEEESPFlt(struct KaffeineContext *ctx, void *cpu)
     return return_float(res);
 }
 
-/* -42: IEEESPCmp(D0=leftParm, D1=rightParm) -> D0=-1/0/+1, sets CCR */
+/* -42: IEEESPCmp(D0=leftParm, D1=rightParm) -> D0=-1/0/+1, sets CCR, in
+   the order of amiga_compare() */
 IPTR kaffeine_mathieeesingbas_IEEESPCmp(struct KaffeineContext *ctx, void *cpu)
 {
-    float left = bits_to_float(THUNK_D(0));
-    float right = bits_to_float(THUNK_D(1));
-    LONG cmp;
+    LONG cmp = amiga_compare(THUNK_D(0), THUNK_D(1), 32);
 
     (void)ctx;
-    if (left > right)
-        cmp = 1;
-    else if (left < right)
-        cmp = -1;
-    else
-        cmp = 0;
-
     set_math_ccr(cpu, cmp == 0, cmp < 0, 0);
     return (IPTR)(ULONG)cmp;
 }
 
-/* -48: IEEESPTst(D0=parm) -> D0=-1/0/+1, sets CCR */
+/* -48: IEEESPTst(D0=parm) -> D0=-1/0/+1, sets CCR: the sign of a NaN too,
+   in the order of amiga_compare(). AmigaOS 3.2.3 also sets V for -0.0;
+   no caller can need that, and it is left out. */
 IPTR kaffeine_mathieeesingbas_IEEESPTst(struct KaffeineContext *ctx, void *cpu)
 {
-    float parm = bits_to_float(THUNK_D(0));
-    LONG cmp;
+    LONG cmp = amiga_compare(THUNK_D(0), 0, 32);
 
     (void)ctx;
-    if (parm > 0.0f)
-        cmp = 1;
-    else if (parm < 0.0f)
-        cmp = -1;
-    else
-        cmp = 0;
-
     set_math_ccr(cpu, cmp == 0, cmp < 0, 0);
     return (IPTR)(ULONG)cmp;
 }

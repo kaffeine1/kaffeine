@@ -15,12 +15,26 @@
     patterns, and host libm results with a tolerance in units in the last
     place for the transcendental functions. The C code below never computes
     with floating point; it only compares bit patterns.
+
+    "math_ieee probe" checks nothing: it prints, one line per call, the raw
+    D0/D1 and N, Z and V of IEEEDPTst(), IEEEDPCmp(), IEEEDPFix(), the four
+    operations and IEEEDPPow() on zeros, denormals, the largest finite
+    values, infinities and NaNs, so that the output on two systems can be
+    compared line by line where the IEEE results leave the Amiga libraries a
+    choice.
+
+    "math_ieee null" also calls IEEEDPSincos() with A0 NULL, which must
+    return the sine and write nothing. The bridge does that; AmigaOS 3.2.3
+    writes the cosine at address 0 and stops, so a plain "math_ieee" leaves
+    that call out and runs there too. Only the exact words count: any other
+    argument prints the usage and calls nothing.
 */
 
 #include <exec/types.h>
 #include <exec/libraries.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <string.h>
 
 #include "m68ktest.h"
 
@@ -123,9 +137,16 @@ static const struct Case cases[] =
     { BAS,  42, "IEEEDPCmp(2 = 2)", 0x40000000UL, 0x00000000UL, 0x40000000UL, 0x00000000UL, R_L, 0x00000000UL, 0, CC_Z, 0 },
     { BAS,  42, "IEEEDPCmp(-0.0 = +0.0)", 0x80000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_L, 0x00000000UL, 0, CC_Z, 0 },
     { BAS,  42, "IEEEDPCmp(-Inf < +Inf)", 0xFFF00000UL, 0x00000000UL, 0x7FF00000UL, 0x00000000UL, R_L, 0xFFFFFFFFUL, 0, CC_N, 0 },
+    { BAS,  42, "IEEEDPCmp(-2 < -0.5)", 0xC0000000UL, 0x00000000UL, 0xBFE00000UL, 0x00000000UL, R_L, 0xFFFFFFFFUL, 0, CC_N, 0 },
+    { BAS,  42, "IEEEDPCmp(1 < +NaN, above +Inf)", 0x3FF00000UL, 0x00000000UL, 0x7FF80000UL, 0x00000000UL, R_L, 0xFFFFFFFFUL, 0, CC_N, 0 },
+    { BAS,  42, "IEEEDPCmp(1 > -NaN, below -Inf)", 0x3FF00000UL, 0x00000000UL, 0xFFF80000UL, 0x00000000UL, R_L, 0x00000001UL, 0, 0, 0 },
+    { BAS,  42, "IEEEDPCmp(+Inf < +NaN)", 0x7FF00000UL, 0x00000000UL, 0x7FF80000UL, 0x00000000UL, R_L, 0xFFFFFFFFUL, 0, CC_N, 0 },
+    { BAS,  42, "IEEEDPCmp(+NaN = +NaN)", 0x7FF80000UL, 0x00000000UL, 0x7FF80000UL, 0x00000000UL, R_L, 0x00000000UL, 0, CC_Z, 0 },
     { BAS,  48, "IEEEDPTst(-3 is negative)", 0xC0080000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_L, 0xFFFFFFFFUL, 0, CC_N, 0 },
     { BAS,  48, "IEEEDPTst(0 is zero)", 0x00000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_L, 0x00000000UL, 0, CC_Z, 0 },
     { BAS,  48, "IEEEDPTst(5 is positive)", 0x40140000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_L, 0x00000001UL, 0, 0, 0 },
+    { BAS,  48, "IEEEDPTst(+NaN is positive)", 0x7FF80000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_L, 0x00000001UL, 0, 0, 0 },
+    { BAS,  48, "IEEEDPTst(-NaN is negative)", 0xFFF80000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_L, 0xFFFFFFFFUL, 0, CC_N, 0 },
     { BAS,  54, "IEEEDPAbs(-4)", 0xC0100000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_D, 0x40100000UL, 0x00000000UL, 0, 0 },
     { BAS,  54, "IEEEDPAbs(-0.0 gives +0.0)", 0x80000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_D, 0x00000000UL, 0x00000000UL, CC_Z, 0 },
     { BAS,  60, "IEEEDPNeg(4)", 0x40100000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_D, 0xC0100000UL, 0x00000000UL, CC_N, 0 },
@@ -219,7 +240,10 @@ static const struct Case cases[] =
     { SING,  42, "IEEESPCmp(1 < 2)", 0x3F800000UL, 0x40000000UL, 0x00000000UL, 0x00000000UL, R_L, 0xFFFFFFFFUL, 0, CC_N, 0 },
     { SING,  42, "IEEESPCmp(2 > 1)", 0x40000000UL, 0x3F800000UL, 0x00000000UL, 0x00000000UL, R_L, 0x00000001UL, 0, 0, 0 },
     { SING,  42, "IEEESPCmp(-0.0 = +0.0)", 0x80000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_L, 0x00000000UL, 0, CC_Z, 0 },
+    { SING,  42, "IEEESPCmp(1 < +NaN)", 0x3F800000UL, 0x7FC00000UL, 0x00000000UL, 0x00000000UL, R_L, 0xFFFFFFFFUL, 0, CC_N, 0 },
+    { SING,  42, "IEEESPCmp(1 > -NaN)", 0x3F800000UL, 0xFFC00000UL, 0x00000000UL, 0x00000000UL, R_L, 0x00000001UL, 0, 0, 0 },
     { SING,  48, "IEEESPTst(-3 is negative)", 0xC0400000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_L, 0xFFFFFFFFUL, 0, CC_N, 0 },
+    { SING,  48, "IEEESPTst(+NaN is positive)", 0x7FC00000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_L, 0x00000001UL, 0, 0, 0 },
     { SING,  54, "IEEESPAbs(-4)", 0xC0800000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_S, 0x40800000UL, 0, 0, 0 },
     { SING,  60, "IEEESPNeg(4)", 0x40800000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL, R_S, 0xC0800000UL, 0, CC_N, 0 },
     { SING,  66, "IEEESPAdd(1.5 + 2.25)", 0x3FC00000UL, 0x40100000UL, 0x00000000UL, 0x00000000UL, R_S, 0x40700000UL, 0, 0, 0 },
@@ -393,14 +417,121 @@ static void run_sincos(const char *what, ULONG hi, ULONG lo, ULONG sin_hi, ULONG
     check(ok, what);
 }
 
-int main(void)
+/* The operands of the probe: +0, -0, the smallest denormals, +-1, the
+   largest finite values, the infinities, quiet NaNs of both signs, a
+   signaling NaN and the NaN with every fraction bit set. */
+static const ULONG probe_operands[][2] =
+{
+    { 0x00000000UL, 0x00000000UL }, { 0x80000000UL, 0x00000000UL },
+    { 0x00000000UL, 0x00000001UL }, { 0x80000000UL, 0x00000001UL },
+    { 0x3FF00000UL, 0x00000000UL }, { 0xBFF00000UL, 0x00000000UL },
+    { 0x7FEFFFFFUL, 0xFFFFFFFFUL }, { 0xFFEFFFFFUL, 0xFFFFFFFFUL },
+    { 0x7FF00000UL, 0x00000000UL }, { 0xFFF00000UL, 0x00000000UL },
+    { 0x7FF80000UL, 0x00000000UL }, { 0xFFF80000UL, 0x00000000UL },
+    { 0x7FF00000UL, 0x00000001UL }, { 0x7FFFFFFFUL, 0xFFFFFFFFUL },
+};
+#define PROBE_OPERANDS (sizeof(probe_operands) / sizeof(probe_operands[0]))
+
+/* The same operands in single precision, for IEEESPTst() and IEEESPCmp(),
+   which take their arguments in D0 and D1. */
+static const ULONG probe_singles[] =
+{
+    0x00000000UL, 0x80000000UL, 0x00000001UL, 0x80000001UL, 0x3F800000UL, 0xBF800000UL,
+    0x7F7FFFFFUL, 0xFF7FFFFFUL, 0x7F800000UL, 0xFF800000UL, 0x7FC00000UL, 0xFFC00000UL,
+    0x7F800001UL, 0x7FFFFFFFUL,
+};
+#define PROBE_SINGLES (sizeof(probe_singles) / sizeof(probe_singles[0]))
+
+/* The operands of the four operations: +0, -0, 1, the largest finite
+   value, the infinities and a quiet NaN. */
+static const UBYTE probe_arith[] = { 0, 1, 4, 6, 8, 9, 10 };
+
+static void probe(const char *what, LONG a, LONG b, struct Library *base, WORD lvo,
+                  ULONG d0, ULONG d1, ULONG d2, ULONG d3)
 {
     struct IEEECall call = { 0 };
+
+    call.in_d0 = d0;
+    call.in_d1 = d1;
+    call.in_d2 = d2;
+    call.in_d3 = d3;
+    call.in_ccr = 0;
+    ieee_call(base, -lvo, &call);
+    Printf("%s %ld %ld: %08lx %08lx %s%s%s\n", (LONG)what, a, b, call.d0, call.d1,
+           (LONG)(call.n ? "N" : "-"), (LONG)(call.z ? "Z" : "-"), (LONG)(call.v ? "V" : "-"));
+}
+
+static void run_probe(void)
+{
+    static const struct { const char *what; WORD lvo; } ops[] =
+        { { "add", 66 }, { "sub", 72 }, { "mul", 78 }, { "div", 84 } };
+    /* base, exponent: overflow, underflow to a denormal and to zero, and a
+       negative base with a fractional exponent */
+    static const ULONG pows[][4] =
+    {
+        { 0x40240000UL, 0, 0x40735000UL, 0 },   /* 10^309 */
+        { 0x40240000UL, 0, 0x408F4000UL, 0 },   /* 10^1000 */
+        { 0x40000000UL, 0, 0x40900000UL, 0 },   /* 2^1024 */
+        { 0x40000000UL, 0, 0xC090C800UL, 0 },   /* 2^-1074 */
+        { 0x40000000UL, 0, 0xC090E000UL, 0 },   /* 2^-1080 */
+        { 0xC0200000UL, 0, 0x3FE00000UL, 0 },   /* (-8)^0.5 */
+    };
+    ULONG i, j;
+
+    for (i = 0; i < PROBE_OPERANDS; i++)
+        probe("tst", i, 0, MathIeeeDoubBasBase, 48, probe_operands[i][0], probe_operands[i][1], 0, 0);
+    for (i = 0; i < PROBE_OPERANDS; i++)
+        probe("fix", i, 0, MathIeeeDoubBasBase, 30, probe_operands[i][0], probe_operands[i][1], 0, 0);
+    for (i = 0; i < PROBE_OPERANDS; i++)
+        for (j = 0; j < PROBE_OPERANDS; j++)
+            probe("cmp", i, j, MathIeeeDoubBasBase, 42, probe_operands[i][0], probe_operands[i][1],
+                  probe_operands[j][0], probe_operands[j][1]);
+    for (i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
+    {
+        ULONG a, b;
+
+        for (a = 0; a < sizeof(probe_arith); a++)
+            for (b = 0; b < sizeof(probe_arith); b++)
+            {
+                const ULONG *x = probe_operands[probe_arith[a]], *y = probe_operands[probe_arith[b]];
+
+                probe(ops[i].what, probe_arith[a], probe_arith[b], MathIeeeDoubBasBase, ops[i].lvo,
+                      x[0], x[1], y[0], y[1]);
+            }
+    }
+    for (i = 0; i < sizeof(pows) / sizeof(pows[0]); i++)
+        probe("pow", i, 0, MathIeeeDoubTransBase, 90, pows[i][0], pows[i][1], pows[i][2], pows[i][3]);
+    if (!MathIeeeSingBasBase)
+        return;
+    for (i = 0; i < PROBE_SINGLES; i++)
+        probe("stst", i, 0, MathIeeeSingBasBase, 48, probe_singles[i], 0, 0, 0);
+    for (i = 0; i < PROBE_SINGLES; i++)
+        for (j = 0; j < PROBE_SINGLES; j++)
+            probe("scmp", i, j, MathIeeeSingBasBase, 42, probe_singles[i], probe_singles[j], 0, 0);
+}
+
+int main(int argc, char **argv)
+{
+    struct IEEECall call = { 0 };
+    const char *mode = argc > 1 ? argv[1] : "";
     ULONG i;
 
+    if (*mode && strcmp(mode, "probe") != 0 && strcmp(mode, "null") != 0)
+    {
+        PutStr((CONST_STRPTR)"usage: math_ieee [probe|null]\n");
+        return RETURN_FAIL;
+    }
     MathIeeeDoubBasBase = OpenLibrary((CONST_STRPTR)"mathieeedoubbas.library", 34);
     MathIeeeDoubTransBase = OpenLibrary((CONST_STRPTR)"mathieeedoubtrans.library", 34);
     MathIeeeSingBasBase = OpenLibrary((CONST_STRPTR)"mathieeesingbas.library", 34);
+    if (strcmp(mode, "probe") == 0 && MathIeeeDoubBasBase && MathIeeeDoubTransBase)
+    {
+        run_probe();
+        CloseLibrary(MathIeeeSingBasBase);
+        CloseLibrary(MathIeeeDoubTransBase);
+        CloseLibrary(MathIeeeDoubBasBase);
+        return 0;
+    }
     if (!check(MathIeeeDoubBasBase != NULL, "OpenLibrary() of mathieeedoubbas.library") ||
         !check(MathIeeeDoubTransBase != NULL, "OpenLibrary() of mathieeedoubtrans.library") ||
         !check(MathIeeeSingBasBase != NULL, "OpenLibrary() of mathieeesingbas.library"))
@@ -419,12 +550,17 @@ int main(void)
     run_sincos("IEEEDPSincos(0.5): sine in D0/D1, cosine big-endian at A0",
                0x3FE00000, 0, SIN_HALF_HI, SIN_HALF_LO, COS_HALF_HI, COS_HALF_LO, 0, 2);
 
-    /* A NULL A0 must not be written; the sine still comes back */
-    call.in_d0 = 0x3FE00000;
-    call.in_ccr = 0;
-    ieee_call(MathIeeeDoubTransBase, -54, &call);
-    check(close_double(call.d0, call.d1, SIN_HALF_HI, SIN_HALF_LO, 2),
-          "IEEEDPSincos() with A0 NULL returns the sine and writes nothing");
+    /* A NULL A0 must not be written; the sine still comes back. Only the
+       bridge does that: AmigaOS 3.2.3 writes the cosine at address 0 and
+       the machine stops, so the call is made only by "math_ieee null". */
+    if (strcmp(mode, "null") == 0)
+    {
+        call.in_d0 = 0x3FE00000;
+        call.in_ccr = 0;
+        ieee_call(MathIeeeDoubTransBase, -54, &call);
+        check(close_double(call.d0, call.d1, SIN_HALF_HI, SIN_HALF_LO, 2),
+              "IEEEDPSincos() with A0 NULL returns the sine and writes nothing");
+    }
 
     CloseLibrary(MathIeeeSingBasBase);
     CloseLibrary(MathIeeeDoubTransBase);

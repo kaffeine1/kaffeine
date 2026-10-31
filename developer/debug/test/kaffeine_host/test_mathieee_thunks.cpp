@@ -310,6 +310,15 @@ static uint64_t ulp_distance(uint64_t got_bits, double want)
     return got_bits > want_bits ? got_bits - want_bits : want_bits - got_bits;
 }
 
+/* The order of two singles by sign and magnitude, both zeros equal. */
+static int32_t sign_magnitude_order(uint32_t a, uint32_t b)
+{
+    int64_t ka = a & 0x7FFFFFFFu, kb = b & 0x7FFFFFFFu;
+    if (a & 0x80000000u) ka = -ka;
+    if (b & 0x80000000u) kb = -kb;
+    return ka > kb ? 1 : ka < kb ? -1 : 0;
+}
+
 static void test_tables()
 {
     bool bas_ok = kaffeine_thunks_mathieeedoubbas_count == 12;
@@ -438,7 +447,16 @@ static void test_dpcmp_dptst()
     expect_cmp(0x7FF0000000000000ULL, 0xFFF0000000000000ULL, 1, CCR_POS, "IEEEDPCmp(+Inf, -Inf)");
     expect_cmp(0x0000000000000001ULL, to_bits(0.0), 1, CCR_POS, "IEEEDPCmp(+denormal, 0.0)");
     expect_cmp(0x8000000000000001ULL, to_bits(0.0), -1, CCR_N, "IEEEDPCmp(-denormal, 0.0)");
-    expect_cmp(0x7FF8000000000001ULL, to_bits(1.0), 0, CCR_Z, "IEEEDPCmp(NaN, 1.0)");
+    /* NaNs order by sign and magnitude, as AmigaOS 3.2.3 measures them */
+    expect_cmp(0x7FF8000000000001ULL, to_bits(1.0), 1, CCR_POS, "IEEEDPCmp(NaN, 1.0): a positive NaN is above");
+    expect_cmp(to_bits(1.0), 0x7FF8000000000000ULL, -1, CCR_N, "IEEEDPCmp(1.0, +qNaN)");
+    expect_cmp(to_bits(1.0), 0xFFF8000000000000ULL, 1, CCR_POS, "IEEEDPCmp(1.0, -qNaN)");
+    expect_cmp(0x7FF0000000000000ULL, 0x7FF8000000000000ULL, -1, CCR_N, "IEEEDPCmp(+Inf, +qNaN)");
+    expect_cmp(0xFFF0000000000000ULL, 0xFFF8000000000000ULL, 1, CCR_POS, "IEEEDPCmp(-Inf, -qNaN)");
+    expect_cmp(0x7FF8000000000000ULL, 0x7FF8000000000000ULL, 0, CCR_Z, "IEEEDPCmp(qNaN, qNaN)");
+    expect_cmp(0x7FF8000000000000ULL, 0x7FFFFFFFFFFFFFFFULL, -1, CCR_N, "IEEEDPCmp(qNaN, all-ones NaN)");
+    expect_cmp(to_bits(-2.0), to_bits(-0.5), -1, CCR_N, "IEEEDPCmp(-2.0, -0.5)");
+    expect_cmp(to_bits(-0.0), to_bits(0.0), 0, CCR_Z, "IEEEDPCmp(-0.0, +0.0)");
 
     expect_tst(to_bits(3.5), 1, CCR_POS, "IEEEDPTst(3.5)");
     expect_tst(to_bits(-3.5), -1, CCR_N, "IEEEDPTst(-3.5)");
@@ -448,7 +466,9 @@ static void test_dpcmp_dptst()
     expect_tst(0xFFF0000000000000ULL, -1, CCR_N, "IEEEDPTst(-Inf)");
     expect_tst(0x0000000000000001ULL, 1, CCR_POS, "IEEEDPTst(+denormal)");
     expect_tst(0x8000000000000001ULL, -1, CCR_N, "IEEEDPTst(-denormal)");
-    expect_tst(0x7FF8000000000001ULL, 0, CCR_Z, "IEEEDPTst(NaN)");
+    expect_tst(0x7FF8000000000001ULL, 1, CCR_POS, "IEEEDPTst(NaN): the sign of the NaN");
+    expect_tst(0xFFF8000000000000ULL, -1, CCR_N, "IEEEDPTst(-qNaN)");
+    expect_tst(0x7FF0000000000001ULL, 1, CCR_POS, "IEEEDPTst(sNaN)");
 }
 
 static void test_dpbasic_arith()
@@ -633,13 +653,17 @@ static void test_spcmp_sptst()
     expect_s(LVO_IEEESPCMP, f(0.0f), f(-0.0f), 0, CCR_Z, "IEEESPCmp(+0.0, -0.0)");
     expect_s(LVO_IEEESPCMP, 0xFF800000u, 0x7F800000u, (uint32_t)-1, CCR_N, "IEEESPCmp(-Inf, +Inf)");
     expect_s(LVO_IEEESPCMP, 0x80000001u, f(0.0f), (uint32_t)-1, CCR_N, "IEEESPCmp(-denormal, 0.0)");
-    expect_s(LVO_IEEESPCMP, 0x7FC00001u, f(1.0f), 0, CCR_Z, "IEEESPCmp(NaN, 1.0)");
+    expect_s(LVO_IEEESPCMP, 0x7FC00001u, f(1.0f), 1, CCR_POS, "IEEESPCmp(NaN, 1.0): a positive NaN is above");
+    expect_s(LVO_IEEESPCMP, f(1.0f), 0xFFC00000u, 1, CCR_POS, "IEEESPCmp(1.0, -qNaN)");
+    expect_s(LVO_IEEESPCMP, 0x7F800000u, 0x7FC00000u, (uint32_t)-1, CCR_N, "IEEESPCmp(+Inf, +qNaN)");
+    expect_s(LVO_IEEESPCMP, f(-2.0f), f(-0.5f), (uint32_t)-1, CCR_N, "IEEESPCmp(-2.0, -0.5)");
 
     expect_s(LVO_IEEESPTST, f(3.5f), 0, 1, CCR_POS, "IEEESPTst(3.5)");
     expect_s(LVO_IEEESPTST, f(-3.5f), 0, (uint32_t)-1, CCR_N, "IEEESPTst(-3.5)");
     expect_s(LVO_IEEESPTST, f(-0.0f), 0, 0, CCR_Z, "IEEESPTst(-0.0)");
     expect_s(LVO_IEEESPTST, 0x00000001u, 0, 1, CCR_POS, "IEEESPTst(+denormal)");
-    expect_s(LVO_IEEESPTST, 0x7FC00001u, 0, 0, CCR_Z, "IEEESPTst(NaN)");
+    expect_s(LVO_IEEESPTST, 0x7FC00001u, 0, 1, CCR_POS, "IEEESPTst(NaN): the sign of the NaN");
+    expect_s(LVO_IEEESPTST, 0xFFC00000u, 0, (uint32_t)-1, CCR_N, "IEEESPTst(-qNaN)");
 }
 
 static void test_spbasic_arith()
@@ -766,7 +790,10 @@ static void test_spbasic_reference()
         flags_ok = flags_ok && (fixture.state.sr & CCR_NZV_MASK) ==
             ((want_fix == 0 ? CCR_Z : 0) | (want_fix < 0 ? CCR_N : 0) | (in_range ? 0 : CCR_V));
 
-        int32_t want_cmp = a > b ? 1 : a < b ? -1 : 0;
+        /* Ordered values compare as IEEE 754 does; with a NaN, by sign and
+           magnitude, as AmigaOS 3.2.3 measures it. */
+        int32_t want_cmp = (std::isnan(a) || std::isnan(b)) ? sign_magnitude_order(abits, bbits)
+                                                          : a > b ? 1 : a < b ? -1 : 0;
         values_ok = values_ok && (int32_t)fixture.call_s(LVO_IEEESPCMP, abits, bbits) == want_cmp;
         flags_ok = flags_ok && (fixture.state.sr & CCR_NZV_MASK) ==
             ((want_cmp == 0 ? CCR_Z : 0) | (want_cmp < 0 ? CCR_N : 0));
