@@ -117,6 +117,32 @@ static void dispose_context(struct KaffeineContext *ctx)
     Kaffeine_DestroyContext(ctx);
 }
 
+/* The fake dos.library base (lib_id=1): the public part of a 68k
+   DosLibrary, with the version of the native one, which programs check
+   before they call the functions of a later DOS, and the dl_TimeReq that
+   C startups read (Kaffeine_DosTimeRequest()). The other fields stay 0. */
+static void setup_dos_base(struct KaffeineContext *ctx)
+{
+    ULONG base = Kaffeine_SetupLibBaseSized(ctx, 1, "dos.library",
+                                            KAFFEINE_MAX_LVO, M68K_SIZEOF_DOSLIBRARY,
+                                            kaffeine_thunks_dos,
+                                            kaffeine_thunks_dos_count,
+                                            kaffeine_thunks_dos_gen,
+                                            kaffeine_thunks_dos_gen_count);
+
+    if (!base)
+        return;
+    memset(ctx->mem + base, 0, M68K_SIZEOF_DOSLIBRARY);
+    ctx->mem[base + M68K_LIB_LNTYPE] = NT_LIBRARY;
+    m68k_write16(ctx, base + M68K_LIB_NEGSIZE, KAFFEINE_MAX_LVO * M68K_JT_SLOT_SIZE);
+    m68k_write16(ctx, base + M68K_LIB_POSSIZE, M68K_SIZEOF_DOSLIBRARY);
+    m68k_write16(ctx, base + M68K_LIB_VERSION, DOSBase->dl_lib.lib_Version);
+    m68k_write16(ctx, base + M68K_LIB_REVISION, DOSBase->dl_lib.lib_Revision);
+    if (DOSBase->dl_TimeReq)
+        m68k_write32(ctx, base + M68K_DL_TIMEREQ,
+                     Kaffeine_DosTimeRequest(ctx, DOSBase->dl_TimeReq->tr_node.io_Device));
+}
+
 /* ── Common setup + execution for both RunHunk and RunFile ─────── */
 
 static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
@@ -139,13 +165,7 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     if (!m68k_sysbase)
         return -1;
 
-    /* Set up fake dos.library base (lib_id=1) */
-    Kaffeine_SetupLibBase(ctx, 1, "dos.library",
-                          KAFFEINE_MAX_LVO,
-                          kaffeine_thunks_dos,
-                          kaffeine_thunks_dos_count,
-                          kaffeine_thunks_dos_gen,
-                          kaffeine_thunks_dos_gen_count);
+    setup_dos_base(ctx);
 
     /* Write SysBase pointer at address 4 (AbsExecBase) */
     m68k_write32(ctx, 4, m68k_sysbase);

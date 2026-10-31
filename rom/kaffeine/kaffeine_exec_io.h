@@ -38,6 +38,10 @@ IPTR Kaffeine_IORefuse(struct KaffeineContext *ctx, const char *why);
    aborted and taken back first, and nothing more reaches the guest. */
 void Kaffeine_IOCleanup(struct KaffeineContext *ctx);
 
+/* A guest timerequest for dl_TimeReq of the guest DOSBase, on the guest
+   base of the native timer.device native; 0 when it cannot be made. */
+ULONG Kaffeine_DosTimeRequest(struct KaffeineContext *ctx, struct Device *native);
+
 /* timer.device */
 IPTR kaffeine_timer_BeginIO(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_timer_AbortIO(struct KaffeineContext *ctx, void *cpu);

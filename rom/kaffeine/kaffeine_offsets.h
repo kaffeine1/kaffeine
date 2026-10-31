@@ -94,6 +94,11 @@
 #define M68K_LIB_IDSTRING          24
 #define M68K_LIB_OPENCNT           32
 
+/* ── DosLibrary offsets (m68k, dos/dosextens.h) ──────────────────── */
+
+#define M68K_DL_TIMEREQ            58
+#define M68K_SIZEOF_DOSLIBRARY     70   /* the public part, to dl_IntuitionBase */
+
 /* lib_Flags (exec/libraries.h) */
 #define M68K_LIBF_CHANGED          0x02
 #define M68K_LIBF_SUMUSED          0x04
@@ -321,6 +326,15 @@
    ends the program. A program that saw AFF_68881, AFF_68882 or AFF_FPU40
    would run FPU code, as the startup code of libnix FPU builds does. */
 #define M68K_ATTNFLAGS_68040        0x000F
+
+/* ── E-clock of the guest ────────────────────────────────────────── */
+
+/* ExecBase->ex_EClockFrequency and the rate that ReadEClock() gives the
+   guest: the E-clock of a PAL Amiga. AROS on the Raspberry Pi counts its
+   own at 100 Hz, and 68k code divides the rate by 1000 (the clock() of
+   libnix) or takes it for about 709 kHz. */
+#define M68K_EXECBASE_ECLOCKFREQUENCY 568
+#define M68K_ECLOCK_RATE            709379
 
 /* ── struct Locale (libraries/locale.h, 168 bytes on m68k) ───────── */
 

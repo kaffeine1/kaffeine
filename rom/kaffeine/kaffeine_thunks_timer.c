@@ -11,7 +11,9 @@
 
 #include "kaffeine_intern.h"
 #include "kaffeine_exec_io.h"
+#include "kaffeine_offsets.h"
 
+#include <stdint.h>
 #include <aros/debug.h>
 #include <devices/timer.h>
 #include <proto/timer.h>
@@ -117,19 +119,26 @@ IPTR kaffeine_timer_CmpTime(struct KaffeineContext *ctx, void *cpu)
     return a > b ? (IPTR)(LONG)-1 : a < b ? 1 : 0;
 }
 
-/* -60: ReadEClock(A0=dest) -> D0=E-clock frequency, of the native timer. */
+/* -60: ReadEClock(A0=dest) -> D0=E-clock frequency. The native E-clock in
+   ticks of the guest one, M68K_ECLOCK_RATE (kaffeine_offsets.h): whole
+   native seconds and the rest are scaled apart, so that no product needs
+   more than 64 bits for any uptime of a running system. */
 IPTR kaffeine_timer_ReadEClock(struct KaffeineContext *ctx, void *cpu)
 {
     struct Device *TimerBase = ctx->native_timer;
     ULONG dest = THUNK_A(0), rate;
     struct EClockVal ev;
+    uint64_t ticks;
 
     if (!guest_range(ctx, dest, 8))
         return Kaffeine_IORefuse(ctx, "ReadEClock(): the EClockVal is not in guest memory");
     rate = ReadEClock(&ev);
-    m68k_write32(ctx, dest + EV_HI, ev.ev_hi);
-    m68k_write32(ctx, dest + EV_LO, ev.ev_lo);
-    return rate;
+    ticks = (uint64_t)ev.ev_hi << 32 | ev.ev_lo;
+    if (rate && rate != M68K_ECLOCK_RATE)
+        ticks = ticks / rate * M68K_ECLOCK_RATE + ticks % rate * M68K_ECLOCK_RATE / rate;
+    m68k_write32(ctx, dest + EV_HI, (ULONG)(ticks >> 32));
+    m68k_write32(ctx, dest + EV_LO, (ULONG)ticks);
+    return M68K_ECLOCK_RATE;
 }
 
 /* -66: GetSysTime(A0=dest), of the native timer. */

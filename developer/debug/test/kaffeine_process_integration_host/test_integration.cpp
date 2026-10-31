@@ -80,7 +80,7 @@ static LONG Kaffeine_Execute(KaffeineContext *ctx){++cpu_calls;cpu_task=current_
 static LONG Kaffeine_ExecuteJIT(KaffeineContext *ctx){++cpu_calls;cpu_task=current_task;owner_bound&=ctx->exec_task==current_task;return 8;}
 static ULONG Kaffeine_SetupLibBase(KaffeineContext *,unsigned,...){return library_ok?0x1000:0;}
 static int kaffeine_thunks_exec,kaffeine_thunks_exec_count,kaffeine_thunks_exec_gen,kaffeine_thunks_exec_gen_count;
-static int kaffeine_thunks_dos,kaffeine_thunks_dos_count,kaffeine_thunks_dos_gen,kaffeine_thunks_dos_gen_count;
+static void setup_dos_base(KaffeineContext *){}
 static ULONG Kaffeine_HeapAlloc(KaffeineContext *,ULONG,ULONG){return 0x100;}
 static void *m68k_to_host(KaffeineContext *ctx,ULONG at){return ctx->mem.data()+at;}
 static void CopyMem(APTR src,APTR dst,ULONG size){std::memcpy(dst,src,size);}
