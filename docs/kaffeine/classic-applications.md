@@ -15,6 +15,12 @@ private test disk images are not distributed here.
 
 ### TurboText save and reopen (2026-10-31)
 
+The [JIT demonstration video](turbotext-jit-demo.md) records a separate
+99-byte named-file workflow through native AROS Execute and two original
+`WAIT` invocations. Its caption strip reproduces the actual backend and
+nonzero JIT counters from that session; both saved copies match after
+shutdown. The earlier nine-byte test below remains a separate result.
+
 The original TurboText 2.0 launcher and support libraries completed two
 `WAIT` invocations with the Kaffeine JIT on AROS ARM64. On a 1024x768,
 24-bit Workbench, the first editor typed `Kaffeine` and a newline, saved the

@@ -73,18 +73,25 @@ are shortened and drawing remains at its original speed. This is an AROS
 ARM64/QEMU compatibility demonstration using Moira, rather than a JIT or
 physical hardware benchmark.
 
-## TurboText opening and input, 30 October 2026
+## TurboText with the Kaffeine JIT, 31 October 2026
 
-The original 68k TurboText 2.0 now opens its editor, loads a text document and
-visibly inserts a test character on AROS ARM64 with the Kaffeine JIT and a
-24-bit Workbench. See the [framebuffer captures and checked scope](docs/kaffeine/media/turbotext-2026-10-30/README.md).
-Native AROS screen-position and indexed-color conversion issues remain;
-saving, reopening and broader editor behavior have not been accepted.
+The original 68k TurboText 2.0 edits, saves, closes and reopens a text document
+on AROS ARM64 with the Kaffeine JIT and a 24-bit Workbench. The saved bytes
+were checked after shutdown, and both original `WAIT` invocations returned 0.
+See the [framebuffer captures, hashes and checked scope](docs/kaffeine/media/turbotext-2026-10-31/README.md).
+Broader editor features and indexed-color composition remain separate checks.
+
+[![Original TurboText 68k displaying its saved document with the Kaffeine JIT backend message](docs/kaffeine/media/turbotext-2026-10-31/jit-reopened.png)](docs/kaffeine/turbotext-jit-demo.md)
+
+**[Watch the JIT video (MP4, 2:18)](docs/kaffeine/media/turbotext-2026-10-31/turbotext-68k-kaffeine-jit-aros-arm64.mp4)**
+or read the [launch method, same-session JIT counters and exact saved-file checks](docs/kaffeine/turbotext-jit-demo.md).
+This recording uses native AROS Execute with TurboText's `WAIT` option.
 
 ## Documentation and tests
 
 - [Upstream m68kemu comparison and contribution candidates](docs/kaffeine/upstream-pr1905-comparison.md).
 - [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
+- [TurboText 68k demonstration with the Kaffeine JIT](docs/kaffeine/turbotext-jit-demo.md).
 - [Current behavior, architecture and verified limits](README.KAFFEINE.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
 - [Bounded native backfill hooks](docs/kaffeine/native-backfill.md).
