@@ -340,7 +340,7 @@ static void close_native(struct KaffeineIORequest *entry)
    kaffeine_messages.c reserves them */
 static ULONG request_span(const struct KaffeineIORequest *entry)
 {
-    return entry->capacity ? entry->capacity : entry->copy ? G_TIMEREQUEST_SIZE : G_IOSTDREQ_SIZE;
+    return Kaffeine_IORequestSpan(entry);
 }
 
 /* The root task on the native task that runs the guest, from trusted state
@@ -1279,7 +1279,10 @@ IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu)
 /* -462: SendIO(A1=iORequest). timer.device alone: of a request opened
    here, TR_ADDREQUEST on any unit but the EClock ones, or TR_GETSYSTIME;
    of a 40-byte copy of one, TR_ADDREQUEST on UNIT_MICROHZ or UNIT_VBLANK
-   while that unit has an open. A copy gets a native request and open of
+   while that unit has an open. A caller-built original needs mn_Length 40
+   or the supported zero-length timer case; larger lengths require trusted
+   CreateIORequest capacity. OpenDevice's prefix check and typed DoIO are
+   unchanged. A copy gets a native request and open of
    its own, with the OpenDevice() flags of an open of its unit, at its
    first SendIO(). The current task sends, outside callbacks, to a reply port
    of its own or one that ignores arrivals, which must take the request as

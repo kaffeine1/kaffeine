@@ -419,8 +419,17 @@ static void async_requests()
         check(f.exec(366,f.port,req+80)==0xD0000000,"a message right after a copy is sent");
         f.exec(372,f.port);
         io_record(f,2,0x9800,f.port,false,false,false);
+        check(!Kaffeine_MessageMemory(&f.ctx,0x9800+39,1) && Kaffeine_MessageMemory(&f.ctx,0x9800+40,8),
+              "an original caller-built timer reserves exactly its trusted forty bytes");
+        f.ctx.io_requests[2].kind=KAFFEINE_IO_INPUT;
         check(!Kaffeine_MessageMemory(&f.ctx,0x9800+40,8) && Kaffeine_MessageMemory(&f.ctx,0x9800+48,8),
-              "an open request in guest storage keeps its 48 bytes");
+              "another original adapter retains its forty-eight-byte reservation");
+        f.ctx.io_requests[2].kind=KAFFEINE_IO_NONE;
+        f.ctx.io_requests[2].stack_message=1;
+        check(!Kaffeine_MessageMemory(&f.ctx,0x9800+39,1) && Kaffeine_MessageMemory(&f.ctx,0x9800+40,8),
+              "a retained closed zero-length timer keeps its trusted forty-byte extent");
+        f.ctx.io_requests[2].stack_message=0;
+        f.ctx.io_requests[2].kind=KAFFEINE_IO_TIMER;
         f.ctx.io_requests[2].capacity=64;
         check(!Kaffeine_MessageMemory(&f.ctx,0x9800+60,4) && Kaffeine_MessageMemory(&f.ctx,0x9800+64,4),
               "and CreateIORequest() storage its capacity");
