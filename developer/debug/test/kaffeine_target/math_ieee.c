@@ -22,12 +22,19 @@
     values, infinities and NaNs, so that the output on two systems can be
     compared line by line where the IEEE results leave the Amiga libraries a
     choice.
+
+    "math_ieee null" also calls IEEEDPSincos() with A0 NULL, which must
+    return the sine and write nothing. The bridge does that; AmigaOS 3.2.3
+    writes the cosine at address 0 and stops, so a plain "math_ieee" leaves
+    that call out and runs there too. Only the exact words count: any other
+    argument prints the usage and calls nothing.
 */
 
 #include <exec/types.h>
 #include <exec/libraries.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <string.h>
 
 #include "m68ktest.h"
 
@@ -506,12 +513,18 @@ static void run_probe(void)
 int main(int argc, char **argv)
 {
     struct IEEECall call = { 0 };
+    const char *mode = argc > 1 ? argv[1] : "";
     ULONG i;
 
+    if (*mode && strcmp(mode, "probe") != 0 && strcmp(mode, "null") != 0)
+    {
+        PutStr((CONST_STRPTR)"usage: math_ieee [probe|null]\n");
+        return RETURN_FAIL;
+    }
     MathIeeeDoubBasBase = OpenLibrary((CONST_STRPTR)"mathieeedoubbas.library", 34);
     MathIeeeDoubTransBase = OpenLibrary((CONST_STRPTR)"mathieeedoubtrans.library", 34);
     MathIeeeSingBasBase = OpenLibrary((CONST_STRPTR)"mathieeesingbas.library", 34);
-    if (argc > 1 && argv[1][0] == 'p' && MathIeeeDoubBasBase && MathIeeeDoubTransBase)
+    if (strcmp(mode, "probe") == 0 && MathIeeeDoubBasBase && MathIeeeDoubTransBase)
     {
         run_probe();
         CloseLibrary(MathIeeeSingBasBase);
@@ -537,12 +550,17 @@ int main(int argc, char **argv)
     run_sincos("IEEEDPSincos(0.5): sine in D0/D1, cosine big-endian at A0",
                0x3FE00000, 0, SIN_HALF_HI, SIN_HALF_LO, COS_HALF_HI, COS_HALF_LO, 0, 2);
 
-    /* A NULL A0 must not be written; the sine still comes back */
-    call.in_d0 = 0x3FE00000;
-    call.in_ccr = 0;
-    ieee_call(MathIeeeDoubTransBase, -54, &call);
-    check(close_double(call.d0, call.d1, SIN_HALF_HI, SIN_HALF_LO, 2),
-          "IEEEDPSincos() with A0 NULL returns the sine and writes nothing");
+    /* A NULL A0 must not be written; the sine still comes back. Only the
+       bridge does that: AmigaOS 3.2.3 writes the cosine at address 0 and
+       the machine stops, so the call is made only by "math_ieee null". */
+    if (strcmp(mode, "null") == 0)
+    {
+        call.in_d0 = 0x3FE00000;
+        call.in_ccr = 0;
+        ieee_call(MathIeeeDoubTransBase, -54, &call);
+        check(close_double(call.d0, call.d1, SIN_HALF_HI, SIN_HALF_LO, 2),
+              "IEEEDPSincos() with A0 NULL returns the sine and writes nothing");
+    }
 
     CloseLibrary(MathIeeeSingBasBase);
     CloseLibrary(MathIeeeDoubTransBase);
