@@ -318,6 +318,36 @@ LUA_ARGS_bad := EMU68/bad.lua
 ifneq ($(LUA_SRC),)
 PROGRAMS += lua
 endif
+
+# unzip of Info-ZIP UnZip 6.0: set UNZIP_SRC to an unpacked unzip60
+# directory to build the Unix port
+# (unix/unix.c) with libnix, with unzip_config.h included in front and, for
+# the m68k, unzip_libnix.c so timestamps stay in UTC0 without opening
+# locale.library. The battery runs it through nine steps on the deterministic
+# archives that make-unzip-files.py writes to $(UNZIP_FILES) under EMU68/,
+# and compares its output with the one of the same program built for the
+# host, which "make unzip-refs" writes to $(UNZIP_REFS) under TZ=UTC0.
+UNZIP_SRC ?=
+UNZIP_FILES := $(BUILD_DIR)/unzip-files
+UNZIP_REFS := $(BUILD_DIR)/unzip-refs
+UNZIP_CORE := unzip crc32 crypt envargs explode extract fileio globals \
+              inflate list match process ttyio ubz2err unreduce unshrink \
+              zipinfo unix/unix
+UNZIP_SOURCES := $(addprefix $(UNZIP_SRC)/,$(addsuffix .c,$(UNZIP_CORE)))
+UNZIP_FLAGS := -I$(UNZIP_SRC) -include $(TEST_DIR)/unzip_config.h
+UNZIP_STEPS := list verbose zipinfo test pipe extract overwrite bad_trunc bad_crc
+UNZIP_ARGS_list := -l EMU68/tree.zip
+UNZIP_ARGS_verbose := -v EMU68/tree.zip
+UNZIP_ARGS_zipinfo := -Z EMU68/tree.zip
+UNZIP_ARGS_test := -t EMU68/tree.zip
+UNZIP_ARGS_pipe := -p EMU68/tree.zip sub/nested/deflated.txt
+UNZIP_ARGS_extract := -o EMU68/tree.zip -d T:unzip_tree
+UNZIP_ARGS_overwrite := -o EMU68/tree.zip -d T:unzip_tree
+UNZIP_ARGS_bad_trunc := -l EMU68/bad_trunc.zip
+UNZIP_ARGS_bad_crc := -p EMU68/bad_crc.zip
+ifneq ($(UNZIP_SRC),)
+PROGRAMS += unzip
+endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
@@ -684,6 +714,34 @@ $(LUA_REFS)/stamp: $(LUA_SOURCES) $(TEST_DIR)/lua_config.h $(LUA_FILES).stamp
 
 lua-refs: $(LUA_REFS)/stamp
 
+$(UNZIP_FILES).stamp: $(TEST_DIR)/make-unzip-files.py | $(BUILD_DIR)
+	rm -rf $(UNZIP_FILES)
+	$(PYTHON) $(TEST_DIR)/make-unzip-files.py $(UNZIP_FILES)
+	touch $@
+
+$(BUILD_DIR)/unzip: $(UNZIP_SOURCES) $(TEST_DIR)/unzip_libnix.c $(TEST_DIR)/unzip_config.h | $(BUILD_DIR) \
+                    $(UNZIP_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) $(UNZIP_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $(UNZIP_SOURCES) $(TEST_DIR)/unzip_libnix.c
+
+# The unzip references: the outputs of the steps through unzip built for
+# the host, run under TZ=UTC0 where EMU68 names $(UNZIP_FILES).
+# unzip_bad_trunc ends with 9 (PK_NOZIP) and unzip_bad_crc ends with 2
+# (PK_ERR). The extracted tree T:unzip_tree is removed after the steps run.
+$(UNZIP_REFS)/stamp: $(UNZIP_SOURCES) $(TEST_DIR)/unzip_config.h $(UNZIP_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 -Wno-deprecated-non-prototype -Wno-format-security $(UNZIP_FLAGS) \
+	    -o $(@D)/unzip $(UNZIP_SOURCES)
+	ln -s $(UNZIP_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(UNZIP_STEPS),cp unzip SYS:EMU68/unzip_$(s) && \
+	    { TZ=UTC0 SYS:EMU68/unzip_$(s) $(UNZIP_ARGS_$(s)) > unzip_$(s).out 2> unzip_$(s).err; \
+	    test $$? = $(if $(filter bad_trunc,$(s)),9,$(if $(filter bad_crc,$(s)),2,0)); } &&) \
+	    rm -rf 'T:unzip_tree'
+	touch $@
+
+unzip-refs: $(UNZIP_REFS)/stamp
+
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
 $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
@@ -700,24 +758,24 @@ $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
 # bzip2, zstd, the JPEG programs, the zlib ones, pngtest, xmlwf, xz,
-# mbedtls_selftest and lua too, also when they were built with a BZIP2_SRC,
-# ZSTD_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC, MBEDTLS_SRC or
-# LUA_SRC that this make lacks
+# mbedtls_selftest, lua and unzip too, also when they were built with a
+# BZIP2_SRC, ZSTD_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC,
+# MBEDTLS_SRC, LUA_SRC or UNZIP_SRC that this make lacks
 clean:
 	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BZIP2_FILES).stamp $(BUILD_DIR)/zstd $(ZSTD_FILES).stamp $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
 	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
 	rm -f $(BUILD_DIR)/xmlwf $(XMLWF_FILES).stamp $(BUILD_DIR)/xz $(XZ_FILES).stamp
-	rm -f $(BUILD_DIR)/mbedtls_selftest $(BUILD_DIR)/lua $(LUA_FILES).stamp
+	rm -f $(BUILD_DIR)/mbedtls_selftest $(BUILD_DIR)/lua $(LUA_FILES).stamp $(BUILD_DIR)/unzip $(UNZIP_FILES).stamp
 	rm -rf $(BZIP2_FILES) $(BZIP2_REFS) $(ZSTD_FILES) $(ZSTD_REFS) $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
 	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS) $(XZ_BUILD) $(XZ_FILES) $(XZ_REFS)
-	rm -rf $(MBEDTLS_REFS) $(LUA_FILES) $(LUA_REFS)
+	rm -rf $(MBEDTLS_REFS) $(LUA_FILES) $(LUA_REFS) $(UNZIP_FILES) $(UNZIP_REFS)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs lua-refs
+.PHONY: all clean check-runner bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs lua-refs unzip-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)

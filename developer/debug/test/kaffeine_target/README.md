@@ -80,8 +80,11 @@ at the end.
 | `lua_libnix.c` | What `lua` needs beyond libnix: `lua_libnix_snprintf()`, which moves a sign in front of leading zero padding and clears integer digits past `DBL_DIG` on `%f` and `%F`, `lua_libnix_strtod()`, which parses decimal floats with a 64-bit integer mantissa of up to 19 significant digits and leaves `*endptr` at `nptr` when no digits match, and the soft-float double comparisons (`__eqdf2`, `__nedf2`, `__gtdf2`, `__gedf2`, `__ltdf2`, `__ledf2`, `__cmpdf2` and `__unorddf2`) and division (`__divdf3`), which answer as ISO C does for NaNs before they call `IEEEDPCmp()` and `IEEEDPDiv()`. |
 | `lua_stdin.lua` | The script that `lua_stdin` reads from standard input: exercises `pcall` and `xpcall` (`setjmp`/`longjmp`), IEEE 754 `double` math and `table.sort`, `string.format` with `%g` and `%a`, file I/O on `EMU68/` and a temporary file, `os.clock()` and `os.time()`. |
 | `lua_bad.lua` | The script of `lua_bad`: flushes a line to standard output and raises an unhandled error in `fail_step()`, ending with return code 1 and a stack traceback on standard error. |
+| `unzip_config.h` | The configuration header included in front of Info-ZIP UnZip 6.0 for the m68k libnix build and the host build of its Unix port (`unix/unix.c`). |
+| `unzip_libnix.c` | Fixes `timezone` (`__gmtoffset`) and `tzset()` to UTC0 for the m68k libnix build of `unzip` without pulling in the `locale.library` constructor of `libnix20.a(__gmtoffset.o)`. |
+| `make-unzip-files.py` | Generates the deterministic Zip test archives (`tree.zip`, `bad_trunc.zip` and `bad_crc.zip`) in `build/unzip-files`. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `zstd` of Zstandard 1.5.7 when `ZSTD_SRC` names its source, with its references from `make zstd-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`, and `lua` of Lua 5.4.7 when `LUA_SRC` names its source, with its references from `make lua-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `zstd` of Zstandard 1.5.7 when `ZSTD_SRC` names its source, with its references from `make zstd-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`, `lua` of Lua 5.4.7 when `LUA_SRC` names its source, with its references from `make lua-refs`, and `unzip` of Info-ZIP UnZip 6.0 when `UNZIP_SRC` names its source, with its references from `make unzip-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -235,6 +238,14 @@ a step: neither Moira nor the Kaffeine JIT executes 68881 Line-F
 instructions and `SysBase->AttnFlags` leaves the FPU flags clear, so the
 FPU check in the startup code of libnix exits with return code 20 before
 `main()`, as `c_compute_fpu` already tests.
+
+Set `UNZIP_SRC` to an unpacked Info-ZIP UnZip 6.0 (`unzip60`) tree to
+include `unzip`, built from the Unix port
+(`unix/unix.c`) with `unzip_config.h` included in front and, for the m68k,
+`unzip_libnix.c` so timestamps use UTC0 without opening `locale.library`.
+The Makefile generates the test archives in `build/unzip-files` with
+`make-unzip-files.py`, and `make unzip-refs` writes the reference outputs
+and error files to `build/unzip-refs` under `TZ=UTC0`.
 
 ## Running on AROS AArch64
 
@@ -428,6 +439,7 @@ compile and evaluate this emitted Hook; see that directory's README.
 | each step of `xmlwf` | `--files NAME build/xmlwf-files` |
 | each step of `xz` | `--files NAME build/xz-files` |
 | each step of `lua` | `--files NAME build/lua-files` |
+| each step of `unzip` | `--files NAME build/unzip-files` |
 
 The bitmap font is generated from original fixture data by the Makefile.
 The packet fixture is an original 12-byte file. Requests of 5, 9 and 4 bytes
@@ -784,6 +796,59 @@ EMU68/strings.lua' --expect lua_strings build/lua-refs/lua_strings.out
 lua_strings=build/lua`, and `lua_stdin` adds `--input lua_stdin
 build/lua-files/stdin.lua`.
 
+## The UnZip 6.0 steps
+
+`unzip` of Info-ZIP UnZip 6.0 is built from its Unix port (`unix/unix.c`)
+with libnix. `make-unzip-files.py` builds three deterministic archives in
+`build/unzip-files`:
+
+- `tree.zip` (1,151 bytes): an archive comment and five members with fixed
+  MS-DOS dates and fixed Unix permissions (`create_system` 3): `empty.txt`
+  (empty, stored, `0644`), `sub/stored.txt` (stored, `0644`),
+  `sub/nested/deflated.txt` (deflated, `0755`), `sub/commented.txt`
+  (deflated, `0600`, with a member comment) and a deflated file under
+  `deep/path_alpha/path_beta/path_gamma/path_delta/` (`0700`). The
+  directories exist only in the member paths, so UnZip prints no `creating:`
+  lines and its output is the same on every extraction: `checkdir()` creates
+  them with `mkdir()` the first time and finds them with `stat()` after.
+  Every member keeps owner write permission, so the second extraction can
+  delete and replace the files in `T:unzip_tree`.
+- `bad_trunc.zip` (1,091 bytes): `tree.zip` with its last 60 bytes removed
+  so the end-of-central-directory record is missing (`PK_NOZIP`, exit code 9).
+- `bad_crc.zip` (277 bytes): a two-member archive (`ok.txt` stored and
+  `corrupt.txt` deflated) whose CRC-32 for `corrupt.txt` is XORed with
+  `0xDEADBEEF` in both the local and central headers (`PK_ERR`, exit code 2).
+
+The nine steps are listed in `UNZIP_STEPS`, with their arguments in
+`UNZIP_ARGS_<step>`, and pass only if their output (and error output in
+`NAME.err`) is byte for byte the one that `make unzip-refs` writes to
+`build/unzip-refs` under `TZ=UTC0`:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `unzip_list` | `-l EMU68/tree.zip` | archive comment, member comment, lengths, dates, times and names | 0 |
+| `unzip_verbose` | `-v EMU68/tree.zip` | methods (`Stored`, `Defl:N`), compressed sizes, ratios, dates, CRC-32s and comments | 0 |
+| `unzip_zipinfo` | `-Z EMU68/tree.zip` | `zipinfo` listing with Unix permission strings (`-rw-r--r--`, `-rwxr-xr-x`, `-rw-------`, `-rwx------`), methods and dates | 0 |
+| `unzip_test` | `-t EMU68/tree.zip` | integrity test (`OK`) of all five members | 0 |
+| `unzip_pipe` | `-p EMU68/tree.zip sub/nested/deflated.txt` | the 880 uncompressed bytes of `sub/nested/deflated.txt` on `stdout` | 0 |
+| `unzip_extract` | `-o EMU68/tree.zip -d T:unzip_tree` | extracts all five members and their directory tree into `T:unzip_tree`, listing each member on `stdout` | 0 |
+| `unzip_overwrite` | `-o EMU68/tree.zip -d T:unzip_tree` | second extraction over `T:unzip_tree`, replacing existing files | 0 |
+| `unzip_bad_trunc` | `-l EMU68/bad_trunc.zip` | `Archive:` header on `stdout`, missing central directory error in `unzip_bad_trunc.err` | 9 |
+| `unzip_bad_crc` | `-p EMU68/bad_crc.zip` | unpacked bytes of `ok.txt` and `corrupt.txt` on `stdout`, `bad CRC 6759aa20  (should be b9f414cf)` in `unzip_bad_crc.err` | 2 |
+
+Note that `UzpMessagePrnt()` in `fileio.c` routes `MSG_STDERR` diagnostics
+to `stderr` only when `-t` is not set (`!uO.tflag`), so `unzip_bad_trunc`
+uses `-l` and `unzip_bad_crc` uses `-p` to produce both a non-empty `stdout`
+reference (`.out`) and a non-empty `stderr` reference (`.err`).
+
+During `unzip_extract` and `unzip_overwrite`, UnZip reaches dos.library
+through libnix: `mkdir()` calls `CreateDir()` and then `chmod()`, `chmod()`
+turns the Unix mode into a protection mask for `SetProtection()` (the owner
+bits inverted, the group and other bits as they are, so the five modes of the
+archive give five different masks), `utime()` turns the Unix time into a
+`DateStamp` for `SetFileDate()`, `stat()` uses `Lock()` and `Examine()`, and
+`unlink()` calls `DeleteFile()` before a file is replaced.
+
 ## The CLI programs under the Kaffeine JIT
 
 I ran the 48 steps of zlib, pngtest, xmlwf, xz and the mbed TLS self-test
@@ -827,8 +892,10 @@ each, and it enters them about 204 million times a run.
 | `xmlwf_errors=xmlwf` | `-k -s` and three of the documents | 2 for the two that are not well formed or not standalone |
 | `xz_bad1=xz` to `xz_bad6=xz` | `-dc`, bad and unsupported files and a good one | 1, as `tests/test_files.sh` expects of each bad file |
 | `lua_bad=lua` | `EMU68/bad.lua` | 1 for the unhandled Lua error |
+| `unzip_bad_trunc=unzip` | `-l EMU68/bad_trunc.zip` | 9 (`PK_NOZIP`) for the truncated central directory |
+| `unzip_bad_crc=unzip` | `-p EMU68/bad_crc.zip` | 2 (`PK_ERR`) for the corrupted member CRC-32 |
 
-These forty-two Shell/Run executions are deliberate nonzero cases. They must
+These forty-six Shell/Run executions are deliberate nonzero cases. They must
 be checked against their expected behavior; raw nonzero status alone is
 not a regression verdict. Valid ordinary queues are positive tests in
 `exec_messages`.
