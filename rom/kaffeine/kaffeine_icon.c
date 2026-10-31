@@ -5,7 +5,9 @@
     icon.library DiskObjects as metadata-only 68k snapshots. The program gets
     a guest copy of the classic DiskObject with its strings and ToolTypes;
     the native object stays private behind the owner table and every guest
-    pointer field that would refer to native data is zero.
+    pointer field that would refer to native data is zero. PutDiskObject also
+    accepts a bounded classic TOOL/PROJECT made by the program, copied into a
+    registered native object with private strings and planar images.
 */
 #include "kaffeine_intern.h"
 #include "kaffeine_icon.h"
@@ -25,6 +27,8 @@
 #define ICON_TOOLTYPE_MAX 128     /* entries before the terminator */
 #define ICON_SNAPSHOT_MAX 65536
 #define ICON_HEADER       80      /* classic 78 bytes, padded for the array */
+#define ICON_CLASSIC_HEADER 78
+#define ICON_IMAGE_HEADER  20
 
 /* Classic 68k DiskObject layout (workbench/workbench.h, intuition.h) */
 #define DO_MAGIC          0
@@ -37,6 +41,8 @@
 #define GG_FLAGS          16
 #define GG_ACTIVATION     18
 #define GG_GADGETTYPE     20
+#define GG_GADGETRENDER   22
+#define GG_SELECTRENDER   26
 #define GG_MUTUALEXCLUDE  34
 #define GG_GADGETID       42
 #define DO_TYPE           48
@@ -213,14 +219,15 @@ IPTR kaffeine_icon_NewDiskObject(struct KaffeineContext *ctx, void *cpu)
 }
 
 /* Strings/arrays may refer to this exact owned metadata snapshot, or ordinary
-   guest data. No other mirror, free heap interval or protected object is input. */
+   guest data. With no owner only ordinary data is admitted. No other mirror,
+   free heap interval or protected object is input. */
 static BOOL icon_input(struct KaffeineContext *ctx, const struct KaffeineIcon *icon,
                        ULONG addr, ULONG size)
 {
     unsigned i;
     if (!addr || !size || !ctx->mem || addr >= ctx->mem_size || size > ctx->mem_size - addr)
         return FALSE;
-    if (addr >= icon->guest && addr - icon->guest < icon->size &&
+    if (icon && addr >= icon->guest && addr - icon->guest < icon->size &&
         size <= icon->size - (addr - icon->guest)) return TRUE;
     if (!Kaffeine_MessageMemory(ctx, addr, size) || !Kaffeine_HeapGuestRange(ctx, addr, size) ||
         (ctx->memory_info && Kaffeine_Overlap(addr,size,ctx->memory_info,KAFFEINE_MEMINFO_SIZE)))
@@ -279,10 +286,98 @@ static BOOL icon_header(struct KaffeineContext *ctx, const struct KaffeineIcon *
            m68k_read16(ctx,g+42) == d->do_Gadget.GadgetID && ctx->mem[g+48] == d->do_Type;
 }
 
+/* A caller-built classic object is ordinary guest data, never an inferred
+   owner. Only Boolean TOOL/PROJECT icons and Image renders are admitted. */
+static BOOL icon_constructed_header(struct KaffeineContext *ctx, ULONG g)
+{
+    const ULONG pointers[] = {4, 30, 38, 44, 66};
+    UWORD flags;
+    ULONG normal, selected;
+    LONG width, height;
+    unsigned i;
+    if ((g & 1) || !icon_input(ctx, NULL, g, ICON_CLASSIC_HEADER)) return FALSE;
+    if (m68k_read16(ctx,g) != 0xE310 || m68k_read16(ctx,g+2) != 1 ||
+        (ctx->mem[g+DO_TYPE] != 3 && ctx->mem[g+DO_TYPE] != 4) ||
+        m68k_read16(ctx,g+GG_GADGETTYPE) != GTYP_BOOLGADGET) return FALSE;
+    width = (WORD)m68k_read16(ctx,g+GG_WIDTH);
+    height = (WORD)m68k_read16(ctx,g+GG_HEIGHT);
+    if (width < 1 || width > 1024 || height < 1 || height > 1024 ||
+        (ULONG)width * (ULONG)height > 65536) return FALSE;
+    for (i = 0; i < sizeof(pointers) / sizeof(pointers[0]); i++)
+        if (m68k_read32(ctx,g+pointers[i])) return FALSE;
+    flags = m68k_read16(ctx,g+GG_FLAGS);
+    normal = m68k_read32(ctx,g+GG_GADGETRENDER);
+    selected = m68k_read32(ctx,g+GG_SELECTRENDER);
+    /* Native WriteIcon requires a normal planar image for an empty NewDiskObject.
+       Its missing-image failure follows an internal duplicate, so reject it here. */
+    if ((flags & GFLG_EXTENDED) || !(flags & GFLG_GADGIMAGE) || !normal ||
+        ((flags & GFLG_GADGHIGHBITS) == GFLG_GADGHIMAGE && !selected)) return FALSE;
+    return TRUE;
+}
+
+struct IconImage
+{
+    ULONG guest, data, bytes;
+    struct Image *native;
+};
+
+/* The typed layout/geometry decoding follows Kaffeine_CopyImages. Unlike
+   DrawImage, the icon writer reads every Depth plane, regardless of PlanePick.
+   It writes only one Image, so NextImage is deliberately unsupported. */
+static BOOL icon_image(struct KaffeineContext *ctx, ULONG guest,
+                       struct IconImage *image, ULONG *size)
+{
+    LONG width, height, depth;
+    ULONG data, bytes, planes = 0, bit;
+    UBYTE pick;
+    if (!guest) return TRUE;
+    if ((guest & 1) || !icon_input(ctx,NULL,guest,ICON_IMAGE_HEADER)) return FALSE;
+    width = (WORD)m68k_read16(ctx,guest+4);
+    height = (WORD)m68k_read16(ctx,guest+6);
+    depth = (WORD)m68k_read16(ctx,guest+8);
+    data = m68k_read32(ctx,guest+10);
+    pick = ctx->mem[guest+14];
+    if (width < 1 || width > 1024 || height < 1 || height > 1024 ||
+        (ULONG)width * (ULONG)height > 65536 || depth < 1 || depth > 8 ||
+        m68k_read32(ctx,guest+16)) return FALSE;
+    for (bit = 0; bit < 8; bit++) planes += (pick >> bit) & 1;
+    if (planes > (ULONG)depth) return FALSE;
+    bytes = (ULONG)((width + 15) >> 4) * (ULONG)height * (ULONG)depth * 2;
+    if ((data & 1) || !icon_input(ctx,NULL,data,bytes) ||
+        !grow(size,sizeof(struct Image)) || !grow(size,bytes)) return FALSE;
+    image->guest = guest;
+    image->data = data;
+    image->bytes = bytes;
+    return TRUE;
+}
+
+/* Native Image headers come first for pointer alignment. Planar data stays
+   in raw big-endian byte order, as graphics.library and WriteImage expect;
+   it is privately copied, never borrowed from guest storage. */
+static void icon_image_fill(struct KaffeineContext *ctx, struct IconImage *image,
+                            struct Image *native, UBYTE *scratch, ULONG *at)
+{
+    ULONG g = image->guest;
+    memset(native,0,sizeof(*native));
+    native->LeftEdge = (WORD)m68k_read16(ctx,g);
+    native->TopEdge = (WORD)m68k_read16(ctx,g+2);
+    native->Width = (WORD)m68k_read16(ctx,g+4);
+    native->Height = (WORD)m68k_read16(ctx,g+6);
+    native->Depth = (WORD)m68k_read16(ctx,g+8);
+    native->ImageData = (UWORD *)(scratch+*at);
+    native->PlanePick = ctx->mem[g+14];
+    native->PlaneOnOff = ctx->mem[g+15];
+    memcpy(scratch+*at,ctx->mem+image->data,image->bytes);
+    *at += image->bytes;
+    image->native = native;
+}
+
 static IPTR icon_put_native(struct KaffeineContext *ctx, void *cpu)
 {
     struct KaffeineIcon *icon = NULL;
     struct DiskObject *copy, saved;
+    struct IconImage images[2] = {{0}};
+    struct Image *native_images;
     ULONG guest = THUNK_A(1), name = THUNK_A(0), g, count = 0, size = 0, at;
     ULONG tool, window, array, tool_len, window_len, name_len;
     ULONG addrs[ICON_TOOLTYPE_MAX], lengths[ICON_TOOLTYPE_MAX];
@@ -291,11 +386,12 @@ static IPTR icon_put_native(struct KaffeineContext *ctx, void *cpu)
     STRPTR *native_types = NULL;
     SIPTR error;
     BOOL okay;
-    unsigned i;
+    unsigned i, image_count = 0;
     for (i = 0; i < KAFFEINE_MAX_ICONS; i++)
         if (ctx->icons[i].guest == guest && ctx->icons[i].native) { icon = &ctx->icons[i]; break; }
-    if (!icon || !icon_header(ctx, icon)) return stop(ctx, "PutDiskObject owner/header");
-    g = icon->guest;
+    if (icon ? !icon_header(ctx,icon) : !icon_constructed_header(ctx,guest))
+        return stop(ctx, "PutDiskObject owner/header");
+    g = guest;
     tool = m68k_read32(ctx,g+DO_DEFAULTTOOL);
     window = m68k_read32(ctx,g+DO_TOOLWINDOW);
     array = m68k_read32(ctx,g+DO_TOOLTYPES);
@@ -321,6 +417,13 @@ static IPTR icon_put_native(struct KaffeineContext *ctx, void *cpu)
             !grow(&size,(count + 1) * sizeof(STRPTR)))
             return stop(ctx, "PutDiskObject ToolTypes aggregate");
     }
+    if (!icon)
+    {
+        if (!icon_image(ctx,m68k_read32(ctx,g+GG_GADGETRENDER),&images[0],&size) ||
+            !icon_image(ctx,m68k_read32(ctx,g+GG_SELECTRENDER),&images[1],&size))
+            return stop(ctx,"PutDiskObject classic Image");
+        image_count = !!images[0].guest + !!images[1].guest;
+    }
     if (size && !(scratch = AllocVec(size, MEMF_PRIVATE)))
     {
         SetIoErr(ERROR_NO_FREE_STORE);
@@ -328,6 +431,10 @@ static IPTR icon_put_native(struct KaffeineContext *ctx, void *cpu)
     }
     at = array ? (count + 1) * sizeof(STRPTR) : 0;
     if (array) native_types = (STRPTR *)scratch;
+    native_images = (struct Image *)(scratch ? scratch+at : NULL);
+    at += image_count * sizeof(struct Image);
+    for (i = 0; i < 2; i++)
+        if (images[i].guest) icon_image_fill(ctx,&images[i],native_images++,scratch,&at);
     if (name_len) { native_name=(STRPTR)(scratch+at); memcpy(scratch+at,ctx->mem+name,name_len); at+=name_len; }
     if (tool_len) { native_tool=(STRPTR)(scratch+at); memcpy(scratch+at,ctx->mem+tool,tool_len); at+=tool_len; }
     if (window_len) { native_window=(STRPTR)(scratch+at); memcpy(scratch+at,ctx->mem+window,window_len); at+=window_len; }
@@ -337,9 +444,9 @@ static IPTR icon_put_native(struct KaffeineContext *ctx, void *cpu)
         memcpy(scratch+at,ctx->mem+addrs[i],lengths[i]); at+=lengths[i];
     }
     if (array) native_types[count] = NULL;
-    /* A real native duplicate retains its registered private/PNG image state;
-       a stack DiskObject copy would silently lose those native extensions. */
-    copy = DupDiskObjectA(icon->native, NULL);
+    /* Owned objects retain registered private/PNG state through a duplicate.
+       Caller-built input gets its own registered, initially empty object. */
+    copy = icon ? DupDiskObjectA(icon->native,NULL) : NewDiskObject(ctx->mem[g+DO_TYPE]);
     if (!copy)
     {
         if (scratch) FreeVec(scratch);
@@ -347,6 +454,28 @@ static IPTR icon_put_native(struct KaffeineContext *ctx, void *cpu)
         return 0;
     }
     saved = *copy;
+    if (!icon)
+    {
+        copy->do_Magic = m68k_read16(ctx,g+DO_MAGIC);
+        copy->do_Version = m68k_read16(ctx,g+DO_VERSION);
+        copy->do_Gadget.NextGadget = NULL;
+        copy->do_Gadget.LeftEdge = (WORD)m68k_read16(ctx,g+GG_LEFTEDGE);
+        copy->do_Gadget.TopEdge = (WORD)m68k_read16(ctx,g+GG_TOPEDGE);
+        copy->do_Gadget.Width = (WORD)m68k_read16(ctx,g+GG_WIDTH);
+        copy->do_Gadget.Height = (WORD)m68k_read16(ctx,g+GG_HEIGHT);
+        copy->do_Gadget.Flags = m68k_read16(ctx,g+GG_FLAGS);
+        copy->do_Gadget.Activation = m68k_read16(ctx,g+GG_ACTIVATION);
+        copy->do_Gadget.GadgetType = m68k_read16(ctx,g+GG_GADGETTYPE);
+        copy->do_Gadget.GadgetRender = images[0].native;
+        copy->do_Gadget.SelectRender = images[1].native;
+        copy->do_Gadget.GadgetText = NULL;
+        copy->do_Gadget.MutualExclude = (LONG)m68k_read32(ctx,g+GG_MUTUALEXCLUDE);
+        copy->do_Gadget.SpecialInfo = NULL;
+        copy->do_Gadget.GadgetID = m68k_read16(ctx,g+GG_GADGETID);
+        copy->do_Gadget.UserData = NULL;
+        copy->do_Type = ctx->mem[g+DO_TYPE];
+        copy->do_DrawerData = NULL;
+    }
     copy->do_DefaultTool = native_tool;
     copy->do_ToolWindow = native_window;
     copy->do_ToolTypes = native_types;

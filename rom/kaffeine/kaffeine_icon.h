@@ -2,7 +2,7 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
     Author: Michele Dipace (@kaffeine1)
 
-    kaffeine.library — icon.library metadata-only DiskObject boundary
+    kaffeine.library — icon.library typed DiskObject boundary
 */
 #ifndef KAFFEINE_ICON_H
 #define KAFFEINE_ICON_H
@@ -14,9 +14,14 @@ extern "C" {
 #endif
 
 IPTR kaffeine_icon_GetDiskObject(struct KaffeineContext *ctx, void *cpu);
-/* Exact owned snapshot only. Positions, stack and bounded string/ToolTypes
+/* For an exact owned snapshot, positions, stack and bounded string/ToolTypes
    metadata may change; image/drawer pointers, Gadget fields and type stay
-   immutable. Native images/extensions are retained through a real duplicate. */
+   immutable. Native images/extensions are retained through a real duplicate.
+   Also accepts an ordinary caller-built 78-byte classic TOOL/PROJECT, with
+   Boolean Gadget scalars, a normal planar Image and an optional selected Image.
+   Gadget and Images have positive dimensions <=1024 and <=65536 pixels.
+   Images have Depth 1..8 and no NextImage;
+   strings, native headers and full planar data together stay within 64 KiB. */
 IPTR kaffeine_icon_PutDiskObject(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_icon_FreeDiskObject(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_icon_FindToolType(struct KaffeineContext *ctx, void *cpu);

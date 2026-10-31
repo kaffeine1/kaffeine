@@ -86,18 +86,27 @@ root retains its direct native path. Ordinary `AddTask()` and classic-only
 `CreateProc()` tasks have no native DOS context for these operations.
 
 The guest receives a metadata snapshot with no native image or drawer
-pointers. `PutDiskObject()` accepts only an exact, live owned snapshot.
-Positions, stack size, DefaultTool, ToolWindow and bounded ToolTypes may be
-edited; type, Gadget fields and structural pointer fields remain immutable.
-Strings and big-endian pointer arrays are validated and copied before native
-I/O. A real native duplicate preserves the original icon's private images and
-extensions. Native `FALSE` and `IoErr()` are returned as ordinary write
-failures; malformed identities or unsupported structural edits stop with 20.
+pointers. For an exact, live owned snapshot, `PutDiskObject()` permits changes
+to positions, stack size, DefaultTool, ToolWindow and bounded ToolTypes; type,
+Gadget fields and structural pointer fields remain immutable. A real native
+duplicate preserves the original icon's private images and extensions.
 
-Live snapshots are protected from generic `FreeMem()`/`FreeVec()` release.
-The typed free operation and context cleanup retire their private native
-owners. The supported write subset does not add guest Image conversion,
-arbitrary DiskObject construction, `DupDiskObjectA()` or `PutIconTagList()`.
+A program may also supply its own classic TOOL or PROJECT DiskObject. The
+adapter validates its 78-byte header, Boolean Gadget and ordinary guest
+storage, then creates a registered native object. A normal planar Image is
+required; an optional selected Image is also supported. Image headers and
+full Depth payloads are copied privately, retaining the big-endian planar
+byte layout. Gadget and Image dimensions are positive, at most 1024 per axis
+and 65,536 pixels; Image Depth is 1..8. Metadata, native headers and image
+payloads together fit within 64 KiB. Drawer data, Borders, extended Gadgets,
+image chains and Depth 0 remain unsupported.
+
+Strings and big-endian pointer arrays are validated and copied before native
+I/O. Native `FALSE` and `IoErr()` are returned as ordinary write failures;
+malformed identities or unsupported forms stop with 20. Live snapshots are
+protected from generic `FreeMem()`/`FreeVec()` release. The typed free operation
+and context cleanup retire their private native owners. Guest
+`DupDiskObjectA()` and `PutIconTagList()` remain unsupported.
 
 ## Loader and startup transaction
 
