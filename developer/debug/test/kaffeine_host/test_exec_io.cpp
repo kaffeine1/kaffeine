@@ -957,10 +957,107 @@ static void test_doio()
           doio_calls == 4, "DoIO() without a device returns -1, as Exec");
     std::memcpy(f.memory.data() + Fixture::copy, f.memory.data() + r, 40);
     check(f.call(456, 0xA0A0A0A0, Fixture::copy) == 20 && f.stopped() && doio_calls == 4,
-          "DoIO() on a copy of an open request stops the guest with 20");
+          "DoIO() on a copy with a command other than TR_ADDREQUEST or TR_GETSYSTIME stops the guest");
     check(f.call(456, 0xA0A0A0A0, 0xFFF0) == 20 && f.stopped(),
           "DoIO() on a request outside guest memory stops the guest");
     for (ULONG req : { r, e, unopened }) f.call(660, req);
+    f.call(672, p);
+}
+
+static bool no_record(Fixture &f, ULONG req)
+{
+    for (const auto &entry : f.ctx.io_requests)
+        if (entry.guest == req && (entry.native || entry.capacity))
+            return false;
+    return true;
+}
+
+/* DoIO() on a timer request that was not opened here, as sleep() and
+   usleep() of libnix make of dl_TimeReq: a native open for the call alone. */
+static void test_doio_copy()
+{
+    Fixture f;
+    const ULONG p = f.port();
+    const ULONG r = f.request(p, 40);
+    const ULONG c = Fixture::copy;
+    f.open(r);
+    auto copy_of = [&](ULONG from, UWORD command, ULONG secs, ULONG micro, ULONG at = Fixture::copy) {
+        std::memcpy(f.memory.data() + at, f.memory.data() + from, 40);
+        m68k_write16(&f.ctx, at + IO_COMMAND, command);
+        m68k_write32(&f.ctx, at + TV_SECS, secs);
+        m68k_write32(&f.ctx, at + TV_MICRO, micro);
+        return f.call(456, 0xA0A0A0A0, at);
+    };
+
+    check(copy_of(r, TR_ADDREQUEST, 2, 500000) == 0 && doio_calls == 1 && doio_command == TR_ADDREQUEST &&
+          doio_secs == 2 && doio_micro == 500000 && open_calls == 2 && open_name == "timer.device" &&
+          open_unit == UNIT_MICROHZ && open_flags == 0 && close_calls == 1 && live_opens == 1 &&
+          live_requests == 1 && f.error(c) == 0 && f.memory[c + IO_FLAGS] == 0 &&
+          f.memory[c + LN_TYPE] == NT_REPLYMSG,
+          "DoIO(TR_ADDREQUEST) on a copy of an open request runs on a native open of its own");
+    check(m68k_read32(&f.ctx, c + MN_REPLYPORT) == p && m68k_read32(&f.ctx, c + IO_DEVICE) == f.ctx.timer_base &&
+          no_record(f, c),
+          "the copy keeps its reply port and device, and gets no record");
+    check(copy_of(r, TR_GETSYSTIME, 0, 0) == 0 && m68k_read32(&f.ctx, c + TV_SECS) == 12345 &&
+          m68k_read32(&f.ctx, c + TV_MICRO) == 678901 && f.memory[c + IO_FLAGS] == IOF_QUICK &&
+          close_calls == 2 && live_opens == 1,
+          "DoIO(TR_GETSYSTIME) on a copy returns the time");
+    doio_error = IOERR_ABORTED;
+    check(copy_of(r, TR_GETSYSTIME, 0, 0) == 0xFFFFFFFE && f.error(c) == IOERR_ABORTED &&
+          close_calls == 3 && live_opens == 1,
+          "a native error on a copy comes back in io_Error, and the open still closes");
+    doio_error = 0;
+
+    const unsigned doios = doio_calls, opens = open_calls;
+    check(copy_of(r, TR_SETSYSTIME, 1, 2) == 20 && f.stopped() && doio_calls == doios && open_calls == opens,
+          "TR_SETSYSTIME on a copy stops the guest before any native call");
+    std::memcpy(f.memory.data() + c, f.memory.data() + r, 40);
+    m68k_write32(&f.ctx, c + IO_UNIT, UNIT_ECLOCK);
+    m68k_write16(&f.ctx, c + IO_COMMAND, TR_GETSYSTIME);
+    check(f.call(456, 0xA0A0A0A0, c) == 20 && f.stopped() && open_calls == opens,
+          "a copy on an EClock unit stops the guest");
+    std::memcpy(f.memory.data() + c, f.memory.data() + r, 40);
+    m68k_write32(&f.ctx, c + IO_DEVICE, f.ctx.timer_base + 2);
+    m68k_write16(&f.ctx, c + IO_COMMAND, TR_GETSYSTIME);
+    check(f.call(456, 0xA0A0A0A0, c) == 20 && f.stopped() && open_calls == opens,
+          "a request that names another device stops the guest");
+    check(copy_of(r, TR_GETSYSTIME, 0, 0, c + 1) == 20 && f.stopped() && open_calls == opens,
+          "a copy at an odd address stops the guest");
+    open_error = IOERR_OPENFAIL;
+    check(copy_of(r, TR_ADDREQUEST, 0, 1) == 20 && f.stopped() && open_calls == opens + 1 &&
+          doio_calls == doios && live_opens == 1 && live_requests == 1,
+          "a failed native open stops the guest and leaves no native request");
+    open_error = 0;
+
+    const ULONG s = f.request(p, 40);
+    check(copy_of(r, TR_GETSYSTIME, 0, 0, s) == 0 && m68k_read32(&f.ctx, s + TV_SECS) == 12345 &&
+          live_opens == 1,
+          "a CreateIORequest() request that the guest filled as a copy works too");
+    for (ULONG req : { r, s }) f.call(660, req);
+    f.call(672, p);
+}
+
+/* The libnix case: dl_TimeReq, never opened by the guest, copied and used. */
+static void test_doio_dos_time_request()
+{
+    Fixture f;
+    const ULONG req = Kaffeine_DosTimeRequest(&f.ctx, &native_timer);
+    const ULONG p = f.port();
+    const ULONG c = Fixture::copy;
+
+    std::memcpy(f.memory.data() + c, f.memory.data() + req, 40);
+    m68k_write32(&f.ctx, c + MN_REPLYPORT, p);
+    m68k_write16(&f.ctx, c + IO_COMMAND, TR_ADDREQUEST);
+    m68k_write32(&f.ctx, c + TV_SECS, 0);
+    m68k_write32(&f.ctx, c + TV_MICRO, 20000);
+    check(f.call(456, 0xA0A0A0A0, c) == 0 && doio_calls == 1 && doio_micro == 20000 &&
+          open_calls == 1 && open_unit == UNIT_VBLANK && close_calls == 1 && !live_opens && !live_requests &&
+          !f.ctx.io_reply_port && f.memory[c + LN_TYPE] == NT_REPLYMSG,
+          "DoIO() on a copy of dl_TimeReq waits on UNIT_VBLANK and leaves no native object");
+    m68k_write16(&f.ctx, req + IO_COMMAND, TR_GETSYSTIME);
+    check(f.call(456, 0xA0A0A0A0, req) == 0 && m68k_read32(&f.ctx, req + TV_SECS) == 12345 &&
+          open_calls == 2 && !live_opens && no_record(f, req),
+          "DoIO() on dl_TimeReq itself works the same way");
     f.call(672, p);
 }
 
@@ -2906,6 +3003,8 @@ int main()
     test_requests();
     test_open_close();
     test_doio();
+    test_doio_copy();
+    test_doio_dos_time_request();
     test_async();
     test_shared_signal_budget();
     test_shared_first_open_failures();

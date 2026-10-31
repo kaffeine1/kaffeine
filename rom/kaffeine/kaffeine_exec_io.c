@@ -1230,6 +1230,59 @@ static IPTR std_doio(struct KaffeineContext *ctx, ULONG req, struct KaffeineIORe
     return (IPTR)(LONG)error;
 }
 
+/* DoIO() of a timer request that was not opened here: a copy of one, as
+   sleep(), usleep() and nanosleep() of libnix make of dl_TimeReq on their
+   stack. A 40-byte request at an even address that names the guest timer
+   base, on UNIT_MICROHZ or UNIT_VBLANK, with TR_ADDREQUEST or
+   TR_GETSYSTIME, runs on a native request that the bridge opens on that
+   unit for this call alone. The guest address gets no record, and the guest
+   request keeps its reply port. Anything else stops the guest before any
+   native call. */
+static IPTR timer_copy_doio(struct KaffeineContext *ctx, ULONG req)
+{
+    ULONG unit = m68k_read32(ctx, req + G_IO_UNIT);
+    UWORD command = m68k_read16(ctx, req + G_IO_COMMAND);
+    struct MsgPort *reply;
+    struct timerequest *native;
+    BYTE error;
+
+    if (!ctx->timer_base || m68k_read32(ctx, req + G_IO_DEVICE) != ctx->timer_base)
+        return Kaffeine_IORefuse(ctx, "DoIO(): the request was not opened here, and only a copy "
+                                     "of a timer.device request is supported");
+    if ((unit != UNIT_MICROHZ && unit != UNIT_VBLANK) ||
+        (command != TR_ADDREQUEST && command != TR_GETSYSTIME))
+        return Kaffeine_IORefuse(ctx, "DoIO(): a copied timer request supports TR_ADDREQUEST and "
+                                     "TR_GETSYSTIME on UNIT_MICROHZ or UNIT_VBLANK");
+    if ((req & 1) || !request_range(ctx, req, G_TIMEREQUEST_SIZE))
+        return Kaffeine_IORefuse(ctx, "DoIO(): a copied timer request is not a timerequest "
+                                     "in guest memory at an even address");
+    reply = reply_port_acquire(ctx);
+    native = reply ? (struct timerequest *)CreateIORequest(reply, sizeof(*native)) : NULL;
+    if (!native || OpenDevice("timer.device", unit, &native->tr_node, 0))
+    {
+        if (native)
+            DeleteIORequest(native);
+        reply_port_release(ctx);
+        return Kaffeine_IORefuse(ctx, "DoIO(): the native timer.device did not open "
+                                     "for a copied timer request");
+    }
+    ctx->mem[req + G_IO_FLAGS] = IOF_QUICK;
+    ctx->mem[req + G_LN_TYPE] = 0;
+    native->tr_node.io_Command = command;
+    native->tr_time.tv_secs = m68k_read32(ctx, req + G_TV_SECS);
+    native->tr_time.tv_micro = m68k_read32(ctx, req + G_TV_MICRO);
+    error = DoIO(&native->tr_node);
+    m68k_write32(ctx, req + G_TV_SECS, native->tr_time.tv_secs);
+    m68k_write32(ctx, req + G_TV_MICRO, native->tr_time.tv_micro);
+    ctx->mem[req + G_IO_FLAGS] = native->tr_node.io_Flags & IOF_QUICK;
+    ctx->mem[req + G_LN_TYPE] = native->tr_node.io_Message.mn_Node.ln_Type;
+    ctx->mem[req + G_IO_ERROR] = (UBYTE)error;
+    CloseDevice(&native->tr_node);
+    DeleteIORequest(native);
+    reply_port_release(ctx);
+    return (IPTR)(LONG)error;
+}
+
 /* -456: DoIO(A1=iORequest) -> D0=io_Error. As Exec, the request gets
    IOF_QUICK and ln_Type 0 first, and without a device the result is -1.
    For timer.device, TR_ADDREQUEST and TR_GETSYSTIME copy both time fields
@@ -1238,9 +1291,10 @@ static IPTR std_doio(struct KaffeineContext *ctx, ULONG req, struct KaffeineIORe
    delay; they and every other command end with IOERR_NOCMD without
    reaching the device. Console requests always return IOERR_NOCMD, using
    the native record's kind rather than guest-editable device/unit fields.
-   Keyboard and input requests go to std_doio(). A request in flight or
-   still queued on its reply port, and a copy, stop the guest before any
-   write. */
+   Keyboard and input requests go to std_doio(), and a timer request that
+   was not opened here to timer_copy_doio(). A request in flight or still
+   queued on its reply port, and a copy that SendIO() keeps, stop the guest
+   before any write. */
 IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG req = THUNK_A(1);
@@ -1269,15 +1323,12 @@ IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu)
     if (entry && entry->native &&
         (entry->kind == KAFFEINE_IO_KEYBOARD || entry->kind == KAFFEINE_IO_INPUT))
         return std_doio(ctx, req, entry);
+    if ((!entry || !entry->native) && m68k_read32(ctx, req + G_IO_DEVICE))
+        return timer_copy_doio(ctx, req);
     ctx->mem[req + G_IO_FLAGS] = IOF_QUICK;
     ctx->mem[req + G_LN_TYPE] = 0;
     if (!entry || !entry->native)
-    {
-        if (!m68k_read32(ctx, req + G_IO_DEVICE))
-            return (IPTR)(LONG)-1;
-        return Kaffeine_IORefuse(ctx, "DoIO(): the request was not opened here, "
-                                     "and a copy of an open request is not supported yet");
-    }
+        return (IPTR)(LONG)-1;
     command = m68k_read16(ctx, req + G_IO_COMMAND);
     if (entry->kind == KAFFEINE_IO_TIMER &&
         (command == TR_GETSYSTIME ||
