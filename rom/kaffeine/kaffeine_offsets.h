@@ -327,6 +327,15 @@
    would run FPU code, as the startup code of libnix FPU builds does. */
 #define M68K_ATTNFLAGS_68040        0x000F
 
+/* ── E-clock of the guest ────────────────────────────────────────── */
+
+/* ExecBase->ex_EClockFrequency and the rate that ReadEClock() gives the
+   guest: the E-clock of a PAL Amiga. AROS on the Raspberry Pi counts its
+   own at 100 Hz, and 68k code divides the rate by 1000 (the clock() of
+   libnix) or takes it for about 709 kHz. */
+#define M68K_EXECBASE_ECLOCKFREQUENCY 568
+#define M68K_ECLOCK_RATE            709379
+
 /* ── struct Locale (libraries/locale.h, 168 bytes on m68k) ───────── */
 
 #define M68K_SIZEOF_LOCALE               168

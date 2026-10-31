@@ -436,6 +436,10 @@ ULONG shadow_init_execbase(struct KaffeineContext *ctx, ULONG m68k_base, void *n
        runs it (see M68K_ATTNFLAGS_68040) */
     m68k_write16(ctx, m68k_base + M68K_EXECBASE_ATTNFLAGS, M68K_ATTNFLAGS_68040);
 
+    /* and ex_EClockFrequency: the rate of the guest E-clock that
+       ReadEClock() gives (see M68K_ECLOCK_RATE) */
+    m68k_write32(ctx, m68k_base + M68K_EXECBASE_ECLOCKFREQUENCY, M68K_ECLOCK_RATE);
+
     /* Generated pointer fields without a sub-layout are zeroed by sync_fields.
        Publish the same registered snapshot that named FindTask lookups reuse. */
     ctx->guest_exec_task = shadow_task(ctx, FindTask(NULL), TRUE);

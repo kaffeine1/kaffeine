@@ -425,12 +425,15 @@ extern "C" void stub_GetSysTime(Device *base, timeval *dest)
     dest->tv_micro = 200;
 }
 
+/* The native E-clock: its rate and count, as the test sets them. */
+static ULONG eclock_rate, eclock_hi, eclock_lo;
+
 extern "C" ULONG stub_ReadEClock(Device *base, EClockVal *dest)
 {
     assert(base == &native_timer);
-    dest->ev_hi = 0x12345678;
-    dest->ev_lo = 0x9ABCDEF0;
-    return 709379;
+    dest->ev_hi = eclock_hi;
+    dest->ev_lo = eclock_lo;
+    return eclock_rate;
 }
 
 extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *, const char *)
@@ -512,6 +515,7 @@ struct Fixture
         current_task = &owner_task;
         fail_signal = fail_port = fail_request = false;
         open_error = 0; doio_error = 0;
+        eclock_rate = 709379; eclock_hi = 0x12345678; eclock_lo = 0x9ABCDEF0;
         alloc_signal_calls = free_signal_calls = signal_calls = 0;
         signal_task = nullptr; signal_mask = 0;
         live_ports = live_requests = live_opens = 0;
@@ -2269,6 +2273,33 @@ static void test_dos_time_request()
     f.call(672, p);
 }
 
+/* ReadEClock() gives the guest the E-clock of a PAL Amiga whatever the
+   native rate: the native count in guest ticks, rounded down. */
+static void test_eclock_rate()
+{
+    Fixture f;
+    Kaffeine_DosTimeRequest(&f.ctx, &native_timer);
+    const ULONG ev = 0x2700;
+    struct Case { ULONG rate; uint64_t ticks; const char *what; };
+    const Case cases[] = {
+        { 709379, 0x123456789ABCDEF0ull, "a native PAL E-clock passes unchanged" },
+        { 100, 12345, "the 100 Hz E-clock of AROS on the Pi, after two minutes" },
+        { 100, 100ull * 86400 * 365 * 30, "the 100 Hz E-clock after thirty years" },
+        { 19200000, 19200000ull * 3600 * 24 * 400 + 1234567, "a 19.2 MHz E-clock after 400 days" },
+        { 1, 0, "a native count of zero" },
+    };
+    for (const auto &c : cases)
+    {
+        eclock_rate = c.rate;
+        eclock_hi = (ULONG)(c.ticks >> 32);
+        eclock_lo = (ULONG)c.ticks;
+        const unsigned __int128 want = (unsigned __int128)c.ticks * 709379 / c.rate;
+        const ULONG rate = f.timer(60, ev);
+        const uint64_t got = (uint64_t)m68k_read32(&f.ctx, ev) << 32 | m68k_read32(&f.ctx, ev + 4);
+        check(rate == 709379 && got == (uint64_t)want, c.what);
+    }
+}
+
 /* The low 32 bits of no native device or request anywhere in a guest
    Device and its jump table. */
 static bool no_native_pointer(Fixture &f, ULONG base, ULONG vectors)
@@ -3005,6 +3036,7 @@ int main()
     test_doio();
     test_doio_copy();
     test_doio_dos_time_request();
+    test_eclock_rate();
     test_async();
     test_shared_signal_budget();
     test_shared_first_open_failures();

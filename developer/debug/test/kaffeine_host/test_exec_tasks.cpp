@@ -227,6 +227,21 @@ static void test_embedded_exec_lists()
     }
 }
 
+/* The guest sees the E-clock rate that its ReadEClock() gives, not the
+   100 Hz of AROS on the Pi. */
+static void test_eclock_frequency()
+{
+    Fixture f(false);
+    UBYTE *native = reinterpret_cast<UBYTE *>(&f.native) + 1184; /* AROS ex_EClockFrequency */
+    const ULONG hundred = 100;
+    ULONG after;
+    std::memcpy(native, &hundred, sizeof(hundred));
+    check(f.init() == f.base, "ExecBase initialization succeeds");
+    std::memcpy(&after, native, sizeof(after));
+    check(m68k_read32(&f.ctx, f.base + 568) == 709379 && after == 100,
+          "ex_EClockFrequency of the guest ExecBase is 709379, the native one stays");
+}
+
 static void test_memory_capacity()
 {
     Fixture f(false);
@@ -507,6 +522,7 @@ static void test_fallback_control()
 int main(int argc, char **argv)
 {
     test_embedded_exec_lists();
+    test_eclock_frequency();
     test_memory_capacity();
     test_embedded_list_callbacks();
     test_current_identity();
