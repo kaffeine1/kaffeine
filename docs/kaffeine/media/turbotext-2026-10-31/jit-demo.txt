@@ -1,0 +1,3 @@
+TurboText 2.0 - original Motorola 68k
+Native AROS ARM64 - Kaffeine JIT
+Edit save close and reopen.

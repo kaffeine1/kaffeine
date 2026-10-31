@@ -5,6 +5,20 @@ Author: Michele Dipace (@kaffeine1)
 
 # TurboText 68k save and reopen on AROS ARM64
 
+## JIT demonstration video
+
+**[Watch or download the video (MP4, 2:18)](turbotext-68k-kaffeine-jit-aros-arm64.mp4)**
+
+[![Reloaded text and the actual Kaffeine JIT backend message](jit-reopened.png)](turbotext-68k-kaffeine-jit-aros-arm64.mp4)
+
+This separate recording edits and saves 99 bytes, closes the editor, and
+reloads the same file through a second original `WAIT` invocation. A strip
+below the guest display reproduces the session's actual JIT backend and
+nonzero counters. See the [launch method and verified limits](../../turbotext-jit-demo.md),
+[exact saved text](jit-demo.txt) and [media checksums](JIT-SHA256SUMS).
+
+## Earlier nine-byte test
+
 On 2026-10-31, the original TurboText 2.0 launcher and its three support
 libraries ran unmodified through the Kaffeine JIT on AROS ARM64. Workbench
 was 1024x768, 24-bit, using the Raspberry Pi 3 model in QEMU with one TCG
