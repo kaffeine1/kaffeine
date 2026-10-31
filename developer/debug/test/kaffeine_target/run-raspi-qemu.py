@@ -14,8 +14,10 @@ have written their completion markers, or when the timeout expires. A boot
 finishing does not make its programs pass: each execution needs a return
 code of zero (or the CODE of --expect-rc), nonempty output and no failed
 checks. With --expect, an execution also needs output that is byte for byte
-the given file, as the bzip2 self-test does. Results are also saved in
-results.json in each boot directory and summary.json in the run directory.
+the given file, as the bzip2 self-test does, and with --expect-err an error
+output that is byte for byte the given file; without --expect-err the error
+output is kept but not judged. Results are also saved in results.json in
+each boot directory and summary.json in the run directory.
 
 A program can take keys from QEMU's USB keyboard: with --keys it writes
 SYS:EMU68/NAME-keys-N.txt when it is ready for them, NAME being the name
@@ -467,7 +469,8 @@ def guest_completed(read_file, names):
             all(marker_done(read_file('%s-run-done.txt' % name)) for name in names))
 
 
-def parse_result(name, mode, output, rc_text, completed=True, expected=None, expected_rc=0):
+def parse_result(name, mode, output, rc_text, completed=True, expected=None, expected_rc=0,
+                 error_output=None, expected_err=None):
     """Assess one execution without QEMU or filesystem dependencies.
 
     Missing/malformed artifacts are incomplete, even if partial output looks
@@ -476,7 +479,9 @@ def parse_result(name, mode, output, rc_text, completed=True, expected=None, exp
     failures. Programs such as hello need no check summary, but must produce
     output and return expected_rc. With expected bytes, the output must be
     exactly those bytes, and its lines are not read as checks: a compressed
-    file can contain anything.
+    file can contain anything. With expected_err bytes, error_output must be
+    exactly those bytes too (empty bytes: no error output at all); without
+    them error_output is not read.
     """
     if expected_rc is None:
         expected_rc = 0
@@ -505,6 +510,18 @@ def parse_result(name, mode, output, rc_text, completed=True, expected=None, exp
             failures.append('output differs from the expected %d bytes at byte %d of %d' % (
                 len(expected), offset, len(data)))
         lines = []
+    err_matches = None
+    if expected_err is not None:
+        if error_output is None:
+            errors.append('missing error output')
+        else:
+            data = error_output.encode('latin-1', errors='replace')
+            err_matches = data == expected_err
+            if not err_matches:
+                offset = next((i for i, (got, want) in enumerate(zip(data, expected_err))
+                               if got != want), min(len(data), len(expected_err)))
+                failures.append('error output differs from the expected %d bytes at byte %d of %d'
+                                % (len(expected_err), offset, len(data)))
     failed_lines = [line.strip() for line in lines if re.match(r'^\s*FAIL(?:\s|:|$)', line)]
     summaries = []
     for line in lines:
@@ -521,12 +538,13 @@ def parse_result(name, mode, output, rc_text, completed=True, expected=None, exp
             'return_code': rc, 'errors': errors, 'failures': failures,
             'failed_lines': failed_lines, 'check_summaries': summaries,
             'output_matches': matches,
+            'error_output_matches': err_matches,
             'last_line': ('output matches the expected %d bytes' % len(expected)) if matches else
                          next((line.strip() for line in reversed(lines) if line.strip()),
                               '(no output)')}
 
 
-def assess_boot(names, read_file, vm, expected=None, expected_rc=None):
+def assess_boot(names, read_file, vm, expected=None, expected_rc=None, expected_err=None):
     """Keep VM completion and program verdicts separate in a JSON-ready report."""
     results = []
     for name in names:
@@ -537,7 +555,9 @@ def assess_boot(names, read_file, vm, expected=None, expected_rc=None):
                 completed=(mode == 'shell' or
                            marker_done(read_file('%s-run-done.txt' % name))),
                 expected=(expected or {}).get(name),
-                expected_rc=(expected_rc or {}).get(name, 0)))
+                expected_rc=(expected_rc or {}).get(name, 0),
+                error_output=read_file('%s-%s-err.txt' % (name, mode)),
+                expected_err=(expected_err or {}).get(name)))
     # input that --keys or --mouse could not send fails the execution that
     # waited for it
     for result in results:
@@ -786,7 +806,8 @@ def boot(args, run, programs):
 
     guest = run / 'guest'
     report = assess_boot(names, lambda name: load_text(guest / name), vm,
-                         args.expected, getattr(args, 'expected_rc', None))
+                         args.expected, getattr(args, 'expected_rc', None),
+                         getattr(args, 'expected_err', None))
     report['directory'] = str(run)
     (run / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
     return report
@@ -825,7 +846,10 @@ def main():
                    help='PROGRAM passes only if its output is byte for byte FILE')
     p.add_argument('--expect-rc', nargs=2, action='append', default=[],
                    metavar=('PROGRAM', 'CODE'),
-                   help='PROGRAM passes only if its return code is CODE (default: 0)')
+                   help='PROGRAM passes only if its return code is CODE, 0 to 20 (default: 0)')
+    p.add_argument('--expect-err', nargs=2, action='append', default=[],
+                   metavar=('PROGRAM', 'FILE'),
+                   help='PROGRAM passes only if its error output is byte for byte FILE')
     p.add_argument('--files', nargs=2, action='append', default=[], metavar=('PROGRAM', 'DIR'),
                    help='install the files and directories in DIR next to PROGRAM in '
                         'SYS:EMU68, as the drawer of an application')
@@ -854,7 +878,7 @@ def main():
     args.arguments = dict(args.args)
     args.inputs = dict(args.input)
     for option, pairs in (('--keys', args.keys), ('--mouse', args.mouse),
-                          ('--expect-rc', args.expect_rc)):
+                          ('--expect-rc', args.expect_rc), ('--expect-err', args.expect_err)):
         counts = collections.Counter(name for name, _ in pairs)
         twice = sorted(name for name, count in counts.items() if count > 1)
         if twice:
@@ -876,10 +900,18 @@ def main():
             args.expected[name] = Path(path).read_bytes()
         except OSError as e:
             p.error('cannot read the expected output of %s: %s' % (name, e))
+    args.expected_err = {}
+    for name, path in args.expect_err:
+        try:
+            args.expected_err[name] = Path(path).read_bytes()
+        except OSError as e:
+            p.error('cannot read the expected error output of %s: %s' % (name, e))
+    # The launch scripts run the program under FailAt 21: a return code of 21
+    # or more stops the script before it saves the code.
     args.expected_rc = {}
     for name, code in args.expect_rc:
-        if not re.fullmatch(r'-?[0-9]+', code):
-            p.error('--expect-rc %s: %r is no integer' % (name, code))
+        if not re.fullmatch(r'[0-9]+', code) or int(code) > 20:
+            p.error('--expect-rc %s: %r is not a return code from 0 to 20' % (name, code))
         args.expected_rc[name] = int(code)
     names = [program_name(program) for program in args.programs]
     if any(not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', name) for name in names):
@@ -888,7 +920,8 @@ def main():
     if len({name.lower() for name in names}) != len(names):
         p.error('program names must be unique (the FAT volume is case-insensitive)')
     # An expectation that names no program would leave its output or return code unchecked.
-    for option, table in (('--expect', args.expected), ('--expect-rc', args.expected_rc)):
+    for option, table in (('--expect', args.expected), ('--expect-rc', args.expected_rc),
+                          ('--expect-err', args.expected_err)):
         unknown = sorted(set(table) - set(names))
         if unknown:
             p.error('%s names no program: %s (use the NAME of NAME=FILE, spelled as given)'

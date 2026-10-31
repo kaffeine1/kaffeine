@@ -306,8 +306,10 @@ calculations can remain quiet, so choose it for the workload.
 
 Options precede program names. `NAME=FILE` installs an executable under an
 alias, `--args NAME TEXT` supplies arguments, `--input NAME FILE` redirects
-input, `--expect NAME FILE` compares output byte for byte and `--expect-rc
-NAME CODE` requires return code `CODE` instead of `0`. `--keys` and `--mouse`
+input, `--expect NAME FILE` compares output byte for byte, `--expect-err NAME
+FILE` compares the error output byte for byte and `--expect-rc NAME CODE`
+requires return code `CODE` instead of `0`; `CODE` goes from 0 to 20, since
+the launch scripts run the program under `FailAt 21`. `--keys` and `--mouse`
 drive the guest through QMP. `--keep-image` retains the modified copy for
 inspection.
 
@@ -523,7 +525,8 @@ checks with `cmp` that `bzip2_c1` to `bzip2_c3` and `bzip2_d1` to `bzip2_d3`
 match `sample1.bz2` to `sample3.bz2` and `sample1.ref` to `sample3.ref` of
 the distribution. For example, `bzip2_c1` is `--files bzip2_c1
 build/bzip2-files --args bzip2_c1 "-c -1 EMU68/sample1.ref" --expect
-bzip2_c1 build/bzip2-refs/bzip2_c1.out bzip2_c1=build/bzip2`.
+bzip2_c1 build/bzip2-refs/bzip2_c1.out --expect-err bzip2_c1
+build/bzip2-refs/bzip2_c1.err bzip2_c1=build/bzip2`.
 
 ## The zstd steps
 
@@ -559,7 +562,8 @@ inputs four times. For example, `zstd_c1` is `--files zstd_c1
 build/zstd-files --args zstd_c1 "-c -1
 EMU68/PR-3517-block-splitter-corruption-test EMU68/http
 EMU68/huffman-compressed-larger EMU68/large-literal-and-match-lengths"
---expect zstd_c1 build/zstd-refs/zstd_c1.out zstd_c1=build/zstd`, and
+--expect zstd_c1 build/zstd-refs/zstd_c1.out --expect-err zstd_c1
+build/zstd-refs/zstd_c1.err zstd_c1=build/zstd`, and
 `zstd_unpack` adds `--input zstd_unpack build/zstd-refs/zstd_unpack.in`.
 
 ## The zlib steps
@@ -723,12 +727,13 @@ that kaffeine gives the guest, and `-4` stops with `Out of memory`.
 the guest, so `make xz-refs` runs the host build under that name too, next
 to an `EMU68` that names `build/xz-files`, and writes its error output to
 `NAME.err`. The runner keeps the error output of each run in
-`guest/NAME-shell-err.txt` and `guest/NAME-run-err.txt`. For example,
+`guest/NAME-shell-err.txt` and `guest/NAME-run-err.txt`, and compares it
+with `NAME.err` when `--expect-err` names that file. For example,
 `xz_p1` is `--files xz_p1 build/xz-files --args xz_p1 "-c -1
 --memlimit-compress=48MiB --memlimit-decompress=5MiB --no-adjust
 --threads=1 EMU68/compress_generated_abc EMU68/compress_generated_random
 EMU68/compress_generated_text" --expect xz_p1 build/xz-refs/xz_p1.out
-xz_p1=build/xz`, and `xz_unpack` adds `--input xz_unpack
+--expect-err xz_p1 build/xz-refs/xz_p1.err xz_p1=build/xz`, and `xz_unpack` adds `--input xz_unpack
 build/xz-refs/xz_unpack.in`.
 
 Under QEMU the 25 steps give the output and the error output of the host
@@ -813,7 +818,7 @@ step as `SYS:EMU68/lua_<step>` next to an `EMU68` that names
 `build/lua-files`. For example, `lua_strings` is `--files lua_strings
 build/lua-files --args lua_strings '-e "_port=true _soft=true"
 EMU68/strings.lua' --expect lua_strings build/lua-refs/lua_strings.out
-lua_strings=build/lua`, and `lua_stdin` adds `--input lua_stdin
+--expect-err lua_strings build/lua-refs/lua_strings.err lua_strings=build/lua`, and `lua_stdin` adds `--input lua_stdin
 build/lua-files/stdin.lua`.
 
 ## The UnZip 6.0 steps
@@ -847,9 +852,10 @@ the error output of `unzip_bad_trunc` (`maybe_exe` in `process.c`); with mode
 `0755` the host build of `make unzip-refs` writes the same note.
 
 The nine steps are listed in `UNZIP_STEPS`, with their arguments in
-`UNZIP_ARGS_<step>`, and pass only if their output (and error output in
-`NAME.err`) is byte for byte the one that `make unzip-refs` writes to
-`build/unzip-refs` under `TZ=UTC0`:
+`UNZIP_ARGS_<step>`, and pass only if their output (with `--expect
+build/unzip-refs/NAME.out`) and error output (with `--expect-err
+build/unzip-refs/NAME.err`) are byte for byte those that `make unzip-refs`
+writes under `TZ=UTC0`:
 
 | Program | Arguments | Output | Exit |
 | --- | --- | --- | --- |
@@ -932,7 +938,8 @@ The step names are in `AWK_STEPS` and their arguments in `AWK_ARGS_<step>`.
 runs each step as `SYS:EMU68/awk_<step>` next to an `EMU68` that names
 `build/awk-files`. For example, `awk_p5` is `--files awk_p5 build/awk-files
 --args awk_p5 "-f EMU68/p.5 EMU68/test.countries EMU68/test.countries"
---expect awk_p5 build/awk-refs/awk_p5.out awk_p5=build/awk`.
+--expect awk_p5 build/awk-refs/awk_p5.out --expect-err awk_p5
+build/awk-refs/awk_p5.err awk_p5=build/awk`.
 
 ## The CLI programs under the Kaffeine JIT
 
@@ -1003,6 +1010,10 @@ both the Shell and Run executions and still checks the output (and the
   (`LUA_RC_bad`), `--expect-rc unzip_bad_trunc 9` and
   `--expect-rc unzip_bad_crc 2` (`UNZIP_RC_bad_trunc`, `UNZIP_RC_bad_crc`),
   and `--expect-rc awk_bad 2` (`AWK_RC_bad`).
+
+The error output counts only with `--expect-err`: with `--expect-rc` alone, a
+program that crashes after some output with the expected code would pass, so
+the CLI steps also take the `NAME.err` of their references.
 
 With `--expect-rc`, a return code of 0 or any other code fails the execution;
 without it, raw nonzero status alone is not a regression verdict. Valid
