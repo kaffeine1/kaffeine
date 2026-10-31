@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     A guest program allocates and frees from a private MemHeader, using the
     production Exec thunks and Moira. This does not execute libnix startup.

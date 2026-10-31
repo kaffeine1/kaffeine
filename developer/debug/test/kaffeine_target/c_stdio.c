@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     A libnix C program with stdio: argc and argv, printf() and sprintf()
     formats, malloc(), calloc(), realloc() and free(), strdup(), qsort() and

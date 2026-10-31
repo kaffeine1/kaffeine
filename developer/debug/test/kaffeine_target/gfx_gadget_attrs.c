@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The attributes of GadTools gadgets, read back with GT_GetGadgetAttrsA(),
     with no window and no input needed. A gadget of every kind but

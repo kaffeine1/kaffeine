@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Production C thunks and dispatcher, with literal ABI vectors and real
     instructions through the production Moira adapter. No native guest code.

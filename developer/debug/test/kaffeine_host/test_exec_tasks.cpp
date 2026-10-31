@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     FindTask identity and embedded ExecBase lists through the real shadow
     engine, including an original bounded successor walk through Moira.

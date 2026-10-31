@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     exec.library list functions on a list and nodes in 68k memory, called
     from a libnix C program that uses neither stdio nor malloc. NewList()

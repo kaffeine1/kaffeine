@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original screen-owned shared-pen protocol, also built as native ARM reference. */
 #include <exec/types.h>
 #include <intuition/screens.h>

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Classic 68k tasks of one program, scheduled cooperatively inside its
     Kaffeine_RunCPU().

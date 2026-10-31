@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The configuration of mbed TLS 3.6.7 for its programs/test/selftest,
     built for the m68k with libnix and for the host from the same sources:

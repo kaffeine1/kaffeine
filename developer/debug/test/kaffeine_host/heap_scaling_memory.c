@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Compile the production heap with basic-block coverage and inspect its
     native invariants between batches, without adding production test hooks.

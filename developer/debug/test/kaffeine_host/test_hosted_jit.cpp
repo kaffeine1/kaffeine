@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The hosted AArch64 translation probe (kaffeine_jit.c) with the production
     run loop, dispatcher, callback primitive and thunks. The production

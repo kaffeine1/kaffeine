@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 """
 Run the production DOS process entry and cleanup with controlled collaborators.
 """

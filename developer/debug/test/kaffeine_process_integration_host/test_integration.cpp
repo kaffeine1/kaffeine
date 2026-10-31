@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  * The runner inserts complete production Signal and startup/owner cleanup
  * functions. The threaded domain-driver fixture tests asynchronous lifetime. */
 #include <array>

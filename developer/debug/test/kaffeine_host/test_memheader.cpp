@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Exercise the production guest MemHeader allocator through Exec LVOs.
     The allocator, CPU interface and dispatcher are compiled separately as C.

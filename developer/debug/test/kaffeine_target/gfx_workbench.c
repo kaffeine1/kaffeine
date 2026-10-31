@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     workbench.library AppWindow, AppMenuItem and AppIcon registration,
     removal and AppMessages on a MsgPort of the program's own.

@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original clipping probe for owned window and classic requester layers. */
 #include <exec/types.h>
 #include <intuition/intuition.h>

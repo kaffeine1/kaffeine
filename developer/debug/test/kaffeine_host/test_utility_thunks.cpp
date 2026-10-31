@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * Call the production utility.library thunks through the real dispatcher
  * with literal LVOs and poisoned generated fallbacks. Check both result

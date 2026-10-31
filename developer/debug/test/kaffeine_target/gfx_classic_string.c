@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Classic Intuition string and integer gadgets built in the program's own
     memory, without GadTools. Three GTYP_STRGADGET gadgets are linked in

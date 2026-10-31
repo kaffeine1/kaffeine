@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Independent classic ABI test of owned screen-bar drawing and LayerInfo. */
 #include <exec/types.h>
 #include <exec/nodes.h>

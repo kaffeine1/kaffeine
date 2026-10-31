@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Native copies of 68k structures that native code reads itself, made in
     two runs over the same input: one that checks it and counts, one that

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     IDCMP messages of a window, the way C programs take them. A window
     opened active with IDCMP flags gets IDCMP_ACTIVEWINDOW and then

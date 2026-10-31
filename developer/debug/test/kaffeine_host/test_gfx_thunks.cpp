@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Check the production Intuition and graphics thunks through literal LVOs,
     the real dispatcher and heap: the ABI slots of the tables, OpenFont() and

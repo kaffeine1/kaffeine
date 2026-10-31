@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     GadTools menus, the way C programs build them, with no input needed.
     A VisualInfo of the default public screen; a strip from a NewMenu array

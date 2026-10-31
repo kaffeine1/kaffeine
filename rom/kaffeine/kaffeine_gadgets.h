@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     GadTools gadgets of 68k code: gadget lists made by CreateContext() and
     CreateGadgetA() with a 68k mirror of every gadget, FreeGadgets(), the

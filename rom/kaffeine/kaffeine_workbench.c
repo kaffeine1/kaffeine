@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     workbench.library of 68k code: the AppWindows, AppIcons and AppMenuItems
     of the native Workbench, whose AppMessages reach the program's own port.

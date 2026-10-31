@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * Library dispatch tests using a small CPU backend with no Moira dependency.
  */

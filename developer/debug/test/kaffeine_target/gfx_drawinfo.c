@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original DrawInfo scalar, font, pens and nested-lifetime oracle. */
 #include <exec/types.h>
 #include <graphics/displayinfo.h>

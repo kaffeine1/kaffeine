@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 """Compile unchanged public Intuition refresh bodies over recording layers."""
 from pathlib import Path
 import re

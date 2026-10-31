@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The mouse on a window of the program's own: a GadTools button, a
     Boolean gadget and two proportional gadgets that the program built

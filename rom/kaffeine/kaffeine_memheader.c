@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Private pools retain their classic 32-bit, big-endian MemHeader and
     MemChunk layouts inside guest memory. Only mh_First and mh_Free are

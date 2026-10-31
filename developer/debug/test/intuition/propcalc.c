@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Arithmetic of classic Intuition proportional gadgets, as AmigaOS 3.2.3
     computes it. A bordered gadget gets LeftBorder 4 and TopBorder 2 without

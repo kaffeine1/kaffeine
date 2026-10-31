@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The soft-float conversions that the ported programs, bzip2 1.0.8 and the
     IJG JPEG library 9f, call beyond those of libgcc_ieee.c: the empty

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 #
 # Print the hunk structure of an Amiga HUNK executable, including the
 # relocation format (long HUNK_RELOC32, or the 16-bit HUNK_RELOC32SHORT

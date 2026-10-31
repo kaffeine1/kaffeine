@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * Production C thunks, CPU accessors and dispatcher; no native mathffp.
  * Literal LVOs and a poisoned fallback detect missing or misplaced entries.

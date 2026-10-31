@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The windows, IDCMP ports and messages of 68k code through literal LVOs,
     the real dispatcher and heap: the 68k Window of a native one, which

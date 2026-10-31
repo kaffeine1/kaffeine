@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * Call ReadArgs(), FreeArgs() and GetProgramName() for 68k programs
  * through the real dispatcher with literal LVOs. Behind the thunks runs

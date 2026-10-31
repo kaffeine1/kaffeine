@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Layers of 68k code. A classic program reads Window.WLayer and
     RastPort.Layer, follows the front and back links of the layers of its

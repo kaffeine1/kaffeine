@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Native AROS Raspberry framebuffer proof (compile for AArch64, not m68k).
     Opens a genuine LUT8 screen behind Workbench, draws before showing it,

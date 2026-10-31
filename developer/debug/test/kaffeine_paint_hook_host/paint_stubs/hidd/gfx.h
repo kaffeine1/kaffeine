@@ -1,4 +1,5 @@
-/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1) */
 #pragma once
 #include <graphics/gfx.h>
 #define HIDD_BM_PAD_MAGIC 0x6148

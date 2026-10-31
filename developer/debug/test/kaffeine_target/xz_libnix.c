@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The POSIX calls of xz 5.8.3 that libnix lacks, for its m68k build. xz
     catches signals with sigaction() and blocks them with sigprocmask()

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Host build of the DOS HUNK loader, rom/dos/internalloadseg_aos.c, for
     the kaffeine tests. The loader source is compiled unchanged; the DOS

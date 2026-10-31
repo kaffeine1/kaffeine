@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Isolated regressions for dos.library calls whose kaffeine thunks used
     to sit at the wrong LVO or read the wrong register. The first argument

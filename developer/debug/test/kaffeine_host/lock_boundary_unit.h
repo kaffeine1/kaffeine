@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Numeric collaborators for legacy DOS/Workbench unit fixtures. These
    fixtures exercise wrapper arguments, not lock identity or ownership.
    test_locks links the production module instead, with native lock records. */

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     timer.device behind the guest base that OpenDevice() gives out: the
     time arithmetic on 68k timevals as AROS does it, and GetSysTime() and

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     OpenLibrary() and CloseLibrary() of 68k disk libraries built from
     emu68test_lib.c: emu68test.library with a WORD offset function table

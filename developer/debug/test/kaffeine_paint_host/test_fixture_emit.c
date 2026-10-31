@@ -1,4 +1,5 @@
-/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1) */
 #define PAINT_FIXTURE_EMIT_ONLY
 #define PAINT_FIXTURE_NO_MAIN
 #include "paint_fixture_native.c"

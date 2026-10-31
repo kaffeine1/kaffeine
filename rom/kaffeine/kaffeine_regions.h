@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Regions of 68k code: real native graphics Regions of the program, each
     with a stable classic 68k Region and bounded snapshots of its

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Palette access through the ColorMap borrowed from a live Screen.
     Identity comes only from the native screen registry. Guest ColorMap

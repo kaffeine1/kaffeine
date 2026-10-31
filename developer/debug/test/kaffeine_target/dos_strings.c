@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Second DOS string/structure batch. All filesystem objects are in RAM:.
     The separate "exit" mode flushes a line and must terminate with code 7.

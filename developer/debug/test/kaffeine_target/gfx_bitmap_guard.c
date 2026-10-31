@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Expected containment: an unconverted cybergraphics bitmap call stops20. */
 #include <exec/types.h>
 #include <exec/libraries.h>

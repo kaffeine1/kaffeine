@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original classic CreateProc service-process protocol using a caller-owned
    68k JMP seglist. No guest function is handed to native Exec. */
 #include <exec/types.h>

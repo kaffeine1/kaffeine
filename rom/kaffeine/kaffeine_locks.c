@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
 
    Typed classic FileLock views. Native BPTRs and filesystem keys remain in
    private metadata; guest fields are checked snapshots, never native inputs.

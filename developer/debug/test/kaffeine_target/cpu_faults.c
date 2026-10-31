@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Deliberate guest faults. Build without FPU startup so the instruction
     below reaches Moira even while AttnFlags correctly advertises no FPU.

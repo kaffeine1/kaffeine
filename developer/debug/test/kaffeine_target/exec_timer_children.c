@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original child-task timer protocol, also built for native AROS ARM. */
 #include <exec/types.h>
 #include <exec/tasks.h>

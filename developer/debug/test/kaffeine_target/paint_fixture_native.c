@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  * Original foreign-native paint-Hook regression. No application input.
  * PAINT_FIXTURE_EMIT_ONLY builds the bounded HUNK emitter without AROS.
  * Target execution needs UP AROS, a managed public screen and an external

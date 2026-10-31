@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Compile the unchanged AROS renderer as an independent host oracle.
     Tests supply aligned native arguments and explicit positional offsets.

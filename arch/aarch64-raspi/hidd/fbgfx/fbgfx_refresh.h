@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Desc: Portable bitmap-to-framebuffer refresh helper for the FB Gfx hidd.
           Copies a rectangle of a chunky bitmap into an RGBX (R,G,B,x byte

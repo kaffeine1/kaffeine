@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The layers of 68k code through literal LVOs, the real dispatcher, run
     loop, window bridge and heap: classic 68k Layers at the NDK offsets of

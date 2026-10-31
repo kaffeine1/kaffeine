@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original native ARM / classic 68k LayerInfo backfill mode probe. */
 #include <exec/types.h>
 #include <exec/memory.h>

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     A window on the default public screen and its RastPort, the way C
     programs use them: the fields of the Window, the RastPort and its font

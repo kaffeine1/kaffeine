@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Native AROS companion: start two original 68k modules through DOS.
    This bypasses the refused guest CreateNewProc thunk deliberately.
    The parent pins kaffeine.library until both native owners have retired. */

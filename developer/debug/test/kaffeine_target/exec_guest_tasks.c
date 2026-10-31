@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original classic Exec task/signal test. Parent and child code share their
    data but have independent CPU state and stacks. Wait temporarily permits
    scheduling inside Forbid, and child return must not end the parent. */

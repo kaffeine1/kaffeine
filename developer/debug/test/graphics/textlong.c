@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Text() of a text wider than a WORD counts. graphics works out the extent
     of a text, and the raster that it draws the text into, in WORDs, so 8193

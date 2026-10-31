@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     strgclass copies texts and numbers into the buffer of a string gadget
     no further than its MaxChars, gives the lowest LONG its digits, and

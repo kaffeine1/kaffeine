@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     GadTools menus of 68k code through literal LVOs, the real dispatcher
     and heap: VisualInfo handles, CreateMenusA() from a 68k NewMenu array

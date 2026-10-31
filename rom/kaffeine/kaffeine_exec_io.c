@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Exec ports, I/O requests and signals of 68k code, timer.device
     through DoIO(), console.device's no-window library unit,

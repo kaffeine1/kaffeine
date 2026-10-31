@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Public screens of 68k code. Each native screen that the program locks
     has one 68k Screen, which every LockPubScreen() of that screen hands
