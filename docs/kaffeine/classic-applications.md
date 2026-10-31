@@ -8,10 +8,32 @@ private test disk images are not distributed here.
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
-| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT opens the main editor, loads the sample document and visibly inserts a typed character | Opening, document loading and a single-character input smoke check accepted. The native screen-position regression now passes; indexed composition, save/reopen and broader editing remain separate checks |
+| TurboText 2.0 | Original launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT edits, saves, closes and reopens a new text file, then closes normally | Both original `WAIT` invocations return 0; first-save and final files match the nine entered bytes. Broader editing and indexed composition remain separate checks |
 | AmiPixelShop 0.6.1-beta | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; P96 and screen-mode requester requirements are additional source-level gaps |
 
 ## Additional startup checks (2026-10-29)
+
+### TurboText save and reopen (2026-10-31)
+
+The original TurboText 2.0 launcher and support libraries completed two
+`WAIT` invocations with the Kaffeine JIT on AROS ARM64. On a 1024x768,
+24-bit Workbench, the first editor typed `Kaffeine` and a newline, saved the
+new document and closed. The second invocation visibly reloaded those bytes
+without new input, then closed. Both returned 0 with empty standard error.
+After shutdown, the first-save copy and final file each matched the expected
+nine bytes, and all ten installed artifacts matched their staged hashes.
+
+This required classic `PutDiskObject()` support through the guest Process's
+native DOS broker and the correct 40-byte reservation for caller-built timer
+requests. The old 48-byte reservation falsely rejected TurboText's adjacent
+message port during close. Source checks, host regressions and the actual
+application run are separate validation steps.
+
+![Original 68k TurboText displaying the reloaded document on AROS ARM64](media/turbotext-2026-10-31/reopened.png)
+
+[Frames, artifact hashes and the exact test scope](media/turbotext-2026-10-31/README.md)
+record the result. Broader editor features and a separate generic `Run`
+invocation remain unverified by this workflow.
 
 ### TurboText progress (2026-10-30)
 
@@ -72,8 +94,8 @@ uniprocessor AROS ARM64 kernel in QEMU's Raspberry Pi 3 model. Workbench was
 confirmed through native bitmap attributes as 1024x768, 24-bit. The original
 launcher opens `document.txt`, displays both sample lines, and inserts a
 delivered `j` at the cursor. The modified indicator and cursor column change
-with the visible text. This is an opening/loading/input smoke check; saving,
-reopening and broader editor features have not been accepted.
+with the visible text. That run accepted opening, loading and input. The
+2026-10-31 check below adds a separate save/close/reopen result.
 
 ![Original 68k TurboText displaying the sample document on AROS ARM64](media/turbotext-2026-10-30/document.png)
 
