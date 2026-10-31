@@ -57,11 +57,10 @@ IPTR Kaffeine_MessageFailure(struct KaffeineContext *ctx, const char *op)
     return 20;
 }
 
-/* The bytes that a request record of kaffeine_exec_io.c reserves: its
-   CreateIORequest() capacity, the 40 bytes of a copy, else an IOStdReq. */
+/* Share the typed reservation with the I/O adapter and its release hook. */
 static ULONG request_span(const struct KaffeineIORequest *e)
 {
-    return e->capacity ? e->capacity : e->copy ? 40 : 48;
+    return Kaffeine_IORequestSpan(e);
 }
 
 /* Guest bytes that no bridge structure holds. self is the bridge's own

@@ -3684,9 +3684,14 @@ the whole 40-byte timerequest and captures that exact case in private
 metadata. The zero remains in guest memory. Only that record's completed,
 non-orphaned reply acquires a typed queue extent; no arbitrary zero-length
 message is accepted. A changed captured length stops before completion
-writes. Copies still require exactly 40 and CreateIORequest storage keeps
-its normal length/capacity checks. Existing conservative request reservations
-remain in place.
+writes. Caller-built timer requests reserve the 40-byte classic timerequest,
+including a closed original whose zero-length reply remains queued. An ordinary
+port may start immediately after those 40 bytes; a real overlap still fails.
+SendIO accepts mn_Length 40, plus the original zero-length exception described
+above. Larger manual timer message lengths are unsupported. Copies still
+require exactly 40, while CreateIORequest allocations retain their recorded
+capacity and normal length checks. OpenDevice and synchronous DoIO continue
+to validate their typed adapter fields.
 
 ### Timers of cooperative guest tasks
 

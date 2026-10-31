@@ -1038,6 +1038,153 @@ static Async async_setup(Fixture &f, ULONG unit = UNIT_MICROHZ, ULONG flags = 0)
     return { p, r };
 }
 
+/* An original timer in caller storage has the classic forty-byte extent.
+   The adjacent port is a distinct subobject, not part of the request. */
+static void test_manual_timer_extent()
+{
+    for (bool zero_length : { false, true })
+    {
+        Fixture f;
+        f.ctx.exec_task = &owner_task;
+        const ULONG r = 0x2800, p = r + 40;
+        check(f.call(330, 0, 0, 24) == 24, "the adjacent timer port owns a guest signal");
+        std::memset(f.memory.data() + r, 0, 40);
+        m68k_write16(&f.ctx, r + MN_LENGTH, zero_length ? 0 : 40);
+        m68k_write32(&f.ctx, r + MN_REPLYPORT, p);
+        f.manual_port(p, 0, 24, Fixture::task);
+        check(f.open(r, UNIT_VBLANK) == 0 && f.record(r) && !f.record(r)->capacity,
+              "OpenDevice establishes a trusted timer record for caller-built forty-byte storage");
+        const auto before = f.memory;
+        const Counts prior = counts();
+        check(f.get(p) == 0 && !f.stopped() && f.memory == before && counts() == prior,
+              "an empty port beginning exactly after the original timer remains a valid FIFO");
+        f.delay(r, 0, 5);
+        const ULONG sent = f.send(r);
+        check(sent == 0 && !f.stopped(), "the adjacent port can receive the original timer's reply");
+        if (sent != 0) continue; // preserve a useful before-fix failure without fabricating a completion
+        complete(f.native_of(r), 0, 0, 7);
+        check(f.check_io(r) == r && f.queue(p) == std::vector<ULONG>({r}),
+              "the actual native timer completion queues once on its adjacent port");
+        f.call(450, 0xA0A0A0A0, r);
+        check(zero_length ? (f.record(r) && !f.record(r)->native &&
+                            f.record(r)->kind == KAFFEINE_IO_NONE && f.record(r)->stack_message) : !f.record(r),
+              "CloseDevice retains exactly the private proof needed by a queued zero-length timer");
+        check(f.get(p) == r && f.get(p) == 0 && !f.stopped(),
+              "the closed timer reply and then the empty adjacent FIFO remain readable");
+        if (zero_length)
+            check(f.wait_io(r) == 0 && !f.record(r), "WaitIO retires the drained closed zero-length identity");
+        check(f.open(r, UNIT_VBLANK) == 0, "the same caller-built timer storage reopens after draining");
+        f.delay(r, 0, 9);
+        const ULONG resent = f.send(r);
+        check(resent == 0, "the reopened timer can be sent again beside the same port");
+        if (resent == 0)
+        {
+            complete(f.native_of(r));
+            check(f.wait_io(r) == 0 && f.get(p) == 0, "the resend completes without duplicate arrivals");
+        }
+        f.call(450, 0xA0A0A0A0, r);
+    }
+    {
+        Fixture f;
+        f.ctx.exec_task = &owner_task;
+        const ULONG reply = f.port(), r = 0x2800;
+        std::memset(f.memory.data() + r, 0, 40);
+        m68k_write16(&f.ctx, r + MN_LENGTH, 40);
+        m68k_write32(&f.ctx, r + MN_REPLYPORT, reply);
+        check(f.open(r) == 0, "the overlap control opens an original caller-built timer");
+        const ULONG overlapping = r + 38;
+        f.manual_port(overlapping, 2, 0, 0);
+        for (UWORD length : { UWORD(0), UWORD(1), UWORD(40), UWORD(48), UWORD(65535) })
+        {
+            m68k_write16(&f.ctx, r + MN_LENGTH, length);
+            m68k_write32(&f.ctx, r + IO_DEVICE, 0); // mutable fields never shrink a trusted reservation
+            refused(f, [&] { return f.get(overlapping); },
+                    "a port overlapping the timer's last word refuses atomically despite edited guest fields");
+        }
+    }
+    for (UWORD length : { UWORD(1), UWORD(39), UWORD(41), UWORD(48), UWORD(65535) })
+    {
+        Fixture f;
+        f.ctx.exec_task = &owner_task;
+        const ULONG reply = f.port(), r = 0x2800;
+        std::memset(f.memory.data() + r, 0, 64);
+        m68k_write16(&f.ctx, r + MN_LENGTH, length);
+        m68k_write32(&f.ctx, r + MN_REPLYPORT, reply);
+        check(f.open(r) == 0, "OpenDevice checks the timer prefix independently of mn_Length");
+        f.delay(r, 0, 3);
+        refused(f, [&] { return f.send(r); },
+                "SendIO refuses unsupported caller-built timer lengths before writes or native effects");
+    }
+    {
+        Fixture f;
+        f.ctx.exec_task = &owner_task;
+        const ULONG reply = f.port(), r = 0x2800;
+        std::memset(f.memory.data() + r, 0, 40);
+        m68k_write16(&f.ctx, r + MN_LENGTH, 40);
+        m68k_write32(&f.ctx, r + MN_REPLYPORT, reply);
+        check(f.open(r) == 0, "the release-hook control opens a caller-built timer");
+        f.delay(r, 0, 4);
+        check(f.send(r) == 0, "the release-hook control has a native timer in flight");
+        const auto before = f.memory;
+        const Counts prior = counts();
+        for (bool commit : { false, true })
+        {
+            check(f.ctx.io_release(&f.ctx, r + 40, 34, commit) &&
+                  f.memory == before && counts() == prior && f.record(r)->pending,
+                  "preflight and commit of unrelated adjacent storage never reject, abort or forget the timer");
+            check(!f.ctx.io_release(&f.ctx, r + 38, 2, commit) &&
+                  !f.ctx.io_release(&f.ctx, reply, 34, commit) &&
+                  f.memory == before && counts() == prior && f.record(r)->pending,
+                  "actual request overlap and its in-flight reply port remain protected without side effects");
+        }
+        m68k_write16(&f.ctx, r + MN_LENGTH, 48);
+        const auto corrupted = f.memory;
+        const unsigned signals = signal_calls;
+        complete(f.native_of(r), 0, 3, 4);
+        const ULONG result = f.check_io(r);
+        check(result == 20 && f.stopped() && f.memory == corrupted && signal_calls == signals && !f.record(r)->pending,
+              "growing a pending manual timer length stops before guest reply writes or signals");
+        if (result != 20) f.wait_io(r); // before-fix control may have admitted the corrupted reply
+        m68k_write16(&f.ctx, r + MN_LENGTH, 40);
+        f.delay(r, 0, 5);
+        const ULONG sent = f.send(r);
+        check(sent == 0, "restoring the supported length permits a clean retry");
+        if (sent == 0)
+        {
+            complete(f.native_of(r));
+            check(f.wait_io(r) == 0 && f.get(reply) == 0, "the restored timer completes exactly once");
+        }
+    }
+    {
+        Fixture f;
+        f.ctx.exec_task = &owner_task;
+        const ULONG reply = f.port(), r = f.request(reply, 48);
+        check(f.open(r) == 0 && f.record(r)->capacity == 48,
+              "CreateIORequest preserves the larger trusted allocation capacity");
+        std::memset(f.memory.data() + r + 40, 0x79, 8);
+        f.delay(r, 0, 6);
+        check(f.send(r) == 0, "an owned timer may send its declared forty-eight-byte message");
+        for (UWORD length : { UWORD(0), UWORD(40), UWORD(49), UWORD(65535) })
+        {
+            m68k_write16(&f.ctx, r + MN_LENGTH, length);
+            const auto before = f.memory;
+            const Counts prior = counts();
+            check(!Kaffeine_MessageMemory(&f.ctx, r + 40, 8) &&
+                  !f.ctx.io_release(&f.ctx, r + 40, 8, FALSE) &&
+                  !f.ctx.io_release(&f.ctx, r + 40, 8, TRUE) &&
+                  f.memory == before && counts() == prior,
+                  "guest length edits never shrink or grow an owned request's trusted capacity");
+        }
+        m68k_write16(&f.ctx, r + MN_LENGTH, 48);
+        complete(f.native_of(r));
+        check(f.get(reply) == r && f.get(reply) == 0 && f.fill_is(r + 40, 8, 0x79),
+              "the larger owned message traverses the real queue without touching its extra payload");
+        f.call(450, 0xA0A0A0A0, r);
+        f.call(660, r);
+        f.call(672, reply);
+    }
+}
+
 /* The native emulator task has only sixteen general signal bits. A guest
    reply port and twelve ordinary bits leave room for one private native
    port and two further guest bits, independent of the number of opens. */
@@ -1501,8 +1648,8 @@ static void test_async_refusals()
     attempt(c + 1, none, "a copy at an odd address");
     for (ULONG at : { a + 8, a - 8, a + 38, a - 38 })
         attempt(at, none, "a copy over another copy");
-    for (ULONG at : { g + 8, g - 24, g + 46 })
-        attempt(at, none, "a copy over an open request in guest storage, which keeps 48 bytes");
+    for (ULONG at : { g + 8, g - 24, g + 38 })
+        attempt(at, none, "a copy over an original timer in guest storage, which keeps forty bytes");
     refused(f, [&] { return f.send(r + 8); }, "a request inside CreateIORequest() storage");
     const ULONG p2 = f.port();
     attempt(p2, none, "a copy over a CreateMsgPort() port");
@@ -2719,6 +2866,7 @@ static void test_layer_async_native_waits()
 
 int main()
 {
+    test_manual_timer_extent();
     test_layer_async_native_waits();
     test_signals();
     test_signal_task();

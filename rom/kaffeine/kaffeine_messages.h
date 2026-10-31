@@ -7,6 +7,18 @@
 extern "C" {
 #endif
 #define KAFFEINE_MESSAGE_LIMIT 256
+/* Reserve the native record's trusted classic extent, never mn_Length.
+   CreateIORequest capacity remains authoritative, including larger timers.
+   Caller-built timers and their copies occupy 40 bytes; stack_message keeps
+   that extent after closing a queued zero-length original clears its kind.
+   Other original device records retain the existing 48-byte reservation. */
+static inline ULONG Kaffeine_IORequestSpan(const struct KaffeineIORequest *entry)
+{
+    if (entry->capacity) return entry->capacity;
+    if (entry->copy || entry->stack_message || entry->kind == KAFFEINE_IO_TIMER)
+        return 40;
+    return 48;
+}
 struct KaffeineQueue
 {
     ULONG port, nodes[KAFFEINE_MESSAGE_LIMIT], sizes[KAFFEINE_MESSAGE_LIMIT];
