@@ -349,17 +349,18 @@ ifneq ($(UNZIP_SRC),)
 PROGRAMS += unzip
 endif
 
-# awk of the one true awk (2ndEdition, 20230911), from an unpacked awk tree:
+# awk of the one true awk (20260426), from an unpacked awk tree:
 # set AWK_SRC to its directory to build it, with awk_config.h in front of
 # each file, awkgram.tab.c and awkgram.tab.h generated from awkgram.y by
 # $(YACC), proctab.c generated from awkgram.tab.h by maketab built for the
-# host, and, for the m68k, awk_libnix.c for environ, pclose(), snprintf()
-# and strtod(). The battery runs it on six deterministic p.* programs from
-# testdir on test.countries, eight deterministic t.* programs from testdir
-# on test.data, six programs of our own (printf, regex, getline, redir,
-# strings and system) and a fatal-error step (bad), which $(AWK_FILES)
-# collects under EMU68/, and compares its output with the one of the same
-# program built for the host, which "make awk-refs" writes to $(AWK_REFS).
+# host, and, for the m68k, awk_libnix.c for environ, pclose(), locale
+# initialization, snprintf() and strtod(). The battery runs it on six
+# deterministic p.* programs from testdir on test.countries, eight
+# deterministic t.* programs from testdir on test.data, six programs of my
+# own (printf, regex, getline, redir, strings and system) and a fatal-error
+# step (bad), which $(AWK_FILES) collects under EMU68/, and compares its
+# output with the one of the same program built for the host, which
+# "make awk-refs" writes to $(AWK_REFS).
 AWK_SRC ?=
 ifeq ($(origin YACC),default)
 YACC := bison -d -y

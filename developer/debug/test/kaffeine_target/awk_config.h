@@ -2,17 +2,20 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
     Author: Michele Dipace (@kaffeine1)
 
-    The configuration header of the one true awk (2ndEdition, 20230911),
-    included in front of each file for both the m68k and the host build. It
-    renames awk's concat() so that it does not collide with the variadic
-    concat() declared in libnix's <string.h>, supplies FOPEN_MAX when <stdio.h>
-    omits it, and restricts setlocale() to the C locale so that MB_CUR_MAX and
-    the decimal point stay identical on every host and on AmigaOS. On AmigaOS
-    it undefines SA_SIGINFO (which newlib's <sys/signal.h> defines without
-    sa_sigaction or FPE_INTDIV), maps the wait status macros of run.c's
-    system() builtin to the unshifted return code of libnix's SystemTagList()
-    call, maps srandom()/random() to srand()/rand(), and routes snprintf() and
-    strtod() on m68k to awk_libnix.c.
+    The configuration header of the one true awk (20260426), included in
+    front of each file for both the m68k and the host build. It renames awk's
+    concat() so that it does not collide with the variadic concat() declared
+    in libnix's <string.h>, supplies FOPEN_MAX when <stdio.h> omits it, and
+    restricts setlocale() and MB_CUR_MAX to the single-byte C locale so that
+    awk_mb_cur_max is 1 and tolower()/toupper() do not enter libnix's stub
+    mbtowc() (where ___locale_mb_cur_max() is 255, __mb_cur_max is 4, and
+    mbtowc() returns 4 on every call, including at the terminating NUL). On
+    AmigaOS it undefines SA_SIGINFO (which newlib's <sys/signal.h> defines
+    without sa_sigaction or FPE_INTDIV), maps the wait status macros of
+    run.c's system() builtin to the unshifted return code of libnix's
+    SystemTagList() call, maps srandom()/random() to srand()/rand(), and
+    routes locale initialization, snprintf() and strtod() on m68k to
+    awk_libnix.c.
 */
 
 #ifndef AWK_CONFIG_H
@@ -32,9 +35,19 @@
 #define FOPEN_MAX 40
 #endif
 
+#undef MB_CUR_MAX
+#define MB_CUR_MAX 1
+
+#ifdef __mc68000__
+extern void awk_libnix_init_locale(void);
+#endif
+
 static inline char *awk_c_setlocale(int cat, const char *locale)
 {
     (void)cat;
+#ifdef __mc68000__
+    awk_libnix_init_locale();
+#endif
     if (locale == NULL || strcmp(locale, "C") == 0 || strcmp(locale, "") == 0)
         return (char *)"C";
     return NULL;
