@@ -8,7 +8,7 @@ private test disk images are not distributed here.
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
-| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT opens the main editor, loads the sample document and visibly inserts a typed character | Opening, document loading and a single-character input smoke check accepted. Native screen-position and indexed-composition defects remain; save/reopen and broader editing are unverified |
+| TurboText 2.0 | Original Aminet launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT opens the main editor, loads the sample document and visibly inserts a typed character | Opening, document loading and a single-character input smoke check accepted. The native screen-position regression now passes; indexed composition, save/reopen and broader editing remain separate checks |
 | AmiPixelShop 0.6.1-beta | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; P96 and screen-mode requester requirements are additional source-level gaps |
 
 ## Additional startup checks (2026-10-29)
@@ -94,18 +94,27 @@ events before native mapping. Focused layer tests pass 37 groups and private
 layer tests pass 31 groups, both normally and with ASan/UBSan. Native execution,
 host regression and application acceptance remain separate evidence lanes.
 
-Two native AROS display limitations remain. The current
+The native
 [`ScreenPosition()` implementation](../../rom/intuition/screenposition.c)
-treats `SPOS_MAKEVISIBLE` rectangle coordinates as a relative move. An already
-visible caret therefore moves Workbench down, repeatedly during input; the
-screenshots retain that behavior. Separately, an original native LUT8-to-truecolor
+now implements `SPOS_MAKEVISIBLE` using the display aperture rather than
+treating the rectangle coordinates as a relative move. The 2026-10-30
+screenshots retain the earlier Workbench movement during caret updates.
+On 2026-10-31, the native regression ran on AROS ARM64 in `raspi3b` QEMU with
+a 1024x768, 24-bit Workbench. The original implementation reported 19 checks,
+8 geometry failures and RC20. Replacing only `intuition.library` produced
+21 checks, zero failures, zero skips and RC0, covering all 19 core cases
+and both pulled-down-screen cases. The other 67 BSP members were unchanged.
+This accepts the native geometry fix; it is separate from application
+save/reopen acceptance.
+
+An original native LUT8-to-truecolor
 blit probe with distinct palettes copies the destination palette's colors
 instead of the source's. The optimized
 [CopyBox conversion](../../rom/hidds/gfx/gfx_hiddclass.c) selects the destination
 bitmap's color map. The compositor uses that conversion for an indexed screen;
 a separate native framebuffer probe observes black pixels after a screen move.
-The 24-bit desktop permits the observed editor
-check; neither native display defect is fixed by this application milestone.
+The 24-bit desktop permits the observed editor check; indexed composition
+remains a separate native display limitation.
 
 The original foreign-backfill controller passed **20 checks with zero failures**
 through each of Moira and JIT on AROS ARM64. A separate native Process invoked
