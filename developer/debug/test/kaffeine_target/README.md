@@ -966,6 +966,19 @@ At the end of each run the JIT writes its counters to `serial-aux.log`:
 the 6501 blocks of `mbedtls_selftest` hold 51421 instructions, about eight
 each, and it enters them about 204 million times a run.
 
+I ran the 63 steps of bzip2, zstd, Lua, UnZip and awk the same way under the
+JIT, with the binaries of this tree and the library of master `ce4869b`.
+Every step gives the output and the error output of the host build byte for
+byte, from the Shell and with Run, and the eight deliberate failures end
+with the codes of the table in the next section. On AmigaOS 3.2.3 under
+FS-UAE, with a 68030, 2 MB of chip, 8 MB of fast and 64 MB of Zorro III
+memory, all in one boot as `SYS:EMU68/NAME`, 62 of them give the same
+output, error output and exit code. The exception is `lua_strings`:
+`strings.lua` looks for the largest power of ten below `math.huge` and at
+line 270 expects `10^j` to overflow to infinity, but on overflow the
+`IEEEDPPow()` of AmigaOS 3.2.3 gives the largest finite double, so the
+assertion fails there. Under the bridge `10^j` is infinity, as on the host.
+
 ## Expected containment and exit probes
 
 | Program or alias | Argument | Expected exit |
