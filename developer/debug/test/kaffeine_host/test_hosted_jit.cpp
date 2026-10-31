@@ -766,6 +766,84 @@ static void program()
     std::printf("  sort: %lu blocks, %lu enters from C\n", s->blocks, s->enters);
 }
 
+/* DBcc displacement is relative to the extension word, in both directions.
+   Keep the branch destinations observable without a decoder-only oracle. */
+static void dbcc_targets()
+{
+    for (Backend which : { MOIRA, JIT, JIT_LIBRARY })
+    {
+        Machine m;
+        /* MOVEQ #0,D0; MOVEQ #1,D1; loop: ADDQ.W #1,D0;
+           DBF D1,loop; RTS. A target two bytes high skips the second ADDQ. */
+        m.code(Layout::entry, {0x7000, 0x7201, 0x5240, 0x51C9, 0xFFFC, 0x4E75});
+        CHECK(m.run(which) == 2);
+        if (which != MOIRA)
+        {
+            CHECK(!HJ_LastFault(m.jit)[0]);
+            CHECK(HJ_GetStats(m.jit)->enters && HJ_GetStats(m.jit)->icache_syncs);
+        }
+    }
+    for (unsigned form = 0; form < 3; ++form)
+    {
+        std::array<UBYTE, 66> reference = {};
+        for (Backend which : { MOIRA, JIT, JIT_LIBRARY })
+        {
+            Machine m;
+            m.d(0, form == 2 ? 3 : 0);
+            m.d(1, 0xC0DE0001);
+            m.d(2, 0x87650000);
+            if (form == 0)
+            {
+                ULONG loop = m.pc;
+                m.word(0x5240);                  /* ADDQ.W #1,D0 */
+                m.word(0x44FC); m.word(0x001F); /* MOVE #$1F,CCR */
+                m.word(0x51C9);                  /* DBF D1,loop */
+                m.word((UWORD)(loop - m.pc));
+            }
+            else
+            {
+                m.word(0x44FC); m.word(0x001F);
+                m.word(form == 1 ? 0x51C9 : 0x57C9); /* DBF / DBEQ D1,target */
+                ULONG extension = m.pc;
+                m.word(0);
+                ULONG target;
+                if (form == 1)
+                {
+                    m.word(0x70FF);              /* Fallthrough: MOVEQ #-1,D0 */
+                    m.word(0x6006);              /* BRA.S finish */
+                    m.word(0x4E71);
+                    target = m.pc;
+                    m.word(0x42C2);              /* Target: MOVE CCR,D2 */
+                    m.word(0x7007);              /* MOVEQ #7,D0 */
+                }
+                else
+                {
+                    /* Z is set: DBEQ must leave D1 and every CCR bit alone. */
+                    m.word(0x6004);              /* Fallthrough: BRA.S finish */
+                    target = m.pc;
+                    m.word(0x70FF);              /* Wrongly taken: MOVEQ #-1,D0 */
+                    m.word(0x4E71);
+                }
+                m68k_write16(&m.ctx, extension, (UWORD)(target - extension));
+            }
+            m.save(); m.rts();
+            CHECK(m.run(which) == (form == 0 ? 2 : form == 1 ? 7 : 3));
+            CHECK(m.read(Layout::snapshot + 4) ==
+                  (form == 0 ? 0xC0DEFFFFu : form == 1 ? 0xC0DE0000u : 0xC0DE0001u));
+            CHECK(m.read(Layout::snapshot + 8) == (form == 1 ? 0x8765001Fu : 0x87650000u));
+            CHECK((m68k_read16(&m.ctx, Layout::snapshot + 64) & 0x1F) == (form == 1 ? 0x10 : 0x1F));
+            if (which == MOIRA)
+                std::copy_n(m.mem.data() + Layout::snapshot, reference.size(), reference.begin());
+            else
+            {
+                CHECK(!HJ_LastFault(m.jit)[0]);
+                CHECK(HJ_GetStats(m.jit)->enters && HJ_GetStats(m.jit)->icache_syncs);
+                CHECK(std::equal(reference.begin(), reference.end(), m.mem.begin() + Layout::snapshot));
+            }
+        }
+    }
+}
+
 /* A block cut at 64 instructions, with the X of its last one read in the
    next block; and a loop of 200000 back edges, more than one budget. */
 static void block_limits()
@@ -2394,6 +2472,7 @@ int main(int argc, char **argv)
         {"encoder", encoder, false}, {"translate-only", translate_only, false},
         {"exec-memory", exec_memory, true}, {"endian", endian, true},
         {"custom-page", custom_page, true}, {"program", program, true},
+        {"dbcc-targets", dbcc_targets, true},
         {"block-limits", block_limits, true}, {"code-reset", code_reset, true},
         {"library-calls", library_calls, true}, {"callback-depth", callback_depth, true},
         {"callback-registers", callback_registers, true}, {"callback-format", callback_format, true},
