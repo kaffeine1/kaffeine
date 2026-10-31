@@ -3,7 +3,7 @@ name: kaffeine host suite
 # Only when the bridge, its host tests or the AROS sources that they build
 # or read change: the .conf files and the native functions of the
 # libraries that test_thunk_registrations.py checks, and the dos and
-# utility sources and dos headers that the tests compile. On a pull
+# utility sources and DOS/Intuition headers that the tests compile. On a pull
 # request a new push stops the run of the old one; on master a run that
 # has started goes to its end.
 on:
@@ -15,7 +15,9 @@ on:
       - 'developer/debug/test/kaffeine_host/**'
       - 'developer/debug/test/kaffeine_*_host/**'
       - 'developer/debug/test/dos_process_host/**'
+      - 'developer/debug/test/intuition_screenposition_host/**'
       - 'compiler/include/dos/**'
+      - 'compiler/include/intuition/screens.h'
       - 'rom/dos/**'
       - 'rom/exec/**'
       - 'rom/graphics/**'
@@ -35,7 +37,9 @@ on:
       - 'developer/debug/test/kaffeine_host/**'
       - 'developer/debug/test/kaffeine_*_host/**'
       - 'developer/debug/test/dos_process_host/**'
+      - 'developer/debug/test/intuition_screenposition_host/**'
       - 'compiler/include/dos/**'
+      - 'compiler/include/intuition/screens.h'
       - 'rom/dos/**'
       - 'rom/exec/**'
       - 'rom/graphics/**'
@@ -86,6 +90,11 @@ jobs:
         run: |
           make -C developer/debug/test/dos_process_host
           make -C developer/debug/test/dos_process_host test-sanitize
+
+      - name: Check native Intuition ScreenPosition modes and bounds
+        run: |
+          make -C developer/debug/test/intuition_screenposition_host
+          make -C developer/debug/test/intuition_screenposition_host test-sanitize
 
       - name: Run standalone compatibility suites
         shell: bash
