@@ -131,3 +131,24 @@ to show Moira.
 For repeatable target runs, pass `--cpu jit` or `--cpu moira` to
 `developer/debug/test/kaffeine_target/run-raspi-qemu.py`; it selects the
 backend in both generated launch scripts.
+
+## QEMU acceleration on Apple silicon
+
+The QEMU accelerator runs the ARM virtual machine; Moira or the Kaffeine
+JIT runs 68k code inside AROS. These are separate choices. The current
+Raspberry Pi test image uses `-accel tcg,thread=single`.
+
+On 2026-10-31, QEMU 11.0.0 successfully created a paused
+`virt -cpu host -accel hvf` machine on an Apple silicon host. This was a
+capability check without a kernel or disk, not an AROS boot or a performance
+result. The existing Raspberry Pi BSP cannot be transferred to `virt`
+without adapting its boot layout and device support.
+
+The same paused check with `raspi3b` fails before boot, including with
+`-global cortex-a53-arm-cpu.has_el3=off`. Its HVF trace reaches
+`hv_vm_unmap(0, 0x3f003000)`, a size not aligned to the host's 16 KiB pages.
+Apple's [unmap API requires a page-size multiple](https://developer.apple.com/documentation/hypervisor/hv_vm_unmap%28_%3A_%3A%29).
+QEMU's [HVF memory handler](https://gitlab.com/qemu-project/qemu/-/blob/v11.0.0/accel/hvf/hvf-all.c#L74)
+passes an unaligned section to that unmap path. No working stock command-line
+configuration was established for this board; the accepted AROS runs remain
+TCG runs.
