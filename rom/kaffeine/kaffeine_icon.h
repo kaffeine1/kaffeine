@@ -2,7 +2,7 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
     Author: Michele Dipace (@kaffeine1)
 
-    kaffeine.library — icon.library metadata-only DiskObject boundary
+    kaffeine.library — icon.library typed DiskObject boundary
 */
 #ifndef KAFFEINE_ICON_H
 #define KAFFEINE_ICON_H
@@ -14,12 +14,24 @@ extern "C" {
 #endif
 
 IPTR kaffeine_icon_GetDiskObject(struct KaffeineContext *ctx, void *cpu);
+/* For an exact owned snapshot, positions, stack and bounded string/ToolTypes
+   metadata may change; image/drawer pointers, Gadget fields and type stay
+   immutable. Native images/extensions are retained through a real duplicate.
+   Also accepts an ordinary caller-built 78-byte classic TOOL/PROJECT, with
+   Boolean Gadget scalars, a normal planar Image and an optional selected Image.
+   Gadget and Images have positive dimensions <=1024 and <=65536 pixels.
+   Images have Depth 1..8 and no NextImage;
+   strings, native headers and full planar data together stay within 64 KiB. */
+IPTR kaffeine_icon_PutDiskObject(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_icon_FreeDiskObject(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_icon_FindToolType(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_icon_MatchToolValue(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_icon_GetDefDiskObject(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_icon_GetDiskObjectNew(struct KaffeineContext *ctx, void *cpu);
 IPTR kaffeine_icon_NewDiskObject(struct KaffeineContext *ctx, void *cpu);
+/* Trusted native lookup for the scheduler's fixed icon-I/O broker route.
+   Only 78/84/120/132 are admitted; helpers never recurse public wrappers. */
+KaffeineThunkFn Kaffeine_IconIOThunk(ULONG lvo);
 /* Every other icon.library call takes or returns native pointer-rich
    structures; it stops the program without looking at its arguments. */
 IPTR kaffeine_icon_Unsupported(struct KaffeineContext *ctx, void *cpu);
@@ -35,7 +47,7 @@ extern const ULONG kaffeine_thunks_icon_manual_count;
     {  54, kaffeine_icon_Unsupported },       /* FreeFreeList */ \
     {  72, kaffeine_icon_Unsupported },       /* AddFreeList */ \
     {  78, kaffeine_icon_GetDiskObject }, \
-    {  84, kaffeine_icon_Unsupported },       /* PutDiskObject */ \
+    {  84, kaffeine_icon_PutDiskObject }, \
     {  90, kaffeine_icon_FreeDiskObject }, \
     {  96, kaffeine_icon_FindToolType }, \
     { 102, kaffeine_icon_MatchToolValue }, \

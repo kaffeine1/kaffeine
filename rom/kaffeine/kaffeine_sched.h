@@ -139,6 +139,11 @@ struct KaffeineTaskOps
        this hook nor its helper accepts a guest/native function pointer. */
     BOOL  (*packet_call)(struct KaffeineContext *ctx, ULONG port, ULONG msg,
                          BOOL file, IPTR *result);
+    /* Closed icon.library IO operations only (78/84/120/132). TRUE consumes
+       or refuses the call in its private Process broker; FALSE is only the
+       live root's direct path. No guest/native callback is accepted. */
+    BOOL  (*icon_call)(struct KaffeineContext *ctx, void *cpu, ULONG lvo,
+                       IPTR *result);
 };
 
 #ifdef __cplusplus

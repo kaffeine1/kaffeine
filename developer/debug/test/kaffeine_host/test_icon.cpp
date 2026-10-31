@@ -6,9 +6,41 @@
 #include <set>
 #include "message_fixture.h"
 #include "kaffeine_icon.h"
+#include "kaffeine_sched.h"
 
 static std::set<DiskObject *> objects;
-static unsigned icon_gets, frees, finds, matches;
+static unsigned icon_gets, frees, finds, matches, icon_dups, icon_puts;
+static bool icon_duplicate_failure, cleanup_changes_error;
+static BOOL put_result;
+static SIPTR put_error;
+static KaffeineContext *active_context;
+static Task *seen_put_owner;
+static DiskObject *seen_source;
+static std::map<DiskObject *, DiskObject> clone_saved;
+static std::map<DiskObject *, DiskObject *> clone_sources;
+static std::map<DiskObject *, DiskObject> new_saved;
+static bool blank_new, new_failure, constructed_put;
+static unsigned icon_news;
+struct SavedImage
+{
+    bool present{};
+    WORD left{}, top{}, width{}, height{}, depth{};
+    UBYTE pick{}, on{};
+    std::vector<UBYTE> bytes;
+};
+static SavedImage saved_normal, saved_select;
+static DiskObject saved_constructed;
+static std::string saved_name, saved_tool, saved_window;
+static std::vector<std::string> saved_types;
+static bool null_name, null_tool, null_window, null_types;
+static LONG saved_x, saved_y, saved_stack;
+static APTR saved_image, saved_selected;
+static DrawerData *saved_drawer;
+static bool outside_guest(const void *p)
+{
+    auto v=reinterpret_cast<uintptr_t>(p),base=reinterpret_cast<uintptr_t>(active_context->mem);
+    return !p || v<base || v-base>=active_context->mem_size;
+}
 static bool getter_failure, empty_metadata;
 static unsigned oversized;
 static UBYTE *forced_find;
@@ -40,9 +72,114 @@ static DiskObject *acquire(ULONG type)
 extern "C" DiskObject *GetDiskObject(CONST_STRPTR name){last_name=name;return acquire(4);}
 extern "C" DiskObject *GetDiskObjectNew(CONST_STRPTR name){last_name=name;return acquire(4);}
 extern "C" DiskObject *GetDefDiskObject(LONG type){return acquire(type);}
-extern "C" DiskObject *NewDiskObject(ULONG type){return acquire(type);}
+extern "C" DiskObject *NewDiskObject(ULONG type)
+{
+    ++icon_news;
+    if(new_failure)return nullptr;
+    DiskObject *d;
+    if(blank_new){++icon_gets;d=new DiskObject{};d->do_Type=static_cast<UBYTE>(type);objects.insert(d);}
+    else d=acquire(type);
+    if(d)new_saved[d]=*d;
+    return d;
+}
 extern "C" void FreeDiskObject(DiskObject *d)
-{ if(!d)return;assert(objects.erase(d)==1);++frees;delete d; }
+{
+    if(!d)return;
+    if(clone_saved.count(d))
+    {
+        auto &old=clone_saved.at(d);
+        check(d->do_DefaultTool==old.do_DefaultTool && d->do_ToolTypes==old.do_ToolTypes &&
+              d->do_ToolWindow==old.do_ToolWindow && d->do_CurrentX==old.do_CurrentX &&
+              d->do_CurrentY==old.do_CurrentY && d->do_StackSize==old.do_StackSize,
+              "temporary native clone fields restored before release");
+        clone_saved.erase(d);clone_sources.erase(d);
+    }
+    if(new_saved.count(d))
+    {
+        check(!std::memcmp(d,&new_saved.at(d),sizeof(*d)),
+              "registered NewDiskObject has every borrowed field restored before release");
+        new_saved.erase(d);
+    }
+    assert(objects.erase(d)==1);++frees;delete d;
+    if(cleanup_changes_error)ioerr=0xBADF00D;
+}
+extern "C" DiskObject *DupDiskObjectA(DiskObject *source,TagItem *tags)
+{
+    ++icon_dups;assert(source && objects.count(source) && !clone_saved.count(source) && !tags);
+    seen_source=source;
+    if(icon_duplicate_failure)return nullptr;
+    auto *copy=new DiskObject(*source);objects.insert(copy);clone_saved[copy]=*copy;clone_sources[copy]=source;
+    return copy;
+}
+static bool private_span(const void *p,size_t size)
+{
+    auto addr=reinterpret_cast<uintptr_t>(p);
+    for(auto [base,room]:native_blocks)
+    {
+        auto start=reinterpret_cast<uintptr_t>(base);
+        if(addr>=start && addr-start<=room && size<=room-(addr-start))return true;
+    }
+    return false;
+}
+static SavedImage capture_image(APTR pointer)
+{
+    SavedImage result;
+    if(!pointer)return result;
+    auto *im=static_cast<Image *>(pointer);
+    check(outside_guest(im) && private_span(im,sizeof(*im)) && reinterpret_cast<uintptr_t>(im)%alignof(Image)==0,
+          "constructed native Image header is private and naturally aligned");
+    assert(private_span(im,sizeof(*im)));
+    check(!im->NextImage,"native icon writer never receives an unsupported image chain");
+    result.present=true;result.left=im->LeftEdge;result.top=im->TopEdge;
+    result.width=im->Width;result.height=im->Height;result.depth=im->Depth;
+    result.pick=im->PlanePick;result.on=im->PlaneOnOff;
+    assert(im->Width>0 && im->Height>0 && im->Depth>0);
+    size_t bytes=((static_cast<size_t>(im->Width)+15)/16)*2*im->Height*im->Depth;
+    check(outside_guest(im->ImageData) && private_span(im->ImageData,bytes) && !(reinterpret_cast<uintptr_t>(im->ImageData)&1),
+          "full Depth planar payload uses private word-aligned storage");
+    assert(private_span(im->ImageData,bytes));
+    auto *raw=reinterpret_cast<UBYTE *>(im->ImageData);
+    result.bytes.assign(raw,raw+bytes);
+    return result;
+}
+extern "C" BOOL PutDiskObject(CONST_STRPTR name,DiskObject *d)
+{
+    ++icon_puts;assert(d && objects.count(d) && (clone_saved.count(d)||new_saved.count(d)));
+    check(outside_guest(name) && outside_guest(d) && outside_guest(d->do_DefaultTool) &&
+          outside_guest(d->do_ToolWindow) && outside_guest(d->do_ToolTypes),
+          "native write receives only private native structures and copied strings");
+    null_name=!name;null_tool=!d->do_DefaultTool;null_window=!d->do_ToolWindow;null_types=!d->do_ToolTypes;
+    saved_name=name?name:"";saved_tool=d->do_DefaultTool?d->do_DefaultTool:"";
+    saved_window=d->do_ToolWindow?d->do_ToolWindow:"";saved_types.clear();
+    if(d->do_ToolTypes)for(unsigned i=0;d->do_ToolTypes[i];++i)
+    { assert(i<128);check(outside_guest(d->do_ToolTypes[i]),"tool types use native-width private strings");saved_types.emplace_back(d->do_ToolTypes[i]); }
+    saved_x=d->do_CurrentX;saved_y=d->do_CurrentY;saved_stack=d->do_StackSize;
+    saved_image=d->do_Gadget.GadgetRender;saved_selected=d->do_Gadget.SelectRender;saved_drawer=d->do_DrawerData;
+    constructed_put=!clone_saved.count(d);
+    if(!constructed_put)
+    {
+        auto *original=clone_sources.at(d);
+        check(d!=original && d->do_Gadget.GadgetRender==original->do_Gadget.GadgetRender &&
+              d->do_Gadget.SelectRender==original->do_Gadget.SelectRender && d->do_DrawerData==original->do_DrawerData,
+              "native registered duplicate retains original private image/drawer provenance");
+    }
+    else
+    {
+        saved_constructed=*d;
+        check(!d->do_Gadget.NextGadget && !d->do_Gadget.GadgetText && !d->do_Gadget.SpecialInfo &&
+              !d->do_Gadget.UserData && !d->do_DrawerData,"constructed icon carries no unsupported native pointers");
+        saved_normal=capture_image(d->do_Gadget.GadgetRender);
+        saved_select=capture_image(d->do_Gadget.SelectRender);
+        if(saved_normal.present && saved_select.present)
+        {
+            auto *normal=static_cast<Image *>(d->do_Gadget.GadgetRender);
+            auto *selected=static_cast<Image *>(d->do_Gadget.SelectRender);
+            check(normal!=selected && normal->ImageData!=selected->ImageData,
+                  "normal and select aliases each get an independent private image copy");
+        }
+    }
+    seen_put_owner=FindTask(nullptr);ioerr=put_error;return put_result;
+}
 extern "C" UBYTE *FindToolType(const STRPTR *array,const STRPTR name)
 {
     ++finds;last_array=const_cast<STRPTR *>(array);
@@ -68,14 +205,20 @@ struct IconFixture:Fixture
     std::array<M68KThunkEntry,21> generated;
     IconFixture()
     {
-        assert(objects.empty());icon_gets=frees=finds=matches=0;getter_failure=empty_metadata=false;
+        assert(objects.empty());icon_gets=frees=finds=matches=icon_dups=icon_puts=0;getter_failure=empty_metadata=false;
+        icon_duplicate_failure=cleanup_changes_error=false;put_result=-1;put_error=0;active_context=&ctx;
+        seen_put_owner=nullptr;seen_source=nullptr;clone_saved.clear();clone_sources.clear();
+        assert(new_saved.empty());blank_new=new_failure=constructed_put=false;icon_news=0;
+        saved_normal={};saved_select={};saved_constructed={};
+        saved_name.clear();saved_tool.clear();saved_window.clear();saved_types.clear();
         oversized=0;forced_find=nullptr;last_name=nullptr;last_array=nullptr;
         for(unsigned i=0;i<generated.size();++i)generated[i]={icon_lvos[i],poison};
         auto &lib=ctx.libs[1];lib.thunks=icon_manual;lib.num_thunks=std::size(icon_manual);
         lib.gen_thunks=generated.data();lib.num_gen_thunks=generated.size();
         std::strcpy(lib.name,"icon.library");
+        ctx.libs[0].pos_size=632;lib.pos_size=34;
     }
-    ~IconFixture(){Kaffeine_IconsCleanup(&ctx);assert(objects.empty());}
+    ~IconFixture(){Kaffeine_IconsCleanup(&ctx);assert(objects.empty() && new_saved.empty());}
     ULONG icon(ULONG lvo,ULONG a0=0,ULONG a1=0,ULONG d0=4)
     {
         for(unsigned i=0;i<8;++i){state.d[i]=0xD0000000+i;state.a[i]=0xA0000000+i;}
@@ -92,9 +235,9 @@ struct IconFixture:Fixture
     }
     void rejected(ULONG lvo,ULONG a0,ULONG a1=0)
     {
-        auto before=bytes();unsigned total=icon_gets+frees+finds+matches;
+        auto before=bytes();unsigned total=icon_gets+frees+finds+matches+icon_dups+icon_puts;
         check(icon(lvo,a0,a1)==20 && !ctx.running && ctx.exit_code==20,"invalid icon boundary stops20");
-        check(bytes()==before && icon_gets+frees+finds+matches==total,"rejected icon call preserves all guest bytes and native owners");
+        check(bytes()==before && icon_gets+frees+finds+matches+icon_dups+icon_puts==total,"rejected icon call preserves all guest bytes and native owners");
     }
 };
 static void lifecycle()
@@ -137,7 +280,7 @@ static void failures_and_guards()
     {IconFixture f;getter_failure=true;auto before=f.bytes();check(!f.icon(78) && icon_gets==1 && !frees && before==f.bytes(),"native getter failure publishes nothing");}
     {IconFixture f;empty_metadata=true;ULONG g=f.icon(174);check(g && !f.r(g+50) && !f.r(g+54) && !f.r(g+70),"NULL optional metadata remains NULL");}
     for(ULONG lvo:icon_lvos)
-        if(lvo!=78 && lvo!=90 && lvo!=96 && lvo!=102 && lvo!=120 && lvo!=132 && lvo!=174)
+        if(lvo!=78 && lvo!=84 && lvo!=90 && lvo!=96 && lvo!=102 && lvo!=120 && lvo!=132 && lvo!=174)
         {IconFixture f;f.rejected(lvo,0xFFFFFFFF,0xFFFFFFFE);}
     {IconFixture f;f.rejected(90,f.msg);f.ctx.mem[f.ctx.mem_size-2]='X';f.ctx.mem[f.ctx.mem_size-1]='Y';f.rejected(78,f.ctx.mem_size-2);f.rejected(132,0xFFFFFFFF);f.rejected(102,0,f.msg);}
     {IconFixture f;std::memset(f.ctx.mem+f.ctx.mem_size-4096,'X',4096);f.rejected(78,f.ctx.mem_size-4096);}
@@ -146,9 +289,306 @@ static void failures_and_guards()
         auto before=f.bytes();forced_find=reinterpret_cast<UBYTE *>(0x123456789ABCULL);
         check(f.icon(96,0x6800,0x6840)==20 && !f.ctx.running && finds==1 && before==f.bytes(),"FindToolType never exposes an unrelated native result pointer");}
 }
+static ULONG name_at(IconFixture &f,const char *s="RAM:OriginalProject")
+{
+    std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0x6800),s);return 0x6800;
+}
+static void put_success()
+{
+    IconFixture f;ULONG g=f.icon(78,name_at(f));auto *original=f.ctx.icons[0].native;
+    auto original_copy=*original;auto before=f.bytes();auto blocks=native_blocks.size();
+    cleanup_changes_error=true;put_error=205;
+    check(f.icon(84,0x6800,g)==0xFFFFFFFF && f.ctx.running && ioerr==205,
+          "PutDiskObject returns native BOOL bits and preserves IoErr across native cleanup");
+    check(icon_puts==1 && icon_dups==1 && seen_source==original && objects.size()==1 && native_blocks.size()==blocks,
+          "Put uses a real duplicate of its exact owner and releases all temporary storage");
+    check(saved_name=="RAM:OriginalProject" && saved_tool==default_tool && saved_window==tool_window && saved_types.size()==3,
+          "unchanged snapshot strings and BE32 array marshal to native metadata");
+    check(f.bytes()==before && original->do_DefaultTool==original_copy.do_DefaultTool && original->do_ToolTypes==original_copy.do_ToolTypes &&
+          original->do_CurrentX==original_copy.do_CurrentX,"Put does not mutate guest bytes or the private original");
+    std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0x6900),"SYS:C/ReplacementTool");
+    std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0x6940),"CON:////Edited");
+    std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0x6980),"MODE=edited");
+    std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0x69C0),"LABEL=public fixture");
+    f.w(g+50,0x6900);f.w(g+70,0x6940);f.w(g+54,0x6A00);
+    f.w(0x6A00,0x6980);f.w(0x6A04,0x69C0);f.w(0x6A08,0);
+    f.w(g+58,0x80000000);f.w(g+62,0xFFFFFFFF);f.w(g+74,0xFEDCBA98);
+    before=f.bytes();put_result=0;put_error=221;
+    check(f.icon(84,0x6800,g)==0 && f.ctx.running && f.ctx.exit_code==0 && ioerr==221,
+          "native FALSE and native error are ordinary failure, never unsupported-stop");
+    check(saved_tool=="SYS:C/ReplacementTool" && saved_window=="CON:////Edited" &&
+          saved_types==std::vector<std::string>{"MODE=edited","LABEL=public fixture"},"guest metadata edits are copied, not silently discarded");
+    check(static_cast<ULONG>(saved_x)==0x80000000 && saved_y==-1 && static_cast<ULONG>(saved_stack)==0xFEDCBA98,
+          "signed classic position/stack bits retain exact values");
+    check(f.bytes()==before && objects.size()==1 && native_blocks.size()==blocks,"native FALSE leaves ownership and guest snapshot unchanged");
+    f.w(g+50,0);f.w(g+70,0);f.w(g+54,0);put_result=-1;
+    check(f.icon(84,0,g)==0xFFFFFFFF && null_name && null_tool && null_window && null_types,"NULL metadata remains NULL at the native boundary");
+    f.w(g+54,0x6A00);f.w(0x6A00,0);
+    check(f.icon(84,0x6800,g)==0xFFFFFFFF && !null_types && saved_types.empty(),"empty non-NULL ToolTypes array remains distinct from NULL");
+    auto heap=Kaffeine_HeapAvail(&f.ctx,0);ULONG size=f.ctx.icons[0].size;
+    Kaffeine_HeapFree(&f.ctx,g,size);
+    check(Kaffeine_HeapAvail(&f.ctx,0)==heap && f.ctx.icons[0].guest==g && f.icon(84,0x6800,g)==0xFFFFFFFF,
+          "generic FreeMem cannot retire/reuse a live typed icon token");
+}
+static void put_refusals_and_oom()
+{
+    {IconFixture f;ULONG g=f.icon(78,name_at(f));f.ctx.mem[0x6800]=0;
+     f.rejected(78,0x6800);f.rejected(132,0x6800);f.rejected(84,0x6800,g);}
+    for(ULONG offset:{0U,2U,4U,8U,12U,16U,18U,20U,22U,26U,30U,34U,38U,42U,44U,48U,66U})
+    {
+        IconFixture f;ULONG g=f.icon(78,name_at(f));f.ctx.mem[g+offset]^=1;
+        f.rejected(84,0x6800,g);
+    }
+    {IconFixture f;ULONG g=f.icon(78,name_at(f));f.rejected(84,0x6800,g+2);f.rejected(84,0x6800,0);f.rejected(84,0x6800,0xFFFFFFFF);
+     f.icon(90,g);ULONG ordinary=Kaffeine_HeapAlloc(&f.ctx,128,MEMF_PUBLIC);check(ordinary!=0,"ordinary reuse allocation exists");
+     f.rejected(84,0x6800,g);Kaffeine_HeapFree(&f.ctx,ordinary,128);}
+    for(unsigned mode=0;mode<9;++mode)
+    {
+        IconFixture f;ULONG g=f.icon(78,name_at(f));
+        switch(mode)
+        {
+            case 0:f.ctx.mem[f.ctx.mem_size-1]='X';f.rejected(84,f.ctx.mem_size-1,g);break;
+            case 1:f.w(g+50,0xFFFFFFFF);f.rejected(84,0x6800,g);break;
+            case 2:f.w(g+54,0x6A01);f.rejected(84,0x6800,g);break;
+            case 3:f.w(g+54,f.ctx.mem_size-2);f.rejected(84,0x6800,g);break;
+            case 4:f.w(g+70,Fixture::exec_base);f.rejected(84,0x6800,g);break;
+            case 5:f.w(g+54,0x6A00);for(unsigned i=0;i<129;++i)f.w(0x6A00+4*i,0x6800);f.rejected(84,0x6800,g);break;
+            case 6:{ULONG other=f.icon(174);f.w(g+50,other);f.rejected(84,0x6800,g);break;}
+            case 7:f.w(g+50,f.ctx.heap_start);f.rejected(84,0x6800,g);break;
+            case 8:f.w(g+50,f.ctx.mem_size-4096);std::memset(f.ctx.mem+f.ctx.mem_size-4096,'X',4096);f.rejected(84,0x6800,g);break;
+        }
+    }
+    {IconFixture f;ULONG g=f.icon(78,name_at(f));f.w(g+54,0x6A00);
+     ULONG text=Kaffeine_HeapAlloc(&f.ctx,4096,MEMF_PUBLIC);assert(text);
+     std::memset(f.ctx.mem+text,'X',4095);f.ctx.mem[text+4095]=0;
+     for(unsigned i=0;i<17;++i)f.w(0x6A00+i*4,text);
+     f.w(0x6A00+17*4,0);
+     f.rejected(84,0x6800,g);Kaffeine_HeapFree(&f.ctx,text,4096);}
+    {IconFixture f;ULONG g=f.icon(78,name_at(f));f.w(g+54,0x6A00);
+     std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0x6900),"FLAG");
+     for(unsigned i=0;i<128;++i)f.w(0x6A00+i*4,0x6900);
+     f.w(0x6A00+128*4,0);
+     check(f.icon(84,0x6800,g)==0xFFFFFFFF && saved_types.size()==128,"exact 128-entry tool-type limit is accepted");
+     ULONG text=Kaffeine_HeapAlloc(&f.ctx,4096,MEMF_PUBLIC);assert(text);
+     std::memset(f.ctx.mem+text,'X',4095);f.ctx.mem[text+4095]=0;f.w(g+54,0);f.w(g+50,text);
+     check(f.icon(84,0x6800,g)==0xFFFFFFFF && saved_tool.size()==4095,"4096-byte NUL-terminated ordinary string is accepted");
+     f.ctx.mem[text+4095]='X';f.rejected(84,0x6800,g);Kaffeine_HeapFree(&f.ctx,text,4096);}
+    {IconFixture f;ULONG g=f.icon(78,name_at(f));f.ctx.memory_info=0x6900;f.w(g+50,0x6900);f.rejected(84,0x6800,g);f.ctx.memory_info=0;}
+    {IconFixture f;ULONG g=f.icon(78,name_at(f));f.ctx.fonts[0].guest=0x6900;f.ctx.fonts[0].allocation_size=40;
+     f.w(g+50,0x6900);f.rejected(84,0x6800,g);f.ctx.fonts[0]={};}
+    for(bool duplicate:{false,true})
+    {
+        IconFixture f;ULONG g=f.icon(78,name_at(f));auto before=f.bytes();auto blocks=native_blocks.size();
+        icon_duplicate_failure=duplicate;if(!duplicate)allocation_countdown=0;cleanup_changes_error=true;
+        check(f.icon(84,0x6800,g)==0 && f.ctx.running && ioerr==ERROR_NO_FREE_STORE,"OOM is ordinary FALSE with deterministic no-free-store error");
+        allocation_countdown=-1;
+        check(!icon_puts && icon_dups==(duplicate?1U:0U) && objects.size()==1 && native_blocks.size()==blocks && f.bytes()==before,
+              "scratch/duplicate failure rolls back without native write or ownership loss");
+    }
+}
+static ULONG caller_image(IconFixture &,ULONG,ULONG,UWORD,UWORD,UWORD);
+static ULONG caller_icon(IconFixture &f,UBYTE type=4,ULONG g=0xB000)
+{
+    blank_new=true;
+    std::memset(f.ctx.mem+g,0,78);
+    m68k_write16(&f.ctx,g,0xE310);m68k_write16(&f.ctx,g+2,1);
+    m68k_write16(&f.ctx,g+8,0xFFFD);m68k_write16(&f.ctx,g+10,5);
+    m68k_write16(&f.ctx,g+12,17);m68k_write16(&f.ctx,g+14,19);
+    m68k_write16(&f.ctx,g+16,GFLG_GADGIMAGE|GFLG_GADGHNONE);
+    m68k_write16(&f.ctx,g+18,GACT_RELVERIFY);m68k_write16(&f.ctx,g+20,GTYP_BOOLGADGET);
+    f.w(g+34,0xFFFFFFF9);m68k_write16(&f.ctx,g+42,0x4567);f.ctx.mem[g+48]=type;
+    f.w(g+58,0x80000000);f.w(g+62,0xFFFFFFFF);f.w(g+74,16384);
+    f.w(g+22,caller_image(f,0xB100,0xB200,17,2,2));
+    return g;
+}
+static ULONG caller_image(IconFixture &f,ULONG image=0xB100,ULONG data=0xB200,
+                           UWORD width=17,UWORD height=2,UWORD depth=2)
+{
+    std::memset(f.ctx.mem+image,0,20);
+    m68k_write16(&f.ctx,image,0xFFF7);m68k_write16(&f.ctx,image+2,7);
+    m68k_write16(&f.ctx,image+4,width);m68k_write16(&f.ctx,image+6,height);
+    m68k_write16(&f.ctx,image+8,depth);f.w(image+10,data);
+    f.ctx.mem[image+14]=depth<8?static_cast<UBYTE>((1U<<depth)-1):0xFF;
+    f.ctx.mem[image+15]=0x80;
+    return image;
+}
+static void caller_put_success()
+{
+    for(UBYTE type:{3,4})
+    {
+        IconFixture f;ULONG g=caller_icon(f,type);auto blocks=native_blocks.size();auto heap=Kaffeine_HeapAvail(&f.ctx,0);
+        name_at(f);auto before=f.bytes();cleanup_changes_error=true;put_error=205;
+        check(f.icon(84,0x6800,g)==0xFFFFFFFF && f.ctx.running && ioerr==205 && constructed_put && f.bytes()==before,
+              "ordinary caller TOOL/PROJECT is written with native BOOL and IoErr");
+        check(icon_news==1 && !icon_dups && objects.empty() && native_blocks.size()==blocks &&
+              Kaffeine_HeapAvail(&f.ctx,0)==heap,"caller write uses a registered temporary without claiming guest ownership");
+        check(saved_constructed.do_Magic==0xE310 && saved_constructed.do_Version==1 && saved_constructed.do_Type==type &&
+              saved_constructed.do_Gadget.LeftEdge==-3 && saved_constructed.do_Gadget.TopEdge==5 &&
+              saved_constructed.do_Gadget.Width==17 && saved_constructed.do_Gadget.Height==19 &&
+              saved_constructed.do_Gadget.GadgetID==0x4567 && static_cast<ULONG>(saved_constructed.do_Gadget.MutualExclude)==0xFFFFFFF9 &&
+              static_cast<ULONG>(saved_x)==0x80000000 && saved_y==-1 && saved_stack==16384,
+              "caller DiskObject BE scalars retain their exact typed values");
+        check(saved_normal.present && !saved_select.present,"caller icon supplies the normal Image required by the native writer");
+        for(auto &slot:f.ctx.icons)check(!slot.guest && !slot.native,"caller object never becomes an owned snapshot");
+        f.rejected(90,g);
+    }
+    {
+        IconFixture f;ULONG g=caller_icon(f);ULONG im=caller_image(f);
+        static const UBYTE raw[]={0x80,0x01,0x12,0x34,0xA5,0x5A,0xFE,0xDC,0x01,0x02,0xAB,0xCD,0x77,0x88,0x13,0x57};
+        std::copy(std::begin(raw),std::end(raw),f.ctx.mem+0xB200);
+        m68k_write16(&f.ctx,g+16,GFLG_GADGIMAGE|GFLG_GADGHIMAGE);f.w(g+22,im);f.w(g+26,im);
+        std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0xB400),"SYS:C/TypedTool");f.w(g+50,0xB400);
+        std::strcpy(reinterpret_cast<char *>(f.ctx.mem+0xB440),"MODE=caller");
+        f.w(g+54,0xB480);f.w(0xB480,0xB440);f.w(0xB484,0);
+        name_at(f);auto before=f.bytes();auto blocks=native_blocks.size();put_error=221;cleanup_changes_error=true;
+        check(f.icon(84,0x6800,g)==0xFFFFFFFF && f.bytes()==before && native_blocks.size()==blocks && objects.empty(),
+              "normal/select aliased input writes atomically with no borrowed guest image storage");
+        const std::vector<UBYTE> expected(std::begin(raw),std::end(raw));
+        check(saved_normal.bytes==expected && saved_select.bytes==expected && saved_normal.left==-9 && saved_normal.top==7 &&
+              saved_normal.width==17 && saved_normal.height==2 && saved_normal.depth==2 && saved_normal.pick==3 && saved_normal.on==0x80,
+              "independent native oracle receives exact raw BE planar bytes including partial row words");
+        check(saved_tool=="SYS:C/TypedTool" && saved_types==std::vector<std::string>{"MODE=caller"},
+              "caller strings and BE ToolTypes use the existing private metadata decoder");
+        put_result=0;put_error=234;
+        check(f.icon(84,0x6800,g)==0 && f.ctx.running && ioerr==234 && f.bytes()==before && objects.empty(),
+              "native caller-object FALSE and IoErr survive temporary image/object cleanup");
+        f.ctx.mem[im+14]=0;before=f.bytes();put_result=-1;
+        check(f.icon(84,0x6800,g)==0xFFFFFFFF && saved_normal.bytes==expected && f.bytes()==before,
+              "writer copies full Depth data even with no PlanePick bits set");
+    }
+    {IconFixture f;ULONG g=caller_icon(f,4,f.ctx.mem_size-78);auto before=f.bytes();
+     check(f.icon(84,0,g)==0xFFFFFFFF && f.bytes()==before,"caller header is exactly 78 bytes and does not require owned padding");}
+}
+static void caller_put_refusals()
+{
+    for(unsigned mode=0;mode<22;++mode)
+    {
+        IconFixture f;ULONG g=caller_icon(f);name_at(f);
+        switch(mode)
+        {
+            case 0:m68k_write16(&f.ctx,g,0);break;
+            case 1:m68k_write16(&f.ctx,g+2,2);break;
+            case 2:f.ctx.mem[g+48]=2;break;
+            case 3:m68k_write16(&f.ctx,g+20,0);break;
+            case 4:m68k_write16(&f.ctx,g+20,GTYP_CUSTOMGADGET);break;
+            case 5:f.w(g+4,0xB100);break;
+            case 6:f.w(g+30,0xB100);break;
+            case 7:f.w(g+38,0xB100);break;
+            case 8:f.w(g+44,0xB100);break;
+            case 9:f.w(g+66,0xB100);break;
+            case 10:m68k_write16(&f.ctx,g+16,GFLG_EXTENDED);break;
+            case 11:m68k_write16(&f.ctx,g+16,GFLG_GADGIMAGE);f.w(g+22,0);break;
+            case 12:m68k_write16(&f.ctx,g+16,GFLG_GADGIMAGE|GFLG_GADGHIMAGE);break;
+            case 13:m68k_write16(&f.ctx,g+16,GFLG_GADGHNONE);break;
+            case 14:g++;break;
+            case 15:g=f.ctx.mem_size-76;break;
+            case 16:m68k_write16(&f.ctx,g+16,GFLG_GADGHNONE);f.w(g+22,0);break;
+            case 17:m68k_write16(&f.ctx,g+12,0);break;
+            case 18:m68k_write16(&f.ctx,g+14,0xFFFF);break;
+            case 19:m68k_write16(&f.ctx,g+12,1025);break;
+            case 20:m68k_write16(&f.ctx,g+14,1025);break;
+            case 21:m68k_write16(&f.ctx,g+12,257);m68k_write16(&f.ctx,g+14,256);break;
+        }
+        f.rejected(84,0x6800,g);
+    }
+    for(unsigned mode=0;mode<22;++mode)
+    {
+        IconFixture f;ULONG g=caller_icon(f),im=caller_image(f);name_at(f);
+        m68k_write16(&f.ctx,g+16,GFLG_GADGIMAGE|GFLG_GADGHNONE);f.w(g+22,im);
+        switch(mode)
+        {
+            case 0:f.w(g+22,im+1);break;
+            case 1:f.w(g+22,f.ctx.mem_size-18);break;
+            case 2:m68k_write16(&f.ctx,im+4,0);break;
+            case 3:m68k_write16(&f.ctx,im+4,0xFFFF);break;
+            case 4:m68k_write16(&f.ctx,im+4,1025);break;
+            case 5:m68k_write16(&f.ctx,im+6,1025);break;
+            case 6:m68k_write16(&f.ctx,im+4,257);m68k_write16(&f.ctx,im+6,256);break;
+            case 7:m68k_write16(&f.ctx,im+8,0);break;
+            case 8:m68k_write16(&f.ctx,im+8,0xFFFF);break;
+            case 9:m68k_write16(&f.ctx,im+8,9);break;
+            case 10:f.ctx.mem[im+14]=7;break;
+            case 11:f.w(im+10,0xB201);break;
+            case 12:f.ctx.mem[im+14]=0;f.w(im+10,f.ctx.mem_size-2);break;
+            case 13:f.w(im+16,im);break;
+            case 14:f.w(im+16,caller_image(f,0xB140));break;
+            case 15:f.w(im+10,Fixture::exec_base);break;
+            case 16:f.w(im+10,f.ctx.heap_start);break;
+            case 17:f.ctx.memory_info=0xB200;break;
+            case 18:f.ctx.fonts[0].guest=0xB200;f.ctx.fonts[0].allocation_size=40;break;
+            case 19:f.w(g+22,f.icon(174));break;
+            case 20:f.w(im+10,f.icon(174));break;
+            case 21:f.w(im+10,0);break;
+        }
+        f.rejected(84,0x6800,g);f.ctx.memory_info=0;f.ctx.fonts[0]={};
+    }
+    {IconFixture f;ULONG g=caller_icon(f);f.ctx.memory_info=g;f.rejected(84,name_at(f),g);f.ctx.memory_info=0;}
+    {IconFixture f;ULONG g=caller_icon(f);f.w(g+50,f.ctx.heap_start);f.rejected(84,name_at(f),g);}
+}
+static void caller_put_limits_and_oom()
+{
+    {
+        IconFixture f;ULONG g=caller_icon(f);
+        ULONG data=Kaffeine_HeapAlloc(&f.ctx,8192,MEMF_PUBLIC);assert(data);
+        ULONG im=caller_image(f,0xB100,data,1024,64,1);
+        m68k_write16(&f.ctx,g+12,1024);m68k_write16(&f.ctx,g+14,64);
+        m68k_write16(&f.ctx,g+16,GFLG_GADGIMAGE|GFLG_GADGHNONE);f.w(g+22,im);
+        check(f.icon(84,0,g)==0xFFFFFFFF && saved_normal.width==1024 && saved_normal.height==64 &&
+              saved_normal.bytes.size()==8192,"exact dimension and 65536-pixel limits are accepted");
+        Kaffeine_HeapFree(&f.ctx,data,8192);
+    }
+    {
+        IconFixture f;ULONG g=caller_icon(f),payload=256*255;
+        ULONG data=Kaffeine_HeapAlloc(&f.ctx,payload,MEMF_PUBLIC);assert(data);
+        ULONG im=caller_image(f,0xB100,data,256,255,8);
+        std::memset(f.ctx.mem+data,0xA5,payload);f.ctx.mem[data]=0x12;f.ctx.mem[data+1]=0x34;
+        m68k_write16(&f.ctx,g+16,GFLG_GADGIMAGE|GFLG_GADGHNONE);f.w(g+22,im);
+        size_t text_bytes=65536-payload-sizeof(Image);assert(text_bytes>1 && text_bytes<1024);
+        std::memset(f.ctx.mem+0xB400,'X',text_bytes);f.ctx.mem[0xB400+text_bytes-1]=0;f.w(g+50,0xB400);
+        auto blocks=native_blocks.size();auto before=f.bytes();
+        check(f.icon(84,0,g)==0xFFFFFFFF && saved_normal.bytes.size()==payload && saved_normal.bytes[0]==0x12 &&
+              saved_normal.bytes[1]==0x34 && f.bytes()==before && native_blocks.size()==blocks,
+              "exact 64KiB aggregate private scratch budget succeeds");
+        f.ctx.mem[0xB400+text_bytes-1]='X';f.ctx.mem[0xB400+text_bytes]=0;
+        f.rejected(84,0,g);Kaffeine_HeapFree(&f.ctx,data,payload);
+    }
+    for(bool constructor:{false,true})
+    {
+        IconFixture f;ULONG g=caller_icon(f);f.w(g+22,caller_image(f));
+        m68k_write16(&f.ctx,g+16,GFLG_GADGIMAGE|GFLG_GADGHNONE);name_at(f);
+        auto before=f.bytes();auto blocks=native_blocks.size();new_failure=constructor;
+        if(!constructor)allocation_countdown=0;
+        cleanup_changes_error=true;
+        check(f.icon(84,0x6800,g)==0 && f.ctx.running && ioerr==ERROR_NO_FREE_STORE &&
+              icon_news==(constructor?1U:0U) && !icon_puts && !icon_dups && objects.empty() &&
+              native_blocks.size()==blocks && f.bytes()==before,
+              "caller scratch/registered-constructor OOM rolls back without write or mutation");
+        allocation_countdown=-1;
+    }
+}
+static unsigned icon_hook_calls;
+static Task icon_owner;
+static BOOL icon_route(KaffeineContext *ctx,void *cpu,ULONG lvo,IPTR *result)
+{
+    ++icon_hook_calls;auto fn=Kaffeine_IconIOThunk(lvo);assert(fn);
+    auto *old=native_caller;native_caller=&icon_owner;*result=fn(ctx,cpu);native_caller=old;return TRUE;
+}
+static void icon_routes()
+{
+    for(ULONG lvo=0;lvo<205;++lvo)
+        check(bool(Kaffeine_IconIOThunk(lvo))==(lvo==78||lvo==84||lvo==120||lvo==132),"icon broker lookup has an exact four-LVO allowlist");
+    IconFixture f;KaffeineTaskOps ops{};ops.icon_call=icon_route;
+    f.ctx.task_ops=&ops;f.ctx.sched=reinterpret_cast<KaffeineScheduler *>(1);icon_hook_calls=0;
+    ULONG g=f.icon(78,name_at(f));check(g && icon_hook_calls==1 && icon_gets==1,"getter wrapper routes once to the compiled native helper");
+    check(f.icon(84,0x6800,g)==0xFFFFFFFF && icon_hook_calls==2 && seen_put_owner==&icon_owner,
+          "Put wrapper is consumed once by the caller-owner route");
+    check(f.icon(120) && f.icon(132,0x6800) && icon_hook_calls==4,"all file-reading icon getters use the fixed route");
+    f.ctx.task_ops=nullptr;f.rejected(84,0x6800,g);f.ctx.sched=nullptr;
+}
 int main()
 {
-    lifecycle();failures_and_guards();
+    lifecycle();failures_and_guards();put_success();put_refusals_and_oom();icon_routes();
+    caller_put_success();caller_put_refusals();caller_put_limits_and_oom();
     check(native_blocks.empty() && objects.empty(),"all native records, snapshots and icons are released");
     std::printf("Guest icon boundary: %u/%u checks passed\n",checks-failures,checks);
     return failures?1:0;

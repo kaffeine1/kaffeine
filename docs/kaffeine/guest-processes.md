@@ -76,6 +76,38 @@ the live root signals the fixed native driver, even when the packet adapter is
 running on a broker. Staged arguments clear on completion or failure and before
 Process teardown; a transport failure never permits execution on the driver.
 
+## Icon metadata and Process I/O
+
+`GetDiskObject()`, `GetDiskObjectNew()`, `GetDefDiskObject()` and
+`PutDiskObject()` use the typed Process's private DOS broker. A fixed helper
+validates the current CPU and native owner before executing the selected
+operation, so relative names and `IoErr()` belong to that Process. The live
+root retains its direct native path. Ordinary `AddTask()` and classic-only
+`CreateProc()` tasks have no native DOS context for these operations.
+
+The guest receives a metadata snapshot with no native image or drawer
+pointers. For an exact, live owned snapshot, `PutDiskObject()` permits changes
+to positions, stack size, DefaultTool, ToolWindow and bounded ToolTypes; type,
+Gadget fields and structural pointer fields remain immutable. A real native
+duplicate preserves the original icon's private images and extensions.
+
+A program may also supply its own classic TOOL or PROJECT DiskObject. The
+adapter validates its 78-byte header, Boolean Gadget and ordinary guest
+storage, then creates a registered native object. A normal planar Image is
+required; an optional selected Image is also supported. Image headers and
+full Depth payloads are copied privately, retaining the big-endian planar
+byte layout. Gadget and Image dimensions are positive, at most 1024 per axis
+and 65,536 pixels; Image Depth is 1..8. Metadata, native headers and image
+payloads together fit within 64 KiB. Drawer data, Borders, extended Gadgets,
+image chains and Depth 0 remain unsupported.
+
+Strings and big-endian pointer arrays are validated and copied before native
+I/O. Native `FALSE` and `IoErr()` are returned as ordinary write failures;
+malformed identities or unsupported forms stop with 20. Live snapshots are
+protected from generic `FreeMem()`/`FreeVec()` release. The typed free operation
+and context cleanup retire their private native owners. Guest
+`DupDiskObjectA()` and `PutIconTagList()` remain unsupported.
+
 ## Loader and startup transaction
 
 [`LoadSeg()` / `NewLoadSeg()`](../../rom/kaffeine/kaffeine_thunks_dos.c) reserve a

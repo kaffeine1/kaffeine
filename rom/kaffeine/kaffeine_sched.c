@@ -68,6 +68,7 @@
 #include "kaffeine_process.h"
 #include "kaffeine_dos_broker.h"
 #include "kaffeine_domain_modules.h"
+#include "kaffeine_icon.h"
 
 /* The classic Task of the NDK (exec/tasks.h) and its constants */
 enum
@@ -118,6 +119,7 @@ struct GuestTask
     BOOL dos_pending;
     ULONG packet_port, packet_msg; /* private synchronous broker arguments */
     BOOL packet_file, packet_pending;
+    ULONG icon_lvo;              /* closed icon IO operation while brokered */
     ULONG cli;                  /* guest CLI cache of this DOS owner */
     ULONG argptr, argsize;
     ULONG startup_entry;        /* private staged MemList; never read from guest links */
@@ -317,6 +319,7 @@ static BOOL finish_process(struct KaffeineContext *ctx, struct KaffeineScheduler
     struct DosScope scope;
     BOOL okay;
     packet_clear(t); /* no packet RPC survives its synchronous acknowledgement */
+    t->icon_lvo = 0;
     if (!t->broker) return TRUE;
     dos_scope_begin(ctx, s, t, NULL, &scope);
     okay = Kaffeine_DosBrokerFinish(t->broker, ctx, Kaffeine_ProcessDropGuestDos);
@@ -2174,6 +2177,81 @@ static BOOL sched_packet_call(struct KaffeineContext *ctx, ULONG port, ULONG msg
     return TRUE;
 }
 
+static IPTR icon_refuse(struct KaffeineContext *ctx, const char *why)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s ? s->current : NULL;
+    /* A rejected context CPU is not a write capability. Only the scheduler's
+       still-live current CPU can receive the authoritative failure value. */
+    if (t && task_of(s, t->tcb) == t && t->cpu)
+        Kaffeine_StopGuest(ctx, t->cpu, 20);
+    else
+        ctx->callback_failed = TRUE;
+    return refuse(ctx, why);
+}
+
+/* A closed native helper is resolved again in the actual worker. No guest
+   code, dispatcher or callback executes there, and the driver is paused for
+   the whole synchronous request. */
+static IPTR icon_thunk(struct KaffeineContext *ctx, void *cpu)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s ? s->current : NULL;
+    KaffeineThunkFn thunk;
+    IPTR result;
+    if (!t || !is_process(s, t) || !t->broker || !t->icon_lvo ||
+        task_of(s, t->tcb) != t || t->state != SLOT_RUN || !ctx->running ||
+        ctx->cpu != t->cpu || cpu != t->cpu || ctx->guest_exec_task != t->tcb ||
+        this_task(ctx) != t->tcb || ctx->callback_depth || !ctx->broker_call ||
+        !ctx->broker_owner || ctx->broker_owner != FindTask(NULL) ||
+        ctx->broker_owner == ctx->exec_task ||
+        ctx->broker_owner->tc_Node.ln_Type != NT_PROCESS || Kaffeine_LayerInfoLocked(ctx))
+        return icon_refuse(ctx, "an icon IO operation has no safe broker owner");
+    thunk = Kaffeine_IconIOThunk(t->icon_lvo);
+    if (!thunk)
+        return icon_refuse(ctx, "an icon IO operation is outside the closed helper set");
+    result = thunk(ctx, cpu);
+    if (!ctx->running && ctx->exit_code == 20)
+        Kaffeine_StopGuest(ctx, t->cpu, 20);
+    return result;
+}
+
+static BOOL sched_icon_call(struct KaffeineContext *ctx, void *cpu, ULONG lvo, IPTR *result)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s ? s->current : NULL;
+    SIPTR error = 0;
+    BOOL okay;
+    if (!s) return FALSE;
+    if (!t || task_of(s, t->tcb) != t || t->state != SLOT_RUN || !ctx->running ||
+        cpu != t->cpu || ctx->cpu != t->cpu || ctx->guest_exec_task != t->tcb ||
+        this_task(ctx) != t->tcb || ctx->callback_depth || Kaffeine_LayerInfoLocked(ctx) ||
+        !ctx->exec_task || FindTask(NULL) != ctx->exec_task ||
+        ctx->exec_task->tc_Node.ln_Type != NT_PROCESS || ctx->broker_call || ctx->broker_owner ||
+        t->icon_lvo || !Kaffeine_IconIOThunk(lvo))
+    {
+        *result = icon_refuse(ctx, "an icon IO operation has no safe Process route");
+        return TRUE;
+    }
+    if (t == &s->root) return FALSE;
+    if (!is_process(s, t) || !t->broker)
+    {
+        *result = icon_refuse(ctx, "a classic guest task has no native DOS context for icon IO");
+        return TRUE;
+    }
+    t->icon_lvo = lvo;
+    ctx->broker_call = TRUE;
+    okay = Kaffeine_DosBrokerCall(t->broker, ctx, t->cpu, 0, icon_thunk, result, &error);
+    ctx->broker_call = FALSE;
+    t->icon_lvo = 0; /* Neither a failed submission nor an ACK can replay it. */
+    if (!okay)
+    {
+        bug("[kaffeine] icon broker transport failed (%ld)\n", (long)error);
+        *result = icon_refuse(ctx, "an icon IO Process broker call failed");
+    }
+    return TRUE;
+}
+
 /* Queue geometry is checked by Kaffeine_GuestGetMsg before it calls here.
    Only the receiving task can wait for its empty PA_SIGNAL port; a child
    Process also for its pr_MsgPort, on its own SIGB_DOS. */
@@ -2273,5 +2351,5 @@ const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
     Kaffeine_ProcCreate, sched_process_port, sched_process_dos,
     sched_is_root, sched_caller_task, sched_block_io, sched_io_completed,
     sched_dos_call, Kaffeine_SchedFinishRoot, sched_root_result,
-    sched_root_task, sched_can_signal, sched_packet_call
+    sched_root_task, sched_can_signal, sched_packet_call, sched_icon_call
 };

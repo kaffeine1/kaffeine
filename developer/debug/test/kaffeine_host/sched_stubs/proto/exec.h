@@ -1,12 +1,11 @@
 #ifndef KAFFEINE_TEST_SCHED_PROTO_EXEC_H
 #define KAFFEINE_TEST_SCHED_PROTO_EXEC_H
-#include <exec/types.h>
+#include <exec/tasks.h>
 #define SIGB_DOS 8
 #define SIGF_DOS (1UL << SIGB_DOS)
 
 /* The native Exec of the guest task scheduler, which test_guest_tasks.cpp
    defines and records: one native task runs every guest task. */
-struct Task;
 #ifdef __cplusplus
 extern "C" {
 #endif
