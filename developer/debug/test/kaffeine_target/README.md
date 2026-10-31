@@ -83,8 +83,11 @@ at the end.
 | `unzip_config.h` | The configuration header included in front of Info-ZIP UnZip 6.0 for the m68k libnix build and the host build of its Unix port (`unix/unix.c`). |
 | `unzip_libnix.c` | Fixes `timezone` (`__gmtoffset`) and `tzset()` to UTC0 for the m68k libnix build of `unzip` without pulling in the `locale.library` constructor of `libnix20.a(__gmtoffset.o)`. |
 | `make-unzip-files.py` | Generates the deterministic Zip test archives (`tree.zip`, `bad_trunc.zip` and `bad_crc.zip`) in `build/unzip-files`. |
+| `awk_config.h` | The configuration header of the one true awk (`2ndEdition`, 20230911), included in front of each file for both the m68k and the host build: renames `concat()` to avoid the variadic `concat()` in libnix's `<string.h>`, supplies `FOPEN_MAX`, restricts `setlocale()` to the `"C"` locale, undefines `SA_SIGINFO` on AmigaOS, maps the `wait()` status macros of `run.c`'s `system()` builtin to the unshifted return code of `SystemTagList()`, maps `srandom()`/`random()` to `srand()`/`rand()`, and routes `snprintf()` and `strtod()` on m68k to `awk_libnix.c`. |
+| `awk_libnix.c` | The runtime, `snprintf()` and `strtod()` helpers of `awk` for libnix: an empty `environ` for `tran.c`, a `pclose()` stub returning `-1` with `EIO`, direct integer formatting for `%.30g` (where libnix's `__vfprintf_total_size()` overflows its 20-digit buffer and appends `.0000000000`), sign placement in front of leading zero padding on negative floats, and a `strtod()` that handles decimal floats, infinities and NaNs without advancing `endptr` past a bare `.`. |
+| `awk_printf.awk` to `awk_bad.awk` | Seven awk scripts of our own for `awk`: `printf` conversions and widths (`awk_printf.awk`), regular expressions with POSIX classes and alternation (`awk_regex.awk`), `getline` and `close()` (`awk_getline.awk`), output redirection to `T:awk_redir.txt` and reading it back (`awk_redir.awk`), string builtins (`awk_strings.awk`), `system("echo kaffeine")` (`awk_system.awk`), and a deliberate fatal error (`awk_bad.awk`). |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `zstd` of Zstandard 1.5.7 when `ZSTD_SRC` names its source, with its references from `make zstd-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`, `lua` of Lua 5.4.7 when `LUA_SRC` names its source, with its references from `make lua-refs`, and `unzip` of Info-ZIP UnZip 6.0 when `UNZIP_SRC` names its source, with its references from `make unzip-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `zstd` of Zstandard 1.5.7 when `ZSTD_SRC` names its source, with its references from `make zstd-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`, `lua` of Lua 5.4.7 when `LUA_SRC` names its source, with its references from `make lua-refs`, `unzip` of Info-ZIP UnZip 6.0 when `UNZIP_SRC` names its source, with its references from `make unzip-refs`, and `awk` of the one true awk when `AWK_SRC` names an unpacked awk tree, with its references from `make awk-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -246,6 +249,18 @@ include `unzip`, built from the Unix port
 The Makefile generates the test archives in `build/unzip-files` with
 `make-unzip-files.py`, and `make unzip-refs` writes the reference outputs
 and error files to `build/unzip-refs` under `TZ=UTC0`.
+
+Set `AWK_SRC` to an unpacked awk tree (`onetrueawk/awk`, tag `2ndEdition`,
+version 20230911) to include `awk`. The Makefile runs `$(YACC)` (`bison -d -y
+-b awkgram` by default) on `awkgram.y` to write `build/awk-src/awkgram.tab.c`
+and `build/awk-src/awkgram.tab.h`, builds the generator `maketab` from
+`maketab.c` with `HOST_CC`, and runs it on `awkgram.tab.h` to write
+`build/awk-src/proctab.c`. Both the m68k and the host build include
+`awk_config.h` in front of each file, and the m68k build links `awk_libnix.c`
+and the `libm.a` of libnix. The Makefile collects `test.countries`,
+`test.data`, the fourteen selected `p.*` and `t.*` programs of `testdir` and
+the seven `awk_*.awk` scripts in `build/awk-files`, and `make awk-refs`
+writes the reference outputs and error streams to `build/awk-refs`.
 
 ## Running on AROS AArch64
 
@@ -440,6 +455,7 @@ compile and evaluate this emitted Hook; see that directory's README.
 | each step of `xz` | `--files NAME build/xz-files` |
 | each step of `lua` | `--files NAME build/lua-files` |
 | each step of `unzip` | `--files NAME build/unzip-files` |
+| each step of `awk` | `--files NAME build/awk-files` |
 
 The bitmap font is generated from original fixture data by the Makefile.
 The packet fixture is an original 12-byte file. Requests of 5, 9 and 4 bytes
@@ -849,6 +865,75 @@ archive give five different masks), `utime()` turns the Unix time into a
 `DateStamp` for `SetFileDate()`, `stat()` uses `Lock()` and `Examine()`, and
 `unlink()` calls `DeleteFile()` before a file is replaced.
 
+## The awk steps
+
+`awk` is built from an unpacked awk tree (`onetrueawk/awk`, tag `2ndEdition`,
+version 20230911). The Makefile runs `$(YACC)` (`bison -d -y -b awkgram` by
+default) on `awkgram.y` to generate `awkgram.tab.c` and `awkgram.tab.h` in
+`build/awk-src`, compiles `maketab.c` with `HOST_CC`, and runs
+`build/awk-src/maketab build/awk-src/awkgram.tab.h` to write
+`build/awk-src/proctab.c`. Both the m68k and the host build compile those two
+generated sources together with `b.c`, `main.c`, `parse.c`, `tran.c`, `lib.c`,
+`run.c` and `lex.c`, with `awk_config.h` in front of each file.
+
+Twenty-one steps run `awk`: six `p.*` programs from `testdir` (from *The AWK
+Programming Language*) on `EMU68/test.countries` twice as `Compare.p` runs
+them, eight `t.*` regression programs from `testdir` on `EMU68/test.data` as
+`Compare.t` runs them, six programs of our own for `printf`, regular
+expressions, `getline`, output redirection in `T:`, string builtins and
+`system()`, and one deliberate fatal-error probe. Each step passes only if its
+output and error streams match those of the same program built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `awk_p5` | `-f EMU68/p.5 EMU68/test.countries EMU68/test.countries` | formatted country, area, population and continent table | 0 |
+| `awk_p24` | `-f EMU68/p.24 EMU68/test.countries EMU68/test.countries` | records 1 to 5 of each input file with `FILENAME` | 0 |
+| `awk_p25` | `-f EMU68/p.25 EMU68/test.countries EMU68/test.countries` | population density formatted with `%10s %6.1f` | 0 |
+| `awk_p36` | `-f EMU68/p.36 EMU68/test.countries EMU68/test.countries` | tab-separated records with computed field `$5` | 0 |
+| `awk_p43` | `-f EMU68/p.43 EMU68/test.countries EMU68/test.countries` | total area by continent in an associative array | 0 |
+| `awk_ptable` | `-f EMU68/p.table EMU68/test.countries EMU68/test.countries` | two-pass aligned table formatter with user functions | 0 |
+| `awk_tarray` | `-f EMU68/t.array EMU68/test.data` | array indexing by `NR` and `split()` in `END` | 0 |
+| `awk_tbuiltins` | `-f EMU68/t.builtins EMU68/test.data` | `length()`, `log()`, `sqrt()`, `int()` and `exp()` on numeric records | 0 |
+| `awk_tfun5` | `-f EMU68/t.fun5 EMU68/test.data` | user function filling a caller array through `split()` | 0 |
+| `awk_tgetline1` | `-f EMU68/t.getline1 EMU68/test.data` | `getline` advancing across three records per iteration | 0 |
+| `awk_tprintf` | `-f EMU68/t.printf EMU68/test.data` | `printf` and `sprintf("%8d %10.10s", $1, $2)` | 0 |
+| `awk_troff` | `-f EMU68/t.roff EMU68/test.data` | word-wrapped 60-column text filling | 0 |
+| `awk_tsplit4` | `-f EMU68/t.split4 EMU68/test.data` | `split()` with the regular expression `/[ \t][ \t]*/` | 0 |
+| `awk_tsub2` | `-f EMU68/t.sub2 EMU68/test.data` | `sub()` with `&&` and `&\&&` replacements | 0 |
+| `awk_printf` | `-f EMU68/awk_printf.awk` | `%d`, `%i`, `%o`, `%x`, `%X`, `%u`, `%c`, `%s`, `%e`, `%E`, `%f`, `%g`, `%G` and widths | 0 |
+| `awk_regex` | `-f EMU68/awk_regex.awk EMU68/test.countries` | POSIX character classes, negated ranges, alternation and `match()` | 0 |
+| `awk_getline` | `-f EMU68/awk_getline.awk` | `getline` from `EMU68/test.countries` and `EMU68/test.data`, `close()` and re-reading | 0 |
+| `awk_redir` | `-f EMU68/awk_redir.awk` | `>` and `>>` redirection to `T:awk_redir.txt`, `close()` and reading it back | 0 |
+| `awk_strings` | `-f EMU68/awk_strings.awk` | `split()`, `substr()`, `index()`, `length()`, `sub()`, `gsub()`, `tolower()`, `toupper()` and `sprintf()` | 0 |
+| `awk_system` | `-f EMU68/awk_system.awk` | `system("echo kaffeine")` (`kaffeine` and `rc=0`) | 0 |
+| `awk_bad` | `-f EMU68/awk_bad.awk EMU68/test.countries` | a line on standard output before the fatal `printf` error on standard error | 2 |
+
+With `-noixemul`, `m68k-amigaos-gcc` links `libnix20.a` in front of `libnix.a`.
+In `libnix20.a` (`system.o`), `system()` checks `DOSBase->dl_lib.lib_Version`:
+when it is greater than 35 (AmigaOS 2.0+ and AROS), `system()` calls
+`dos.library` `SystemTagList()` (LVO `-606`) with an empty tag list
+(`TAG_DONE`) and returns its `LONG` return code directly in `d0`, falling back
+to `Execute(cmd, Input(), Output())` (LVO `-222`) only on Kickstart 1.3.
+Because `run.c` passes `status = system(...)` through `<sys/wait.h>`'s
+`WIFEXITED(status)` and `WEXITSTATUS(status)` (which in newlib's header expect
+a shifted POSIX wait status), `awk_config.h` redefines `WIFEXITED(w)` to
+`((w) >= 0)` and `WEXITSTATUS(w)` to `(w)` on AmigaOS so that `awk`'s
+`system()` returns the exact AmigaDOS return code (`0` in `awk_system`).
+
+`libnix`'s `<stdio.h>` declares `popen()` and `pclose()`, and `libnix20.a`
+contains `popen.o`, but `_popen` in `libnix20.a` is only a 14-byte stub that
+sets `errno = EIO` (5) and returns `NULL`, and `pclose()` is not defined in
+any `libnix` archive. `awk_libnix.c` supplies the matching `pclose()` stub so
+that `run.c` links cleanly, and no `"cmd" | getline` or `print | "cmd"` pipe
+step is included.
+
+The step names are in `AWK_STEPS` and their arguments in `AWK_ARGS_<step>`.
+`awk` begins its error messages with `cmdname` (`argv[0]`), so `make awk-refs`
+runs each step as `SYS:EMU68/awk_<step>` next to an `EMU68` that names
+`build/awk-files`. For example, `awk_p5` is `--files awk_p5 build/awk-files
+--args awk_p5 "-f EMU68/p.5 EMU68/test.countries EMU68/test.countries"
+--expect awk_p5 build/awk-refs/awk_p5.out awk_p5=build/awk`.
+
 ## The CLI programs under the Kaffeine JIT
 
 I ran the 48 steps of zlib, pngtest, xmlwf, xz and the mbed TLS self-test
@@ -894,8 +979,9 @@ each, and it enters them about 204 million times a run.
 | `lua_bad=lua` | `EMU68/bad.lua` | 1 for the unhandled Lua error |
 | `unzip_bad_trunc=unzip` | `-l EMU68/bad_trunc.zip` | 9 (`PK_NOZIP`) for the truncated central directory |
 | `unzip_bad_crc=unzip` | `-p EMU68/bad_crc.zip` | 2 (`PK_ERR`) for the corrupted member CRC-32 |
+| `awk_bad=awk` | `-f EMU68/awk_bad.awk EMU68/test.countries` | 2 for the missing `printf` argument |
 
-These forty-six Shell/Run executions are deliberate nonzero cases. They must
+These forty-eight Shell/Run executions are deliberate nonzero cases. They must
 be checked against their expected behavior; raw nonzero status alone is
 not a regression verdict. Valid ordinary queues are positive tests in
 `exec_messages`.

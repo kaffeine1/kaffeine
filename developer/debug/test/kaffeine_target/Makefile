@@ -348,6 +348,59 @@ UNZIP_ARGS_bad_crc := -p EMU68/bad_crc.zip
 ifneq ($(UNZIP_SRC),)
 PROGRAMS += unzip
 endif
+
+# awk of the one true awk (2ndEdition, 20230911), from an unpacked awk tree:
+# set AWK_SRC to its directory to build it, with awk_config.h in front of
+# each file, awkgram.tab.c and awkgram.tab.h generated from awkgram.y by
+# $(YACC), proctab.c generated from awkgram.tab.h by maketab built for the
+# host, and, for the m68k, awk_libnix.c for environ, pclose(), snprintf()
+# and strtod(). The battery runs it on six deterministic p.* programs from
+# testdir on test.countries, eight deterministic t.* programs from testdir
+# on test.data, six programs of our own (printf, regex, getline, redir,
+# strings and system) and a fatal-error step (bad), which $(AWK_FILES)
+# collects under EMU68/, and compares its output with the one of the same
+# program built for the host, which "make awk-refs" writes to $(AWK_REFS).
+AWK_SRC ?=
+ifeq ($(origin YACC),default)
+YACC := bison -d -y
+endif
+YACC ?= bison -d -y
+AWK_BUILD := $(BUILD_DIR)/awk-src
+AWK_FILES := $(BUILD_DIR)/awk-files
+AWK_REFS := $(BUILD_DIR)/awk-refs
+AWK_SOURCES := $(addprefix $(AWK_SRC)/,b.c main.c parse.c tran.c lib.c run.c lex.c)
+AWK_GEN_SOURCES := $(AWK_BUILD)/awkgram.tab.c $(AWK_BUILD)/proctab.c
+AWK_FLAGS := -I$(AWK_BUILD) -I$(AWK_SRC) -include $(TEST_DIR)/awk_config.h
+AWK_P_TESTS := p.5 p.24 p.25 p.36 p.43 p.table
+AWK_T_TESTS := t.array t.builtins t.fun5 t.getline1 t.printf t.roff t.split4 t.sub2
+AWK_P_STEPS := p5 p24 p25 p36 p43 ptable
+AWK_T_STEPS := tarray tbuiltins tfun5 tgetline1 tprintf troff tsplit4 tsub2
+AWK_OWN_STEPS := printf regex getline redir strings system bad
+AWK_STEPS := $(AWK_P_STEPS) $(AWK_T_STEPS) $(AWK_OWN_STEPS)
+AWK_ARGS_p5 := -f EMU68/p.5 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_p24 := -f EMU68/p.24 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_p25 := -f EMU68/p.25 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_p36 := -f EMU68/p.36 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_p43 := -f EMU68/p.43 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_ptable := -f EMU68/p.table EMU68/test.countries EMU68/test.countries
+AWK_ARGS_tarray := -f EMU68/t.array EMU68/test.data
+AWK_ARGS_tbuiltins := -f EMU68/t.builtins EMU68/test.data
+AWK_ARGS_tfun5 := -f EMU68/t.fun5 EMU68/test.data
+AWK_ARGS_tgetline1 := -f EMU68/t.getline1 EMU68/test.data
+AWK_ARGS_tprintf := -f EMU68/t.printf EMU68/test.data
+AWK_ARGS_troff := -f EMU68/t.roff EMU68/test.data
+AWK_ARGS_tsplit4 := -f EMU68/t.split4 EMU68/test.data
+AWK_ARGS_tsub2 := -f EMU68/t.sub2 EMU68/test.data
+AWK_ARGS_printf := -f EMU68/awk_printf.awk
+AWK_ARGS_regex := -f EMU68/awk_regex.awk EMU68/test.countries
+AWK_ARGS_getline := -f EMU68/awk_getline.awk
+AWK_ARGS_redir := -f EMU68/awk_redir.awk
+AWK_ARGS_strings := -f EMU68/awk_strings.awk
+AWK_ARGS_system := -f EMU68/awk_system.awk
+AWK_ARGS_bad := -f EMU68/awk_bad.awk EMU68/test.countries
+ifneq ($(AWK_SRC),)
+PROGRAMS += awk
+endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
@@ -742,6 +795,49 @@ $(UNZIP_REFS)/stamp: $(UNZIP_SOURCES) $(TEST_DIR)/unzip_config.h $(UNZIP_FILES).
 
 unzip-refs: $(UNZIP_REFS)/stamp
 
+$(AWK_BUILD)/awkgram.tab.c $(AWK_BUILD)/awkgram.tab.h: $(AWK_SRC)/awkgram.y
+	mkdir -p $(@D)
+	cd $(@D) && $(YACC) -b awkgram $(AWK_SRC)/awkgram.y
+	test -f $(AWK_BUILD)/awkgram.tab.c || mv $(AWK_BUILD)/y.tab.c $(AWK_BUILD)/awkgram.tab.c
+	test -f $(AWK_BUILD)/awkgram.tab.h || mv $(AWK_BUILD)/y.tab.h $(AWK_BUILD)/awkgram.tab.h
+
+$(AWK_BUILD)/proctab.c: $(AWK_SRC)/maketab.c $(AWK_BUILD)/awkgram.tab.h $(AWK_SRC)/awk.h $(AWK_SRC)/proto.h
+	mkdir -p $(@D)
+	$(HOST_CC) -O2 -I$(AWK_BUILD) -I$(AWK_SRC) -o $(AWK_BUILD)/maketab $<
+	$(AWK_BUILD)/maketab $(AWK_BUILD)/awkgram.tab.h > $@
+
+# The scripts and input files of the steps, installed with --files next to each step
+$(AWK_FILES).stamp: $(addprefix $(AWK_SRC)/testdir/,test.countries test.data $(AWK_P_TESTS) $(AWK_T_TESTS)) \
+                    $(patsubst %,$(TEST_DIR)/awk_%.awk,$(AWK_OWN_STEPS)) | $(BUILD_DIR)
+	rm -rf $(AWK_FILES)
+	mkdir -p $(AWK_FILES)
+	cp $(addprefix $(AWK_SRC)/testdir/,test.countries test.data $(AWK_P_TESTS) $(AWK_T_TESTS)) $(AWK_FILES)/
+	cp $(patsubst %,$(TEST_DIR)/awk_%.awk,$(AWK_OWN_STEPS)) $(AWK_FILES)/
+	touch $@
+
+# -lm brings the IEEE double helpers and the floating-point printf() of libnix
+$(BUILD_DIR)/awk: $(AWK_SOURCES) $(AWK_GEN_SOURCES) $(TEST_DIR)/awk_libnix.c $(TEST_DIR)/awk_config.h | \
+                  $(BUILD_DIR) $(AWK_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) $(AWK_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $(AWK_GEN_SOURCES) $(AWK_SOURCES) $(TEST_DIR)/awk_libnix.c -lm
+
+# The awk references: the outputs of the steps through awk built for the
+# host, run where EMU68 names $(AWK_FILES). awk begins its error messages
+# with its name as it was started, SYS:EMU68/NAME in the guest, so each step
+# runs as that here too, and writes its error output to NAME.err. awk_bad
+# ends with 2.
+$(AWK_REFS)/stamp: $(AWK_SOURCES) $(AWK_GEN_SOURCES) $(TEST_DIR)/awk_config.h $(AWK_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 $(AWK_FLAGS) -o $(@D)/awk $(AWK_GEN_SOURCES) $(AWK_SOURCES) -lm
+	ln -s $(AWK_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(AWK_STEPS),cp awk SYS:EMU68/awk_$(s) && \
+	    { SYS:EMU68/awk_$(s) $(AWK_ARGS_$(s)) > awk_$(s).out 2> awk_$(s).err; \
+	    test $$? = $(if $(filter bad,$(s)),2,0); } &&) rm -f $(@D)/T:awk_redir.txt
+	touch $@
+
+awk-refs: $(AWK_REFS)/stamp
+
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
 $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
@@ -758,24 +854,24 @@ $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
 # bzip2, zstd, the JPEG programs, the zlib ones, pngtest, xmlwf, xz,
-# mbedtls_selftest, lua and unzip too, also when they were built with a
-# BZIP2_SRC, ZSTD_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC,
-# MBEDTLS_SRC, LUA_SRC or UNZIP_SRC that this make lacks
+# mbedtls_selftest, lua, unzip and awk too, also when they were built
+# with a BZIP2_SRC, ZSTD_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC,
+# XZ_SRC, MBEDTLS_SRC, LUA_SRC, UNZIP_SRC or AWK_SRC that this make lacks
 clean:
 	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BZIP2_FILES).stamp $(BUILD_DIR)/zstd $(ZSTD_FILES).stamp $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
 	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
 	rm -f $(BUILD_DIR)/xmlwf $(XMLWF_FILES).stamp $(BUILD_DIR)/xz $(XZ_FILES).stamp
-	rm -f $(BUILD_DIR)/mbedtls_selftest $(BUILD_DIR)/lua $(LUA_FILES).stamp $(BUILD_DIR)/unzip $(UNZIP_FILES).stamp
+	rm -f $(BUILD_DIR)/mbedtls_selftest $(BUILD_DIR)/lua $(LUA_FILES).stamp $(BUILD_DIR)/unzip $(UNZIP_FILES).stamp $(BUILD_DIR)/awk $(AWK_FILES).stamp
 	rm -rf $(BZIP2_FILES) $(BZIP2_REFS) $(ZSTD_FILES) $(ZSTD_REFS) $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
 	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS) $(XZ_BUILD) $(XZ_FILES) $(XZ_REFS)
-	rm -rf $(MBEDTLS_REFS) $(LUA_FILES) $(LUA_REFS) $(UNZIP_FILES) $(UNZIP_REFS)
+	rm -rf $(MBEDTLS_REFS) $(LUA_FILES) $(LUA_REFS) $(UNZIP_FILES) $(UNZIP_REFS) $(AWK_BUILD) $(AWK_FILES) $(AWK_REFS)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs lua-refs unzip-refs
+.PHONY: all clean check-runner bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs lua-refs unzip-refs awk-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)
