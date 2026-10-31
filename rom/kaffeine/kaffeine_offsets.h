@@ -94,6 +94,11 @@
 #define M68K_LIB_IDSTRING          24
 #define M68K_LIB_OPENCNT           32
 
+/* ── DosLibrary offsets (m68k, dos/dosextens.h) ──────────────────── */
+
+#define M68K_DL_TIMEREQ            58
+#define M68K_SIZEOF_DOSLIBRARY     70   /* the public part, to dl_IntuitionBase */
+
 /* lib_Flags (exec/libraries.h) */
 #define M68K_LIBF_CHANGED          0x02
 #define M68K_LIBF_SUMUSED          0x04

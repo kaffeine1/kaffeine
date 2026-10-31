@@ -2140,6 +2140,38 @@ static void test_timer_base()
     f.call(672, p);
 }
 
+/* dl_TimeReq of the guest DOSBase: a timerequest on the guest timer.device
+   base, made without a native open, which C startups call ReadEClock() on
+   and which a later OpenDevice() shares. */
+static void test_dos_time_request()
+{
+    Fixture f;
+
+    check(!Kaffeine_DosTimeRequest(&f.ctx, nullptr) && !f.ctx.timer_base,
+          "no dl_TimeReq and no guest base without a native timer");
+    const ULONG req = Kaffeine_DosTimeRequest(&f.ctx, &native_timer);
+    const ULONG tb = f.ctx.timer_base;
+    check(req && tb && f.ctx.native_timer == &native_timer && !open_calls && !live_opens,
+          "dl_TimeReq makes the guest timer.device base without a native open");
+    check(m68k_read32(&f.ctx, req + IO_DEVICE) == tb && m68k_read32(&f.ctx, req + IO_UNIT) == UNIT_VBLANK &&
+          m68k_read16(&f.ctx, req + MN_LENGTH) == 40 && f.memory[req + LN_TYPE] == NT_REPLYMSG &&
+          !m68k_read32(&f.ctx, req + MN_REPLYPORT) && !m68k_read16(&f.ctx, req + IO_COMMAND),
+          "dl_TimeReq is a timerequest on unit VBLANK of the guest base");
+    check(m68k_read16(&f.ctx, tb + 20) == 41 && m68k_read16(&f.ctx, tb + 22) == 2,
+          "the guest base has the version of the native timer");
+    const ULONG ev = 0x2700;
+    check(f.timer(60, ev) == 709379 && timeval_is(f, ev, 0x12345678, 0x9ABCDEF0),
+          "ReadEClock() through its io_Device reads the native E-clock");
+
+    const ULONG p = f.port();
+    const ULONG r = f.request(p, 40);
+    check(f.open(r, UNIT_VBLANK) == 0 && f.ctx.timer_base == tb && m68k_read32(&f.ctx, r + IO_DEVICE) == tb &&
+          open_calls == 1,
+          "a later OpenDevice(timer.device) gives the same guest base");
+    f.call(660, r);
+    f.call(672, p);
+}
+
 /* The low 32 bits of no native device or request anywhere in a guest
    Device and its jump table. */
 static bool no_native_pointer(Fixture &f, ULONG base, ULONG vectors)
@@ -2895,6 +2927,7 @@ int main()
     test_async_changed();
     test_async_cleanup();
     test_timer_base();
+    test_dos_time_request();
     test_input_open_close();
     test_input_base_rollback();
     test_keyboard_matrix();

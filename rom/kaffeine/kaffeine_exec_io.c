@@ -826,8 +826,9 @@ static IPTR open_failed(struct KaffeineContext *ctx, ULONG req, BYTE error)
     return (IPTR)(LONG)error;
 }
 
-/* The guest timer.device base, made at the first successful open: a 68k
-   Device with the name, the type and the version of the native one. */
+/* The guest timer.device base, made at the first successful open or for
+   the dl_TimeReq of the guest DOSBase: a 68k Device with the name, the
+   type and the version of the native one. */
 static BOOL timer_base(struct KaffeineContext *ctx, struct Device *native)
 {
     static const char name[] = "timer.device";
@@ -853,6 +854,30 @@ static BOOL timer_base(struct KaffeineContext *ctx, struct Device *native)
     ctx->timer_base = base;
     ctx->native_timer = native;
     return TRUE;
+}
+
+/* The request that dl_TimeReq of the guest DOSBase points to. C startups
+   take timer.device from there without opening it: the clock() of libnix
+   and its constructor call ReadEClock() of its io_Device. A timerequest on
+   UNIT_VBLANK, as dos.library opens its own (rom/dos/dos_init.c), whose
+   io_Device is the guest base of native, the timer behind the native one.
+   No open stands behind it, so the bridge takes I/O on it only as on a
+   copy of a timer request. 0 without a native timer or guest memory. */
+ULONG Kaffeine_DosTimeRequest(struct KaffeineContext *ctx, struct Device *native)
+{
+    ULONG req;
+
+    if (!native || !timer_base(ctx, native))
+        return 0;
+    req = Kaffeine_HeapAlloc(ctx, G_TIMEREQUEST_SIZE, MEMF_PUBLIC);
+    if (!req)
+        return 0;
+    memset(ctx->mem + req, 0, G_TIMEREQUEST_SIZE);
+    ctx->mem[req + G_LN_TYPE] = NT_REPLYMSG;
+    m68k_write16(ctx, req + G_MN_LENGTH, G_TIMEREQUEST_SIZE);
+    m68k_write32(ctx, req + G_IO_DEVICE, ctx->timer_base);
+    m68k_write32(ctx, req + G_IO_UNIT, UNIT_VBLANK);
+    return req;
 }
 
 /* A guest Device with the name, the type and the version of the native
