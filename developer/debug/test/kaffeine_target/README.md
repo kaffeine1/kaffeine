@@ -306,9 +306,10 @@ calculations can remain quiet, so choose it for the workload.
 
 Options precede program names. `NAME=FILE` installs an executable under an
 alias, `--args NAME TEXT` supplies arguments, `--input NAME FILE` redirects
-input and `--expect NAME FILE` compares output byte for byte. `--keys` and
-`--mouse` drive the guest through QMP. `--keep-image` retains the modified
-copy for inspection.
+input, `--expect NAME FILE` compares output byte for byte and `--expect-rc
+NAME CODE` requires return code `CODE` instead of `0`. `--keys` and `--mouse`
+drive the guest through QMP. `--keep-image` retains the modified copy for
+inspection.
 
 ### Independent loaded-hunk process probe
 
@@ -623,7 +624,8 @@ same in the guest and for the host: `S:User-Startup` runs the programs in
 EMU68/pngtest.png EMU68/png-3/cicp-display-p3_reencoded.png" --expect
 png_strict build/png-refs/png_strict.out png_strict=build/pngtest`.
 
-`png_badpal` ends with 1 on purpose. `tests/pngtest-all` expects these
+`png_badpal` ends with 1 on purpose (`PNG_RC_badpal` in the Makefile, passed
+with `--expect-rc png_badpal 1`). `tests/pngtest-all` expects these
 images to fail, and checks that each gives both
 `IDAT: Read palette index exceeding num_palette` and
 `Wrote palette index exceeding num_palette`; it runs them one at a time,
@@ -670,7 +672,8 @@ EMU68/optable.xml" --expect xmlwf_canon build/xmlwf-refs/xmlwf_canon.out
 xmlwf_canon=build/xmlwf`, and the standard input step adds `--input
 xmlwf_stdin build/xmlwf-files/AndroidManifest.xml`.
 
-`xmlwf_errors` ends with 2 on purpose. `avx.xml` holds one `<instruction>`
+`xmlwf_errors` ends with 2 on purpose (`XMLWF_RC_errors` in the Makefile,
+passed with `--expect-rc xmlwf_errors 2`). `avx.xml` holds one `<instruction>`
 after another with no element around them, so `xmlwf` reports junk after
 the document element; with `-s` the SVG icon is not standalone, since it
 names an external DTD; `-k` keeps `xmlwf` going to the manifest, which is
@@ -703,7 +706,9 @@ the one of the same program built for the host:
 The compression steps and `xz_unpack` also take the memory options of
 `tests/test_compress.sh`, `--memlimit-compress=48MiB
 --memlimit-decompress=5MiB --no-adjust --threads=1`. The arguments are in
-`XZ_ARGS_` and the step name, `XZ_ARGS_p1` for example. Each bad step ends
+`XZ_ARGS_` and the step name, `XZ_ARGS_p1` for example, and `XZ_RC_bad1` to
+`XZ_RC_bad6` give the return code 1 for `--expect-rc xz_bad1 1` to
+`--expect-rc xz_bad6 1`. Each bad step ends
 with a good file, which `xz` decompresses after the errors of the others, so
 that no step is without output.
 
@@ -969,10 +974,32 @@ each, and it enters them about 204 million times a run.
 | `unzip_bad_crc=unzip` | `-p EMU68/bad_crc.zip` | 2 (`PK_ERR`) for the corrupted member CRC-32 |
 | `awk_bad=awk` | `-f EMU68/awk_bad.awk EMU68/test.countries` | 2 for the missing `printf` argument |
 
-These forty-eight Shell/Run executions are deliberate nonzero cases. They must
-be checked against their expected behavior; raw nonzero status alone is
-not a regression verdict. Valid ordinary queues are positive tests in
-`exec_messages`.
+These forty-eight Shell/Run executions are deliberate nonzero cases. Pass
+`--expect-rc NAME CODE` with the program or alias name of the first column and
+the exit code of the third so the runner requires that exact return code in
+both the Shell and Run executions and still checks the output (and the
+`--expect` reference file, when given):
+
+- `--expect-rc cpu_faults 20`, `--expect-rc c_compute_fpu 20`,
+  `--expect-rc exec_timer_sendio 20`, `--expect-rc exec_public_putmsg 20`,
+  `--expect-rc exec_memory_procure 20`, `--expect-rc exec_memory_vacate 20`
+  and `--expect-rc cpu_faults_mmu 20` for the seven containment probes that
+  stop with `RETURN_FAIL` (20), and `--expect-rc dos_strings_exit 7` for the
+  `Exit(7)` probe;
+- `--expect-rc png_badpal 1` (`PNG_RC_badpal` in the Makefile),
+  `--expect-rc xmlwf_errors 2` (`XMLWF_RC_errors`) and
+  `--expect-rc xz_bad1 1` to `--expect-rc xz_bad6 1` (`XZ_RC_bad1` to
+  `XZ_RC_bad6`);
+- `--expect-rc bzip2_bad_crc 2`, `--expect-rc bzip2_bad_cut 2` and
+  `--expect-rc bzip2_bad_magic 2` (`BZIP2_RC_bad_crc` to `BZIP2_RC_bad_magic`),
+  `--expect-rc zstd_bad 1` (`ZSTD_RC_bad`), `--expect-rc lua_bad 1`
+  (`LUA_RC_bad`), `--expect-rc unzip_bad_trunc 9` and
+  `--expect-rc unzip_bad_crc 2` (`UNZIP_RC_bad_trunc`, `UNZIP_RC_bad_crc`),
+  and `--expect-rc awk_bad 2` (`AWK_RC_bad`).
+
+With `--expect-rc`, a return code of 0 or any other code fails the execution;
+without it, raw nonzero status alone is not a regression verdict. Valid
+ordinary queues are positive tests in `exec_messages`.
 
 ## Verified results and limits
 

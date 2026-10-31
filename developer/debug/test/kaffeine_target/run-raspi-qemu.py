@@ -12,10 +12,10 @@ SystemTagList() whose shell runs the program the same way. The results are
 written to SYS:EMU68 and read back once S:User-Startup and every Run wrapper
 have written their completion markers, or when the timeout expires. A boot
 finishing does not make its programs pass: each execution needs a return
-code of zero, nonempty output and no failed checks. With --expect, an
-execution also needs output that is byte for byte the given file, as the
-bzip2 self-test does. Results are also saved in results.json in each boot
-directory and summary.json in the run directory.
+code of zero (or the CODE of --expect-rc), nonempty output and no failed
+checks. With --expect, an execution also needs output that is byte for byte
+the given file, as the bzip2 self-test does. Results are also saved in
+results.json in each boot directory and summary.json in the run directory.
 
 A program can take keys from QEMU's USB keyboard: with --keys it writes
 SYS:EMU68/NAME-keys-N.txt when it is ready for them, NAME being the name
@@ -467,16 +467,19 @@ def guest_completed(read_file, names):
             all(marker_done(read_file('%s-run-done.txt' % name)) for name in names))
 
 
-def parse_result(name, mode, output, rc_text, completed=True, expected=None):
+def parse_result(name, mode, output, rc_text, completed=True, expected=None, expected_rc=0):
     """Assess one execution without QEMU or filesystem dependencies.
 
     Missing/malformed artifacts are incomplete, even if partial output looks
-    successful. A completed execution fails on a nonzero RC, a FAIL line, or
-    a test summary reporting failures. Programs such as hello need no check
-    summary, but must produce output and return zero. With expected bytes,
-    the output must be exactly those bytes, and its lines are not read as
-    checks: a compressed file can contain anything.
+    successful. A completed execution fails on a return code other than
+    expected_rc (0 by default), a FAIL line, or a test summary reporting
+    failures. Programs such as hello need no check summary, but must produce
+    output and return expected_rc. With expected bytes, the output must be
+    exactly those bytes, and its lines are not read as checks: a compressed
+    file can contain anything.
     """
+    if expected_rc is None:
+        expected_rc = 0
     errors, failures = [], []
     rc_match = re.fullmatch(r'rc\s+(-?\d+)', rc_text.strip()) if rc_text else None
     rc = int(rc_match.group(1)) if rc_match else None
@@ -484,8 +487,11 @@ def parse_result(name, mode, output, rc_text, completed=True, expected=None):
         errors.append('missing or invalid completion marker')
     if rc is None:
         errors.append('missing or invalid return code')
-    elif rc != 0:
-        failures.append('return code %d' % rc)
+    elif rc != expected_rc:
+        if expected_rc == 0:
+            failures.append('return code %d' % rc)
+        else:
+            failures.append('return code %d (expected rc %d)' % (rc, expected_rc))
     if output is None or not output.strip():
         errors.append('missing or empty output')
     lines = output.splitlines() if output else []
@@ -520,7 +526,7 @@ def parse_result(name, mode, output, rc_text, completed=True, expected=None):
                               '(no output)')}
 
 
-def assess_boot(names, read_file, vm, expected=None):
+def assess_boot(names, read_file, vm, expected=None, expected_rc=None):
     """Keep VM completion and program verdicts separate in a JSON-ready report."""
     results = []
     for name in names:
@@ -530,7 +536,8 @@ def assess_boot(names, read_file, vm, expected=None):
                 read_file('%s-%s-rc.txt' % (name, mode)),
                 completed=(mode == 'shell' or
                            marker_done(read_file('%s-run-done.txt' % name))),
-                expected=(expected or {}).get(name)))
+                expected=(expected or {}).get(name),
+                expected_rc=(expected_rc or {}).get(name, 0)))
     # input that --keys or --mouse could not send fails the execution that
     # waited for it
     for result in results:
@@ -778,7 +785,8 @@ def boot(args, run, programs):
         subprocess.run(['gzip', '-f', str(debug_log)], check=False)
 
     guest = run / 'guest'
-    report = assess_boot(names, lambda name: load_text(guest / name), vm, args.expected)
+    report = assess_boot(names, lambda name: load_text(guest / name), vm,
+                         args.expected, getattr(args, 'expected_rc', None))
     report['directory'] = str(run)
     (run / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
     return report
@@ -815,6 +823,9 @@ def main():
                         'screen as screen-NAME.png in the run directory')
     p.add_argument('--expect', nargs=2, action='append', default=[], metavar=('PROGRAM', 'FILE'),
                    help='PROGRAM passes only if its output is byte for byte FILE')
+    p.add_argument('--expect-rc', nargs=2, action='append', default=[],
+                   metavar=('PROGRAM', 'CODE'),
+                   help='PROGRAM passes only if its return code is CODE (default: 0)')
     p.add_argument('--files', nargs=2, action='append', default=[], metavar=('PROGRAM', 'DIR'),
                    help='install the files and directories in DIR next to PROGRAM in '
                         'SYS:EMU68, as the drawer of an application')
@@ -842,7 +853,8 @@ def main():
         sys.stdout.reconfigure(errors='backslashreplace')
     args.arguments = dict(args.args)
     args.inputs = dict(args.input)
-    for option, pairs in (('--keys', args.keys), ('--mouse', args.mouse)):
+    for option, pairs in (('--keys', args.keys), ('--mouse', args.mouse),
+                          ('--expect-rc', args.expect_rc)):
         counts = collections.Counter(name for name, _ in pairs)
         twice = sorted(name for name, count in counts.items() if count > 1)
         if twice:
@@ -864,17 +876,23 @@ def main():
             args.expected[name] = Path(path).read_bytes()
         except OSError as e:
             p.error('cannot read the expected output of %s: %s' % (name, e))
+    args.expected_rc = {}
+    for name, code in args.expect_rc:
+        if not re.fullmatch(r'-?[0-9]+', code):
+            p.error('--expect-rc %s: %r is no integer' % (name, code))
+        args.expected_rc[name] = int(code)
     names = [program_name(program) for program in args.programs]
     if any(not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', name) for name in names):
         p.error('program names must contain only letters, digits, underscores, dots and hyphens, '
                 'and must not start with a dot or hyphen; use NAME=FILE for other file names')
     if len({name.lower() for name in names}) != len(names):
         p.error('program names must be unique (the FAT volume is case-insensitive)')
-    # An expectation that names no program would leave its output unchecked.
-    unknown = sorted(set(args.expected) - set(names))
-    if unknown:
-        p.error('--expect names no program: %s (use the NAME of NAME=FILE, spelled as given)'
-                % ', '.join(unknown))
+    # An expectation that names no program would leave its output or return code unchecked.
+    for option, table in (('--expect', args.expected), ('--expect-rc', args.expected_rc)):
+        unknown = sorted(set(table) - set(names))
+        if unknown:
+            p.error('%s names no program: %s (use the NAME of NAME=FILE, spelled as given)'
+                    % (option, ', '.join(unknown)))
     for option, scripts in (('--keys', args.keys), ('--mouse', args.mouse)):
         unknown = sorted(set(scripts) - set(names))
         if unknown:

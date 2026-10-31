@@ -58,6 +58,7 @@ BZIP2_ARGS_d3 := -dcs EMU68/sample3.bz2
 BZIP2_ARGS_bad_crc := -dc EMU68/sample1.bz2 EMU68/bad-crc.bz2
 BZIP2_ARGS_bad_cut := -dcq EMU68/sample1.bz2 EMU68/bad-cut.bz2
 BZIP2_ARGS_bad_magic := -dc EMU68/sample1.bz2 EMU68/sample1.ref
+$(foreach s,bad_crc bad_cut bad_magic,$(eval BZIP2_RC_$(s) := 2))
 ifneq ($(BZIP2_SRC),)
 PROGRAMS += bzip2
 endif
@@ -84,6 +85,7 @@ ZSTD_PACK := c1 c3 c9 c19
 ZSTD_STEPS := good bad list $(ZSTD_PACK) unpack
 ZSTD_ARGS_good := -dc $(ZSTD_GOOD)
 ZSTD_ARGS_bad := -dc $(ZSTD_BAD) EMU68/zeroSeq_2B.zst
+ZSTD_RC_bad := 1
 ZSTD_ARGS_list := -l $(ZSTD_GOOD)
 $(foreach l,1 3 9 19,$(eval ZSTD_ARGS_c$(l) := -c -$(l) $(ZSTD_INPUTS)))
 ZSTD_ARGS_unpack := -dc
@@ -180,6 +182,7 @@ PNG_XFAIL3 := $(call png_crashers,huge_sTER_chunk huge_tEXt_chunk huge_tIME_chun
 PNG_BADPAL := $(patsubst %,EMU68/badpal/%.png,regression-palette-8 small-palette-1 \
               small-palette-2 small-palette-4 small-palette-8 test-palette-1 \
               test-palette-2 test-palette-4 test-palette-8)
+PNG_RC_badpal := 1
 ifneq ($(PNG_SRC),)
 ifneq ($(ZLIB_SRC),)
 PROGRAMS += pngtest
@@ -217,6 +220,7 @@ XMLWF_META := -m -d - EMU68/muimaster.xml
 XMLWF_COPY := -c -d - EMU68/Locale.svg
 XMLWF_STDIN := -d -
 XMLWF_ERRORS := -k -s EMU68/avx.xml EMU68/Locale.svg EMU68/AndroidManifest.xml
+XMLWF_RC_errors := 2
 ifneq ($(EXPAT_SRC),)
 PROGRAMS += xmlwf
 endif
@@ -268,6 +272,7 @@ XZ_ARGS_bad3 := -dc $(wordlist 23,33,$(XZ_BAD)) $(XZ_HELLO)
 XZ_ARGS_bad4 := -dc $(wordlist 34,43,$(XZ_BAD)) $(XZ_HELLO)
 XZ_ARGS_bad5 := -dc $(wordlist 44,53,$(XZ_BAD)) $(XZ_HELLO)
 XZ_ARGS_bad6 := -dc $(wordlist 54,62,$(XZ_BAD)) $(XZ_HELLO)
+$(foreach n,1 2 3 4 5 6,$(eval XZ_RC_bad$(n) := 1))
 XZ_ARGS_quiet := -dcqQ EMU68/unsupported-check.xz
 XZ_ARGS_list := -lvv $(patsubst %,EMU68/good-%.xz,0cat-empty 0catpad-empty 1-check-none \
                 1-check-crc32 1-check-crc64 1-check-sha256 1-3delta-lzma2 1-arm64-lzma2-1 \
@@ -315,6 +320,7 @@ LUA_INIT := -e "_port=true _soft=true"
 $(foreach s,$(LUA_TESTS),$(eval LUA_ARGS_$(s) := $(LUA_INIT) EMU68/$(s).lua))
 LUA_ARGS_stdin := -
 LUA_ARGS_bad := EMU68/bad.lua
+LUA_RC_bad := 1
 ifneq ($(LUA_SRC),)
 PROGRAMS += lua
 endif
@@ -345,6 +351,8 @@ UNZIP_ARGS_extract := -o EMU68/tree.zip -d T:unzip_tree
 UNZIP_ARGS_overwrite := -o EMU68/tree.zip -d T:unzip_tree
 UNZIP_ARGS_bad_trunc := -l EMU68/bad_trunc.zip
 UNZIP_ARGS_bad_crc := -p EMU68/bad_crc.zip
+UNZIP_RC_bad_trunc := 9
+UNZIP_RC_bad_crc := 2
 ifneq ($(UNZIP_SRC),)
 PROGRAMS += unzip
 endif
@@ -399,6 +407,7 @@ AWK_ARGS_redir := -f EMU68/awk_redir.awk
 AWK_ARGS_strings := -f EMU68/awk_strings.awk
 AWK_ARGS_system := -f EMU68/awk_system.awk
 AWK_ARGS_bad := -f EMU68/awk_bad.awk EMU68/test.countries
+AWK_RC_bad := 2
 ifneq ($(AWK_SRC),)
 PROGRAMS += awk
 endif
@@ -498,7 +507,7 @@ $(BZIP2_REFS)/stamp: $(BZIP2_SOURCES) $(BZIP2_FILES).stamp
 	ln -s $(BZIP2_FILES) $(@D)/EMU68
 	cd $(@D) && $(foreach s,$(BZIP2_STEPS),cp bzip2 SYS:EMU68/bzip2_$(s) && \
 	    { SYS:EMU68/bzip2_$(s) $(BZIP2_ARGS_$(s)) > bzip2_$(s).out 2> bzip2_$(s).err; \
-	    test $$? = $(if $(filter bad_%,$(s)),2,0); } &&) true
+	    test $$? = $(if $(BZIP2_RC_$(s)),$(BZIP2_RC_$(s)),0); } &&) true
 	cd $(@D) && cmp -s bzip2_c1.out EMU68/sample1.bz2 && \
 	    cmp -s bzip2_c2.out EMU68/sample2.bz2 && \
 	    cmp -s bzip2_c3.out EMU68/sample3.bz2 && \
@@ -539,7 +548,7 @@ $(ZSTD_REFS)/stamp: $(ZSTD_SOURCES) $(ZSTD_FILES).stamp
 	ln -s $(ZSTD_FILES) $(@D)/EMU68
 	cd $(@D) && $(foreach s,$(filter-out unpack,$(ZSTD_STEPS)),cp zstd SYS:EMU68/zstd_$(s) && \
 	    { SYS:EMU68/zstd_$(s) $(ZSTD_ARGS_$(s)) > zstd_$(s).out 2> zstd_$(s).err; \
-	    test $$? = $(if $(filter bad,$(s)),1,0); } &&) true
+	    test $$? = $(if $(ZSTD_RC_$(s)),$(ZSTD_RC_$(s)),0); } &&) true
 	cd $(@D) && cat $(patsubst %,zstd_%.out,$(ZSTD_PACK)) > zstd_unpack.in
 	cd $(@D) && cp zstd SYS:EMU68/zstd_unpack && \
 	    SYS:EMU68/zstd_unpack $(ZSTD_ARGS_unpack) < zstd_unpack.in > zstd_unpack.out 2> zstd_unpack.err
@@ -625,7 +634,7 @@ $(PNG_REFS)/stamp: $(PNG_SRC)/pngtest.c $(PNG_SOURCES) $(ZLIB_SOURCES) $(PNG_BUI
 	cd $(@D) && ./pngtest --xfail $(PNG_XFAIL1) > png_xfail1.out 2> png_xfail1.err
 	cd $(@D) && ./pngtest --xfail $(PNG_XFAIL2) > png_xfail2.out 2> png_xfail2.err
 	cd $(@D) && ./pngtest --xfail $(PNG_XFAIL3) > png_xfail3.out 2> png_xfail3.err
-	cd $(@D) && { ./pngtest -m $(PNG_BADPAL) > png_badpal.out 2> png_badpal.err; test $$? = 1; }
+	cd $(@D) && { ./pngtest -m $(PNG_BADPAL) > png_badpal.out 2> png_badpal.err; test $$? = $(PNG_RC_badpal); }
 	rm -f $(@D)/pngout.png
 	touch $@
 
@@ -668,7 +677,7 @@ $(XMLWF_REFS)/stamp: $(EXPAT_SRC)/xmlwf/xmlwf.c $(EXPAT_SOURCES) $(EXPAT_BUILD)/
 	cd $(@D) && ./xmlwf $(XMLWF_META) > xmlwf_meta.out
 	cd $(@D) && ./xmlwf $(XMLWF_COPY) > xmlwf_copy.out
 	cd $(@D) && ./xmlwf $(XMLWF_STDIN) < EMU68/AndroidManifest.xml > xmlwf_stdin.out
-	cd $(@D) && { ./xmlwf $(XMLWF_ERRORS) > xmlwf_errors.out; test $$? = 2; }
+	cd $(@D) && { ./xmlwf $(XMLWF_ERRORS) > xmlwf_errors.out; test $$? = $(XMLWF_RC_errors); }
 	touch $@
 
 xmlwf-refs: $(XMLWF_REFS)/stamp
@@ -711,7 +720,7 @@ $(XZ_REFS)/stamp: $(XZ_SOURCES) $(XZ_BUILD)/config.h $(XZ_FILES).stamp
 	ln -s $(XZ_FILES) $(@D)/EMU68
 	cd $(@D) && $(foreach s,$(filter-out unpack,$(XZ_STEPS)),cp xz SYS:EMU68/xz_$(s) && \
 	    { SYS:EMU68/xz_$(s) $(XZ_ARGS_$(s)) > xz_$(s).out 2> xz_$(s).err; \
-	    test $$? = $(if $(filter bad%,$(s)),1,0); } &&) true
+	    test $$? = $(if $(XZ_RC_$(s)),$(XZ_RC_$(s)),0); } &&) true
 	cd $(@D) && cat $(patsubst %,xz_%.out,$(XZ_PACK)) > xz_unpack.in
 	cd $(@D) && cp xz SYS:EMU68/xz_unpack && \
 	    SYS:EMU68/xz_unpack $(XZ_ARGS_unpack) < xz_unpack.in > xz_unpack.out 2> xz_unpack.err
@@ -761,7 +770,7 @@ $(LUA_REFS)/stamp: $(LUA_SOURCES) $(TEST_DIR)/lua_config.h $(LUA_FILES).stamp
 	ln -s $(LUA_FILES) $(@D)/EMU68
 	cd $(@D) && $(foreach s,$(filter-out stdin,$(LUA_STEPS)),cp lua SYS:EMU68/lua_$(s) && \
 	    { TZ=UTC0 SYS:EMU68/lua_$(s) $(LUA_ARGS_$(s)) > lua_$(s).out 2> lua_$(s).err; \
-	    test $$? = $(if $(filter bad,$(s)),1,0); } &&) true
+	    test $$? = $(if $(LUA_RC_$(s)),$(LUA_RC_$(s)),0); } &&) true
 	cd $(@D) && cp lua SYS:EMU68/lua_stdin && \
 	    TZ=UTC0 SYS:EMU68/lua_stdin $(LUA_ARGS_stdin) < EMU68/stdin.lua > lua_stdin.out 2> lua_stdin.err
 	touch $@
@@ -790,7 +799,7 @@ $(UNZIP_REFS)/stamp: $(UNZIP_SOURCES) $(TEST_DIR)/unzip_config.h $(UNZIP_FILES).
 	ln -s $(UNZIP_FILES) $(@D)/EMU68
 	cd $(@D) && $(foreach s,$(UNZIP_STEPS),cp unzip SYS:EMU68/unzip_$(s) && \
 	    { TZ=UTC0 SYS:EMU68/unzip_$(s) $(UNZIP_ARGS_$(s)) > unzip_$(s).out 2> unzip_$(s).err; \
-	    test $$? = $(if $(filter bad_trunc,$(s)),9,$(if $(filter bad_crc,$(s)),2,0)); } &&) \
+	    test $$? = $(if $(UNZIP_RC_$(s)),$(UNZIP_RC_$(s)),0); } &&) \
 	    rm -rf 'T:unzip_tree'
 	touch $@
 
@@ -834,7 +843,7 @@ $(AWK_REFS)/stamp: $(AWK_SOURCES) $(AWK_GEN_SOURCES) $(TEST_DIR)/awk_config.h $(
 	ln -s $(AWK_FILES) $(@D)/EMU68
 	cd $(@D) && $(foreach s,$(AWK_STEPS),cp awk SYS:EMU68/awk_$(s) && \
 	    { SYS:EMU68/awk_$(s) $(AWK_ARGS_$(s)) > awk_$(s).out 2> awk_$(s).err; \
-	    test $$? = $(if $(filter bad,$(s)),2,0); } &&) rm -f $(@D)/T:awk_redir.txt
+	    test $$? = $(if $(AWK_RC_$(s)),$(AWK_RC_$(s)),0); } &&) rm -f $(@D)/T:awk_redir.txt
 	touch $@
 
 awk-refs: $(AWK_REFS)/stamp
