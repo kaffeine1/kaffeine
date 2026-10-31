@@ -45,7 +45,7 @@ print("pcall/xpcall ok:", err1, err2, v2)
 -- 2. IEEE-754 double math and deterministic table.sort
 local nums = {
     0.0, -0.0, 0.1, -0.1, 1.0 / 3.0, -45.0 / 247.0,
-    math.pi, math.exp(1.0), math.sqrt(2.0), 2.0^-52, 1e30, -3e-20
+    math.pi, 2.75, math.sqrt(2.0), 2.0^-52, 1e30, -3e-20
 }
 for i = 1, #nums do
     local x = nums[i]

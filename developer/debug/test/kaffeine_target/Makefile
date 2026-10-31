@@ -297,8 +297,8 @@ endif
 # lua of Lua 5.4.7: set LUA_SRC to its lua-5.4.7 directory (with
 # lua-5.4.7-tests next to it or in $(LUA_TESTS_SRC)) to build it, with
 # lua_config.h in front of each file and, for the m68k, lua_libnix.c for
-# the floating-point snprintf() and strtod() cases where libnix differs from
-# ISO C. The battery runs it on the twelve deterministic scripts of
+# the floating-point snprintf(), strtod(), double comparison and division
+# cases where libnix differs from ISO C. The battery runs it on the twelve deterministic scripts of
 # lua-5.4.7-tests that need no C test library, a standard-input step and an
 # unhandled-error step, which $(LUA_FILES) collects under EMU68/, and
 # compares its output with the one of the same program built for the host,

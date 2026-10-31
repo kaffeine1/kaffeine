@@ -77,7 +77,7 @@ at the end.
 | `xz_libnix.c` | What `xz` needs beyond libnix: `sigaction()` on `signal()`, `sigprocmask()` with nothing to block, `fcntl()` that gives no flags and sets none, `poll()` that finds every descriptor ready, and `fchmod()` and `fchown()`, which succeed without doing anything. |
 | `mbedtls_config.h` | The configuration of mbed TLS 3.6.7 for `mbedtls_selftest`, the same for its host build: the modules whose self-tests it runs, with every cipher mode and elliptic curve, without the network, the clock, files and entropy. |
 | `lua_config.h` | The configuration header of Lua 5.4.7, included in front of each file for both `lua` and its host build: sets `LUA_PATH_DEFAULT` to `"EMU68/?.lua;?.lua"`, fixes the decimal point to `'.'` and restricts `setlocale()` to the C locale, leaves `lua_strx2number` and `lua_number2strx` undefined so that both builds use Lua's own hexadecimal float parser and formatter, and on m68k routes `l_sprintf` and `lua_str2number` to `lua_libnix.c`. |
-| `lua_libnix.c` | What `lua` needs beyond libnix: `lua_libnix_snprintf()`, which moves a sign in front of leading zero padding and clears integer digits past `DBL_DIG` on `%f` and `%F`, and `lua_libnix_strtod()`, which parses decimal floats with a 64-bit integer mantissa of up to 19 significant digits and leaves `*endptr` at `nptr` when no digits match. |
+| `lua_libnix.c` | What `lua` needs beyond libnix: `lua_libnix_snprintf()`, which moves a sign in front of leading zero padding and clears integer digits past `DBL_DIG` on `%f` and `%F`, `lua_libnix_strtod()`, which parses decimal floats with a 64-bit integer mantissa of up to 19 significant digits and leaves `*endptr` at `nptr` when no digits match, and the soft-float double comparisons (`__eqdf2`, `__nedf2`, `__gtdf2`, `__gedf2`, `__ltdf2`, `__ledf2`, `__cmpdf2` and `__unorddf2`) and division (`__divdf3`), which answer as ISO C does for NaNs before they call `IEEEDPCmp()` and `IEEEDPDiv()`. |
 | `lua_stdin.lua` | The script that `lua_stdin` reads from standard input: exercises `pcall` and `xpcall` (`setjmp`/`longjmp`), IEEE 754 `double` math and `table.sort`, `string.format` with `%g` and `%a`, file I/O on `EMU68/` and a temporary file, `os.clock()` and `os.time()`. |
 | `lua_bad.lua` | The script of `lua_bad`: flushes a line to standard output and raises an unhandled error in `fail_step()`, ending with return code 1 and a stack traceback on standard error. |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
@@ -224,8 +224,10 @@ which leaves the modules that it does not name empty, and
 Set `LUA_SRC` to an unpacked `lua-5.4.7` directory, with `lua-5.4.7-tests`
 next to it (or named by `LUA_TESTS_SRC`), to include `lua`. The Makefile
 builds every file of `src/` except `luac.c` with `lua_config.h` in front of
-each file, and for the m68k links `lua_libnix.c` and the `libm.a` of
-libnix. It collects the twelve deterministic scripts of `lua-5.4.7-tests`,
+each file, and for the m68k links `lua_libnix.c` (for `snprintf()`,
+`strtod()` and NaN-aware soft-float double comparison and division helpers
+in front of `IEEEDPCmp()` and `IEEEDPDiv()`) and the `libm.a` of libnix. It
+collects the twelve deterministic scripts of `lua-5.4.7-tests`,
 `bwcoercion.lua`, `stdin.lua` and `bad.lua` in `build/lua-files`, and
 `make lua-refs` writes the reference outputs and error streams to
 `build/lua-refs`. A second binary built with `-m68020 -m68881` is not worth
@@ -762,26 +764,14 @@ program built for the host:
 | `lua_stdin` | `-`, with `--input` of `stdin.lua` | `lua_stdin.lua`: nested `pcall`/`xpcall` and coroutine error recovery, `double` math and `table.sort`, `string.format` with `%g` and `%a`, file I/O on `EMU68/` and a temporary file, `os.clock()` and `os.time()` | 0 |
 | `lua_bad` | `EMU68/bad.lua` | `testing unhandled error` on stdout, and the `SYS:EMU68/lua_bad` stack traceback on stderr | 1 |
 
-Of the seventeen scripts in `lua-5.4.7-tests` that run without the `ltests`
-C module, five are left out because their output varies across runs or
-between a 64-bit little-endian host and the 32-bit big-endian 68k target:
-
-- `math.lua` calls `math.randomseed()` with no arguments (seeding from
-  `time(NULL)` and the `lua_State` pointer) and prints the seeds and the
-  sampled minimum and maximum over 6400 random calls.
-- `sort.lua` measures `table.sort` on random arrays with `os.clock()` and
-  prints the elapsed times in milliseconds and the comparison counts.
-- `constructs.lua` sets `_ENV.GLOB1 = math.random(0, 1)` from the default
-  time-and-address seed and prints `testing short-circuit optimizations (0)`
-  or `(1)`.
-- `tpack.lua` prints the platform's C `long` and `size_t` sizes, byte order
-  and alignment (`long 8, size_t 8`, `little endian`, `alignment: 8` on the
-  64-bit host against `long 4, size_t 4`, `big endian`, `alignment: 2` on
-  68k).
-- `locals.lua` loads `tracegc.lua` and calls `tracegc.start()` at line 608
-  without stopping it, so its `__gc` finalizer writes a `.` to standard
-  error on every garbage-collection cycle for the rest of the script, a
-  count that varies with 32-bit and 64-bit object sizes.
+Some other scripts of `lua-5.4.7-tests` run without the `ltests` C module
+but give output that changes from run to run or between the 64-bit
+little-endian host and the 32-bit big-endian 68k. For example, `math.lua` and
+`constructs.lua` seed `math.random` from the time and an address, `sort.lua`
+prints times measured with `os.clock()`, `tpack.lua` prints the sizes, byte
+order and alignment of C types, and `locals.lua` leaves `tracegc` running from
+line 608, so that a `.` goes to standard error on every garbage collection
+cycle.
 
 The steps in `LUA_STEPS` and their arguments in `LUA_ARGS_<step>` cover what
 `math.lua` and `sort.lua` exercise deterministically through `lua_stdin.lua`.

@@ -2,18 +2,24 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
     Author: Michele Dipace (@kaffeine1)
 
-    The snprintf() and strtod() helpers of Lua 5.4.7 for its m68k build with
-    libnix. In libnix, __vfprintf_total_size() writes zero padding before the
-    sign on floating-point conversions and scales large exponents by
-    multiplying by 0.0000000001 in a loop, which leaves rounding drift in
-    digits 16 to 21 of %.99f on 1e308; lua_libnix_snprintf() moves the sign
-    in front of leading zero padding and clears integer digits past DBL_DIG on
-    %f and %F. In libnix, strtod() calls sscanf("%lf%ln"), whose vfscanf()
-    stores 0.0 and advances endptr past the first non-digit character when no
-    number is present, and rounds after 16 decimal digits on 2^63;
-    lua_libnix_strtod() parses decimal floats with a 64-bit integer mantissa
-    of up to 19 significant digits and leaves *endptr at nptr when no digits
-    match.
+    The snprintf(), strtod() and IEEE-754 double comparison helpers of Lua
+    5.4.7 for its m68k build with libnix. In libnix, __vfprintf_total_size()
+    writes zero padding before the sign on floating-point conversions and
+    scales large exponents by multiplying by 0.0000000001 in a loop, which
+    leaves rounding drift in digits 16 to 21 of %.99f on 1e308;
+    lua_libnix_snprintf() moves the sign in front of leading zero padding and
+    clears integer digits past DBL_DIG on %f and %F. In libnix, strtod()
+    calls sscanf("%lf%ln"), whose vfscanf() stores 0.0 and advances endptr
+    past the first non-digit character when no number is present, and rounds
+    after 16 decimal digits on 2^63; lua_libnix_strtod() parses decimal
+    floats with a 64-bit integer mantissa of up to 19 significant digits and
+    leaves *endptr at nptr when no digits match. In libm.a of libnix,
+    __eqdf2, __nedf2, __gtdf2, __gedf2, __ltdf2, __ledf2 and __cmpdf2 are all
+    aliases for IEEEDPCmp(), which has no unordered return value: on AmigaOS
+    3.2.3 IEEEDPCmp(NaN, NaN) is 0 and IEEEDPCmp(NaN, DBL_MAX) is +1. The
+    soft-float helpers below check the IEEE-754 exponent and mantissa words
+    for NaN before calling IEEEDPCmp(), and return a quiet NaN on 0.0 / 0.0
+    or inf / inf in __divdf3().
 */
 
 #include <ctype.h>
@@ -24,6 +30,111 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+
+#include <exec/types.h>
+#include <proto/mathieeedoubbas.h>
+
+typedef union {
+    double d;
+    struct {
+        unsigned long hi;
+        unsigned long lo;
+    } w;
+} lua_ieee_double_t;
+
+static int lua_ieee_isnan(double x)
+{
+    lua_ieee_double_t u;
+
+    u.d = x;
+    return ((u.w.hi & 0x7ff00000UL) == 0x7ff00000UL) &&
+           (((u.w.hi & 0x000fffffUL) != 0UL) || (u.w.lo != 0UL));
+}
+
+static int lua_ieee_iszero(double x)
+{
+    lua_ieee_double_t u;
+
+    u.d = x;
+    return ((u.w.hi & 0x7fffffffUL) == 0UL) && (u.w.lo == 0UL);
+}
+
+static int lua_ieee_isinf(double x)
+{
+    lua_ieee_double_t u;
+
+    u.d = x;
+    return ((u.w.hi & 0x7fffffffUL) == 0x7ff00000UL) && (u.w.lo == 0UL);
+}
+
+double __divdf3(double a, double b)
+{
+    if (lua_ieee_isnan(a) || lua_ieee_isnan(b) ||
+        (lua_ieee_iszero(a) && lua_ieee_iszero(b)) ||
+        (lua_ieee_isinf(a) && lua_ieee_isinf(b)))
+    {
+        lua_ieee_double_t nan;
+
+        nan.w.hi = 0x7ff80000UL;
+        nan.w.lo = 0x00000000UL;
+        return nan.d;
+    }
+    return IEEEDPDiv(a, b);
+}
+
+long __unorddf2(double a, double b)
+{
+    return lua_ieee_isnan(a) || lua_ieee_isnan(b);
+}
+
+long __eqdf2(double a, double b)
+{
+    if (lua_ieee_isnan(a) || lua_ieee_isnan(b))
+        return 1;
+    return IEEEDPCmp(a, b);
+}
+
+long __nedf2(double a, double b)
+{
+    if (lua_ieee_isnan(a) || lua_ieee_isnan(b))
+        return 1;
+    return IEEEDPCmp(a, b);
+}
+
+long __gtdf2(double a, double b)
+{
+    if (lua_ieee_isnan(a) || lua_ieee_isnan(b))
+        return -1;
+    return IEEEDPCmp(a, b);
+}
+
+long __gedf2(double a, double b)
+{
+    if (lua_ieee_isnan(a) || lua_ieee_isnan(b))
+        return -1;
+    return IEEEDPCmp(a, b);
+}
+
+long __ltdf2(double a, double b)
+{
+    if (lua_ieee_isnan(a) || lua_ieee_isnan(b))
+        return 1;
+    return IEEEDPCmp(a, b);
+}
+
+long __ledf2(double a, double b)
+{
+    if (lua_ieee_isnan(a) || lua_ieee_isnan(b))
+        return 1;
+    return IEEEDPCmp(a, b);
+}
+
+long __cmpdf2(double a, double b)
+{
+    if (lua_ieee_isnan(a) || lua_ieee_isnan(b))
+        return 1;
+    return IEEEDPCmp(a, b);
+}
 
 int lua_libnix_snprintf(char *buf, size_t sz, const char *fmt, ...)
 {
