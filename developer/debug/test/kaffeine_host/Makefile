@@ -55,7 +55,7 @@ WORKBENCH_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_un
 TASK_OBJS := $(BUILD_DIR)/file_boundary_unit.o $(addprefix $(BUILD_DIR)/task_,cpu.o dispatch.o shadow.o)
 SCHED_CPPFLAGS := -I$(TEST_DIR)/sched_stubs $(TEST_CPPFLAGS)
 SCHED_OBJS := $(addprefix $(BUILD_DIR)/sched_,cpu.o dispatch.o sched.o messages.o)
-SCHED_OBJS += $(BUILD_DIR)/sched_jit.o
+SCHED_OBJS += $(BUILD_DIR)/sched_jit.o $(BUILD_DIR)/icon_lookup_unused.o
 SCALING_OBJS := $(filter-out $(BUILD_DIR)/memory_memory.o,$(MEMORY_OBJS)) $(BUILD_DIR)/heap_scaling_memory.o
 BENCH_OBJS := $(addprefix $(BUILD_DIR)/heap_bench_,memory.o cpu.o)
 GFX_CPPFLAGS := -I$(TEST_DIR)/gfx_stubs $(TEST_CPPFLAGS)
@@ -88,7 +88,7 @@ REG_CHECK_ARGS := $(if $(NDK_FD_DIR),--ndk-fd-dir "$(NDK_FD_DIR)",) $(if $(AROS_
 
 MESSAGE_CPPFLAGS := -DAROS_FAST_BSTR=1 -I$(TEST_DIR)/message_stubs -I$(TEST_DIR)/dos_thunk_stubs -I$(TEST_DIR)/gfx_stubs -I$(TEST_DIR)/io_stubs $(TEST_CPPFLAGS)
 MESSAGE_OBJS := $(addprefix $(BUILD_DIR)/message_boundary_,cpu.o dispatch.o memory.o messages.o exec_compat.o filehandle.o handlers.o format.o shadow.o)
-MESSAGE_OBJS += $(BUILD_DIR)/message_entries.o
+MESSAGE_OBJS += $(BUILD_DIR)/message_entries.o $(BUILD_DIR)/icon_lookup_unused.o
 ICON_CPPFLAGS := -I$(TEST_DIR)/icon_stubs $(MESSAGE_CPPFLAGS)
 ICON_OBJS := $(MESSAGE_OBJS) $(BUILD_DIR)/icon_boundary_icon.o
 
@@ -491,6 +491,8 @@ $(BUILD_DIR)/message_messages.o: $(KAFFEINE_DIR)/kaffeine_messages.c | $(BUILD_D
 	$(CC) $(CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
 $(BUILD_DIR)/message_native_unused.o: $(TEST_DIR)/message_native_unused.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
+$(BUILD_DIR)/icon_lookup_unused.o: $(TEST_DIR)/icon_lookup_unused.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
 $(BUILD_DIR)/file_boundary_unit.o: $(TEST_DIR)/file_boundary_unit.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
 
@@ -506,8 +508,8 @@ $(BUILD_DIR)/message_process_streams.o: $(BUILD_DIR)/message_process_streams.c |
 	$(CC) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -MMD -MP -c -o $@ $<
 $(BUILD_DIR)/test_exec_messages: $(TEST_DIR)/test_exec_messages.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
-$(BUILD_DIR)/test_dos_packets: $(TEST_DIR)/test_dos_packets.cpp $(MESSAGE_OBJS) $(BUILD_DIR)/message_boundary_sched.o $(BUILD_DIR)/message_process_streams.o | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(BUILD_DIR)/message_boundary_sched.o $(BUILD_DIR)/message_process_streams.o $(LDLIBS)
+$(BUILD_DIR)/test_dos_packets: $(TEST_DIR)/test_dos_packets.cpp $(TEST_DIR)/process_icon_fixture.h $(MESSAGE_OBJS) $(BUILD_DIR)/message_boundary_sched.o $(BUILD_DIR)/message_process_streams.o $(BUILD_DIR)/icon_boundary_icon.o | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(ICON_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(BUILD_DIR)/message_boundary_sched.o $(BUILD_DIR)/message_process_streams.o $(BUILD_DIR)/icon_boundary_icon.o $(LDLIBS)
 $(BUILD_DIR)/test_dos_packet_thunks: $(TEST_DIR)/test_dos_packet_thunks.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MESSAGE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MESSAGE_OBJS) $(LDLIBS)
 $(BUILD_DIR)/test_dos_handlers: $(TEST_DIR)/test_dos_handlers.cpp $(MESSAGE_OBJS) | $(BUILD_DIR)

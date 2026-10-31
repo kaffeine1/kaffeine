@@ -747,9 +747,11 @@ static void process_stream_retirement()
 
 #include "process_packet_fixture.h"
 #include "process_stream_fixture.h"
+#include "process_icon_fixture.h"
 
 int main()
 {
+    typed_process_icons();
     typed_process_packets();
     captured_startup_streams();
     process_stream_retirement();

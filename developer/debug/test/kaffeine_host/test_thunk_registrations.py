@@ -96,7 +96,7 @@ DEVICE_REFUSED = {
     "keyboard": DEVICE_LIBRARY_VECTORS | {30, 36},
     "input": DEVICE_LIBRARY_VECTORS | {30, 36, 42},
 }
-ICON_REFUSED = frozenset((54, 72, 84, 108, 126, 138, 150, 156, 162, 168, 180, 186, 192, 198))
+ICON_REFUSED = frozenset((54, 72, 108, 126, 138, 150, 156, 162, 168, 180, 186, 192, 198))
 # Every generated layers.library slot but DeleteLayer, LockLayer, UnlockLayer,
 # LockLayerInfo, UnlockLayerInfo, NewLayerInfo, DisposeLayerInfo,
 # CreateUpfrontHookLayer and InstallLayerHook,
@@ -135,6 +135,7 @@ CASES = (
     ("graphics", "getdisplayinfodata.c", "GetDisplayInfoData", "thunk_gfx_GetDisplayInfoData"),
     ("graphics", "finddisplayinfo.c", "FindDisplayInfo", "thunk_gfx_FindDisplayInfo"),
     ("icon", "getdiskobject.c", "GetDiskObject", "kaffeine_icon_GetDiskObject"),
+    ("icon", "putdiskobject.c", "PutDiskObject", "kaffeine_icon_PutDiskObject"),
     ("icon", "freediskobject.c", "FreeDiskObject", "kaffeine_icon_FreeDiskObject"),
     ("icon", "findtooltype.c", "FindToolType", "kaffeine_icon_FindToolType"),
     ("icon", "matchtoolvalue.c", "MatchToolValue", "kaffeine_icon_MatchToolValue"),

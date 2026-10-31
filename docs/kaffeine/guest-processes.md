@@ -76,6 +76,29 @@ the live root signals the fixed native driver, even when the packet adapter is
 running on a broker. Staged arguments clear on completion or failure and before
 Process teardown; a transport failure never permits execution on the driver.
 
+## Icon metadata and Process I/O
+
+`GetDiskObject()`, `GetDiskObjectNew()`, `GetDefDiskObject()` and
+`PutDiskObject()` use the typed Process's private DOS broker. A fixed helper
+validates the current CPU and native owner before executing the selected
+operation, so relative names and `IoErr()` belong to that Process. The live
+root retains its direct native path. Ordinary `AddTask()` and classic-only
+`CreateProc()` tasks have no native DOS context for these operations.
+
+The guest receives a metadata snapshot with no native image or drawer
+pointers. `PutDiskObject()` accepts only an exact, live owned snapshot.
+Positions, stack size, DefaultTool, ToolWindow and bounded ToolTypes may be
+edited; type, Gadget fields and structural pointer fields remain immutable.
+Strings and big-endian pointer arrays are validated and copied before native
+I/O. A real native duplicate preserves the original icon's private images and
+extensions. Native `FALSE` and `IoErr()` are returned as ordinary write
+failures; malformed identities or unsupported structural edits stop with 20.
+
+Live snapshots are protected from generic `FreeMem()`/`FreeVec()` release.
+The typed free operation and context cleanup retire their private native
+owners. The supported write subset does not add guest Image conversion,
+arbitrary DiskObject construction, `DupDiskObjectA()` or `PutIconTagList()`.
+
 ## Loader and startup transaction
 
 [`LoadSeg()` / `NewLoadSeg()`](../../rom/kaffeine/kaffeine_thunks_dos.c) reserve a

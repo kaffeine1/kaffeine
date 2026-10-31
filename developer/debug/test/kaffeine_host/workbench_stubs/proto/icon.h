@@ -14,6 +14,8 @@ struct DiskObject *GetDiskObjectNew(CONST_STRPTR);
 struct DiskObject *GetDefDiskObject(LONG);
 struct DiskObject *NewDiskObject(ULONG);
 void FreeDiskObject(struct DiskObject *);
+struct DiskObject *DupDiskObjectA(struct DiskObject *, struct TagItem *);
+BOOL PutDiskObject(CONST_STRPTR, struct DiskObject *);
 UBYTE *FindToolType(const STRPTR *, const STRPTR);
 BOOL MatchToolValue(UBYTE *, UBYTE *);
 struct DiskObject *Test_DupDiskObjectA_WB(struct Library *base, struct DiskObject *icon, struct TagItem *tags);

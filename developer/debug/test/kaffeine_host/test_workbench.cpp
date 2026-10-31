@@ -342,6 +342,8 @@ extern "C" void FreeDiskObject(DiskObject *d)
 extern "C" DiskObject *GetDiskObjectNew(CONST_STRPTR) { require(false, "unexpected GetDiskObjectNew"); return nullptr; }
 extern "C" DiskObject *GetDefDiskObject(LONG) { require(false, "unexpected GetDefDiskObject"); return nullptr; }
 extern "C" DiskObject *NewDiskObject(ULONG) { require(false, "unexpected NewDiskObject"); return nullptr; }
+extern "C" DiskObject *DupDiskObjectA(DiskObject *, TagItem *) { require(false, "unexpected global DupDiskObjectA"); return nullptr; }
+extern "C" BOOL PutDiskObject(CONST_STRPTR, DiskObject *) { require(false, "unexpected global PutDiskObject"); return FALSE; }
 extern "C" UBYTE *FindToolType(const STRPTR *, const STRPTR) { require(false, "unexpected FindToolType"); return nullptr; }
 extern "C" BOOL MatchToolValue(UBYTE *, UBYTE *) { require(false, "unexpected MatchToolValue"); return FALSE; }
 extern "C" Library *OpenLibrary(CONST_STRPTR name, ULONG version)
