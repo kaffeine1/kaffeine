@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     console.device and keymap.library through literal LVOs, the production
     CPU accessors, dispatcher, heap and adapters. Native collaborators

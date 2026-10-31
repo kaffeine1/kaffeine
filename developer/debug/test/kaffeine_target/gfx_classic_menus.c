@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     A classic Intuition menu strip that the program builds in its own
     memory, without GadTools. The strip has two Menus, "Project" and "Edit":

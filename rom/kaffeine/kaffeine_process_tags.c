@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Typed startup for a registered independent 68k program. Code pointers,
    callbacks, stream transfers and borrowed modules are not forwarded. */
 #include <dos/dos.h>

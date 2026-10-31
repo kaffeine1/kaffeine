@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     keymap.library's classic InputEvent boundary. No guest KeyMap table or
     InputEvent pointer is passed to the native library.

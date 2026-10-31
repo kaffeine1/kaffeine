@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Native AROS/ARM controller for an original shared-arena 68k regression.
    Run under an external VM deadline as RunHunk itself is the operation
    under test; all controller/child polls have explicit finite limits. */

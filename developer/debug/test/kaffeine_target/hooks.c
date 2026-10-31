@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Guest hooks and RawDoFmt callbacks. The stubs translate the NDK 3.2
     register conventions to the ordinary libnix C stack convention.

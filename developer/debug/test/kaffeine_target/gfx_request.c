@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     EasyRequests, the way C programs show them, with no input needed. The
     text and the gadgets come from printf-style formats with arguments.

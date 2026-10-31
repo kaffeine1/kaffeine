@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 """Compile the production Init/Drop and private stream helpers verbatim.
 
 Domain loading and scheduler transport retain their standalone suites. This

@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  * Independent instruction execution: pinned project Moira, original programs.
  * Known bridge void calls are intercepted at their typed fake vector boundary. */
 #include "Moira.h"

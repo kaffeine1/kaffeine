@@ -1,4 +1,5 @@
 ; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; Author: Michele Dipace (@kaffeine1)
 ;
 ; Original parent and child of test_guest_tasks.cpp, which holds them
 ; assembled (moira_parent, moira_child) and runs them on real Moira CPUs.

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The two soft-float conversions that the floating point printf() of
     libnix (libm.a) calls and that the m68k-amigaos toolchain used for these

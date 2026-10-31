@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original 68k payload for the native hunk_process_native companion.
    Relative files and a private-data barrier exercise separate DOS owners. */
 #include <exec/types.h>

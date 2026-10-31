@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Host build of the native argument parser for the kaffeine ReadArgs
     test: rom/dos/readargs.c and the ReadItem(), FindArg(), StrToLong() and

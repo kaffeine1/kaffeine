@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original task-to-task message exchange through real classic Exec LVOs.
    WaitPort must yield to the other task even inside Forbid. */
 #include <exec/types.h>

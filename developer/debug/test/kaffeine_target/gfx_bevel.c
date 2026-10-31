@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     DrawBevelBox() of gadtools.library into a window's RastPort on the
     default public screen, with no input needed: a raised bevel box with

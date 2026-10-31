@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * Standalone Amiga 68000 C regression and observation test for Exec messages:
  * PutMsg, GetMsg, ReplyMsg, WaitPort.

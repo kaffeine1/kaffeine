@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * Original ReadPixel regression with manually initialized public structures.
  * No InitRastPort/InitBitMap adapter or display is needed. Only pixels inside

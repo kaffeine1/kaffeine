@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     dos.library ExAll() and ExAllEnd() checks in RAM:, written for both
     AmigaOS 3.2.3 and AROS through kaffeine.

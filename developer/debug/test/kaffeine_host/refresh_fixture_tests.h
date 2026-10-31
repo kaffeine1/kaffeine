@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original refresh cases through the production dispatcher/layer bridge and
    unchanged public native Intuition bodies. Native layer primitives record
    reference counts, update state, contention and OOM; no GUI proof is implied. */

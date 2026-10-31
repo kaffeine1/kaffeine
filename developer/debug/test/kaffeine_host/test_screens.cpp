@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Public and opened screens through literal Intuition LVOs, the real
     dispatcher, heap, tag walker, TextAttr bridge and RastPort bridge.

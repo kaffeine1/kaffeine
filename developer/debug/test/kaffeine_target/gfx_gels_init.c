@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original GELS sentinel initialization, also built for native ARM. */
 #include <exec/types.h>
 #include <graphics/gels.h>

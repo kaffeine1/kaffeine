@@ -1,4 +1,5 @@
-/* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1) */
 #pragma once
 #include <exec/nodes.h>
 struct Task { struct Node tc_Node; UBYTE snapshot[144]; };

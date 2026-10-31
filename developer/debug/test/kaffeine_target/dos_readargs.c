@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Command line parsing with ReadArgs(), the way most CLI tools do it,
     from a libnix C program that uses neither stdio nor malloc. Run it as

@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  * Private allocator/copy interface. Descriptors are native storage, not guest.
  */
 #ifndef KAFFEINE_DOMAIN_MEMORY_H

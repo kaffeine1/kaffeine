@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * Execute the production DOS thunks through the real dispatcher. String
  * parsing and FGets() use the native AROS sources, and VFPrintf() and

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Regions of 68k code. NewRegion() makes a real native Region with
     graphics' own NewRegion() and gives the program a classic 68k Region

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Public screens and the calls around LockPubScreen(): the fields of the
     Screen, its Font TextAttr, also a copy of it kept after the unlock, its

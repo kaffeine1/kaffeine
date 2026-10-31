@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Native copies of 68k structures that native code reads itself, as
     Intuition reads a menu strip or a gadget that a program built:

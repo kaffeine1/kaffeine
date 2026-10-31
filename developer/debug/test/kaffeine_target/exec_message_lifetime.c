@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * Original public-API regression: a manual port drained through list
  * operations may be freed, and its allocation reused for ordinary bytes.

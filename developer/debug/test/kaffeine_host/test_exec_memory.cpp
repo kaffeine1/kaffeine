@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Production heap and memory thunks, compiled as C, through literal Exec
     LVOs from NDK 3.2 exec_lib.fd with poisoned generated fallbacks.

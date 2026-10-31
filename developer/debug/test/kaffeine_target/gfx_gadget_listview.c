@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     A GadTools LISTVIEW_KIND gadget, its attributes from GT_GetGadgetAttrsA()
     and changes to them with GT_SetGadgetAttrsA(), with no input needed. Two

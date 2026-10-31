@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     RastPorts and fonts of 68k code. The RastPort of a window or a screen
     is a 68k RastPort in the guest arena that stands for the native one.

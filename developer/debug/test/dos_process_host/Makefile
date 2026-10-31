@@ -1,4 +1,5 @@
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 TEST_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 AROS_ROOT ?= $(abspath $(TEST_DIR)/../../../..)
 BUILD_DIR ?= $(TEST_DIR)/build

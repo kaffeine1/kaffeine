@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original classic RastPort state and planar-image protocol. */
 #include <exec/types.h>
 #include <exec/memory.h>

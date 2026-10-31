@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * Call the production mathieeedoubbas.library, mathieeedoubtrans.library
  * and mathieeesingbas.library thunks through the real dispatcher with

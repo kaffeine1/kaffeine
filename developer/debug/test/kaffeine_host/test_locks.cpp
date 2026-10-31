@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Production lock module and heap with explicit native-reference oracles. */
 #ifdef NDEBUG
 #undef NDEBUG

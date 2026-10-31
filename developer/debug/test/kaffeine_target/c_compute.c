@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Compiled C code that needs few library calls: libnix's argv, qsort(),
     strtol() and string functions, a CRC32, and 32 and 64-bit integer

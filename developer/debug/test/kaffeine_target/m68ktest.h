@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Check helpers for the kaffeine target test programs. Every check prints
     one line that starts with "ok" or "FAIL", and the program ends with a

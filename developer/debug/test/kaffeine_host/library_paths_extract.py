@@ -1,6 +1,7 @@
 """Compile production OpenLibrary lookup/wrappers without native GUI APIs.
 
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
+Author: Michele Dipace (@kaffeine1)
 Bodies, registrations and generated tables are extracted verbatim. Native
 table functions are poisoned; setup and disk loading are test collaborators.
 """

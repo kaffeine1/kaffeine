@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     console.device CONU_LIBRARY. Guest events and keymaps must never be
     passed to native console or keymap functions without marshalling.

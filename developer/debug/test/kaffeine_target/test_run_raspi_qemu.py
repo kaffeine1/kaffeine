@@ -1,4 +1,5 @@
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
 """Offline tests of result verdicts, the Run completion protocol, the
 keys of --keys and the function names in calls.txt."""
 import importlib.util

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Exercise Allocate()/Deallocate() with a MemHeader and free chunks in
     68k memory. The pool follows libnix malloc's layout: an AllocMem() block

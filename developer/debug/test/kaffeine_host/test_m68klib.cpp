@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Disk library loader integration tests. Native seglists use the host
     BPTR ABI, guest structures use literal big-endian 68k layouts, and all

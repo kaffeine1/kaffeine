@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Bound production heap work through literal Exec LVOs. Only the C heap
     object uses trace-pc; native allocator, dispatcher and test work is excluded.

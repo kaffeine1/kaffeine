@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    An intentionally small assembler for this original public regression.
    All operands are literal words, local labels or explicit HUNK relocations.
    Code/data size, labels, branch spans and relocation offsets are bounded. */

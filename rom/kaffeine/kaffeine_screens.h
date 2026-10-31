@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Screens of 68k code: the screens that it opens and closes, and public
     screens: LockPubScreen() and the calls that hand out the same screens or

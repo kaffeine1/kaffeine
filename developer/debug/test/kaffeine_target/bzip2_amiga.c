@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     What bzip2 1.0.8 needs beyond libnix to run as a target program.
     bzip2 restores the permissions and the owner of an output file with

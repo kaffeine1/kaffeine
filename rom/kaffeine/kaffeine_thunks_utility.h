@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     utility.library thunks: integer math that returns a second result in D1,
     guest TagItem operations and bounded guest string comparisons.

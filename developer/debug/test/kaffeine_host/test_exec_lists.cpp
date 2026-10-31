@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Dispatch the production Exec list thunks against byte-addressed guest
     structures. kaffeine_lists.c is compiled separately as C by the Makefile.

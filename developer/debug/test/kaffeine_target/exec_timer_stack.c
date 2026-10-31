@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    Original timer protocol using stack storage without CreateIORequest. */
 #include <exec/types.h>
 #include <exec/ports.h>

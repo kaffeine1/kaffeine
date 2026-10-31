@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  *
  * The production CLI helper and dispatcher are compiled as C. Native Cli()
  * and guest allocation are controlled collaborators; native CLI memory must

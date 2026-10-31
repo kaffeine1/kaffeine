@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     GadTools gadgets, the way C programs create them, with no window and no
     input needed. A VisualInfo of the default public screen; a context and

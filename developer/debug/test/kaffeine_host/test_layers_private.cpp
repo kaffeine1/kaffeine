@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Private offscreen layers of 68k code through literal LVOs, with the real
     dispatcher, callback primitive, native hook entry, RastPort bridge, layer

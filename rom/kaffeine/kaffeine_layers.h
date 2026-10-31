@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Layers of 68k code: bounded classic snapshots of the native layer
     topology of the screens that the program uses, with stable guest

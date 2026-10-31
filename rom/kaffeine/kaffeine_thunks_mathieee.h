@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     mathieeedoubbas.library, mathieeedoubtrans.library and
     mathieeesingbas.library thunks for 68k callers. On the m68k, an IEEE 754

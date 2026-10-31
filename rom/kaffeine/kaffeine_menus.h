@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     GadTools menus of 68k code: VisualInfo handles, menu strips made by
     CreateMenusA() with a 68k mirror of every Menu, MenuItem, IntuiText,

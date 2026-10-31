@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Small arenas make partial accesses visible to ASan. The CPU loop and
     dispatcher are linked as C objects without unwind tables.

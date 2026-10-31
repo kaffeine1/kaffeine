@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     icon.library DiskObjects as metadata-only 68k snapshots. The program gets
     a guest copy of the classic DiskObject with its strings and ToolTypes;

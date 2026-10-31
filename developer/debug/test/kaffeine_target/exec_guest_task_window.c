@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+   Author: Michele Dipace (@kaffeine1)
    An original child-task IDCMP test. No input is needed: Intuition sends
    ticks to the active window. The child waits inside Forbid(), while its
    parent waits for completion, then replies and closes its own window. */

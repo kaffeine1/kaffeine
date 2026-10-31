@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Intuition and graphics manual thunks shared by kaffeine.library and the
     host dispatch tests. The graphics calls here take the 68k RastPort of a

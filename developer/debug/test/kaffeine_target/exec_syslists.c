@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Read the embedded Exec lists with the classic head/successor protocol.
     Node counts may differ between native AmigaOS and the guest view.

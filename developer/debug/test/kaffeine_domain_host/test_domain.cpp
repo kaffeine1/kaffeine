@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  * The actual heap, copier, guest-memory guard and domain adapter are linked.
  * Native segment images and relocation expectations are original test inputs.
  */

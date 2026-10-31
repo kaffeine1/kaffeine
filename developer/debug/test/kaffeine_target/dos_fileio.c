@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     dos.library file, lock, path and variable functions, called from a
     libnix C program that uses neither stdio nor malloc. The file is

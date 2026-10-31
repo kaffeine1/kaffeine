@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     Compile the complete, unmodified DosEntry and streamSane bodies. The
     fixture substitutes native dependencies, not their dispatch/cleanup logic.

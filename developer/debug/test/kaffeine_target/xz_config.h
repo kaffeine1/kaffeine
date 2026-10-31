@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     The config.h of XZ Utils 5.8.3 for xz, built for the m68k with libnix
     and for the host from the same sources; the Makefile copies it to

@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Author: Michele Dipace (@kaffeine1)
 
     States and redrawing of classic Intuition gadgets, as on AmigaOS 3.2.3.
     A Boolean gadget draws a traditional Image as it is in every state and

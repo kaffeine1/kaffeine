@@ -1,4 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ * Author: Michele Dipace (@kaffeine1)
  * Original synthetic hooks and native collaborators, without app contents. */
 #include <atomic>
 #include <cassert>
