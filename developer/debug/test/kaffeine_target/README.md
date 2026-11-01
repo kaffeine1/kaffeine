@@ -255,14 +255,14 @@ and error files to `build/unzip-refs` under `TZ=UTC0`.
 
 Set `AWK_SRC` to an unpacked awk tree (`onetrueawk/awk`, tag `20260426`) to
 include `awk`. The earlier `2ndEdition` tag (`20230911`) fails on big-endian
-machines: `first()` in `b.c` tested the first byte of the 32-bit rune array
-of a `CCL` node, which upstream fixed in commit `9666b77b36`, in releases from
+machines: `first()` in `b.c` tested the first byte of the 32-bit rune array of
+a `CCL` node, which upstream fixed in commit `9666b77b36`, in releases from
 `20240311` on. The Makefile generates the parser and `proctab.c` in
 `build/awk-src` as "The awk steps" describes, links `awk_libnix.c`,
-`libnix_fmt.c` and the `libm.a` of libnix for the m68k, collects `test.countries`, `test.data`, the
-fourteen selected `p.*` and `t.*` programs of `testdir` and the seven
-`awk_*.awk` scripts in `build/awk-files`, and `make awk-refs` writes the
-reference outputs and error streams to `build/awk-refs`.
+`libnix_fmt.c` and the `libm.a` of libnix for the m68k, collects
+`test.countries`, `test.data`, the fourteen selected `p.*` and `t.*` programs
+of `testdir` and the seven `awk_*.awk` scripts in `build/awk-files`, and `make
+awk-refs` writes the reference outputs and error streams to `build/awk-refs`.
 
 ## Running on AROS AArch64
 
@@ -726,18 +726,18 @@ compresses with `-3` and `-4`, which are left out: the encoder of `-1` takes
 9 MiB and that of `-2` 17 MiB, but that of `-3` takes 32 MiB, all the memory
 that kaffeine gives the guest, and `-4` stops with `Out of memory`.
 
-`xz` begins its messages with the name it runs under, `SYS:EMU68/NAME` in
-the guest, so `make xz-refs` runs the host build under that name too, next
-to an `EMU68` that names `build/xz-files`, and writes its error output to
+`xz` begins its messages with the name it runs under, `SYS:EMU68/NAME` in the
+guest, so `make xz-refs` runs the host build under that name too, next to an
+`EMU68` that names `build/xz-files`, and writes its error output to
 `NAME.err`. The runner keeps the error output of each run in
-`guest/NAME-shell-err.txt` and `guest/NAME-run-err.txt`, and compares it
-with `NAME.err` when `--expect-err` names that file. For example,
-`xz_p1` is `--files xz_p1 build/xz-files --args xz_p1 "-c -1
---memlimit-compress=48MiB --memlimit-decompress=5MiB --no-adjust
---threads=1 EMU68/compress_generated_abc EMU68/compress_generated_random
+`guest/NAME-shell-err.txt` and `guest/NAME-run-err.txt`, and compares it with
+`NAME.err` when `--expect-err` names that file. For example, `xz_p1` is
+`--files xz_p1 build/xz-files --args xz_p1 "-c -1 --memlimit-compress=48MiB
+--memlimit-decompress=5MiB --no-adjust --threads=1
+EMU68/compress_generated_abc EMU68/compress_generated_random
 EMU68/compress_generated_text" --expect xz_p1 build/xz-refs/xz_p1.out
---expect-err xz_p1 build/xz-refs/xz_p1.err xz_p1=build/xz`, and `xz_unpack` adds `--input xz_unpack
-build/xz-refs/xz_unpack.in`.
+--expect-err xz_p1 build/xz-refs/xz_p1.err xz_p1=build/xz`, and `xz_unpack`
+adds `--input xz_unpack build/xz-refs/xz_unpack.in`.
 
 Under QEMU the 25 steps give the output and the error output of the host
 build from the Shell and with Run, in 38 minutes with a boot for each. On
@@ -815,14 +815,14 @@ cycle.
 
 The steps in `LUA_STEPS` and their arguments in `LUA_ARGS_<step>` cover what
 `math.lua` and `sort.lua` exercise deterministically through `lua_stdin.lua`.
-`lua_bad` flushes a line to standard output before raising its uncaught
-error so that its output stream is not empty, and `make lua-refs` runs each
-step as `SYS:EMU68/lua_<step>` next to an `EMU68` that names
-`build/lua-files`. For example, `lua_strings` is `--files lua_strings
-build/lua-files --args lua_strings '-e "_port=true _soft=true"
-EMU68/strings.lua' --expect lua_strings build/lua-refs/lua_strings.out
---expect-err lua_strings build/lua-refs/lua_strings.err lua_strings=build/lua`, and `lua_stdin` adds `--input lua_stdin
-build/lua-files/stdin.lua`.
+`lua_bad` flushes a line to standard output before raising its uncaught error
+so that its output stream is not empty, and `make lua-refs` runs each step as
+`SYS:EMU68/lua_<step>` next to an `EMU68` that names `build/lua-files`. For
+example, `lua_strings` is `--files lua_strings build/lua-files --args
+lua_strings '-e "_port=true _soft=true" EMU68/strings.lua' --expect
+lua_strings build/lua-refs/lua_strings.out --expect-err lua_strings
+build/lua-refs/lua_strings.err lua_strings=build/lua`, and `lua_stdin` adds
+`--input lua_stdin build/lua-files/stdin.lua`.
 
 ## The UnZip 6.0 steps
 
@@ -970,17 +970,25 @@ the 6501 blocks of `mbedtls_selftest` hold 51421 instructions, about eight
 each, and it enters them about 204 million times a run.
 
 I ran the 63 steps of bzip2, zstd, Lua, UnZip and awk the same way under the
-JIT, with the binaries of this tree and the library of master `ce4869b`.
-Every step gives the output and the error output of the host build byte for
-byte, from the Shell and with Run, and the eight deliberate failures end
-with the codes of the table in the next section. On AmigaOS 3.2.3 under
-FS-UAE, with a 68030, 2 MB of chip, 8 MB of fast and 64 MB of Zorro III
-memory, all in one boot as `SYS:EMU68/NAME`, 62 of them give the same
-output, error output and exit code. The exception is `lua_strings`:
-`strings.lua` looks for the largest power of ten below `math.huge` and at
-line 270 expects `10^j` to overflow to infinity, but on overflow the
-`IEEEDPPow()` of AmigaOS 3.2.3 gives the largest finite double, so the
-assertion fails there. Under the bridge `10^j` is infinity, as on the host.
+JIT, with a boot for each step and the library of master `ce4869b`. Every
+step gave the output and the error output of the host build byte for byte,
+from the Shell and with Run, and the eight deliberate failures ended with the
+codes of the table in the next section. Those runs used the Lua and awk
+binaries from before the exact formatter of `libnix_fmt.c`; the runs of the
+35 Lua and awk steps with the binaries of this tree and the library of
+master `0ceb134` are not finished yet. On AmigaOS 3.2.3 under FS-UAE, with a
+68030, 2 MB of chip, 8 MB of fast and 64 MB of Zorro III memory, all in one
+boot as `SYS:EMU68/NAME`, 62 of the 63 steps, with the binaries of this
+tree, give the same output, error output and exit code. The exception is
+`lua_strings`: `strings.lua` looks for the largest power of ten below
+`math.huge` and at line 270 expects `10^j` to overflow to infinity, but on
+overflow the `IEEEDPPow()` of AmigaOS 3.2.3 gives the largest finite double,
+so the assertion fails there. Under the bridge `10^j` is infinity, as on the
+host. The `strtod()` of `lua_libnix.c` and `awk_libnix.c` meets the same
+limit there: it reads 1e308 with `pow()` and multiplications, which AmigaOS
+3.2.3 does not round correctly, and gets a double a few units in the last
+place away from that of the host, so the long steps print 2^1023, built by
+exact doublings.
 
 ## Expected containment and exit probes
 
