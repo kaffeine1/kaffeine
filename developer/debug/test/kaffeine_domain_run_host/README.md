@@ -45,6 +45,16 @@ The actual driver is tested for:
   abort neither runs nor disposes nor accesses that freed context.
 - Invalid input and pure Exec Task refusal before any native `IoErr` query.
   AROS `IoErr` requires a Process; `SetIoErr` safely ignores other Tasks.
+- Break forwarding. CTRL-C to CTRL-F that the caller holds at the commit, or
+  gets while the root runs (as `Break` of its CLI does), go with `Signal()`
+  under the gate semaphore to the task that the driver published at READY;
+  the caller keeps every other signal. Before the commit, on failure or
+  timeout and after root completion the caller keeps its breaks, and no
+  `Signal()` reaches a driver whose root has completed or whose entry has
+  returned. The commit edge is deterministic: the caller's first poll after
+  the commit waits until run has begun, so only breaks given with the commit
+  can be there. The late case parks the caller in its poll across root
+  completion and a break that follows it.
 
 These are host collaborator tests. They do not establish target execution,
 guest scheduler fairness, arbitrary asynchronous IPC or application startup.
