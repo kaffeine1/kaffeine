@@ -1480,8 +1480,11 @@ execution:
 This validation covers one `AslRequest()` per fresh `ASL_FileRequest` handle on
 an owned 1024 by 768 24-bit screen without hooks, filter callbacks, pattern
 gadgets, multiselect or application file I/O. Repeated requests on the same
-handle, AmiPixelShop ASL workflows, Moira execution and physical hardware
-remain separate validation gates.
+handle, Moira execution and physical hardware remain separate validation gates.
+A separate [AmiPixelShop application check](../../../../docs/kaffeine/classic-applications.md#amipixelshop-file-workflow-2026-11-01-utc)
+uses the Kaffeine JIT to open/cancel a requester and to save a two-layer APX1
+document from Shell, then reopen it with Run; its screenshots and extracted
+file are independent application evidence.
 
 ### Additional portable Lua tests (2026-11-01)
 

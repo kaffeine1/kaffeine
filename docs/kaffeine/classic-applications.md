@@ -1,15 +1,17 @@
 # Classic application checks on AROS ARM64
 
-The unmodified 68k programs run through `kaffeine.library` on AROS ARM64.
-Moira and the Kaffeine JIT are tested separately. Application binaries and
-private test disk images are not distributed here.
+These checks run 68k programs through `kaffeine.library` on AROS ARM64.
+Moira and the Kaffeine JIT are tested separately; source-built application
+variants are identified explicitly. Application binaries and test disk images
+are not distributed here.
 
 | Program | Observed behavior | Scope and next check |
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
 | TurboText 2.0 | Original launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT edits, saves, closes and reopens a new text file, then closes normally | Both original `WAIT` invocations return 0; first-save and final files match the nine entered bytes. Broader editing and indexed composition remain separate checks |
-| AmiPixelShop 0.6.1-beta | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; P96 and screen-mode requester requirements are additional source-level gaps |
+| AmiPixelShop 0.6.1-beta (original release) | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; later P96 and first-start mode-requester requirements were not exercised by this startup check |
+| AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel from Shell and Run; Save As of a new 640x480 two-layer document from Shell, then reopen that file with Run | Both executions return 0. The extracted APX1 file preserves the opaque white Background and empty Layer 1; drawing and other formats remain to be tested |
 
 ## Additional startup checks (2026-10-29)
 
@@ -179,7 +181,44 @@ lifetime; they do not establish TurboText editor or UI acceptance.
 The unavailable-emulator failure path remains separate from these successful
 native launches.
 
-### AmiPixelShop startup
+### AmiPixelShop file workflow (2026-11-01 UTC)
+
+A separate source build of AmiPixelShop for a 68020 without an FPU uses
+soft-float code and software math routines.
+The linked executable runs as 68k code through the Kaffeine JIT on AROS
+ARM64 in QEMU's Raspberry Pi 3 model. Workbench is 1024x768, 24-bit; the
+application opens its own 1024x768 screen with a 640x480 document. Preferences
+select RTG mode `0x00100000` and disable the update check.
+
+Two application checks passed:
+
+- **Open and cancel:** from both Shell and `Run`, Ctrl+O opens the native ASL
+  requester on AmiPixelShop's screen. Escape closes it; Ctrl+Q exits cleanly.
+- **Save and reopen:** a fresh Shell execution uses Save As to write
+  `Work:Untitled-1.aps`, displays “Saved” and exits. A fresh `Run` execution
+  selects that file in Open, displays “Loaded” with one `Untitled-1.aps` tab
+  and exits. Both executions return 0 with empty standard error; each records
+  the Kaffeine JIT backend and completed translation counters.
+
+The file extracted after shutdown is a 2,259-byte APX1 version 3 document.
+Independent decoding checks its 640x480 dimensions, two layers, active layer
+1, all 80 opaque-white Background tiles (including padding), the empty
+Layer 1 and exact end of file. The four frames and the actual saved file are
+available in the [media and validation scope](media/amipixelshop-2026-11-01/README.md).
+
+![AmiPixelShop after reopening the saved 68k document through the Kaffeine JIT](media/amipixelshop-2026-11-01/reopened.png)
+
+The application uses `Work:` as its initial drawer. The test image lacked
+that assignment: Open from `Run` stalled with a system requester active on
+Workbench behind the application. Preparing an empty `Work:` drawer allowed
+the workflow to complete. Ensure that `Work:` resolves before reproducing it.
+
+This check uses the source-built executable below. The original release's
+startup result remains separate. Further application checks include drawing,
+coloured content, PNG/JPEG/IFF files, the first-start mode requester, Moira
+and physical hardware.
+
+### AmiPixelShop original-release startup
 
 [AmiPixelShop 0.6.1-beta](https://github.com/radi7777/AmiPixelShop/releases/tag/v0.6.1-beta)
 is the untouched 68040/FPU release, using source tag
@@ -214,12 +253,14 @@ For a later offline GUI probe, preferences `mode=0x<valid RTG mode ID>` and
 They do not resolve the observed FPU/startup blocker. The small-canvas test
 does not validate a complete document workflow or the documented memory floor.
 
-The downloaded executable SHA-256 values identify the tested originals:
+Executable SHA-256 values identify the original downloads and the separate
+source-built test executable:
 
 | File | SHA-256 |
 | --- | --- |
 | TurboText `TTX` | `262399d51c98c3c8498c12e2face18f31c79eb99e68a7a7d302b6b746b6d76c3` |
 | AmiPixelShop | `71db861244ad496aa7cfa4f0c99cabe42f4cf3579ab77ab2a167affa64573a71` |
+| AmiPixelShop 0.6.1, 68020 build without FPU | `14f5d373e46d5665f89f08eb827caf33949346761d44b69fdf516c2ebbbdab4d` |
 
 ## Existing bridge regressions
 
