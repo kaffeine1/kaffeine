@@ -3,7 +3,8 @@
 #
 # printf and sprintf conversions (%d, %i, %o, %x, %X, %u, %c, %s, %e, %E, %f,
 # %g, %G and %%) with positive and negative field widths, precisions, zero
-# padding and dynamic width/precision arguments.
+# padding and dynamic width/precision arguments, and the exact digits and
+# full length of large and long floating conversions.
 
 BEGIN {
     printf "int: [%d] [%i] [%6d] [%-6d] [%06d] [%+d] [% d]\n",
@@ -26,4 +27,10 @@ BEGIN {
         64.125, 1234.5625, 0.0000625, 0.0000625, -64.125, -64.125
     printf "dyn: [%*d] [%*s] [%*.*f] [%%]\n",
         6, 77, -8, "emu68", 9, 3, 15.625
+    printf "exact: [%.0f] [%.0f] [%.2f] [%.17g] [%.30g]\n",
+        1234567890123456, 9007199254740992, 1e15 + 0.25, 0.1, 0.1
+    printf "sign: [%020.2f] [%-+12.3e] [% 010.1f]\n", -1.25, 12345.678, 2.5
+    printf "big: [%.20e] [%.0f]\n", 1e308, 2^70
+    printf "long: [%d] [%s]\n", length(sprintf("%.1000f", 1.25)),
+        substr(sprintf("%.300f", 1e308), 300, 20)
 }

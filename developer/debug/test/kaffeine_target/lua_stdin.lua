@@ -65,6 +65,12 @@ assert(ip == -123 and fp == -0.75 and math.fmod(-17.5, 4.0) == -1.5)
 assert(math.floor(-3.25) == -4 and math.ceil(-3.25) == -3)
 print(string.format("math ok: sin2+cos2=%.6g atan4=%.8g modf=%g,%g", s2, math.atan(1.0) * 4.0, ip, fp))
 
+-- exact digits and signs of floating conversions, and a long one
+print(string.format("exact: %.0f %.0f %.2f %.17g", 1234567890123456.0, 2.0^53, 1e15 + 0.25, 0.1))
+print(string.format("sign: [%020.2f] [%-+12.3e] [% 010.1f]", -1.25, 12345.678, 2.5))
+local big = string.format("%.99f", 1e308)
+print(string.format("big: %d %s %s", #big, big:sub(1, 30), big:sub(300, 320)))
+
 local arr = {}
 for i = 1, 64 do
     arr[i] = ((i * 37 + 13) % 64) * 0.125 - 4.0

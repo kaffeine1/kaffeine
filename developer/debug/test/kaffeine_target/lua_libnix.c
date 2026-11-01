@@ -7,8 +7,8 @@
     writes zero padding before the sign on floating-point conversions and
     scales large exponents by multiplying by 0.0000000001 in a loop, which
     leaves rounding drift in digits 16 to 21 of %.99f on 1e308;
-    lua_libnix_snprintf() moves the sign in front of leading zero padding and
-    clears integer digits past DBL_DIG on %f and %F. In libnix, strtod()
+    lua_libnix_snprintf() hands every single %e, %f or %g conversion to the
+    exact formatter of libnix_fmt.c. In libnix, strtod()
     calls sscanf("%lf%ln"), whose vfscanf() stores 0.0 and advances endptr
     past the first non-digit character when no number is present, and rounds
     after 16 decimal digits on 2^63; lua_libnix_strtod() parses decimal
@@ -33,6 +33,8 @@
 
 #include <exec/types.h>
 #include <proto/mathieeedoubbas.h>
+
+#include "libnix_fmt.h"
 
 typedef union {
     double d;
@@ -140,45 +142,25 @@ int lua_libnix_snprintf(char *buf, size_t sz, const char *fmt, ...)
 {
     va_list ap;
     int r;
-    size_t len;
+    size_t flen = strlen(fmt);
+
+    /* string.format() and tostring() pass one conversion at a time */
+    if (flen >= 2 && fmt[0] == '%' && strchr(fmt + 1, '%') == NULL &&
+        strchr(fmt + 1, '*') == NULL && strchr("eEfFgG", fmt[flen - 1]) != NULL)
+    {
+        double v;
+
+        va_start(ap, fmt);
+        v = va_arg(ap, double);
+        va_end(ap);
+        r = libnix_fmt_double(buf, sz, fmt, v);
+        if (r != -2)
+            return r;
+    }
 
     va_start(ap, fmt);
     r = vsnprintf(buf, sz, fmt, ap);
     va_end(ap);
-
-    if (sz == 0)
-        return r;
-    len = strlen(buf);
-    if (len > 1 && buf[0] == '0')
-    {
-        size_t k = 1;
-
-        while (k < len && buf[k] == '0')
-            k++;
-        if (k < len && (buf[k] == '+' || buf[k] == '-' || buf[k] == ' ') &&
-            isdigit((unsigned char)buf[k + 1]))
-        {
-            buf[0] = buf[k];
-            buf[k] = '0';
-        }
-    }
-    if (len > 0)
-    {
-        char spec = fmt[strlen(fmt) - 1];
-
-        if (spec == 'f' || spec == 'F')
-        {
-            size_t i = (buf[0] == '+' || buf[0] == '-' || buf[0] == ' ') ? 1 : 0;
-            size_t digits = 0;
-
-            for (; i < len && isdigit((unsigned char)buf[i]); i++)
-            {
-                digits++;
-                if (digits > DBL_DIG)
-                    buf[i] = '0';
-            }
-        }
-    }
     return r;
 }
 

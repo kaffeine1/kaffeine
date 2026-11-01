@@ -303,7 +303,8 @@ endif
 # lua-5.4.7-tests next to it or in $(LUA_TESTS_SRC)) to build it, with
 # lua_config.h in front of each file and, for the m68k, lua_libnix.c for
 # the floating-point snprintf(), strtod(), double comparison and division
-# cases where libnix differs from ISO C. The battery runs it on the twelve deterministic scripts of
+# cases where libnix differs from ISO C, with the exact %e, %f and %g of
+# libnix_fmt.c. The battery runs it on the twelve deterministic scripts of
 # lua-5.4.7-tests that need no C test library, a standard-input step and an
 # unhandled-error step, which $(LUA_FILES) collects under EMU68/, and
 # compares its output with the one of the same program built for the host,
@@ -362,7 +363,8 @@ endif
 # each file, awkgram.tab.c and awkgram.tab.h generated from awkgram.y by
 # $(YACC), proctab.c generated from awkgram.tab.h by maketab built for the
 # host, and, for the m68k, awk_libnix.c for environ, pclose(), locale
-# initialization, snprintf() and strtod(). The battery runs it on six
+# initialization, snprintf() and strtod(), with the exact %e, %f and %g of
+# libnix_fmt.c. The battery runs it on six
 # deterministic p.* programs from testdir on test.countries, eight
 # deterministic t.* programs from testdir on test.data, six programs of my
 # own (printf, regex, getline, redir, strings and system) and a fatal-error
@@ -753,10 +755,11 @@ $(LUA_FILES).stamp: $(patsubst %,$(LUA_TESTS_SRC)/%.lua,$(LUA_TESTS) bwcoercion)
 	touch $@
 
 # -lm brings the IEEE double helpers and the floating-point printf() of libnix
-$(BUILD_DIR)/lua: $(LUA_SOURCES) $(TEST_DIR)/lua_libnix.c $(TEST_DIR)/lua_config.h | $(BUILD_DIR) \
+$(BUILD_DIR)/lua: $(LUA_SOURCES) $(TEST_DIR)/lua_libnix.c $(TEST_DIR)/lua_config.h \
+                  $(TEST_DIR)/libnix_fmt.c $(TEST_DIR)/libnix_fmt.h | $(BUILD_DIR) \
                   $(LUA_FILES).stamp
 	$(M68K_CC) $(M68K_CFLAGS) $(LUA_FLAGS) $(M68K_LDFLAGS) \
-	    -o $@ $(LUA_SOURCES) $(TEST_DIR)/lua_libnix.c -lm
+	    -o $@ $(LUA_SOURCES) $(TEST_DIR)/lua_libnix.c $(TEST_DIR)/libnix_fmt.c -lm
 
 # The lua references: the outputs of the steps through lua built for the
 # host, run where EMU68 names $(LUA_FILES). lua begins its error messages
@@ -828,10 +831,10 @@ $(AWK_FILES).stamp: $(addprefix $(AWK_SRC)/testdir/,test.countries test.data $(A
 	touch $@
 
 # -lm brings the IEEE double helpers and the floating-point printf() of libnix
-$(BUILD_DIR)/awk: $(AWK_SOURCES) $(AWK_GEN_SOURCES) $(TEST_DIR)/awk_libnix.c $(TEST_DIR)/awk_config.h | \
-                  $(BUILD_DIR) $(AWK_FILES).stamp
+$(BUILD_DIR)/awk: $(AWK_SOURCES) $(AWK_GEN_SOURCES) $(TEST_DIR)/awk_libnix.c $(TEST_DIR)/awk_config.h \
+                  $(TEST_DIR)/libnix_fmt.c $(TEST_DIR)/libnix_fmt.h | $(BUILD_DIR) $(AWK_FILES).stamp
 	$(M68K_CC) $(M68K_CFLAGS) $(AWK_FLAGS) $(M68K_LDFLAGS) \
-	    -o $@ $(AWK_GEN_SOURCES) $(AWK_SOURCES) $(TEST_DIR)/awk_libnix.c -lm
+	    -o $@ $(AWK_GEN_SOURCES) $(AWK_SOURCES) $(TEST_DIR)/awk_libnix.c $(TEST_DIR)/libnix_fmt.c -lm
 
 # The awk references: the outputs of the steps through awk built for the
 # host, run where EMU68 names $(AWK_FILES). awk begins its error messages
@@ -883,7 +886,16 @@ clean:
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs lua-refs unzip-refs awk-refs
+# libnix_fmt.c built for the host and compared with the host snprintf()
+$(BUILD_DIR)/test_libnix_fmt: $(TEST_DIR)/test_libnix_fmt.c $(TEST_DIR)/libnix_fmt.c \
+                              $(TEST_DIR)/libnix_fmt.h | $(BUILD_DIR)
+	$(HOST_CC) -O2 -Wall -Wno-format-nonliteral -I$(TEST_DIR) -o $@ \
+	    $(TEST_DIR)/test_libnix_fmt.c $(TEST_DIR)/libnix_fmt.c -lm
+
+check-libnix-fmt: $(BUILD_DIR)/test_libnix_fmt
+	$(BUILD_DIR)/test_libnix_fmt
+
+.PHONY: all clean check-runner check-libnix-fmt bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs lua-refs unzip-refs awk-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)
