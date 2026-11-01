@@ -805,11 +805,13 @@ $(UNZIP_REFS)/stamp: $(UNZIP_SOURCES) $(TEST_DIR)/unzip_config.h $(UNZIP_FILES).
 
 unzip-refs: $(UNZIP_REFS)/stamp
 
-$(AWK_BUILD)/awkgram.tab.c $(AWK_BUILD)/awkgram.tab.h: $(AWK_SRC)/awkgram.y
+# A multi-target pattern rule runs Yacc once for both outputs, including
+# under parallel builds, and works with GNU make 3.81 as well.
+$(AWK_BUILD)/%.tab.c $(AWK_BUILD)/%.tab.h: $(AWK_SRC)/%.y
 	mkdir -p $(@D)
-	cd $(@D) && $(YACC) -b awkgram $(AWK_SRC)/awkgram.y
-	test -f $(AWK_BUILD)/awkgram.tab.c || mv $(AWK_BUILD)/y.tab.c $(AWK_BUILD)/awkgram.tab.c
-	test -f $(AWK_BUILD)/awkgram.tab.h || mv $(AWK_BUILD)/y.tab.h $(AWK_BUILD)/awkgram.tab.h
+	cd $(@D) && $(YACC) -b $* $(abspath $<)
+	test -f $(AWK_BUILD)/$*.tab.c || mv $(AWK_BUILD)/y.tab.c $(AWK_BUILD)/$*.tab.c
+	test -f $(AWK_BUILD)/$*.tab.h || mv $(AWK_BUILD)/y.tab.h $(AWK_BUILD)/$*.tab.h
 
 $(AWK_BUILD)/proctab.c: $(AWK_SRC)/maketab.c $(AWK_BUILD)/awkgram.tab.h $(AWK_SRC)/awk.h $(AWK_SRC)/proto.h
 	mkdir -p $(@D)
