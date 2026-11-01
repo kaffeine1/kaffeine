@@ -14,12 +14,14 @@
     a sign and ignores + and space, glibc follows the rule. Everything
     finite and the infinities are compared with the host as they are.
 
-    %g and %G without # are compared with the host %#g or %#G of the same
-    precision, whose trailing zeros are then removed and the field padded
-    again as C99 says. The libc of macOS keeps a trailing zero when %g of an
-    integer rounds a tie down (%G of 1133505 gives 1.13350E+06, glibc gives
-    1.1335E+06), from the integer fast path of gdtoa; the digits of %#g are
-    right either way.
+    %g and %G are built from the host %e and %f, which both libcs get right,
+    by the rule of C11 7.21.6.1p8: the exponent X of %.(P-1)e chooses style
+    f with precision P-1-X when P > X >= -4, else style e with precision
+    P-1, and without # the trailing zeros of the fraction go. The host %g
+    itself is wrong at both ends: macOS keeps a trailing zero when %g of an
+    integer rounds a tie down (%G of 1133505 gives 1.13350E+06), and glibc
+    drops the zeros of %#g when rounding carries into a new digit (%#g of
+    999999.5 gives 1.e+06 for 1.00000e+06).
 */
 
 #include <float.h>
@@ -33,42 +35,67 @@
 
 static unsigned long long checks, failures;
 
-/* The C99 %g or %G of spec from the host %#g or %#G: the core without
-   padding, its trailing zeros removed, then padded again. */
+/* The %g or %G of spec under C11 7.21.6.1p8, from the host %e and %f:
+   the core without padding, then padded as the flags say. */
 static int expected_g(char *out, size_t size, const char *spec, double v)
 {
-    char core_spec[32], core[4096], *mant_end, *z;
+    char sub[48], core[4096], *mant_end, *z;
     const char *p = spec + 1;
-    int minus = 0, zero = 0, width = 0, n = 0, len, pad;
+    char flags[4], upper = spec[strlen(spec) - 1] == 'G';
+    int minus = 0, zero = 0, alt = 0, width = 0, prec = -1, nf = 0, len, pad, x = 0;
 
-    core_spec[n++] = '%';
-    while (strchr("-+ #0", *p) != NULL && *p)
+    for (; *p && strchr("-+ #0", *p) != NULL; p++)
     {
         if (*p == '-')
             minus = 1;
         else if (*p == '0')
             zero = 1;
-        else if (*p != '#')
-            core_spec[n++] = *p;
-        p++;
+        else if (*p == '#')
+            alt = 1;
+        else if (nf < 2)
+            flags[nf++] = *p;
     }
-    core_spec[n++] = '#';
+    flags[nf] = '\0';
     while (*p >= '0' && *p <= '9')
         width = width * 10 + (*p++ - '0');
-    strcpy(core_spec + n, p);
-    snprintf(core, sizeof(core), core_spec, v);
-    if (isfinite(v))
+    if (*p == '.')
     {
-        mant_end = core + strcspn(core, "eE");
-        z = mant_end;
-        while (z > core && z[-1] == '0')
-            z--;
-        if (z > core && z[-1] == '.')
-            z--;
-        memmove(z, mant_end, strlen(mant_end) + 1);
+        prec = 0;
+        for (p++; *p >= '0' && *p <= '9'; p++)
+            prec = prec * 10 + (*p - '0');
+    }
+    if (!isfinite(v))
+    {
+        snprintf(sub, sizeof(sub), "%%%s%c", flags, upper ? 'G' : 'g');
+        snprintf(core, sizeof(core), sub, v);
+        zero = 0;
     }
     else
-        zero = 0;
+    {
+        int g = prec < 0 ? 6 : prec == 0 ? 1 : prec;
+
+        if (v != 0.0)
+        {
+            snprintf(sub, sizeof(sub), "%%.%de", g - 1);
+            snprintf(core, sizeof(core), sub, v);
+            x = atoi(strchr(core, 'e') + 1);
+        }
+        if (g > x && x >= -4)
+            snprintf(sub, sizeof(sub), "%%%s%s.%df", flags, alt ? "#" : "", g - 1 - x);
+        else
+            snprintf(sub, sizeof(sub), "%%%s%s.%d%c", flags, alt ? "#" : "", g - 1, upper ? 'E' : 'e');
+        snprintf(core, sizeof(core), sub, v);
+        if (!alt && strchr(core, '.') != NULL)
+        {
+            mant_end = core + strcspn(core, "eE");
+            z = mant_end;
+            while (z[-1] == '0')
+                z--;
+            if (z[-1] == '.')
+                z--;
+            memmove(z, mant_end, strlen(mant_end) + 1);
+        }
+    }
     len = (int)strlen(core);
     pad = width > len ? width - len : 0;
     if (minus)
@@ -115,9 +142,8 @@ static void compare(const char *spec, double v)
     static char want[4096], got[4096];
     char conv = spec[strlen(spec) - 1];
     int nw = isnan(v) ? expected_nan(want, sizeof(want), spec, v)
-             : (conv == 'g' || conv == 'G') && strchr(spec, '#') == NULL
-                 ? expected_g(want, sizeof(want), spec, v)
-                 : snprintf(want, sizeof(want), spec, v);
+             : conv == 'g' || conv == 'G' ? expected_g(want, sizeof(want), spec, v)
+                                          : snprintf(want, sizeof(want), spec, v);
     size_t sizes[6];
     int k;
 
@@ -250,7 +276,9 @@ int main(int argc, char **argv)
     static const char *const fixed_specs[] = {
         "%f", "%.0f", "%.1f", "%.2f", "%.17f", "%.99f", "%.300f", "%#.0f", "%+f", "% f",
         "%020.2f", "%-20.2f", "%e", "%.0e", "%.17e", "%#.0e", "%E", "%+.3e", "%g", "%.0g",
-        "%#.0g", "%.1g", "%.15g", "%.17g", "%.30g", "%#g", "%G", "%25.0f", "%-+#012.4g", "%08.3e"
+        "%#.0g", "%.1g", "%.15g", "%.17g", "%.30g", "%#g", "%G", "%25.0f", "%-+#012.4g", "%08.3e",
+        /* carries of %g into a new digit, where glibc %#g drops the zeros */
+        "%-+ #0.2g", "%#.1g", "%#.2g", "%#.4g", "%#.6G", "%.6g", "%#12.3g", "%#-12.5G"
     };
     static const double fixed_values[] = {
         0.0, -0.0, 1.0, -1.0, 0.5, 1.5, 2.5, 3.5, 0.125, 0.375, 0.1, 0.2, 0.3, 1.25,
@@ -258,7 +286,10 @@ int main(int argc, char **argv)
         1234567890123456.0, 9007199254740992.0, 9007199254740993.0, -9007199254740991.0,
         1e21, 1e22, 1e23, 1e100, 1e300, 1e308, DBL_MAX, -DBL_MAX, DBL_MIN, -DBL_MIN,
         4.9406564584124654e-324, 2.2250738585072009e-308, 5e-324 * 3, 1.0 / 3.0,
-        2.0 / 3.0, 3.14159265358979, 2.718281828459045, 6.02214076e23, 1.602e-19
+        2.0 / 3.0, 3.14159265358979, 2.718281828459045, 6.02214076e23, 1.602e-19,
+        /* their neighbours: carries up, negative, and at small exponents */
+        99.9140625, -999999.5, 999999.4, 9.5, 0.95, 0.095, 99999.95, 99.95, -99.95,
+        9.9999995e-5, 0.00009999995, 9.99999e-5, 0.0099999, 9.999999e22, 1e-4
     };
     unsigned long long cases = argc > 1 ? strtoull(argv[1], NULL, 10) : 200000;
     static const char flags[] = "-+ #0";
