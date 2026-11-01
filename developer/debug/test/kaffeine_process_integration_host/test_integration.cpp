@@ -36,11 +36,12 @@ struct KaffeineContext {
     unsigned native_resources{};
 };
 static unsigned checks,failures,native_signals,scheduler_calls,refusals,cnp_calls,cpu_calls,autolibs;
-static unsigned file_cleanup,handler_cleanup,lock_cleanup;
+static unsigned file_cleanup,handler_cleanup,lock_cleanup,asl_cleanup,screen_cleanup;
 static unsigned destroy_calls;
 static unsigned last_native_resources;
 static ULONG captured_streams[3];
 static Task *destroy_task,*shadow_task,*autolibs_task,*cpu_task;
+static Task *asl_cleanup_task,*screen_cleanup_task;
 static bool owner_bound;
 static ULONG native_bits;
 static Task *current_task=&parent_task,*cleanup_task;
@@ -56,6 +57,12 @@ static IPTR Kaffeine_IORefuse(KaffeineContext *ctx,const char *){++refusals;ctx-
 static IPTR sched_signal(KaffeineContext *,void *){++scheduler_calls;return 0x42;}
 static const Ops Kaffeine_GuestTaskOps{sched_signal};
 static void noop(KaffeineContext *) {}
+static void Kaffeine_AslCleanup(KaffeineContext *){++asl_cleanup;asl_cleanup_task=current_task;}
+static void Kaffeine_ScreensCleanup(KaffeineContext *){
+    ++screen_cleanup;screen_cleanup_task=current_task;
+    check(asl_cleanup==1&&asl_cleanup_task==current_task,
+          "ASL cleanup precedes screen cleanup in the same native owner");
+}
 static void Kaffeine_FileCleanup(KaffeineContext *ctx){++file_cleanup;ctx->native_resources&=~1u;cleanup_task=current_task;}
 static void Kaffeine_HandlerCleanup(KaffeineContext *ctx){++handler_cleanup;ctx->native_resources&=~2u;cleanup_task=current_task;}
 static void Kaffeine_LockCleanup(KaffeineContext *ctx){++lock_cleanup;ctx->native_resources&=~4u;last_native_resources=ctx->native_resources;cleanup_task=current_task;}
@@ -64,7 +71,6 @@ static void Kaffeine_LockCleanup(KaffeineContext *ctx){++lock_cleanup;ctx->nativ
 #define Kaffeine_GadgetsCleanup noop
 #define Kaffeine_VisualInfosCleanup noop
 #define Kaffeine_IOCleanup noop
-#define Kaffeine_ScreensCleanup noop
 #define Kaffeine_LayersCleanup noop
 #define Kaffeine_RegionsCleanup noop
 #define Kaffeine_SegmentsCleanup noop
@@ -105,7 +111,8 @@ static BOOL Kaffeine_RunDomain(KaffeineContext *ctx,LONG (*run)(KaffeineContext 
 static void reset()
 {
     native_signals=scheduler_calls=refusals=cnp_calls=cpu_calls=autolibs=0;
-    file_cleanup=handler_cleanup=lock_cleanup=0;native_bits=0;cleanup_task=nullptr;
+    file_cleanup=handler_cleanup=lock_cleanup=asl_cleanup=screen_cleanup=0;native_bits=0;cleanup_task=nullptr;
+    asl_cleanup_task=screen_cleanup_task=nullptr;
     destroy_calls=0;destroy_task=shadow_task=autolibs_task=cpu_task=nullptr;last_native_resources=0xff;owner_bound=true;
     for(auto &v:captured_streams)v=0;
     current_task=&parent_task;shadow_ok=library_ok=true;
@@ -139,6 +146,8 @@ int main()
         check(cleanup_task==(stack?&worker_task:&parent_task)&&!cpu_calls&&cnp_calls==bool(stack)&&!autolibs,
               "failed shadow initialization cleans up in its actual direct or driver owner");
         check(owner_bound&&shadow_task==cleanup_task,"native owner is bound before shadow creation without a registry hook");
+        check(asl_cleanup==1&&screen_cleanup==1&&asl_cleanup_task==cleanup_task&&screen_cleanup_task==cleanup_task,
+              "failed startup cleans ASL and screens exactly once in its execution owner");
         check(transferred==bool(stack)&&destroy_calls==bool(stack),"only a published domain owns disposal after failed startup");
         check(!stack||destroy_task==&worker_task,"failed transferred startup disposes in the driver owner");
     }
@@ -152,12 +161,14 @@ int main()
               "shadow, AutoOpen and CPU keep the same directly bound native owner");
         check(cleanup_task==(stack?&worker_task:&parent_task)&&cnp_calls==(stack?1u:0u),
               "cleanup remains in actual execution owner for both modes");
+        check(asl_cleanup==1&&screen_cleanup==1&&asl_cleanup_task==cleanup_task&&screen_cleanup_task==cleanup_task,
+              "normal execution cleans ASL and screens exactly once in its execution owner");
         check(transferred==bool(stack)&&destroy_calls==(stack?1u:0u),"asynchronous domain alone transfers/disposes context ownership");
         check(!stack||destroy_task==&worker_task,"transferred context disposal stays in driver owner");
         check(captured_streams[0]==0x101&&captured_streams[1]==0x102&&captured_streams[2]==0x103,"startup captures typed borrowed streams before CPU/autolibs");
     }
     reset();KaffeineContext ctx;library_ok=false;BOOL transferred=TRUE;
-    check(setup_and_execute(&ctx,0x200,nullptr,0,0,"original-helper",&transferred)==-1&&!ctx.native_resources&&!file_cleanup,
+    check(setup_and_execute(&ctx,0x200,nullptr,0,0,"original-helper",&transferred)==-1&&!ctx.native_resources&&!file_cleanup&&!asl_cleanup&&!screen_cleanup,
           "failure before shadow acquisition preserves earlier behavior");
     check(!transferred&&!destroy_calls,"failed setup cannot publish domain ownership");
     std::printf("process integration: %u checks, %u failures\n",checks,failures);
