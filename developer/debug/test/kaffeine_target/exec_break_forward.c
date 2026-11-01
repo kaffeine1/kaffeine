@@ -11,9 +11,11 @@
     30 seconds for both, then up to 20 seconds for NAME-done-N.txt, which
     the helper writes after both Break commands and their witnesses, and
     returns 0 only when both breaks came, neither CTRL-E nor CTRL-F did and
-    that file says ok. The helper writes its witnesses with the execution
-    number N, 1 from the Shell and 2 through Run, once NAME-shell-rc.txt
-    exists.
+    that file says ok. It deletes that file before it starts the helper,
+    and goes no further unless the file is gone or was never there, so that
+    only this execution's helper can write it. The helper writes its
+    witnesses with the execution number N, 1 from the Shell and 2 through
+    Run, once NAME-shell-rc.txt exists.
 
     The launching script shows that no break was left on that CLI: a CTRL-D
     still pending there would stop the script after the Shell execution,
@@ -50,7 +52,7 @@ static void first_line(const char *path, char *line, LONG size)
 
 int main(void)
 {
-    char name[256], path[300], command[700], done[64];
+    char name[256], path[300], done_path[300], command[700], done[64];
     ULONG got = 0;
     LONG polls, rc, n;
     BPTR lock;
@@ -65,6 +67,14 @@ int main(void)
     n = lock ? 2 : 1;
     if (lock)
         UnLock(lock);
+
+    /* the helper's last witness of this execution: none from an earlier
+       run may be left, deleted or never there */
+    strcpy(done_path, name);
+    strcat(done_path, n == 2 ? "-done-2.txt" : "-done-1.txt");
+    if (!check(DeleteFile((CONST_STRPTR)done_path) || IoErr() == ERROR_OBJECT_NOT_FOUND,
+               "no done witness of an earlier run is left"))
+        return test_done("exec_break_forward");
 
     /* only the breaks that the helper sends count */
     SetSignal(0, BREAKS);
@@ -87,13 +97,11 @@ int main(void)
     check(!(got & (SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F)), "no CTRL-E or CTRL-F");
 
     /* the helper's last witness, written after both Break commands */
-    strcpy(path, name);
-    strcat(path, n == 2 ? "-done-2.txt" : "-done-1.txt");
-    for (polls = 0; polls < 200 && !(lock = Lock((CONST_STRPTR)path, ACCESS_READ)); polls++)
+    for (polls = 0; polls < 200 && !(lock = Lock((CONST_STRPTR)done_path, ACCESS_READ)); polls++)
         Delay(5);
     if (lock)
         UnLock(lock);
-    first_line(path, done, sizeof(done));
+    first_line(done_path, done, sizeof(done));
     check_str("the helper's witness after both Break commands", done, "ok");
     return test_done("exec_break_forward");
 }
