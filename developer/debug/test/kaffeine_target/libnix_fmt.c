@@ -436,7 +436,13 @@ int libnix_fmt_double(char *buf, size_t sz, const char *spec, double v)
    base 2^32 words, least significant first. 10^1124 shifted left by 55
    bits, the largest number the conversion builds, has 3789 bits. */
 #define BIN_WORDS 128
-#define SCAN_DIGITS 800         /* a midpoint of two doubles has at most 767 */
+/* A midpoint of two doubles, or of 0 and the smallest subnormal, or of
+   DBL_MAX and 2^1024, is m * 2^e with m odd and below 2^54 and e at least
+   -1075. Its significant digits are those of m * 5^-e when e < 0 (odd, so
+   no trailing zero), at most the 768 of (2^54 - 1) * 5^1075, and at most
+   309 when e >= 0. The midpoint of the largest subnormal and DBL_MIN,
+   (2^53 - 1) * 2^-1075, has 768 too. */
+#define SCAN_DIGITS 800
 
 struct bin {
     unsigned int w[BIN_WORDS];
@@ -599,7 +605,8 @@ double libnix_fmt_strtod(const char *nptr, char **endptr)
     unsigned int chunk = 0;
     int any = 0, point = 0, sticky = 0, chunk_digits = 0;
     int b, lsb, drop, inexact, k;
-    long nd = 0, adjust = 0, e = 0, exp10;
+    long nd = 0;
+    long long adjust = 0, e = 0, exp10, cap;
 
     if (endptr)
         *endptr = (char *)nptr;
@@ -635,8 +642,10 @@ double libnix_fmt_strtod(const char *nptr, char **endptr)
     /* The significant digits go to a, nine at a time, and adjust counts the
        digits of the fraction among them, or of the integer part past them.
        After SCAN_DIGITS digits, a non-zero digit only sets sticky, which
-       becomes one digit 1 after them: no midpoint lies between D with that
-       digit and the exact value. */
+       becomes one digit 1 after them: a midpoint between the exact value
+       and D with that digit would lie strictly between two numbers of
+       SCAN_DIGITS digits at the same scale, so it would need more digits
+       than any midpoint has. */
     a.n = 0;
     for (;; p++)
     {
@@ -685,17 +694,24 @@ double libnix_fmt_strtod(const char *nptr, char **endptr)
     }
     bin_mul_add(&a, pow10[chunk_digits], chunk);
 
+    /* The exponent saturates at cap, past which adjust cannot bring it back
+       into range: |E| >= |adjust| + 2000 gives |E + adjust| >= 2000, which
+       the checks below take for an overflow or an underflow, as they would
+       the exact exponent. adjust counts digits of the string, so neither it
+       nor 10 * cap overflows a long long for any string that fits in a
+       57-bit address space. */
     if (*p == 'e' || *p == 'E')
     {
         const char *s = p + 1;
         int neg = 0;
 
+        cap = (adjust < 0 ? -adjust : adjust) + 2000;
         if (*s == '-' || *s == '+')
             neg = *s++ == '-';
         if (*s >= '0' && *s <= '9')
         {
             for (; *s >= '0' && *s <= '9'; s++)
-                if (e < 100000000L)
+                if (e < cap)
                     e = e * 10 + (*s - '0');
             if (neg)
                 e = -e;

@@ -29,10 +29,13 @@
     strings of 767 to 1000 digits, on the exact midpoints of neighbouring
     doubles and on decimals just above and below them, on spellings of one
     value with the point moved, and on random doubles and digit strings.
-    Two cases are fixed instead: the libc of macOS takes any bytes up to
-    ')' in nan(...), where C99 allows letters, digits and '_', and glibc on
-    arm64 sets ERANGE when a value under DBL_MIN rounds up to DBL_MIN,
-    which macOS and glibc on x86_64 do not.
+    Some cases are fixed instead: the libc of macOS takes any bytes up to
+    ')' in nan(...), where C99 allows letters, digits and '_', and reads
+    hex, which libnix_fmt_strtod() does not; glibc sets ERANGE for values
+    under DBL_MIN that round up to it (all of them on arm64, those under
+    (2^54 - 1) * 2^-1076 on x86_64), and macOS does not. Two strings of
+    100 MB check that the saturated exponent is not cancelled by the
+    digits.
 */
 
 #include <errno.h>
@@ -302,9 +305,12 @@ static void strtod_compare(const char *s)
     erange_got = errno == ERANGE;
     memcpy(&bw, &want, sizeof(bw));
     memcpy(&bg, &got, sizeof(bg));
-    /* glibc on arm64 tests for tininess before rounding and sets ERANGE
-       when a value under DBL_MIN rounds up to it; macOS and glibc on
-       x86_64 test after rounding, as libnix_fmt_strtod() does */
+    /* For a value under DBL_MIN that rounds up to it the libcs differ:
+       glibc tests tininess before rounding on arm64, and after rounding to
+       53 bits with an unbounded exponent on x86_64, so it sets ERANGE for
+       all or some of them; the libc of macOS, like libnix_fmt_strtod(),
+       sets it only for a zero or subnormal result. The bits are compared
+       all the same, and ERANGE must be 0 there. */
     if (fabs(want) == DBL_MIN)
         erange_want = 0;
     checks++;
@@ -470,7 +476,19 @@ static void strtod_cases(unsigned long long cases)
         "1.7976931348623157e308", "1.7976931348623158e308", "1.7976931348623159e308",
         "1.797693134862315807937289714053e308", "1e308", "1e309", "1e400", "-1e400",
         "1e99999999", "1e999999999999999999999", "1e-999999999999999999999",
-        "0.0000e999999999999", "0.0000000001e318", "10000000000e298",
+        "0.0000e999999999999", "-0e999999999999999999999", "0e-999999999999999999999",
+        "0.0000000001e318", "10000000000e298", "9e309", "-9e309", "9.999e309", "1.8e308",
+        /* (2^1024 - 2^970), the midpoint above DBL_MAX, and one below it */
+        "179769313486231580793728971405303415079934132710037826936173778980444968"
+        "292764750946649017977587207096330286416692887910946555547851940402630657"
+        "488671505820681908902000708383676273854845817711531764475730270069855571"
+        "366959622842914819860834936475292719074168444365510704342711559699508093"
+        "042880177904174497792",
+        "179769313486231580793728971405303415079934132710037826936173778980444968"
+        "292764750946649017977587207096330286416692887910946555547851940402630657"
+        "488671505820681908902000708383676273854845817711531764475730270069855571"
+        "366959622842914819860834936475292719074168444365510704342711559699508093"
+        "042880177904174497791",
         /* zeros, plain values and white space */
         "0", "-0", "+0", "0.0e10", "0e-99999999", "000", "0.", ".0", "-.0e5", "3.14159",
         "1e23", "8.98846567431158e307", "123.456", "123456e-3", "0.000123456e6", "1e0",
@@ -504,12 +522,31 @@ static void strtod_cases(unsigned long long cases)
     strtod_expect("0x1p3", 0, 1, 0);
     strtod_expect("-0x10", 0x8000000000000000ULL, 2, 0);
     strtod_expect("2.2250738585072013e-308", 0x0010000000000000ULL, 23, 0);
+    strtod_expect("2.2250738585072012e-308", 0x0010000000000000ULL, 23, 0);
+
+    /* the exponent saturates where the digits cannot bring it back: one
+       followed by 10^8 zeros times 10^-10^9 is 0, and 10^-(10^8 + 1)
+       times 10^(10^8 + 5) is 10^4 */
+    {
+        size_t zeros = 100000000;
+        char *s = malloc(zeros + 16);
+
+        s[0] = '1';
+        memset(s + 1, '0', zeros);
+        strcpy(s + 1 + zeros, "e-1000000000");
+        strtod_expect(s, 0, (long)strlen(s), 1);
+        memcpy(s, "0.", 2);
+        memset(s + 2, '0', zeros);
+        strcpy(s + 2 + zeros, "1e100000005");
+        strtod_expect(s, 0x40c3880000000000ULL, (long)strlen(s), 0);
+        free(s);
+    }
 
     /* long strings: 767 to 1000 digits, a midpoint with a non-zero digit
        only at position 900, the same with only zeros, and zero runs */
-    for (k = 0; k < 4; k++)
+    for (k = 0; k < 5; k++)
     {
-        static const int lengths[4] = { 767, 800, 801, 1000 };
+        static const int lengths[5] = { 767, 768, 800, 801, 1000 };
         int n;
 
         for (n = 0; n < lengths[k]; n++)
@@ -533,6 +570,25 @@ static void strtod_cases(unsigned long long cases)
     memset(big + 2, '0', 1300);
     strcpy(big + 1302, "4941e1000");
     strtod_compare(big);
+    /* the same cancellations at 200000 digits, against the host */
+    {
+        static const char *const tails[4] = {
+            "e-200005", "e-99999999999999999999999", "1e200005", "1e99999999999999999999"
+        };
+        size_t zeros = 200000;
+        char *s = malloc(zeros + 40);
+
+        for (k = 0; k < 4; k++)
+        {
+            size_t at = k < 2 ? 1 : 2;
+
+            memcpy(s, k < 2 ? "1" : "0.", at);
+            memset(s + at, '0', zeros);
+            strcpy(s + at + zeros, tails[k]);
+            strtod_compare(s);
+        }
+        free(s);
+    }
 
     /* midpoints: fixed ones, then random ones of every exponent */
     strtod_midpoint(0.0, 4.9406564584124654e-324, NULL);
