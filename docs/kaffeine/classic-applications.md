@@ -11,7 +11,7 @@ are not distributed here.
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
 | TurboText 2.0 | Original launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT edits, saves, closes and reopens a new text file, then closes normally | Both original `WAIT` invocations return 0; first-save and final files match the nine entered bytes. Broader editing and indexed composition remain separate checks |
 | AmiPixelShop 0.6.1-beta (original release) | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; later P96 and first-start mode-requester requirements were not exercised by this startup check |
-| AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel from Shell and Run; Save As of a new 640x480 two-layer document from Shell, then reopen that file with Run | Both executions return 0. The extracted APX1 file preserves the opaque white Background and empty Layer 1; drawing and other formats remain to be tested |
+| AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel from Shell and Run; Save As and fresh Run Open of blank and red-stroke 640x480 two-layer documents | Both executions return 0. Decoded APX1 pixels preserve the Background and stroke; the saved and reopened coloured canvas RGB matches exactly. Other tools and formats remain to be tested |
 
 ## Additional startup checks (2026-10-29)
 
@@ -190,7 +190,7 @@ ARM64 in QEMU's Raspberry Pi 3 model. Workbench is 1024x768, 24-bit; the
 application opens its own 1024x768 screen with a 640x480 document. Preferences
 select RTG mode `0x00100000` and disable the update check.
 
-Two application checks passed:
+Three application checks passed:
 
 - **Open and cancel:** from both Shell and `Run`, Ctrl+O opens the native ASL
   requester on AmiPixelShop's screen. Escape closes it; Ctrl+Q exits cleanly.
@@ -199,6 +199,13 @@ Two application checks passed:
   selects that file in Open, displays “Loaded” with one `Untitled-1.aps` tab
   and exits. Both executions return 0 with empty standard error; each records
   the Kaffeine JIT backend and completed translation counters.
+- **Paint, save and reopen:** select red (R 255, G 0, B 0), paint one stroke
+  on Layer 1 with a size-30 brush at full opacity, Save As from Shell and
+  reopen with a fresh `Run`. Both executions return 0. The decoded 3,258-byte
+  APX1 file preserves 3,658 stroke pixels and the white Background; the
+  saved and reopened 640x480 RGB views are byte-identical and match the
+  composite calculated from the saved layers. See the [six frames, saved
+  drawing and pixel checks](media/amipixelshop-colour-2026-11-01/README.md).
 
 The file extracted after shutdown is a 2,259-byte APX1 version 3 document.
 Independent decoding checks its 640x480 dimensions, two layers, active layer
@@ -214,9 +221,8 @@ Workbench behind the application. Preparing an empty `Work:` drawer allowed
 the workflow to complete. Ensure that `Work:` resolves before reproducing it.
 
 This check uses the source-built executable below. The original release's
-startup result remains separate. Further application checks include drawing,
-coloured content, PNG/JPEG/IFF files, the first-start mode requester, Moira
-and physical hardware.
+startup result remains separate. Further application checks include other tools and brush shapes,
+PNG/JPEG/IFF files, the first-start mode requester, Moira and physical hardware.
 
 ### AmiPixelShop original-release startup
 
