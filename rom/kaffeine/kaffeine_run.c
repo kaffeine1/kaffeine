@@ -29,6 +29,7 @@
 #include "kaffeine_window.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_icon.h"
+#include "kaffeine_asl.h"
 #include "kaffeine_layers.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_regions.h"
@@ -41,6 +42,8 @@
    semaphore: release them there, before that task ends. */
 static void cleanup_owned(struct KaffeineContext *ctx)
 {
+    /* ASL requests the program left, which no screen or window outlives */
+    Kaffeine_AslCleanup(ctx);
     Kaffeine_WindowsCleanup(ctx);
     Kaffeine_MenusCleanup(ctx);
     Kaffeine_GadgetsCleanup(ctx);

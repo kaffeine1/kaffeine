@@ -54,6 +54,7 @@
 #include "kaffeine_tasks.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_p96.h"
+#include "kaffeine_asl.h"
 #include "kaffeine_workbench.h"
 #include "kaffeine_icon.h"
 #include "kaffeine_layers.h"
@@ -106,6 +107,14 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
 
     ULONG base = Kaffeine_FindLibBase(ctx, name);
     if (base) return base;
+
+    /* asl.library: the file requester of kaffeine_asl.c alone. Its
+       generated wrappers would hand out native pointers and read scalar
+       tags as pointers, so none is ever attached. */
+    if (strcmp(name, "asl.library") == 0)
+        return Kaffeine_SetupLibBase(ctx, ctx->num_libs, "asl.library", KAFFEINE_MAX_LVO,
+                                    kaffeine_thunks_asl, kaffeine_thunks_asl_count,
+                                    NULL, 0);
 
     for (ULONG i = 0; i < kaffeine_all_gen_libs_count; i++)
     {

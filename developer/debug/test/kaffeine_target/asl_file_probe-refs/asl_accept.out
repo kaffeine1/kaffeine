@@ -1,0 +1,30 @@
+ok   explicit accept or cancel case
+ok   program identity available
+ok   fixed program name matches case
+ok   Shell or Run execution identity established
+ok   exact execution witnesses are fresh
+ok   required library bases opened
+ok   truecolor mode available
+ok   owned 1024 by 768 screen reports depth 24
+ok   ordinary owned-screen window opened
+ok   typed FileRequester allocated
+ok   initial native strings mirrored
+ok   initial scalar outputs are opaque and bounded
+ok   native helper script launched
+ok   native helper completed before screen retirement
+ok   actual native helper RC is zero
+ok   native helper stderr is empty
+ok   fresh exact screenshot marker exists
+ok   fresh exact key marker exists
+ok   native observer saw requester disappear
+ok   native opened requester geometry observed
+ok   AslRequest BOOL: 1
+ok   returned file is probe.txt
+ok   returned drawer denotes RAM
+ok   returned geometry matches native observed window
+ok   returned scalar outputs remain bounded
+ok   actual native result fields recorded
+ok   ordinary window received post-request refresh
+ok   ordinary window drawing calls completed
+ok   owned screen closed after helper
+asl_accept: 29 checks, 0 failed

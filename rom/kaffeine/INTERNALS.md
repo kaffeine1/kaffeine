@@ -1691,6 +1691,63 @@ versions up to 2 the base of the context, made once with a Library of
 version 2, and nothing to a later version; no 68k Picasso96API.library from
 disk is tried, since it could not drive an AROS display.
 
+**asl.library (8 manual thunks, `kaffeine_asl.c`):**
+
+The file requester as AmiPixelShop uses it for Open and Save As, and no
+more. OpenLibrary() attaches only the manual table, never the generated
+wrappers, which would hand out native pointers and read scalar tags as
+pointers. AllocAslRequest() of an ASL_FileRequest gives a 68k
+FileRequester of the bridge (56 bytes, followed in the same mirror by the
+buffers of its strings: 257, 1025 and 257 bytes, the native gadget
+limits); the native request stays private. AslRequest() runs that request
+once, and FreeAslRequest() ends it. All three refuse any caller but the
+root task of the program (the native task that runs it, which must be a
+DOS Process, the scheduler's root), and a callback, DOS broker or
+LayerInfo scope: native ASL locks and creates drawers in the calling
+Process. AllocFileRequest, FreeFileRequest, RequestFile, AbortAslRequest
+and ActivateAslRequest stop with 20.
+
+Tags are taken by number, which the obsolete ASL_ names share: TitleText,
+PositiveText, NegativeText and PubScreenName (at most 256 characters; NULL
+changes nothing, as in native ASL; for several, the last one), InitialFile
+(256) and InitialDrawer (1024), the initial geometry, DoSaveMode,
+DrawersOnly, RejectIcons, FilterDrawers, InitialShowVolumes, PopToFront,
+Activate, PrivateIDCMP, UserData as an opaque value, DoMultiSelect,
+DoPatterns, Locale and TextAttr only as 0, and Screen. A parent Window,
+SleepWindow, the hooks, Flags1 and Flags2, InitialPattern, Accept and
+RejectPattern, the sort tags (whose getters write through a pointer) and
+any other number stop with 20 before anything native. Native ASL keeps
+the Window, Screen and the four strings above by pointer from call to
+call, so each call gets its own copies of those strings, every copy stays
+until FreeAslRequest() (sixteen at most for a requester), and each tag
+list ends with Window NULL and the Screen: NULL in AllocAslRequest(), and
+in AslRequest() the native screen of a 68k Screen that the program opened
+or holds by LockPubScreen(), checked again at that moment. Initial strings
+and scalars go to native ASL in the order given, call by call, without
+any replay of an earlier call. When the bridge has no memory or room for
+a copy, the mirror or a table slot (eight requesters), the call returns 0
+or FALSE with ERROR_NO_FREE_STORE before anything native happens.
+
+One requester runs one AslRequest(): native ASL keeps private string
+pointers from one request for the next (FRGetSelectedFiles() frees
+fr_Pattern without its private copy), so a second request on the same
+requester stops the program, whatever the first returned; a new dialog
+needs a new requester, as AmiPixelShop makes. After AllocAslRequest() and
+after the request, also when it returns FALSE, the 68k FileRequester is a
+copy of the public fields of the native one (strings, geometry, UserData;
+a NULL string as 0, NumArgs and ArgList always 0), since native ASL
+changes the initial strings, UserData and geometry also on cancel; the
+bridge never reads the 68k copy back. At the end of the program every
+requester left is freed before the screens are cleaned up.
+
+Within its one request, native ASL frees fr_File and fr_Drawer before it
+clones the chosen names; if such a clone fails for lack of memory, the
+requester stays open with stale private pointers that its Restore item
+would read. That is native ASL under memory exhaustion, which the bridge
+does not change. The host tests (`test_asl.cpp`) check the bridge against
+recorded native calls; the requester itself, its input and its screen are
+only shown by a target run.
+
 **workbench.library (7 manual thunks, `kaffeine_workbench.c`):**
 
 The native workbench.library sends AppMessages to a native port that the

@@ -35,6 +35,8 @@ C_PROGRAMS += exec_break_forward
 PROGRAMS += exec_break_forward
 C_PROGRAMS += exec_copymem_probe_v3
 PROGRAMS += exec_copymem_probe_v3
+C_PROGRAMS += asl_file_probe
+PROGRAMS += asl_file_probe
 PROGRAMS += exec_messages exec_message_lifetime exec_packets gfx_planar_read icon_objects gfx_display_info
 EXEC_LIBRARIES_DIR := $(BUILD_DIR)/exec_libraries-files
 EXEC_LIBRARIES_LIBS := $(EXEC_LIBRARIES_DIR)/emu68test.library \
@@ -453,6 +455,17 @@ $(BUILD_DIR)/exec_packets-files/putmsg-read.bin: $(TEST_DIR)/exec_packets-files/
 # The native script that sends Break to the CLI that launched exec_break_forward.
 $(BUILD_DIR)/exec_break_forward: | $(BUILD_DIR)/exec_break_forward-files/exec_break_forward-helper
 $(BUILD_DIR)/exec_break_forward-files/exec_break_forward-helper: $(TEST_DIR)/exec_break_forward-files/exec_break_forward-helper | $(BUILD_DIR)
+	mkdir -p $(@D)
+	cp $< $@
+
+# The four literal helper scripts for asl_file_probe (asl_accept and asl_cancel
+# in Shell and Run), installed next to each alias with --files.
+ASL_FILE_PROBE_DIR := $(BUILD_DIR)/asl_file_probe-files
+ASL_FILE_PROBE_SCRIPTS := $(addprefix $(ASL_FILE_PROBE_DIR)/,asl_accept-helper-1 \
+                          asl_accept-helper-2 asl_cancel-helper-1 asl_cancel-helper-2)
+$(BUILD_DIR)/asl_file_probe: $(TEST_DIR)/asl_probe_protocol.h | $(ASL_FILE_PROBE_SCRIPTS)
+$(BUILD_DIR)/asl_file_probe: M68K_CFLAGS += -std=gnu99 -Wextra
+$(ASL_FILE_PROBE_SCRIPTS): $(ASL_FILE_PROBE_DIR)/%: $(TEST_DIR)/asl_file_probe-files/% | $(BUILD_DIR)
 	mkdir -p $(@D)
 	cp $< $@
 
@@ -892,7 +905,7 @@ clean:
 	rm -f $(BUILD_DIR)/mbedtls_selftest $(BUILD_DIR)/lua $(LUA_FILES).stamp $(BUILD_DIR)/unzip $(UNZIP_FILES).stamp $(BUILD_DIR)/awk $(AWK_FILES).stamp
 	rm -rf $(BZIP2_FILES) $(BZIP2_REFS) $(ZSTD_FILES) $(ZSTD_REFS) $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
 	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS) $(XZ_BUILD) $(XZ_FILES) $(XZ_REFS)
-	rm -rf $(MBEDTLS_REFS) $(LUA_FILES) $(LUA_REFS) $(UNZIP_FILES) $(UNZIP_REFS) $(AWK_BUILD) $(AWK_FILES) $(AWK_REFS)
+	rm -rf $(MBEDTLS_REFS) $(LUA_FILES) $(LUA_REFS) $(UNZIP_FILES) $(UNZIP_REFS) $(AWK_BUILD) $(AWK_FILES) $(AWK_REFS) $(ASL_FILE_PROBE_DIR)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
@@ -917,6 +930,12 @@ $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette
 # Native observer after the owned-screen leave probe, in the same boot.
 $(BUILD_DIR)/gfx_screen_cleanup_native: $(TEST_DIR)/gfx_screen_cleanup_native.c | $(BUILD_DIR)
 	$(NATIVE_CC) -O2 -Wall -Werror -o $@ $<
+
+# Native AArch64 Intuition observer for asl_file_probe, staged next to its four
+# helper scripts in $(ASL_FILE_PROBE_DIR): never build this with M68K_CC.
+$(ASL_FILE_PROBE_DIR)/WaitAslWindow: $(TEST_DIR)/WaitAslWindow.c $(TEST_DIR)/asl_probe_protocol.h | $(ASL_FILE_PROBE_SCRIPTS)
+	mkdir -p $(@D)
+	$(NATIVE_CC) -O2 -std=gnu99 -Wall -Wextra -Werror -o $@ $<
 
 # The bytecode probe intentionally uses 68020 addressing and MOVE from CCR.
 $(BUILD_DIR)/cpu_full_index: M68K_CFLAGS += -m68020

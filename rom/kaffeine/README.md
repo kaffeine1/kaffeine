@@ -529,7 +529,7 @@ The bridge provides generated or manual thunks for the following libraries and d
 | iffparse.library | 40 | 0 | 40 | IFF file parsing |
 | datatypes.library | 30 | 0 | 30 | Multimedia data type system |
 | expansion.library | 22 | 0 | 22 | Expansion board management |
-| asl.library | 8 | 0 | 8 | File/font/screenmode requesters |
+| asl.library | 0 | 8 | 8 | The file requester as AmiPixelShop uses it: AllocAslRequest of an ASL_FileRequest, one AslRequest per requester and FreeAslRequest, from the root task, with a bounded set of tags; font and screen mode requesters, a parent window, hooks, multiple selection, patterns, a second request on one requester and the other 5 LVOs stop with 20 |
 | keymap.library | 4 | 0 | 4 | Keyboard mapping |
 | workbench.library | 0 | 7 | 7 | AppWindows, AppIcons and AppMenuItems with their AppMessages, WBInfo |
 | Picasso96API.library | 0 | 28 | 28 | p96BestModeIDTagList and p96WritePixelArray of version 2 on cybergraphics.library, for the true colour modes and 24 and 32-bit buffers, with a bounded search for a mode of an allowed format when the first choice has none; the other 26 LVOs stop with 20 |

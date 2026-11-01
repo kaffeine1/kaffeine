@@ -109,6 +109,8 @@ at the end.
 | `exec_packets.c` | Read-only ACTION_READ packets and shared DOS file position. |
 | `exec_break_forward.c` | Break of the CLI that launched the program reaches it in its Kaffeine driver: the program starts `exec_break_forward-helper` with `Run`, which sends CTRL-C and then CTRL-D with `Break` to the CLI that `Status COMMAND` names, and waits up to 30 seconds for both; neither CTRL-E nor CTRL-F may come. The helper checks that Status gave rc 0 and a positive CLI number before any Break, keeps the results as `NAME-status-N.txt`, `NAME-cli-N.txt`, `NAME-clis-N.txt` and, for each Break, its output, error output and rc (`NAME-break-c-N*.txt`, `NAME-break-d-N*.txt`), and writes `NAME-done-N.txt` last, `ok` or the reason it failed; the program deletes that file before it starts the helper and goes on only when it is gone or was never there, then waits up to 20 seconds for it and needs `ok`. A break left on the launching CLI would stop its script (CTRL-D) or the Copy after the Run execution (CTRL-C). |
 | `exec_copymem_probe_v3.c` | Bounded 14-check regression comparing 65,536 one-byte `CopyMem()` calls and a 65,536-iteration guest byte-copy loop on a 64-byte source pattern into a `MEMF_PUBLIC | MEMF_CLEAR` buffer with 16-byte front and back guard sentinels, full 65,536-byte destination verification after each pass, `timer.device` (`UNIT_MICROHZ`) `ReadEClock()` rate stability and non-negative interval checks, bounded `GetSysTime()` interval checks, relative tick/microsecond observation line without a hardcoded speed-winner assertion, and exact zero-tolerance `AvailMem(MEMF_ANY)` restoration after `FreeMem()`, `CloseDevice()`, `DeleteIORequest()` and `DeleteMsgPort()` following an initial `test_flush()` warm-up. |
+| `asl_file_probe.c`, `asl_probe_protocol.h`, `asl_file_probe-refs/` | One `ASL_FileRequest` lifecycle (`AllocAslRequest()`, one `AslRequest()` and `FreeAslRequest()` on a fresh handle) on an owned 1024 by 768 24-bit Picasso96 screen with an ordinary window, selected by `asl_accept=build/asl_file_probe` with `--args asl_accept accept` (Return key, `BOOL` `1`) or `asl_cancel=build/asl_file_probe` with `--args asl_cancel cancel` (Escape key, `BOOL` `0`), 29 checks each: classic 56-byte `struct FileRequester` layout and field offsets, execution freshness of eleven per-run witness files, P96 1024 by 768 depth-24 screen and ordinary window open, initial mirrored `fr_File` (`"probe.txt"`), `fr_Drawer` (`"RAM:"`), `fr_UserData` (`0x13572468`), `fr_NumArgs` (`0`) and `fr_ArgList` (`NULL`), launching the native `WaitAslWindow` observer through `SYS:EMU68/NAME-helper-N`, waiting for helper completion before screen teardown, zero helper return code and empty helper error stream, atomic screenshot (`NAME-mouse-N.txt`) and key (`NAME-keys-N.txt`) markers with temporaries renamed away, requester disappearance witness, returned `BOOL`, file, drawer (verified with `SameLock()` against `RAM:`), geometry matching the native observed window (`60,60` `520` by `300`), bounded scalar outputs, post-request `IDCMP_REFRESHWINDOW` and drawing on the ordinary window, and `CloseScreen()`. Needs `--files NAME build/asl_file_probe-files`, `--expect NAME asl_file_probe-refs/NAME.out` and `--expect-err NAME asl_file_probe-refs/empty.err`. |
+| `WaitAslWindow.c` | Native AROS AArch64 Intuition observer for `asl_file_probe`, built into `build/asl_file_probe-files/WaitAslWindow`: under short `LockIBase(0)` traversals (key zero is valid, no native pointer kept across waits and no gadget or private-state traversal), finds the unique screen and active requester window by their immutable per-case, per-execution titles, checks two consecutive identical observations on the 1024 by 768 screen, records the twelve screen/window/border scalars, atomically renames the screenshot marker (`NAME-mouse-N.txt`), waits `AP_SHOT_TICKS` (350 ticks, 7 seconds) and verifies the same requester is still open and unchanged before atomically renaming the key marker (`NAME-keys-N.txt`), then waits for the requester window to close before writing `NAME-closed-N.txt`. |
 | `gfx_planar_read.c` | Original 32 by 3 planar images at depths 1, 2 and 8. Manually initialized public RastPort/BitMap structures, all 288 in-range pixel values, Flags 0/BMF_STANDARD, and byte-for-byte preservation of both structures, planes and guards. |
 | `gfx_display_info.c` | NULL-handle display queries by native mode ID: classic DISP/DIMS/NAME/MNTR layouts, headers, every requested length0..104 (monitors0..120), partial rectangles, reserved-tail/guard preservation, unavailable modes and stable monitor names/scalars/identities. |
 | `gfx_layer_topology.c` | Stable Window/RastPort layer identities, live depth order while polling without OS calls, backfill sentinels, backdrop flag preservation and removal of a closed sibling. The native ARM build allows an input-handler turn after depth calls; current native priority classes are preserved. |
@@ -456,6 +458,7 @@ compile and evaluate this emitted Hook; see that directory's README.
 | `exec_libraries` | `--files exec_libraries build/exec_libraries-files` |
 | `exec_packets` | `--files exec_packets build/exec_packets-files` |
 | `exec_break_forward` | `--files exec_break_forward build/exec_break_forward-files` |
+| `asl_accept=build/asl_file_probe`, `asl_cancel=build/asl_file_probe` | `--files asl_accept build/asl_file_probe-files`, `--files asl_cancel build/asl_file_probe-files` (includes native `WaitAslWindow` and the four helper scripts) |
 | `hunk_process_native` (native parent) | `--files hunk_process_native build-hunk-process` (includes its 68k payload) |
 | each step of `bzip2` | `--files NAME build/bzip2-files` |
 | each step of `zstd` | `--files NAME build/zstd-files` |
@@ -1369,3 +1372,93 @@ exact `AvailMem(MEMF_ANY)` restoration after teardown following an initial
 UART output. Moira execution, physical hardware and broader
 application or garbage-collector workloads are separate from this bounded
 functional probe.
+
+### Native ASL `FileRequester` bridge probe (2026-11-01)
+
+`asl_file_probe` and its native AROS AArch64 companion `WaitAslWindow` exercise
+one `ASL_FileRequest` lifecycle per handle (`AllocAslRequest()`, one
+`AslRequest()` and `FreeAslRequest()`) on an owned 1024 by 768 24-bit
+Picasso96 screen (`mode 0x00100000`, `BMA_DEPTH` 24) with an ordinary
+window. Building `build/asl_file_probe` stages the four helper scripts as
+order-only prerequisites; compile the separate native `WaitAslWindow` target
+explicitly alongside it with the configured AROS AArch64 SDK:
+
+```sh
+make -C developer/debug/test/kaffeine_target \
+    BUILD_DIR="$PWD/developer/debug/test/kaffeine_target/build" \
+    M68K_CC=m68k-amigaos-gcc \
+    NATIVE_CC='aarch64-aros-gcc --sysroot=/path/to/AROS/Developer' \
+    "$PWD/developer/debug/test/kaffeine_target/build/asl_file_probe" \
+    "$PWD/developer/debug/test/kaffeine_target/build/asl_file_probe-files/WaitAslWindow"
+```
+
+Run the `accept` and `cancel` aliases in separate boots (`--separate` when
+invoked together, since both aliases use `--files`, `--mouse` and `--keys`),
+comparing standard output and standard error against the source-authored
+reference files in `asl_file_probe-refs/`:
+
+```sh
+python3 developer/debug/test/kaffeine_target/run-raspi-qemu.py \
+    --image /path/to/base.img \
+    --kernel /path/to/aros-aarch64-raspi.img \
+    --bsp /path/to/aros-aarch64-bsp.rom \
+    --dtb /path/to/bcm2710-rpi-3-b.dtb \
+    --library /path/to/kaffeine.library \
+    --mtools /path/to/mtools/bin \
+    --run-dir /path/to/results/asl-file-probe --separate \
+    --cpu jit --tcg-thread single --timeout 180 \
+    --files asl_accept developer/debug/test/kaffeine_target/build/asl_file_probe-files \
+    --args asl_accept accept \
+    --mouse asl_accept shot:asl-accept-before \
+    --keys asl_accept ret \
+    --expect asl_accept developer/debug/test/kaffeine_target/asl_file_probe-refs/asl_accept.out \
+    --expect-err asl_accept developer/debug/test/kaffeine_target/asl_file_probe-refs/empty.err \
+    --expect-rc asl_accept 0 \
+    --files asl_cancel developer/debug/test/kaffeine_target/build/asl_file_probe-files \
+    --args asl_cancel cancel \
+    --mouse asl_cancel shot:asl-cancel-before \
+    --keys asl_cancel esc \
+    --expect asl_cancel developer/debug/test/kaffeine_target/asl_file_probe-refs/asl_cancel.out \
+    --expect-err asl_cancel developer/debug/test/kaffeine_target/asl_file_probe-refs/empty.err \
+    --expect-rc asl_cancel 0 \
+    asl_accept=developer/debug/test/kaffeine_target/build/asl_file_probe \
+    asl_cancel=developer/debug/test/kaffeine_target/build/asl_file_probe
+```
+
+Both `asl_accept` and `asl_cancel` pass **29 checks with zero failures** in
+each of Shell and actual `Run` (**116 checks, 0 failures** across the four
+executions) on AROS ARM64 under QEMU with the Kaffeine JIT (`rc 0`, exact match
+against `asl_accept.out` / `asl_cancel.out` and `empty.err`). In each
+execution:
+
+- `WaitAslWindow` observes the unique owned 1024 by 768 screen and active
+  requester window (`60,60` `520` by `300`, borders `10,25,10,21`) across two
+  consecutive locked inspections, atomically publishes `NAME-mouse-N.txt` for
+  the pre-key `screendump`, waits `AP_SHOT_TICKS` (350 ticks, 7 seconds),
+  verifies the same requester remains open and unchanged, atomically publishes
+  `NAME-keys-N.txt`, and confirms requester window closure (`NAME-closed-N.txt`)
+  before exiting with return code 0 and empty `stderr`.
+- The 7-second (`AP_SHOT_TICKS`) delay between `NAME-mouse-N.txt` and
+  `NAME-keys-N.txt` is a timing heuristic rather than a runner guarantee: if
+  both marker files are already present in the same host poll iteration,
+  `run-raspi-qemu.py` services `--keys` before `--mouse`. In the verified
+  `asl_accept` and `asl_cancel` runs, `runner.log` recorded the input events in
+  strict order (`mouse` screenshot marker, saved PNG of the open requester,
+  then `ret` or `esc` key input) in both Shell (`N=1`) and `Run` (`N=2`). Any
+  reproduction must verify this `mouse to saved PNG to keys` ordering in
+  `runner.log` and the two saved screenshots (`screen-asl-accept-before.png`
+  and `screen-asl-accept-before-2.png`, or the corresponding `asl-cancel`
+  names) for each
+  case as part of acceptance.
+- `asl_accept` returns `BOOL` `1` and `asl_cancel` returns `BOOL` `0`, with
+  `fr_File` `"probe.txt"`, `fr_Drawer` denoting `RAM:` (`SameLock()`),
+  `fr_LeftEdge` `60`, `fr_TopEdge` `60`, `fr_Width` `520`, `fr_Height` `300`,
+  `fr_UserData` `0x13572468`, `fr_NumArgs` `0` and `fr_ArgList` `NULL`,
+  followed by `FreeAslRequest()`, `IDCMP_REFRESHWINDOW` delivery and drawing on
+  the ordinary window, and `CloseScreen()` after the helper has exited.
+
+This validation covers one `AslRequest()` per fresh `ASL_FileRequest` handle on
+an owned 1024 by 768 24-bit screen without hooks, filter callbacks, pattern
+gadgets, multiselect or application file I/O. Repeated requests on the same
+handle, AmiPixelShop ASL workflows, Moira execution and physical hardware
+remain separate validation gates.
