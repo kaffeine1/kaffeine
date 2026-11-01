@@ -14,6 +14,8 @@ void FreeVec(APTR);
 struct Library *OpenLibrary(CONST_STRPTR, ULONG);
 void CloseLibrary(struct Library *);
 struct Task *FindTask(CONST_STRPTR);
+ULONG SetSignal(ULONG, ULONG);
+void Signal(struct Task *, ULONG);
 struct MsgPort *CreateMsgPort(void);
 void DeleteMsgPort(struct MsgPort *);
 void PutMsg(struct MsgPort *, struct Message *);

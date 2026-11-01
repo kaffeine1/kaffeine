@@ -1,0 +1,39 @@
+.KEY NAME/A,N/A
+.BRA {
+.KET }
+; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; Author: Michele Dipace (@kaffeine1)
+; Break of the CLI that launched {NAME}, as Status COMMAND finds it:
+; CTRL-C, then CTRL-D. Every result is kept with the execution number {N}.
+; {NAME}-done-{N}.txt comes last and says ok only when Status gave rc 0
+; and a positive CLI number and both Break commands returned 0; otherwise
+; it says why, and no Break is sent after a failed Status.
+FailAt 21
+Status >ENV:ebfcli{N} *>"{NAME}-status-{N}-err.txt" COMMAND "{NAME}"
+Set ebfrc $RC
+Echo "rc $ebfrc" >"{NAME}-status-{N}.txt"
+Copy ENV:ebfcli{N} "{NAME}-cli-{N}.txt" QUIET
+Status >"{NAME}-clis-{N}.txt"
+If NOT VAL $ebfrc EQ 0
+    Echo "fail: Status COMMAND rc $ebfrc" >"{NAME}-done-{N}.txt"
+    Quit 10
+EndIf
+If NOT VAL $ebfcli{N} GT 0
+    Echo "fail: Status COMMAND gave no positive CLI number" >"{NAME}-done-{N}.txt"
+    Quit 10
+EndIf
+Break $ebfcli{N} C >"{NAME}-break-c-{N}.txt" *>"{NAME}-break-c-{N}-err.txt"
+Set ebfrcc $RC
+Echo "rc $ebfrcc" >"{NAME}-break-c-{N}-rc.txt"
+Wait 1 SECS
+Break $ebfcli{N} D >"{NAME}-break-d-{N}.txt" *>"{NAME}-break-d-{N}-err.txt"
+Set ebfrcd $RC
+Echo "rc $ebfrcd" >"{NAME}-break-d-{N}-rc.txt"
+If VAL $ebfrcc EQ 0
+    If VAL $ebfrcd EQ 0
+        Echo "ok" >"{NAME}-done-{N}.txt"
+        Quit 0
+    EndIf
+EndIf
+Echo "fail: Break rc $ebfrcc and $ebfrcd" >"{NAME}-done-{N}.txt"
+Quit 10

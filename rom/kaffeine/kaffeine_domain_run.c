@@ -17,6 +17,9 @@
 #define KAFFEINE_DOMAIN_START_TICKS 250
 #endif
 
+/* The break signals that the caller passes on to the program it runs */
+#define DOMAIN_BREAKS (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F)
+
 enum DriverState { DRIVER_STARTING, DRIVER_READY, DRIVER_COMMITTED, DRIVER_ABORTED, DRIVER_FINISHED };
 
 struct DomainDriver
@@ -31,8 +34,23 @@ struct DomainDriver
     BOOL root_done, cli;
     LONG result;
     SIPTR error;
+    /* The driver's own native task, set by the driver at READY and cleared
+       at root completion or abort, both under lock: while it is set, the
+       driver cannot have returned, so the caller may signal it there. */
+    struct Task *task;
     char command[256];
 };
+
+/* Under driver->lock, with driver->task set: the break signals that the
+   caller holds go to the driver, which runs the program. Its other
+   signals stay. */
+static void forward_breaks(struct DomainDriver *driver)
+{
+    ULONG breaks = SetSignal(0, DOMAIN_BREAKS) & DOMAIN_BREAKS;
+
+    if (breaks)
+        Signal(driver->task, breaks);
+}
 
 static void release(struct DomainDriver *driver)
 {
@@ -59,6 +77,8 @@ static void root_complete(struct KaffeineContext *ctx, LONG result)
     {
         driver->result = result;
         driver->root_done = TRUE;
+        /* breaks from now on are the caller's again */
+        driver->task = NULL;
     }
     ReleaseSemaphore(&driver->lock);
 }
@@ -83,7 +103,11 @@ static LONG driver_entry(void)
         goto done;
     }
     ObtainSemaphore(&driver->lock);
-    if (driver->state == DRIVER_STARTING) driver->state = DRIVER_READY;
+    if (driver->state == DRIVER_STARTING)
+    {
+        driver->state = DRIVER_READY;
+        driver->task = &me->pr_Task;
+    }
     ReleaseSemaphore(&driver->lock);
     for (ticks = 0; ticks < KAFFEINE_DOMAIN_START_TICKS; ++ticks)
     {
@@ -117,6 +141,7 @@ done:
     me->pr_Task.tc_UserData = NULL;
     ObtainSemaphore(&driver->lock);
     driver->state = DRIVER_FINISHED;
+    driver->task = NULL;
     ReleaseSemaphore(&driver->lock);
     release(driver);
     /* The library is resident (noexpunge), including this final return. */
@@ -202,6 +227,9 @@ BOOL Kaffeine_RunDomain(struct KaffeineContext *ctx, LONG (*run)(struct Kaffeine
             ctx->root_complete = root_complete;
             driver->state = DRIVER_COMMITTED;
             committed = TRUE;
+            /* A break while the program loaded is its own. The driver,
+               which set task at READY, still waits for this state. */
+            forward_breaks(driver);
         }
         done = committed || driver->state == DRIVER_ABORTED || driver->state == DRIVER_FINISHED;
         error = driver->error;
@@ -219,11 +247,15 @@ BOOL Kaffeine_RunDomain(struct KaffeineContext *ctx, LONG (*run)(struct Kaffeine
         SetIoErr(error);
         return FALSE;
     }
+    /* While the root runs, Break of the caller's CLI, or Ctrl+C of a
+       console that the caller read last, reaches the program in the
+       driver. Once the root is done, breaks stay with the caller. */
     for (;;)
     {
         ObtainSemaphore(&driver->lock);
         done = driver->root_done;
         if (done) *result = driver->result;
+        else if (driver->task) forward_breaks(driver);
         ReleaseSemaphore(&driver->lock);
         if (done) break;
         Delay(1);

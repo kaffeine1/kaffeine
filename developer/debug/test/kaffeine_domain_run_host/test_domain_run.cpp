@@ -34,16 +34,19 @@ struct Child
     std::string command;
     bool cli{}, close_input{true}, close_output{true}, close_error{true};
     bool deferred{}, release_start{}, fail_command{}, finished{};
+    bool exited{}; /* the native entry has returned: no signal may reach it */
     LONG result{};
 };
 struct State
 {
-    enum Mode { FAST, CHILD, REPEAT } mode{FAST};
+    enum Mode { FAST, CHILD, REPEAT, INFLIGHT } mode{FAST};
     bool run_entered{}, parent_returned{}, release_children{}, disposed{};
+    bool late_break{}; /* CHILD: a caller break right after root completion */
     unsigned run_calls{}, dispose_calls{}, drop_calls{}, effective_drops{}, live_children{};
     bool borrowed_live[3]{true,true,true};
     BPTR native_streams[3]{};
     Task *owner{};
+    ULONG breaks_at_run{}, breaks_in_flight{}; /* the driver's signals then */
 };
 static std::mutex fixture_lock;
 static std::condition_variable changed;
@@ -61,6 +64,29 @@ static thread_local unsigned semaphore_depth;
 static unsigned opens, closes, cnp_calls, contexts_created, contexts_disposed;
 static std::atomic<unsigned> ioerr_reads;
 static bool fail_alloc, fail_open, fail_dup, fail_cnp, next_defer, next_fail_command, next_early_exit;
+/* Exec signal words of the caller and the drivers, and each Signal() made */
+struct SignalCall { Task *task; ULONG bits; };
+static std::map<Task *, ULONG> signal_words;
+static std::vector<SignalCall> signal_calls;
+static constexpr ULONG ALL_BREAKS = SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F;
+static constexpr ULONG UNRELATED = 0x00010800UL; /* a user bit and a low system bit */
+/* The caller parks in one Delay() of its poll until the late break is up */
+static bool park_caller, caller_parked, late_raised;
+/* The caller's first lock after the commit is the first that follows a
+   lock with no Delay() between: with hold_run set, the caller waits there
+   until the driver has entered run, so only breaks given with the commit
+   can be the driver's by then. */
+static State *hold_run;
+static bool held_until_run;
+static thread_local bool locked_before, delayed_since_lock;
+static void hold_until_run()
+{
+    std::unique_lock<std::mutex> lock(fixture_lock);
+    State *state = hold_run;
+    if (!state) return;
+    hold_run = nullptr;
+    held_until_run = changed.wait_for(lock, std::chrono::seconds(2), [state] { return state->run_entered; });
+}
 static constexpr SIPTR caller_error = (SIPTR)0x12345678000000abULL;
 static constexpr SIPTR injected_error = (SIPTR)0x23456789000000cdULL;
 
@@ -88,7 +114,14 @@ extern "C" void InitSemaphore(SignalSemaphore *s)
     std::lock_guard<std::mutex> lock(fixture_lock);
     semaphores.insert(s);
 }
-extern "C" void ObtainSemaphore(SignalSemaphore *s) { pthread_mutex_lock(&s->mutex); ++semaphore_depth; }
+extern "C" void ObtainSemaphore(SignalSemaphore *s)
+{
+    if (!current_child && locked_before && !delayed_since_lock) hold_until_run();
+    locked_before = true;
+    delayed_since_lock = false;
+    pthread_mutex_lock(&s->mutex);
+    ++semaphore_depth;
+}
 extern "C" void ReleaseSemaphore(SignalSemaphore *s) { --semaphore_depth; pthread_mutex_unlock(&s->mutex); }
 extern "C" APTR AllocVec(ULONG size, ULONG flags)
 {
@@ -183,7 +216,67 @@ extern "C" void Delay(ULONG ticks)
 {
     if (semaphore_depth || ticks != 1) check(false, "polling uses single ticks outside driver semaphore");
     native_error = 0x105;
+    delayed_since_lock = true;
+    if (!current_child)
+    {
+        std::unique_lock<std::mutex> lock(fixture_lock);
+        if (park_caller)
+        {
+            park_caller = false;
+            caller_parked = true;
+            changed.notify_all();
+            changed.wait_for(lock, std::chrono::seconds(2), [] { return late_raised; });
+            return;
+        }
+    }
     std::this_thread::sleep_for(std::chrono::microseconds(150));
+}
+/* Only the caller takes signals, and only of its own word, as Exec does */
+extern "C" ULONG SetSignal(ULONG signals, ULONG mask)
+{
+    /* called once a poll: counted only when it fails, as Delay() */
+    if (current_task != &parent_process.pr_Task || current_child)
+        check(false, "only the native caller takes signals of its own");
+    std::lock_guard<std::mutex> lock(fixture_lock);
+    ULONG &word = signal_words[current_task];
+    ULONG old = word;
+    word = (word & ~mask) | (signals & mask);
+    return old;
+}
+/* A break goes from the caller, under the driver semaphore, to a driver
+   whose native entry has not returned */
+extern "C" void Signal(Task *task, ULONG bits)
+{
+    check(current_task == &parent_process.pr_Task && !current_child && semaphore_depth == 1,
+          "the caller signals the driver while it holds the driver semaphore");
+    std::lock_guard<std::mutex> lock(fixture_lock);
+    Child *target = nullptr;
+    for (auto &child : children)
+        if (&child->process.pr_Task == task) target = child.get();
+    check(target && !target->exited, "a break is signalled only to a live native driver");
+    check(bits && !(bits & ~ALL_BREAKS), "only CTRL-C to CTRL-F are passed on");
+    signal_calls.push_back({task, bits});
+    signal_words[task] |= bits;
+    changed.notify_all();
+}
+/* A native Signal() to the caller from elsewhere, as Break of its CLI */
+static void raise_caller(ULONG bits)
+{
+    std::lock_guard<std::mutex> lock(fixture_lock);
+    signal_words[&parent_process.pr_Task] |= bits;
+    changed.notify_all();
+}
+static ULONG signals_of(Task *task)
+{
+    std::lock_guard<std::mutex> lock(fixture_lock);
+    return signal_words[task];
+}
+static void reset_signals(ULONG caller)
+{
+    std::lock_guard<std::mutex> lock(fixture_lock);
+    signal_words.clear();
+    signal_calls.clear();
+    signal_words[&parent_process.pr_Task] = caller;
 }
 
 extern "C" Process *CreateNewProc(const TagItem *tags)
@@ -249,6 +342,10 @@ extern "C" Process *CreateNewProc(const TagItem *tags)
             if (raw->deferred) changed.wait(lock, [raw] { return raw->release_start; });
         }
         raw->result = entry();
+        {
+            std::lock_guard<std::mutex> lock(fixture_lock);
+            raw->exited = true;
+        }
         check(!raw->process.pr_Task.tc_UserData, "private gate userdata cleared before native DOS exit");
         if (raw->process.pr_CurrentDir) UnLock(raw->process.pr_CurrentDir);
         if (raw->process.pr_HomeDir) UnLock(raw->process.pr_HomeDir);
@@ -336,6 +433,8 @@ static LONG run_domain(KaffeineContext *ctx)
         state->run_entered = true;
         ++state->run_calls;
         state->owner = current_task;
+        state->breaks_at_run = signal_words[current_task];
+        changed.notify_all();
     }
     check(current_child && current_task != &parent_process.pr_Task,
           "compiled run callback executes only in native driver");
@@ -349,8 +448,32 @@ static LONG run_domain(KaffeineContext *ctx)
           current_child->process.pr_CurrentDir > UINT32_MAX,
           "driver has a distinct complete-width native current-directory reference");
     if (state->mode == State::FAST) return 11;
+    if (state->mode == State::INFLIGHT)
+    {   /* the program runs until a break of the caller reaches it */
+        std::unique_lock<std::mutex> lock(fixture_lock);
+        changed.notify_all();
+        bool reached = changed.wait_for(lock, std::chrono::seconds(2), [] {
+            return (signal_words[current_task] & SIGBREAKF_CTRL_D) != 0; });
+        state->breaks_in_flight = signal_words[current_task];
+        check(reached, "a break that the caller gets while the program runs reaches the driver");
+        return 13;
+    }
     state->live_children = 1;
+    if (state->late_break)
+    {   /* the caller waits in its poll while the root completes */
+        std::unique_lock<std::mutex> lock(fixture_lock);
+        park_caller = true;
+        check(changed.wait_for(lock, std::chrono::seconds(2), [] { return caller_parked; }),
+              "the caller parks in its poll before root completion");
+    }
     ctx->root_complete(ctx,7);
+    if (state->late_break)
+    {   /* a break after completion, before the caller looks again */
+        raise_caller(SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F);
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        late_raised = true;
+        changed.notify_all();
+    }
     if (state->mode == State::REPEAT) ctx->root_complete(ctx,99);
     {
         std::unique_lock<std::mutex> lock(fixture_lock);
@@ -446,6 +569,95 @@ static void test_fast(bool cli)
           "fast run (with or without CLI) transfers/disposes exactly once without inspecting CNP sentinel");
     parent_process.pr_CLI=(BPTR)0x900000002ULL;
 }
+/* Breaks that the caller holds when the program loads reach the driver
+   with the commit, before run: also a program that returns at once gets
+   them, whatever the timing. The caller keeps every other signal. */
+static void test_break_commit_edge()
+{
+    State state;
+    open_parent_streams(state);
+    auto ctx=make_context(state);
+    Task *caller=&parent_process.pr_Task;
+    reset_signals(SIGBREAKF_CTRL_C|SIGBREAKF_CTRL_E|UNRELATED);
+    {
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        hold_run=&state;held_until_run=false;
+    }
+    locked_before=false;
+    native_error=caller_error;LONG result=-99;
+    check(Kaffeine_RunDomain(ctx,run_domain,dispose_domain,&result) && result==11 && IoErr()==caller_error,
+          "a program with pending breaks runs and returns with the caller's IoErr");
+    close_parent_streams(state,true);
+    join_all();
+    {
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        check(held_until_run && !hold_run, "the caller's first poll after the commit waited for run");
+    }
+    check(state.breaks_at_run==(SIGBREAKF_CTRL_C|SIGBREAKF_CTRL_E),
+          "breaks pending on the caller are the driver's before run starts");
+    check(signals_of(caller)==UNRELATED, "the caller gives up only CTRL-C to CTRL-F");
+    std::lock_guard<std::mutex> lock(fixture_lock);
+    check(signal_calls.size()==1 && signal_calls[0].task==state.owner &&
+          signal_calls[0].bits==(SIGBREAKF_CTRL_C|SIGBREAKF_CTRL_E),
+          "one Signal() at the commit, to the driver that then runs the program");
+}
+/* A break that comes to the caller while the program runs, as Break of
+   the caller's CLI, reaches the driver; an unrelated signal stays. */
+static void test_break_in_flight()
+{
+    State state;state.mode=State::INFLIGHT;
+    open_parent_streams(state);
+    auto ctx=make_context(state);
+    Task *caller=&parent_process.pr_Task;
+    reset_signals(0);
+    std::thread breaker([&state] {
+        {
+            std::unique_lock<std::mutex> lock(fixture_lock);
+            changed.wait(lock,[&state]{return state.run_entered;});
+        }
+        raise_caller(SIGBREAKF_CTRL_D|0x00020000UL);
+    });
+    native_error=caller_error;LONG result=-99;
+    check(Kaffeine_RunDomain(ctx,run_domain,dispose_domain,&result) && result==13 && IoErr()==caller_error,
+          "the program ends on the forwarded break and the caller's IoErr stays");
+    breaker.join();
+    close_parent_streams(state,true);
+    join_all();
+    check(!state.breaks_at_run && state.breaks_in_flight==SIGBREAKF_CTRL_D,
+          "the driver gets exactly the break, not the caller's other signal");
+    check(signals_of(caller)==0x00020000UL, "the unrelated signal stays with the caller");
+}
+/* After root completion breaks are the caller's again: none goes to the
+   driver of a child that still runs, and none to a driver after it. */
+static void test_break_after_root()
+{
+    State state;state.mode=State::CHILD;state.late_break=true;
+    open_parent_streams(state);
+    auto ctx=make_context(state);
+    Task *caller=&parent_process.pr_Task;
+    reset_signals(UNRELATED);
+    park_caller=caller_parked=late_raised=false;
+    native_error=caller_error;LONG result=-99;
+    check(Kaffeine_RunDomain(ctx,run_domain,dispose_domain,&result) && result==7 && IoErr()==caller_error,
+          "early root completion returns the first result with a late break pending");
+    {
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        check(caller_parked && late_raised, "the caller polled again only after root completion and the break");
+    }
+    check(signals_of(caller)==(UNRELATED|SIGBREAKF_CTRL_C|SIGBREAKF_CTRL_F),
+          "a break after root completion stays pending on the caller");
+    close_parent_streams(state,true);
+    {
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        state.release_children=true;
+        changed.notify_all();
+    }
+    join_all();
+    check(state.disposed && !(signals_of(state.owner) & ALL_BREAKS),
+          "the driver of the surviving child got no break");
+    std::lock_guard<std::mutex> lock(fixture_lock);
+    check(signal_calls.empty(), "no Signal() after root completion");
+}
 static void test_failures()
 {
     enum Failure { ALLOC, OPEN, DUP, CNP, COMMAND };
@@ -458,8 +670,11 @@ static void test_failures()
         unsigned locks_before=live_locks();
         fail_alloc=which==ALLOC;fail_open=which==OPEN;fail_dup=which==DUP;fail_cnp=which==CNP;
         next_fail_command=next_early_exit=which==COMMAND;
+        reset_signals(ALL_BREAKS|UNRELATED);
         native_error=caller_error;
         bool okay=Kaffeine_RunDomain(ctx,run_domain,dispose_domain,&result);
+        check(signals_of(&parent_process.pr_Task)==(ALL_BREAKS|UNRELATED),
+              "a failed start leaves every caller signal, breaks included");
         SIPTR expected=which==ALLOC?ERROR_NO_FREE_STORE:which==OPEN?ERROR_INVALID_RESIDENT_LIBRARY:injected_error;
         check(!okay && IoErr()==expected && result==-99, "precommit failure preserves exact numeric error and result output");
         check(!ctx->root_complete && !ctx->root_completion_data && !state.run_calls && !state.dispose_calls,
@@ -470,6 +685,8 @@ static void test_failures()
         join_all();
         check(live_locks()==locks_before && opens==closes && allocations.empty(),
               "all precommit failure resources balance even when worker exits before CNP returns 1");
+        std::lock_guard<std::mutex> lock(fixture_lock);
+        check(signal_calls.empty(), "no break goes to a driver that never committed");
     }
 }
 static void test_timeout()
@@ -478,9 +695,12 @@ static void test_timeout()
     open_parent_streams(state);
     auto ctx=make_context(state);
     unsigned locks_before=live_locks();
+    reset_signals(ALL_BREAKS|UNRELATED);
     next_defer=true;native_error=caller_error;LONG result=-99;
     check(!Kaffeine_RunDomain(ctx,run_domain,dispose_domain,&result) && IoErr()==ERROR_BREAK && result==-99,
           "bounded startup timeout does not commit or replace result");
+    check(signals_of(&parent_process.pr_Task)==(ALL_BREAKS|UNRELATED),
+          "a timed out start leaves every caller signal, breaks included");
     check(!ctx->root_complete && !ctx->root_completion_data && !state.run_calls && !state.dispose_calls,
           "late worker has never acquired context ownership");
     check(opens==closes+1 && !allocations.empty(), "late worker's private userdata and library pin remain live");
@@ -489,6 +709,8 @@ static void test_timeout()
     join_all(true);
     check(!state.run_calls && !state.dispose_calls && allocations.empty() && opens==closes && live_locks()==locks_before,
           "late entry observes abort without touching already-freed caller context");
+    std::lock_guard<std::mutex> lock(fixture_lock);
+    check(signal_calls.empty(), "the late driver, published after the caller gave up, gets no break");
 }
 static void test_preflight()
 {
@@ -523,6 +745,7 @@ int main()
     test_early_return(State::CHILD);
     test_early_return(State::REPEAT);
     test_fast(true);test_fast(false);
+    test_break_commit_edge();test_break_in_flight();test_break_after_root();
     test_failures();test_timeout();test_preflight();
     check(contexts_created==contexts_disposed && allocations.empty() && semaphores.empty() && opens==closes,
           "every context/record/library is disposed once by its actual owner");
