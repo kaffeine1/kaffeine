@@ -108,6 +108,7 @@ at the end.
 | `exec_message_lifetime.c` | Manual ports drained by RemHead, RemTail, Remove and inline Node links, followed by FreeVec or FreeMem. Reacquires the freed bytes with AllocAbs before reusing them, then checks an unrelated message roundtrip, payload guards and the reused buffer. |
 | `exec_packets.c` | Read-only ACTION_READ packets and shared DOS file position. |
 | `exec_break_forward.c` | Break of the CLI that launched the program reaches it in its Kaffeine driver: the program starts `exec_break_forward-helper` with `Run`, which sends CTRL-C and then CTRL-D with `Break` to the CLI that `Status COMMAND` names, and waits up to 30 seconds for both; neither CTRL-E nor CTRL-F may come. The helper checks that Status gave rc 0 and a positive CLI number before any Break, keeps the results as `NAME-status-N.txt`, `NAME-cli-N.txt`, `NAME-clis-N.txt` and, for each Break, its output, error output and rc (`NAME-break-c-N*.txt`, `NAME-break-d-N*.txt`), and writes `NAME-done-N.txt` last, `ok` or the reason it failed; the program deletes that file before it starts the helper and goes on only when it is gone or was never there, then waits up to 20 seconds for it and needs `ok`. A break left on the launching CLI would stop its script (CTRL-D) or the Copy after the Run execution (CTRL-C). |
+| `exec_copymem_probe_v3.c` | Bounded 14-check regression comparing 65,536 one-byte `CopyMem()` calls and a 65,536-iteration guest byte-copy loop on a 64-byte source pattern into a `MEMF_PUBLIC | MEMF_CLEAR` buffer with 16-byte front and back guard sentinels, full 65,536-byte destination verification after each pass, `timer.device` (`UNIT_MICROHZ`) `ReadEClock()` rate stability and non-negative interval checks, bounded `GetSysTime()` interval checks, relative tick/microsecond observation line without a hardcoded speed-winner assertion, and exact zero-tolerance `AvailMem(MEMF_ANY)` restoration after `FreeMem()`, `CloseDevice()`, `DeleteIORequest()` and `DeleteMsgPort()` following an initial `test_flush()` warm-up. |
 | `gfx_planar_read.c` | Original 32 by 3 planar images at depths 1, 2 and 8. Manually initialized public RastPort/BitMap structures, all 288 in-range pixel values, Flags 0/BMF_STANDARD, and byte-for-byte preservation of both structures, planes and guards. |
 | `gfx_display_info.c` | NULL-handle display queries by native mode ID: classic DISP/DIMS/NAME/MNTR layouts, headers, every requested length0..104 (monitors0..120), partial rectangles, reserved-tail/guard preservation, unavailable modes and stable monitor names/scalars/identities. |
 | `gfx_layer_topology.c` | Stable Window/RastPort layer identities, live depth order while polling without OS calls, backfill sentinels, backdrop flag preservation and removal of a closed sibling. The native ARM build allows an input-handler turn after depth calls; current native priority classes are preserved. |
@@ -1352,3 +1353,19 @@ error output. This smoke test presets mode `0x00100000` and disables update
 checks; it does not exercise the first-start screen-mode requester,
 painting, clipboard, saving or loading. The native Workbench setup is
 1024 by 768 at 24 bits; screenshots verify the application's interface.
+
+### Bounded 1-byte `CopyMem` and timer probe — 2026-11-01
+
+`exec_copymem_probe_v3` passes 14 checks with zero failures in both Shell
+and actual `Run` on AROS ARM64 under QEMU with the Kaffeine JIT (`rc 0`,
+empty error output). It verifies all 65,536 destination bytes and 16-byte
+front and back guard sentinels after 65,536 one-byte `CopyMem()` calls and
+again after a 65,536-iteration guest byte-copy loop, checks positive stable
+`ReadEClock()` rates and bounded non-negative `ReadEClock()` / `GetSysTime()`
+intervals (`UNIT_MICROHZ`), prints relative E-clock tick and microsecond
+timings for observation without a speed-winner threshold, and confirms
+exact `AvailMem(MEMF_ANY)` restoration after teardown following an initial
+`Flush(Output())` warm-up. Timings include bridge dispatch and diagnostic
+UART output. Moira execution, physical hardware and broader
+application or garbage-collector workloads are separate from this bounded
+functional probe.
