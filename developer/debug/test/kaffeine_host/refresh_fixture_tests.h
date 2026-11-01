@@ -202,3 +202,66 @@ static void test_refresh_lifetime()
         f.close(mw);
     }
 }
+
+/* Stand-ins for the 28 manual vectors of kaffeine_p96.c, so that only the
+   dispatcher decides; each records the native Info depth it ran under. */
+static std::vector<int> p96_writes;
+static IPTR record_p96(KaffeineContext *ctx, void *)
+{
+    p96_writes.push_back(Kaffeine_LayerInfoLocked(ctx) ? info_depth : 0);
+    return 0;
+}
+
+static void test_refresh_p96_write()
+{
+    static constexpr ULONG p96_base=0x30000,ri=0x5000;
+    M68KThunkEntry p96[29]={},no_write[28]={};
+    for(unsigned i=0,j=0;i<28;++i)
+    {
+        p96[i]={30+6*i,record_p96};
+        if(p96[i].lvo!=102)no_write[j++]=p96[i];
+    }
+    const std::vector<M68KThunkEntry> none,generated={{102,poison}};
+    for(bool oom:{false,true})
+    {
+        Fixture f;NativeWindow a;make_window(a,scr,10,20,200,100);a.layer.Flags|=LAYERREFRESH;
+        order(scr,{&bar,&a.layer,&foreign});
+        ULONG mw=f.open(a),rp=f.L(mw+M68K_WIN_RPORT),la=f.L(mw+M68K_WIN_WLAYER),info=f.L(la+M68K_LAYER_LAYERINFO);
+        f.lib(4,p96_base,"Picasso96API.library",p96,28,none);f.ctx.num_libs=5;p96_writes.clear();
+        // Outside any scope the dispatcher passes every vector.
+        assert(f.call(p96_base,102,{ri,rp})==0 && f.call(p96_base,108,{ri,rp})==0 && f.ctx.running);
+        assert(p96_writes==std::vector<int>({0,0}));
+        update_fails=oom;
+        assert(f.call(Fixture::intuition_base,354,{mw})==0 && f.ctx.running && refresh_begins==1);
+        assert(Kaffeine_LayerInfoLocked(&f.ctx) && ((a.window.Flags&WFLG_WINDOWREFRESH)!=0)==!oom);
+        auto locks=held_locks;auto depth=info_depth;
+        // The manual write runs between the native Begin and EndRefresh,
+        // also when BeginUpdate failed, and leaves the scope as it was.
+        assert(f.call(p96_base,102,{ri,rp},{0,0,0,0,8,4})==0 && f.ctx.running);
+        assert(p96_writes.size()==3 && p96_writes.back()==depth && depth>0);
+        assert(held_locks==locks && info_depth==depth && !refresh_ends && !update_ends);
+        for(ULONG lvo=30;lvo<=192;lvo+=6)
+            if(lvo!=102)assert(f.call(p96_base,lvo,{ri,rp})==20 && f.stopped() && p96_writes.size()==3);
+        // A generated 102, or a manual 102 of a library of another name, stops.
+        f.lib(4,p96_base,"Picasso96API.library",no_write,27,generated);
+        assert(f.call(p96_base,102,{ri,rp})==20 && f.stopped());
+        for(const char *name:{"picasso96api.library","Picasso96API.libraryX","Picasso96API"})
+        {
+            f.lib(4,p96_base,name,p96,28,none);
+            assert(f.call(p96_base,102,{ri,rp})==20 && f.stopped() && p96_writes.size()==3);
+        }
+        f.lib(4,p96_base,"Picasso96API.library",p96,28,none);
+        assert(f.call(p96_base,102,{ri,rp})==0 && f.ctx.running && p96_writes.size()==4);
+        assert(held_locks==locks && info_depth==depth && !refresh_ends);
+        assert(f.call(Fixture::intuition_base,366,{mw},{1})==0 && f.ctx.running);
+        assert(refresh_ends==1 && update_ends==!oom && !held_locks && !info_depth &&
+               !Kaffeine_LayerInfoLocked(&f.ctx));
+        // An explicit Info scope takes the same single vector.
+        assert(f.call(Fixture::layers_base,120,{info})==0 && Kaffeine_LayerInfoLocked(&f.ctx));
+        assert(f.call(p96_base,102,{ri,rp})==0 && f.ctx.running && p96_writes.back()==1);
+        assert(f.call(p96_base,60,{ri})==20 && f.stopped() && p96_writes.size()==5);
+        assert(f.call(Fixture::layers_base,138,{info})==0 && !info_depth);
+        assert(f.call(p96_base,60,{ri})==0 && p96_writes.size()==6 && p96_writes.back()==0);
+        f.close(mw);
+    }
+}

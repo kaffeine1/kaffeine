@@ -28,6 +28,16 @@
     not have, and "gfx_p96 badri" passes a NULL RenderInfo: both stop the
     program with rc 20 (--expect-rc NAME 20).
 
+    "gfx_p96 refresh" writes in a refresh, which needs 24 bits or more: a
+    simple refresh window paints the pattern's rectangle and a frame of one
+    pixel around it in one colour, a borderless window of the program
+    covers the right half of the pattern and closes, and once the
+    REFRESHWINDOW message has come the whole pattern is written between
+    BeginRefresh() and EndRefresh(). Only the damaged right half may take
+    it; the left half and the frame keep their colour. Nothing else runs in
+    the refresh, as the bridge stops a program there for anything but
+    drawing.
+
     The calls go through the LP macros of the NDK at the offsets of
     Picasso96API.fd and cybergraphics.fd, since the NDK has no Picasso96
     header.
@@ -303,6 +313,132 @@ static void check_pixels(struct Window *win)
         Printf("info SKIP clipping readback: fewer than 24 bits\n");
 }
 
+#define FIELD 0x00123456UL          /* the colour around the write in the refresh */
+
+/* Replies to the messages of win; TRUE if one of them was REFRESHWINDOW. */
+static BOOL refresh_message(struct Window *win)
+{
+    struct IntuiMessage *msg;
+    BOOL refresh = FALSE;
+
+    while ((msg = (struct IntuiMessage *)GetMsg(win->UserPort)))
+    {
+        if (msg->Class == IDCMP_REFRESHWINDOW)
+            refresh = TRUE;
+        ReplyMsg((struct Message *)msg);
+    }
+    return refresh;
+}
+
+static void check_refresh(struct Screen *pub)
+{
+    struct Window *win, *cover;
+    struct RastPort *rp;
+    struct RenderInfo ri;
+    ULONG i, j, c, x0, y0, wrong = 0, wrong_in = 0, wrong_out = 0, backfilled = 0;
+    BOOL refresh = FALSE;
+    int k;
+
+    win = OpenWindowTags(NULL, WA_Left, 40, WA_Top, 120, WA_InnerWidth, 2 * PATTERN_W + 8,
+                         WA_InnerHeight, PATTERN_H + 8, WA_Title, (ULONG)"gfx_p96 refresh",
+                         WA_PubScreen, (ULONG)pub, WA_SimpleRefresh, TRUE,
+                         WA_IDCMP, IDCMP_REFRESHWINDOW, WA_Activate, FALSE, TAG_DONE);
+    if (!check(win != NULL, "a simple refresh window that reports REFRESHWINDOW"))
+        return;
+    rp = win->RPort;
+    x0 = win->BorderLeft + 4;
+    y0 = win->BorderTop + 4;
+    Printf("info screen depth %lu\n", screen_depth(win));
+    if (!check(screen_depth(win) >= 24, "the screen has 24 bits or more"))
+    {
+        CloseWindow(win);
+        return;
+    }
+    /* an empty refresh first, so that no damage of the opening is left,
+       whether or not its message has come yet */
+    Delay(25);
+    refresh_message(win);
+    BeginRefresh(win);
+    EndRefresh(win, TRUE);
+
+    /* the pattern's rectangle and its frame in FIELD, outside a refresh */
+    for (i = 0; i < BUF_W * BUF_H; i++)
+    {
+        buffer[4 * i] = 0xFF;
+        buffer[4 * i + 1] = (UBYTE)(FIELD >> 16);
+        buffer[4 * i + 2] = (UBYTE)(FIELD >> 8);
+        buffer[4 * i + 3] = (UBYTE)FIELD;
+    }
+    ri.Memory = buffer;
+    ri.BytesPerRow = BUF_W * 4;
+    ri.pad = 0;
+    ri.RGBFormat = RGBFB_A8R8G8B8;
+    p96WritePixelArray(&ri, 0, 0, rp, x0 - 1, y0 - 1, PATTERN_W + 2, PATTERN_H + 2);
+    for (j = 0; j < PATTERN_H + 2; j++)
+        for (i = 0; i < PATTERN_W + 2; i++)
+            if ((ReadRGBPixel(rp, x0 - 1 + i, y0 - 1 + j) & 0xFFFFFF) != FIELD)
+                wrong++;
+    check(wrong == 0, "the rectangle and its frame have one colour before the refresh");
+    refresh_message(win);
+
+    /* real damage: a window of the program over the right half, closed */
+    cover = OpenWindowTags(NULL, WA_Left, win->LeftEdge + x0 + PATTERN_W / 2,
+                           WA_Top, win->TopEdge + y0, WA_Width, PATTERN_W / 2,
+                           WA_Height, PATTERN_H, WA_Borderless, TRUE, WA_PubScreen, (ULONG)pub,
+                           WA_IDCMP, 0, WA_Activate, FALSE, TAG_DONE);
+    if (!check(cover != NULL, "a window over the right half of the pattern"))
+    {
+        CloseWindow(win);
+        return;
+    }
+    if (!check(cover->LeftEdge == win->LeftEdge + (WORD)(x0 + PATTERN_W / 2) &&
+               cover->TopEdge == win->TopEdge + (WORD)y0 && cover->Width == PATTERN_W / 2 &&
+               cover->Height == PATTERN_H, "it covers exactly that half"))
+    {
+        CloseWindow(cover);
+        CloseWindow(win);
+        return;
+    }
+    CloseWindow(cover);
+    for (k = 0; k < 100 && !refresh; k++)
+        if (!(refresh = refresh_message(win)))
+            Delay(2);
+    if (!check(refresh, "closing it gives REFRESHWINDOW"))
+    {
+        CloseWindow(win);
+        return;
+    }
+    for (j = 0; j < PATTERN_H; j++)
+        for (i = PATTERN_W / 2; i < PATTERN_W; i++)
+            if ((ReadRGBPixel(rp, x0 + i, y0 + j) & 0xFFFFFF) != FIELD)
+                backfilled++;
+    Printf("info damaged pixels that the backfill changed: %lu of %lu\n", backfilled,
+           (ULONG)(PATTERN_H * PATTERN_W / 2));
+
+    /* the whole pattern in the refresh, and nothing else there */
+    ri.BytesPerRow = fill(RGBFB_A8R8G8B8);
+    test_flush();
+    BeginRefresh(win);
+    p96WritePixelArray(&ri, SRC_X, SRC_Y, rp, x0, y0, PATTERN_W, PATTERN_H);
+    EndRefresh(win, TRUE);
+
+    for (j = 0; j < PATTERN_H + 2; j++)
+        for (i = 0; i < PATTERN_W + 2; i++)
+        {
+            c = ReadRGBPixel(rp, x0 - 1 + i, y0 - 1 + j) & 0xFFFFFF;
+            if (i > PATTERN_W / 2 && i <= PATTERN_W && j >= 1 && j <= PATTERN_H)
+                wrong_in += c != pattern(i - 1, j - 1);
+            else
+                wrong_out += c != FIELD;
+        }
+    check(wrong_in == 0, "the write in the refresh fills the damaged half with the pattern");
+    check(wrong_out == 0, "the undamaged half and the frame keep their colour");
+    Printf("info refresh write: %lu damaged pixels compared, %lu around them\n",
+           (ULONG)(PATTERN_H * PATTERN_W / 2),
+           (ULONG)((PATTERN_W + 2) * (PATTERN_H + 2) - PATTERN_H * PATTERN_W / 2));
+    CloseWindow(win);
+}
+
 int main(int argc, char **argv)
 {
     struct Window *win;
@@ -354,9 +490,17 @@ int main(int argc, char **argv)
         return 10;
     }
 
-    check_open();
-    check_best_mode();
-    check_pixels(win);
+    if (argc > 1 && !strcmp(argv[1], "refresh"))
+    {
+        Printf("info refresh test\n");
+        check_refresh(pub);
+    }
+    else
+    {
+        check_open();
+        check_best_mode();
+        check_pixels(win);
+    }
 
     CloseWindow(win);
     UnlockPubScreen(NULL, pub);

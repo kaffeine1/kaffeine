@@ -1678,7 +1678,13 @@ RenderInfo and the RastPort of a window or a screen, copies the six 24 and
 32-bit formats with WritePixelArray() from the first source pixel, after
 checking every source row in the memory of the program and the
 destination in the WORD coordinates of a RastPort, and stops the program
-for anything else, the other formats among them. The other 26 LVOs of
+for anything else, the other formats among them. It is the one vector of
+the library that the dispatcher also lets through while the program holds
+a LayerInfo lock or a refresh scope (BeginRefresh() to EndRefresh()), as it
+lets the graphics drawing calls through: native WritePixelArray() takes
+only the lock of the RastPort's layer, by recursion that of the window in
+refresh. There every other vector, and a generated entry at offset 102,
+stops the program with 20. The other 26 LVOs of
 version 2 stop the program with 20 and name the call. OpenLibrary() takes
 the library by its file part with its version in open_library(), gives
 versions up to 2 the base of the context, made once with a Library of

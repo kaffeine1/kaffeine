@@ -4,10 +4,12 @@
 
     Picasso96API.library of kaffeine_p96.c through the real dispatcher with
     literal LVOs: p96BestModeIDTagList() and p96WritePixelArray() against
-    recorded cybergraphics.library calls, the halt of the 26 other LVOs, and
-    Kaffeine_P96Open() with its version, reopen and capacity rules. The
-    program memory check, the RastPort lookup and the base setup are
-    collaborators that reproduce the production rules they stand for.
+    recorded cybergraphics.library calls, the halt of the 26 other LVOs, the
+    write as the one manual vector that passes a held LayerInfo or refresh
+    scope (ctx->layer_ops->info_locked), and Kaffeine_P96Open() with its
+    version, reopen and capacity rules. The program memory check, the
+    RastPort lookup and the base setup are collaborators that reproduce the
+    production rules they stand for.
 */
 #include <cstdint>
 #include <cstdio>
@@ -19,6 +21,7 @@
 #include "kaffeine_cpu.h"
 #include "kaffeine_dispatch.h"
 #include "kaffeine_intern.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_p96.h"
 
 #include <cybergraphx/cybergraphics.h>
@@ -694,11 +697,12 @@ static void test_best_mode()
         Fixture f;
         add_mode(0x5003b001, 800, 600, 24, PIXFMT_RGB24, 3);
         CHECK(best(f, { P96BIDTAG_Depth, 0, TAG_DONE, 0 }) == 0x5003b001 &&
-              mode_calls.back().depth == 1);
-        CHECK(best(f, { TAG_DONE, 0 }) == 0x5003b001 && mode_calls.back().depth == 8);
+              !mode_calls.empty() && mode_calls.back().depth == 1);
+        CHECK(best(f, { TAG_DONE, 0 }) == 0x5003b001 && !mode_calls.empty() &&
+              mode_calls.back().depth == 8);
         CHECK(best(f, { P96BIDTAG_Depth, 24, TAG_DONE, 0 }) == 0x5003b001);
         CHECK(best(f, { P96BIDTAG_Depth, 25, TAG_DONE, 0 }) == INVALID &&
-              mode_calls.back().depth == 24);
+              !mode_calls.empty() && mode_calls.back().depth == 24);
         CHECK(best(f, { P96BIDTAG_Depth, 32, TAG_DONE, 0 }) == INVALID);
         add_mode(0x5003b002, 800, 600, 24, PIXFMT_0RGB32, 4);
         CHECK(best(f, { P96BIDTAG_Depth, 25, TAG_DONE, 0 }) == 0x5003b002);
@@ -708,11 +712,13 @@ static void test_best_mode()
         Fixture f;
         add_mode(0x5003c001, 800, 600, 8, PIXFMT_LUT8, 1);
         CHECK(best(f, { P96BIDTAG_NominalWidth, 0, P96BIDTAG_NominalHeight, 0,
-                        TAG_DONE, 0 }) == 0x5003c001 &&
+                        TAG_DONE, 0 }) == 0x5003c001 && !mode_calls.empty() &&
               mode_calls.back().width == 1 && mode_calls.back().height == 1);
-        CHECK(best(f, { TAG_DONE, 0 }) == 0x5003c001 && mode_calls.back().width == 800 &&
-              mode_calls.back().height == 600 && mode_calls.back().tags == 3);
-        CHECK(f.call(60, 0) == 0x5003c001 && mode_calls.back().width == 800);
+        CHECK(best(f, { TAG_DONE, 0 }) == 0x5003c001 && !mode_calls.empty() &&
+              mode_calls.back().width == 800 && mode_calls.back().height == 600 &&
+              mode_calls.back().tags == 3);
+        CHECK(f.call(60, 0) == 0x5003c001 && !mode_calls.empty() &&
+              mode_calls.back().width == 800);
         for (ULONG tag : { P96BIDTAG_NominalWidth, P96BIDTAG_NominalHeight })
         {
             mode_calls.clear();
@@ -869,10 +875,14 @@ static void test_write_pixels()
         f.render_info(BUF, 16 * 4, fm.rgb);
         CHECK(f.call(102, RI, RP_GUEST, { 2, 1, 5, 7, 8, 4 }) == 0 && f.ctx.running);
         CHECK(pixel_calls.size() == 1);
-        const auto &c = pixel_calls[0];
-        CHECK(c.src == f.memory.data() + BUF + 1 * 64 + 2 * fm.bpp);
-        CHECK(c.srcx == 0 && c.srcy == 0 && c.srcmod == 64 && c.rp == &native_rp);
-        CHECK(c.destx == 5 && c.desty == 7 && c.width == 8 && c.height == 4 && c.format == fm.rect);
+        if (pixel_calls.size() == 1)
+        {   /* the fields of that one call, only when it was made */
+            const auto &c = pixel_calls[0];
+            CHECK(c.src == f.memory.data() + BUF + 1 * 64 + 2 * fm.bpp);
+            CHECK(c.srcx == 0 && c.srcy == 0 && c.srcmod == 64 && c.rp == &native_rp);
+            CHECK(c.destx == 5 && c.desty == 7 && c.width == 8 && c.height == 4 &&
+                  c.format == fm.rect);
+        }
     }
     {   /* dirty upper words */
         Fixture f;
@@ -880,7 +890,8 @@ static void test_write_pixels()
         f.call(102, RI, RP_GUEST, { 0xdead0002, 0xbeef0001, 0x12340005, 0x56780007,
                                     0x9abc0008, 0xdef00004 });
         CHECK(f.ctx.running && pixel_calls.size() == 1);
-        CHECK(pixel_calls[0].destx == 5 && pixel_calls[0].width == 8 && pixel_calls[0].height == 4);
+        CHECK(pixel_calls.size() == 1 && pixel_calls[0].destx == 5 && pixel_calls[0].width == 8 &&
+              pixel_calls[0].height == 4);
     }
     for (ULONG bad : { (ULONG)RGBFB_NONE, (ULONG)RGBFB_CLUT, (ULONG)RGBFB_R5G6B5PC,
                        (ULONG)RGBFB_R5G5B5PC, (ULONG)RGBFB_R5G6B5, (ULONG)RGBFB_R5G5B5,
@@ -979,6 +990,115 @@ static void test_write_pixels()
     }
 }
 
+/* A held LayerInfo or refresh scope of the layer bridge, as the dispatcher
+   asks it through Kaffeine_LayerInfoLocked() */
+static BOOL info_held(KaffeineContext *) { return TRUE; }
+static KaffeineLayerOps locked_ops()
+{
+    KaffeineLayerOps ops = {};
+    ops.info_locked = info_held;
+    return ops;
+}
+
+static void test_write_pixels_in_layer_info_scope()
+{
+    static const KaffeineLayerOps held = locked_ops();
+    {   /* the manual write reaches WritePixelArray() as without the scope */
+        Fixture f;
+        f.ctx.layer_ops = &held;
+        f.render_info(BUF, 16 * 4, RGBFB_A8R8G8B8);
+        CHECK(f.call(102, RI, RP_GUEST, { 2, 1, 5, 7, 8, 4 }) == 0 && f.ctx.running);
+        CHECK(pixel_calls.size() == 1);
+        if (pixel_calls.size() == 1)
+        {   /* the fields of that one call, only when it was made */
+            const auto &c = pixel_calls[0];
+            CHECK(c.src == f.memory.data() + BUF + 1 * 64 + 2 * 4 && c.srcmod == 64 &&
+                  c.rp == &native_rp);
+            CHECK(c.destx == 5 && c.desty == 7 && c.width == 8 && c.height == 4 &&
+                  c.format == RECTFMT_ARGB32);
+        }
+    }
+    /* and keeps every refusal of its own: RenderInfo, RastPort, format,
+       stride, destination and source rows */
+    struct Bad { ULONG ri, rp, memory_at; WORD bpr; ULONG format, d[6]; };
+    const Bad bad[] = {
+        { 0, RP_GUEST, BUF, 64, RGBFB_A8R8G8B8, { 0, 0, 0, 0, 8, 4 } },
+        { RI + 1, RP_GUEST, BUF, 64, RGBFB_A8R8G8B8, { 0, 0, 0, 0, 8, 4 } },
+        { RI, 0, BUF, 64, RGBFB_A8R8G8B8, { 0, 0, 0, 0, 8, 4 } },
+        { RI, RP_NOBITMAP, BUF, 64, RGBFB_A8R8G8B8, { 0, 0, 0, 0, 8, 4 } },
+        { RI, RP_GUEST + 2, BUF, 64, RGBFB_A8R8G8B8, { 0, 0, 0, 0, 8, 4 } },
+        { RI, RP_GUEST, BUF, 64, RGBFB_R5G6B5, { 0, 0, 0, 0, 8, 4 } },
+        { RI, RP_GUEST, BUF, 39, RGBFB_A8R8G8B8, { 2, 0, 0, 0, 8, 4 } },
+        { RI, RP_GUEST, BUF, 64, RGBFB_A8R8G8B8, { 0, 0, 32761, 0, 8, 4 } },
+        { RI, RP_GUEST, PROG_HI - 3 * 64 - 8 * 4 + 1, 64, RGBFB_A8R8G8B8, { 0, 0, 0, 0, 8, 4 } },
+        { RI, RP_GUEST, 0xfffffff0u, 0x7ffc, RGBFB_A8R8G8B8, { 0, 0xffff, 0, 0, 8, 0xffff } },
+    };
+    for (const auto &b : bad)
+    {
+        Fixture f;
+        f.ctx.layer_ops = &held;
+        f.render_info(b.memory_at, b.bpr, b.format);
+        CHECK(f.call(102, b.ri, b.rp, { b.d[0], b.d[1], b.d[2], b.d[3], b.d[4], b.d[5] }) == 20);
+        CHECK(f.stopped() && pixel_calls.empty());
+    }
+    {   /* a source row on memory the program does not own */
+        Fixture f;
+        f.ctx.layer_ops = &held;
+        forbid_lo = BUF + 2 * 64; forbid_hi = BUF + 2 * 64 + 4;
+        f.render_info(BUF, 64, RGBFB_A8R8G8B8);
+        f.call(102, RI, RP_GUEST, { 0, 0, 0, 0, 8, 4 });
+        CHECK(f.stopped() && pixel_calls.empty());
+    }
+    {   /* p96BestModeIDTagList() answers without the scope and stops in it,
+           before cybergraphics or the tag list is read */
+        Fixture f;
+        CHECK(best(f, { TAG_DONE }) != 20 && f.ctx.running && mode_calls.size() == 1);
+        Fixture g;
+        g.ctx.layer_ops = &held;
+        CHECK(best(g, { TAG_DONE }) == 20 && g.stopped());
+        CHECK(mode_calls.empty() && program_calls == 0);
+    }
+    for (ULONG lvo = 30; lvo <= 192; lvo += 6)
+    {   /* every other vector of the library stops in the scope */
+        if (lvo == 102)
+            continue;
+        Fixture f;
+        f.ctx.layer_ops = &held;
+        f.render_info(BUF, 64, RGBFB_A8R8G8B8);
+        CHECK(f.call(lvo, RI, RP_GUEST, { 0, 0, 0, 0, 8, 4 }) == 20 && f.stopped());
+        CHECK(mode_calls.empty() && pixel_calls.empty() && program_calls == 0);
+    }
+    {   /* the write thunk as a generated entry: it runs without the scope
+           and stops in it, as only a manual vector 102 passes */
+        static const M68KThunkEntry no_manual[] = { { 0, nullptr } };
+        const M68KThunkEntry generated[] = { { 102, kaffeine_thunks_p96[12].thunk } };
+        CHECK(kaffeine_thunks_p96[12].lvo == 102);
+        for (bool scope : { false, true })
+        {
+            Fixture f;
+            f.ctx.libs[0].thunks = no_manual;
+            f.ctx.libs[0].num_thunks = 0;
+            f.ctx.libs[0].gen_thunks = generated;
+            f.ctx.libs[0].num_gen_thunks = 1;
+            if (scope)
+                f.ctx.layer_ops = &held;
+            f.render_info(BUF, 64, RGBFB_A8R8G8B8);
+            f.call(102, RI, RP_GUEST, { 0, 0, 0, 0, 8, 4 });
+            CHECK(scope ? f.stopped() && pixel_calls.empty()
+                        : f.ctx.running && pixel_calls.size() == 1);
+        }
+    }
+    for (const char *name : { "picasso96api.library", "Picasso96API.libraryX", "Picasso96API" })
+    {   /* the exact library name: vector 102 of any other library stops */
+        Fixture f;
+        f.ctx.layer_ops = &held;
+        std::snprintf(f.ctx.libs[0].name, sizeof(f.ctx.libs[0].name), "%s", name);
+        f.render_info(BUF, 64, RGBFB_A8R8G8B8);
+        f.call(102, RI, RP_GUEST, { 0, 0, 0, 0, 8, 4 });
+        CHECK(f.stopped() && pixel_calls.empty());
+    }
+}
+
 /* ── Kaffeine_P96Open() ── */
 
 static void test_open()
@@ -1035,6 +1155,7 @@ int main()
     test_unsupported();
     test_best_mode();
     test_write_pixels();
+    test_write_pixels_in_layer_info_scope();
     test_open();
     std::printf("Picasso96API.library thunks: %u/%u checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
