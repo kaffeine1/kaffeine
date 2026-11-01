@@ -207,20 +207,21 @@ Three application checks passed:
   composite calculated from the saved layers. See the [six frames, saved
   drawing and pixel checks](media/amipixelshop-colour-2026-11-01/README.md).
 
-The file extracted after shutdown is a 2,259-byte APX1 version 3 document.
+The blank-document file extracted after shutdown is a 2,259-byte APX1 version 3
+document.
 Independent decoding checks its 640x480 dimensions, two layers, active layer
 1, all 80 opaque-white Background tiles (including padding), the empty
 Layer 1 and exact end of file. The four frames and the actual saved file are
 available in the [media and validation scope](media/amipixelshop-2026-11-01/README.md).
 
-![AmiPixelShop after reopening the saved 68k document through the Kaffeine JIT](media/amipixelshop-2026-11-01/reopened.png)
+![AmiPixelShop after reopening the saved blank 68k document through the Kaffeine JIT](media/amipixelshop-2026-11-01/reopened.png)
 
 The application uses `Work:` as its initial drawer. The test image lacked
 that assignment: Open from `Run` stalled with a system requester active on
 Workbench behind the application. Preparing an empty `Work:` drawer allowed
 the workflow to complete. Ensure that `Work:` resolves before reproducing it.
 
-This check uses the source-built executable below. The original release's
+These checks use the source-built executable below. The original release's
 startup result remains separate. Further application checks include other tools and brush shapes,
 PNG/JPEG/IFF files, the first-start mode requester, Moira and physical hardware.
 
