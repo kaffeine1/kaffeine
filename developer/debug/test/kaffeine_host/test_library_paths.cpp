@@ -15,10 +15,11 @@
 #include "kaffeine_thunks.h"
 #include "kaffeine_dispatch.h"
 #include "kaffeine_gfxbase.h"
+#include "kaffeine_p96.h"
 
-static unsigned checks, failures, setup_calls, graphics_setup_calls, disk_calls;
+static unsigned checks, failures, setup_calls, graphics_setup_calls, disk_calls, p96_calls;
 static bool fail_setup, stop_disk;
-static ULONG disk_result, disk_version;
+static ULONG disk_result, disk_version, p96_result, p96_version;
 static std::string disk_name;
 
 #define CHECK(condition) do { ++checks; if (!(condition)) { \
@@ -99,6 +100,15 @@ extern "C" ULONG Kaffeine_OpenM68KLibrary(KaffeineContext *ctx, void *,
     return disk_result;
 }
 
+/* Picasso96API.library is routed by its file part with the version;
+   kaffeine_p96.c and test_p96 check what Kaffeine_P96Open() does with it. */
+extern "C" ULONG Kaffeine_P96Open(KaffeineContext *, ULONG version)
+{
+    ++p96_calls;
+    p96_version = version;
+    return version > KAFFEINE_P96_VERSION ? 0 : p96_result;
+}
+
 struct TestCPU { ULONG d[8] = {}, a[8] = {}, pc = 0x13572468; UWORD sr = 0xa51f; };
 static ULONG get_d(void *p, int n) { return static_cast<TestCPU *>(p)->d[n]; }
 static ULONG get_a(void *p, int n) { return static_cast<TestCPU *>(p)->a[n]; }
@@ -125,6 +135,7 @@ struct Fixture
         memory.fill(0xa5);
         ctx.mem = memory.data(); ctx.mem_size = memory.size(); ctx.running = TRUE;
         fail_setup = stop_disk = false; disk_result = 0; disk_name.clear();
+        p96_result = 0x7c00; p96_calls = 0; p96_version = 0;
         ctx.m68k_sysbase = Kaffeine_SetupLibBase(&ctx, 0, "exec.library",
             KAFFEINE_MAX_LVO, kaffeine_thunks_exec, kaffeine_thunks_exec_count, nullptr, 0);
         Kaffeine_SetupLibBase(&ctx, 1, "dos.library", KAFFEINE_MAX_LVO, nullptr, 0, nullptr, 0);
@@ -348,9 +359,45 @@ static void name_boundaries()
     CHECK(setup_calls == 1 && disk_calls == 0 && f.ctx.num_libs == 3 && f.ctx.num_libmap == 3);
 }
 
+static void p96_routing()
+{
+    /* by the file part, with the low word of D0 as the version, never from disk */
+    for (const char *name : {"Picasso96API.library", "LIBS:Picasso96API.library",
+                             "SYS:Libs/Picasso96API.library", "a/b:c/Picasso96API.library"}) {
+        Fixture f;
+        CHECK(f.call(name, 552, 0xdead0002) == 0x7c00);
+        CHECK(p96_calls == 1 && p96_version == 2);
+        CHECK(disk_calls == 0 && setup_calls == 0 && graphics_setup_calls == 0);
+    }
+    {   /* OldOpenLibrary() asks for version 0 */
+        Fixture f;
+        CHECK(f.call("Picasso96API.library", 408) == 0x7c00 && p96_version == 0);
+    }
+    {   /* a later version gets nothing, and no 68k library from disk either */
+        Fixture f;
+        disk_result = 0x4400;
+        CHECK(f.call("LIBS:Picasso96API.library", 552, 0x00000003) == 0);
+        CHECK(p96_calls == 1 && p96_version == 3 && disk_calls == 0);
+        CHECK(f.call("Picasso96API.library", 552, 0xffffffff) == 0 && p96_version == 0xffff);
+    }
+    {   /* other spellings are other libraries, which go their usual way */
+        for (const char *name : {"picasso96api.library", "Picasso96API.library/",
+                                 "Picasso96API.libraryx", "XPicasso96API.library"}) {
+            Fixture f;
+            f.call(name, 552, 2);
+            CHECK(p96_calls == 0 && disk_calls == 1);
+        }
+    }
+    {   /* Kaffeine_OpenLibrary(), which has no version, does not make it */
+        Fixture f;
+        CHECK(f.native("Picasso96API.library") == 0 && p96_calls == 0);
+    }
+}
+
 int main()
 {
     registrations_and_reuse();
+    p96_routing();
     deferred_commodities();
     rejection_and_fallback();
     name_boundaries();

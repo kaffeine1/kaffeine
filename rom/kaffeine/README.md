@@ -224,7 +224,7 @@ and native AROS C functions. There are two kinds:
     `Text`/`TextLength`/`TextExtent`/`TextFit` with checked text and 68k
     TextExtents; `GetDisplayInfoData` and `MonitorSpec` snapshots (`kaffeine_display.c`);
     `LockLayerRom`/`UnlockLayerRom`/`AttemptLockLayerRom` (`kaffeine_layers.c`);
-    `InitBitMap`/`BltBitMap`/`GetBitMapAttr` (`kaffeine_bitmaps.c`);
+    `InitBitMap`/`BltBitMap`/`GetBitMapAttr` (`kaffeine_layers.c`);
     `NewRegion`/`OrRectRegion`/`DisposeRegion` (`kaffeine_regions.c`);
     plus explicit refusal slots for unimplemented bitmap, region and layer vectors
   - **layers** (40), **utility** (23), **locale** (24), **icon** (21), **workbench** (7), **diskfont** (1), **cybergraphics** (5), **mathffp** (12), **mathieeedoubbas** (12), **mathieeedoubtrans** (17), **mathieeesingbas** (12), **timer.device** (7) and **console.device** (12)
@@ -532,6 +532,7 @@ The bridge provides generated or manual thunks for the following libraries and d
 | asl.library | 8 | 0 | 8 | File/font/screenmode requesters |
 | keymap.library | 4 | 0 | 4 | Keyboard mapping |
 | workbench.library | 0 | 7 | 7 | AppWindows, AppIcons and AppMenuItems with their AppMessages, WBInfo |
+| Picasso96API.library | 0 | 28 | 28 | p96BestModeIDTagList and p96WritePixelArray of version 2 on cybergraphics.library, for the true colour modes and 24 and 32-bit buffers, with a bounded search for a mode of an allowed format when the first choice has none; the other 26 LVOs stop with 20 |
 | mathffp.library | 0 | 12 | 12 | FFP arithmetic and conversions with guest condition codes; see the precision limit in INTERNALS.md |
 | mathieeedoubbas.library | 0 | 12 | 12 | IEEE 754 double-precision basic arithmetic and comparisons with guest condition codes |
 | mathieeedoubtrans.library | 0 | 17 | 17 | IEEE 754 double-precision transcendentals and single/double conversions |
@@ -615,7 +616,7 @@ message handling remains separate.
 
 - Graphics drawing calls accept the registered RastPort of a window or screen, the owned `BarLayer->rp` of an owned screen, or the RastPort of a private offscreen planar layer created through `CreateUpfrontHookLayer`. `ReadPixel` also accepts an unlayered guest-built RastPort with a checked classic planar BitMap; other unbridged RastPorts stop with rc 20
 - Window and screen snapshots publish registered `Layer` snapshots (`WLayer`, `Layer_Info.top_layer`, `BarLayer`), and owned screens share a registered `BitMap` handle across `Screen.BitMap`, `ViewPort.RasInfo->BitMap`, `Screen.RastPort.BitMap`, and `Window.RPort->BitMap`. Supported monochrome TextFonts have owned guest bitmap and character data
-- `InitBitMap`, `BltBitMap` (with minterm `0xC0` between classic planar bitmaps and/or owned indexed screens) and `GetBitMapAttr` are supported; other direct bitmap allocation and locking calls stop with rc 20
+- `InitBitMap`, `BltBitMap` (with minterm `0xC0` between classic planar bitmaps and/or owned indexed screens) and `GetBitMapAttr` are supported. Scalar attribute queries also accept retained, typed borrowed-screen bitmaps; their drawing permissions are unchanged. Other direct bitmap allocation and locking calls stop with rc 20
 - `NewRegion`, `OrRectRegion`, `DisposeRegion` and `InstallClipRegion` are supported for clip regions on registered window/offscreen layers; other region boolean operations stop with rc 20
 - At most 32 68k TextFonts at a time; the fonts of windows and screens stay
   for the whole program
@@ -811,7 +812,7 @@ message handling remains separate.
 | `kaffeine_display.c` | `GetDisplayInfoData` and borrowed `MonitorSpec` snapshots (`OpenMonitor`/`CloseMonitor`/`FindDisplayInfo` guards) |
 | `kaffeine_layers.c` | Live window/screen `Layer` snapshots, owned `BarLayer->rp`, layer locks/hooks, owned `LayerInfo`s and private offscreen planar layers |
 | `kaffeine_regions.c` | Owned `Region` snapshots (`NewRegion`, `OrRectRegion`, `DisposeRegion`) and `InstallClipRegion` |
-| `kaffeine_bitmaps.c` | `InitBitMap`, `BltBitMap` (planar and owned indexed screens), `GetBitMapAttr` and explicit bitmap refusal guards |
+| `kaffeine_layers.c` | `InitBitMap`, `BltBitMap` (planar and owned indexed screens), `GetBitMapAttr` and explicit bitmap refusal guards |
 | `kaffeine_window.c` | Fields and IDCMP ports of 68k windows, 68k IntuiMessages, ModifyIDCMP, `WindowToFront`/`WindowToBack` and the GadTools message calls |
 | `kaffeine_menus.c` | GadTools menu strips with their 68k mirror, strips that the program built with their native copy, VisualInfo handles, `DrawBevelBoxA()` and the Intuition menu calls |
 | `kaffeine_gadgets.c` | GadTools gadget lists with a 68k mirror of every gadget |

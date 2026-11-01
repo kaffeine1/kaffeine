@@ -10,6 +10,7 @@ struct Node
 #define NT_MSGPORT 4
 #define NT_MESSAGE 5
 #define NT_REPLYMSG 7
+#define NT_LIBRARY 9
 #define NT_FONT 12
 
 #define NT_GRAPHICS 18

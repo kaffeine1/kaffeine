@@ -49,6 +49,7 @@ Path(sys.argv[4]).write_text('''/* Generated from the production Exec and DOS th
 #include <proto/dos.h>
 #include "kaffeine_intern.h"
 #include "kaffeine_locks.h"
+#include "kaffeine_p96.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_filehandle.h"
 #include "kaffeine_segments.h"

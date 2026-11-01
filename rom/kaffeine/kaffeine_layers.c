@@ -2980,18 +2980,31 @@ static BOOL layers_blit_adapter(struct KaffeineContext *ctx, struct BlitSide *s)
 /* graphics -960: GetBitMapAttr(A0=bitmap, D1=attribute) -> D0=value.
    Ordinary planar descriptors keep their classic scalar values, including
    Flags 0 versus BMF_STANDARD. A screen handle instead queries its actual
-   native BitMap. Unknown attributes return 0, as graphics does; no native
-   pointer can be an attribute result. */
+   native BitMap, that of a screen that the program opened or, for this
+   query alone, of one that it only keeps (Kaffeine_ScreenBitMapQuery(),
+   such as a locked Workbench screen), which blits refuse. Unknown
+   attributes return 0 once the BitMap is checked, as graphics does; no
+   native pointer can be an attribute result. */
 IPTR Kaffeine_GetBitMapAttr(struct KaffeineContext *ctx, void *cpu)
 {
     struct BlitSide side;
-    ULONG attribute = THUNK_D(1);
+    struct BitMap *borrowed;
+    ULONG bm = THUNK_A(0), attribute = THUNK_D(1);
 
-    if (layers_blit_side(ctx, THUNK_A(0), &side) == BLIT_REFUSED)
+    switch (Kaffeine_ScreenBitMapQuery(ctx, bm, &borrowed))
+    {
+    case KAFFEINE_SCREEN_QUERY_REFUSED:
         return layers_refuse(ctx, "GetBitMapAttr(): not a supported BitMap of the program");
+    case KAFFEINE_SCREEN_QUERY_OTHER:
+        if (layers_blit_side(ctx, bm, &side) == BLIT_REFUSED)
+            return layers_refuse(ctx, "GetBitMapAttr(): not a supported BitMap of the program");
+        break;
+    }
     if (attribute != BMA_WIDTH && attribute != BMA_HEIGHT &&
         attribute != BMA_DEPTH && attribute != BMA_FLAGS)
         return 0;
+    if (borrowed)
+        return (IPTR)(ULONG)GetBitMapAttr(borrowed, attribute);
     if (side.kind == BLIT_SCREEN)
         return (IPTR)(ULONG)GetBitMapAttr(side.native, attribute);
     switch (attribute)

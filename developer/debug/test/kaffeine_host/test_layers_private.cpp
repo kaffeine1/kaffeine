@@ -2628,10 +2628,13 @@ static void test_bitmap_attributes()
     f.memory[handle + M68K_BM_DEPTH] = 7;
     assert(query(handle, BMA_WIDTH) == 40 && query(handle, BMA_HEIGHT) == 12);
     assert(query(handle, BMA_DEPTH) == 3 && query(handle, BMA_FLAGS) == 14);
-    const unsigned attrs = bitmap_attrs;
+    unsigned attrs = bitmap_attrs;
     assert(query(handle, 0x10004u) == 0 && bitmap_attrs == attrs && f.ctx.running);
-    assert(query(pg + M68K_SCR_BITMAP, BMA_DEPTH) == 20 && f.stopped());
-    assert(bitmap_attrs == attrs);
+    /* a screen that the program only keeps answers this query alone */
+    other.bm.Flags = 0x8B;
+    assert(query(pg + M68K_SCR_BITMAP, BMA_DEPTH) == 3 && query(pg + M68K_SCR_BITMAP, BMA_FLAGS) == 10);
+    assert(f.ctx.running && bitmap_attrs == attrs + 2);
+    attrs = bitmap_attrs;
     f.close_screen(own, sg);
     assert(query(handle, BMA_WIDTH) == 20 && f.stopped() && bitmap_attrs == attrs);
     f.close_screen(other, pg);
@@ -2773,6 +2776,125 @@ static void test_init_bitmap_scalars()
     /* a depth of 0 is written as such, and refused by the next consumer */
     assert(init_writes(f, bm, 0, 64, 4, 8, 4, 0));
     assert(f.call(Fixture::graphics_base, 960, { bm }, { 0, BMA_DEPTH }) == 20 && f.stopped());
+}
+
+/* GetBitMapAttr() of the BitMap of a borrowed screen: only while the
+   program keeps that screen (a lock, the list lock, a pen lease, a window,
+   a VisualInfo or a DrawInfo copy), only through the bridge's mirror of it,
+   only for the exact handle, and never through a blit. */
+static void test_borrowed_bitmap_attributes()
+{
+    Fixture f;
+    NativeScreenBitMap pub, else_;
+    auto query = [&](ULONG bitmap, ULONG attribute) {
+        return f.call(Fixture::graphics_base, 960, { bitmap }, { 0x55667788u, attribute });
+    };
+    const ULONG pg = f.open_screen(pub, 8, 10, 4, 60, false);
+    const ULONG handle = pg + M68K_SCR_BITMAP;
+    int slot = 0;
+    while (f.ctx.pubscreens[slot].guest != pg)
+        ++slot;
+    auto &entry = f.ctx.pubscreens[slot];
+    pub.bm.Flags = BMF_DISPLAYABLE;
+    /* every attribute of the native BitMap, the guest bytes not counted */
+    f.memory[handle + M68K_BM_DEPTH] = 1;
+    m68k_write16(&f.ctx, handle + M68K_BM_ROWS, 99);
+    unsigned attrs = bitmap_attrs;
+    assert(query(handle, BMA_WIDTH) == 60 && query(handle, BMA_HEIGHT) == 10);
+    assert(query(handle, BMA_DEPTH) == 4 && query(handle, BMA_FLAGS) == BMF_DISPLAYABLE);
+    assert(f.ctx.running && bitmap_attrs == attrs + 4);
+    /* an unknown attribute is 0 without a native call, once the BitMap is
+       checked */
+    attrs = bitmap_attrs;
+    assert(query(handle, 0x10004u) == 0 && bitmap_attrs == attrs && f.ctx.running);
+    /* a blit of it is refused as before */
+    const ULONG plain = f.bitmap(4, 8, 2);
+    assert(f.call(Fixture::graphics_base, 30, { handle, plain, 0 }, { 0, 0, 8, 0, 8, 4, 0xC0, 0xFF }) == 20 &&
+           f.stopped() && blits.empty());
+
+    /* without a lock, the program keeps it by each of the other ways */
+    entry.locks = 0;
+    assert(query(handle, BMA_DEPTH) == 20 && f.stopped() && bitmap_attrs == attrs);
+    assert(query(handle, 0x10004u) == 20 && f.stopped());
+    struct Window nw = {};
+    const ULONG wg = Kaffeine_MirrorAlloc(&f.ctx, 16);
+    assert(wg);
+    nw.WScreen = &pub.screen;
+    for (int way = 0; way < 5; ++way)
+    {
+        switch (way)
+        {
+        case 0: f.ctx.pubscreen_list_locks = 1; break;
+        case 1: entry.pens = 1; break;
+        case 2: assert(Kaffeine_ShadowAdd(&f.ctx, wg, &nw, KAFFEINE_SHADOW_WINDOW)); break;
+        case 3: f.ctx.visualinfos[0].native = (APTR)&nw; f.ctx.visualinfos[0].screen = &pub.screen; break;
+        case 4: f.ctx.drawinfos[0].guest = wg; f.ctx.drawinfos[0].screen = &pub.screen; break;
+        }
+        assert(query(handle, BMA_DEPTH) == 4 && f.ctx.running);
+        f.ctx.pubscreen_list_locks = 0;
+        entry.pens = 0;
+        Kaffeine_ShadowForget(&f.ctx, wg, KAFFEINE_SHADOW_WINDOW);
+        f.ctx.visualinfos[0] = {};
+        f.ctx.drawinfos[0] = {};
+        assert(query(handle, BMA_DEPTH) == 20 && f.stopped());
+    }
+    /* a window, VisualInfo or DrawInfo of another screen does not keep it */
+    nw.WScreen = &else_.screen;
+    assert(Kaffeine_ShadowAdd(&f.ctx, wg, &nw, KAFFEINE_SHADOW_WINDOW));
+    f.ctx.visualinfos[0].native = (APTR)&nw;
+    f.ctx.visualinfos[0].screen = &else_.screen;
+    f.ctx.drawinfos[0].guest = wg;
+    f.ctx.drawinfos[0].screen = &else_.screen;
+    assert(query(handle, BMA_DEPTH) == 20 && f.stopped());
+    Kaffeine_ShadowForget(&f.ctx, wg, KAFFEINE_SHADOW_WINDOW);
+    f.ctx.visualinfos[0] = {};
+    f.ctx.drawinfos[0] = {};
+    entry.locks = 1;
+    assert(query(handle, BMA_DEPTH) == 4 && f.ctx.running);
+
+    /* the 68k Screen must still stand for that native screen: no shadow,
+       or a shadow of another native screen of either type, is refused; a
+       screen shadow of the same screen, which LockPubScreen() keeps when it
+       finds one, counts as the public one does */
+    Kaffeine_ShadowForget(&f.ctx, pg, KAFFEINE_SHADOW_PUBSCREEN);
+    assert(query(handle, BMA_DEPTH) == 20 && f.stopped());
+    assert(Kaffeine_ShadowAdd(&f.ctx, pg, &pub.screen, KAFFEINE_SHADOW_SCREEN));
+    assert(query(handle, BMA_DEPTH) == 4 && f.ctx.running);
+    Kaffeine_ShadowForget(&f.ctx, pg, KAFFEINE_SHADOW_SCREEN);
+    assert(Kaffeine_ShadowAdd(&f.ctx, pg, &else_.screen, KAFFEINE_SHADOW_SCREEN));
+    assert(query(handle, BMA_DEPTH) == 20 && f.stopped());
+    Kaffeine_ShadowForget(&f.ctx, pg, KAFFEINE_SHADOW_SCREEN);
+    assert(Kaffeine_ShadowAdd(&f.ctx, pg, &else_.screen, KAFFEINE_SHADOW_PUBSCREEN));
+    assert(query(handle, BMA_DEPTH) == 20 && f.stopped());
+    Kaffeine_ShadowForget(&f.ctx, pg, KAFFEINE_SHADOW_PUBSCREEN);
+    assert(Kaffeine_ShadowAdd(&f.ctx, pg, &pub.screen, KAFFEINE_SHADOW_PUBSCREEN));
+    assert(query(handle, BMA_DEPTH) == 4 && f.ctx.running);
+    /* an entry of a screen that the program opened, whose own screen
+       shadow has gone, is not a borrowed one either */
+    entry.owned = TRUE;
+    assert(query(handle, BMA_DEPTH) == 20 && f.stopped());
+    entry.owned = FALSE;
+    /* a native screen without a BitMap */
+    pub.screen.RastPort.BitMap = nullptr;
+    assert(query(handle, BMA_DEPTH) == 20 && f.stopped());
+    pub.screen.RastPort.BitMap = &pub.bm;
+    /* only the exact handle; nearby addresses in the 68k Screen are not
+       BitMaps */
+    for (ULONG near : { handle - 2, handle + 2, handle + 4, pg })
+        assert(query(near, BMA_DEPTH) == 20 && f.stopped());
+    /* an entry without its native screen is refused, even with bytes at its
+       BitMap that make an ordinary planar BitMap elsewhere */
+    std::memcpy(f.memory.data() + handle, f.memory.data() + plain, M68K_SIZEOF_BITMAP);
+    assert(query(plain, BMA_DEPTH) == 2 && f.ctx.running);
+    entry.native = nullptr;
+    assert(query(handle, BMA_DEPTH) == 20 && f.stopped());
+    assert(query(handle, 0x10004u) == 20 && f.stopped());
+    entry.native = &pub.screen;
+    assert(bitmap_attrs == attrs + 8);
+    /* gone: the entry and its 68k Screen */
+    f.close_screen(pub, pg);
+    assert(query(handle, BMA_DEPTH) == 20 && f.stopped() && bitmap_attrs == attrs + 8);
+    Kaffeine_MirrorRelease(&f.ctx, wg);
 }
 
 /* Before any write: NULL, odd, incomplete, outside or wrapping addresses
@@ -3137,6 +3259,7 @@ int main()
         { "BltBitMap() from an ordinary planar BitMap to an opened screen's BitMap and back, by identity", test_blit_screen_transfer },
         { "BltBitMap() refuses borrowed, foreign, stale and NULL screen BitMaps and clips to native bitmap dimensions", test_blit_screen_refusals },
         { "GetBitMapAttr() uses typed bitmap identity and preserves classic scalar flags", test_bitmap_attributes },
+        { "GetBitMapAttr() of a borrowed screen BitMap only while the program keeps that screen, never for a blit", test_borrowed_bitmap_attributes },
         { "Unconverted graphics and cybergraphics bitmap vectors stop before native code and guest writes", test_bitmap_vector_guards },
         { "InitBitMap() (-390) writes graphics' BE scalars from narrowed registers, never planes or other bytes", test_init_bitmap_scalars },
         { "InitBitMap() refuses bad addresses, no memory, owned and borrowed screen BitMaps before any write", test_init_bitmap_refusals },

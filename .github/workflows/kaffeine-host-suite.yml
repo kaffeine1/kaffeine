@@ -28,6 +28,7 @@ on:
       - 'workbench/libs/locale/**'
       - 'workbench/libs/mathieee*/**'
       - 'workbench/libs/workbench/**'
+      - 'workbench/devs/diskimage/include/amigaos/inline/Picasso96API_protos.h'
   push:
     branches:
       - master
@@ -50,6 +51,7 @@ on:
       - 'workbench/libs/locale/**'
       - 'workbench/libs/mathieee*/**'
       - 'workbench/libs/workbench/**'
+      - 'workbench/devs/diskimage/include/amigaos/inline/Picasso96API_protos.h'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

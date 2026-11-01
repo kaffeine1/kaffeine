@@ -29,6 +29,8 @@ LOCALE_HOOK_OBJS := $(LOCALE_THUNK_OBJS) $(addprefix $(BUILD_DIR)/locale_thunk_,
 LOCALE_HOOK_OBJS += $(BUILD_DIR)/locale_format_native.o
 MATHIEEE_THUNK_OBJS := $(addprefix $(BUILD_DIR)/mathieee_thunk_,cpu.o dispatch.o thunks_mathieee.o)
 MATHFFP_THUNK_OBJS := $(addprefix $(BUILD_DIR)/mathffp_thunk_,cpu.o dispatch.o thunks_mathffp.o)
+P96_CPPFLAGS := -I$(TEST_DIR)/p96_stubs -I$(TEST_DIR)/gfx_stubs $(TEST_CPPFLAGS)
+P96_OBJS := $(addprefix $(BUILD_DIR)/p96_,cpu.o dispatch.o p96.o)
 LIBRARY_PATHS_OBJS := $(addprefix $(BUILD_DIR)/library_paths_,cpu.o dispatch.o lookup.o)
 # Expose strnlen() in production C, without restricting the C++ runtime's
 # feature declarations (GCC 15's cstdlib needs quick_exit on macOS).
@@ -101,6 +103,7 @@ TESTS += test_icon test_display test_fbgfx_refresh
 TESTS += test_memheader test_memheader_moira
 TESTS += test_utility_thunks test_locale_thunks test_mathieee_thunks
 TESTS += test_mathffp_thunks
+TESTS += test_p96
 TESTS += test_library_paths
 TESTS += test_readargs
 TESTS += test_cli test_exec_slots test_exec_semaphores test_exec_public test_exec_tasks test_gfx_thunks
@@ -256,6 +259,15 @@ $(BUILD_DIR)/mathffp_thunk_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 $(BUILD_DIR)/test_mathffp_thunks: $(MATHFFP_THUNK_OBJS)
 $(BUILD_DIR)/test_mathffp_thunks: EXTRA_OBJS = $(MATHFFP_THUNK_OBJS)
 $(BUILD_DIR)/test_mathffp_thunks: LDLIBS += -lm
+
+# Picasso96API.library thunks with recorded cybergraphics calls, the real CPU
+# accessors and the production dispatcher; program memory, the RastPort
+# lookup and the base setup are collaborators in test_p96.cpp.
+$(BUILD_DIR)/p96_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(P96_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_p96: $(TEST_DIR)/test_p96.cpp $(P96_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(P96_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(P96_OBJS) $(LDLIBS)
 
 # The ReadArgs thunks run the native parser from rom/dos, built for the host,
 # with the production heap, dispatch and thunks compiled as C.

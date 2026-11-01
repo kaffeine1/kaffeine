@@ -16,6 +16,10 @@ extern "C" {
 #endif
 
 struct RastPort *resolve_rp(struct KaffeineContext *ctx, ULONG m68k_rp);
+/* size bytes of ordinary guest memory of the program, that no registered
+   object, library base or bridge-owned memory shares, for the buffers that
+   a thunk reads from the program (program_memory() of kaffeine_thunks_gfx.c) */
+BOOL Kaffeine_ProgramMemory(struct KaffeineContext *ctx, ULONG addr, ULONG size);
 
 IPTR thunk_intuition_SetWindowPointerA(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_intuition_DrawImage(struct KaffeineContext *ctx, void *cpu);

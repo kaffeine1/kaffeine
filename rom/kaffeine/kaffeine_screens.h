@@ -13,6 +13,9 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_rastport.h"
 
+#include <intuition/intuition.h>
+#include <intuition/screens.h>
+
 /* The 68k BitMap embedded in a 68k Screen (intuition/screens.h), which
    Screen.RastPort.BitMap names: a snapshot of the scalars of the BitMap
    that the native screen draws into, without planes, and the typed handle
@@ -54,6 +57,104 @@ static inline int Kaffeine_ScreenBitMapOf(struct KaffeineContext *ctx, ULONG bm,
         return KAFFEINE_SCREEN_BITMAP_OWNED;
     }
     return KAFFEINE_SCREEN_BITMAP_NONE;
+}
+
+/* The rules by which the program keeps a screen, which
+   kaffeine_screens.c applies, here so that the layer bridge can ask them
+   too. Whether a 68k Window of the program lies on that native screen: */
+static inline BOOL Kaffeine_ScreenWindows(struct KaffeineContext *ctx, const struct Screen *scr)
+{
+    UWORD s;
+
+    for (s = 0; s < ctx->num_shadows; s++)
+        if (ctx->shadow_map[s].type == KAFFEINE_SHADOW_WINDOW &&
+            ((struct Window *)ctx->shadow_map[s].native_ptr)->WScreen == scr)
+            return TRUE;
+    return FALSE;
+}
+
+/* Whether a VisualInfo of the program keeps that native screen */
+static inline BOOL Kaffeine_ScreenVisuals(struct KaffeineContext *ctx, const struct Screen *screen)
+{
+    int i;
+    for (i = 0; i < KAFFEINE_MAX_VISUALINFOS; i++)
+        if (ctx->visualinfos[i].native && ctx->visualinfos[i].screen == screen)
+            return TRUE;
+    return FALSE;
+}
+
+/* Whether a DrawInfo copy of the program keeps that native screen */
+static inline BOOL Kaffeine_ScreenDrawInfos(struct KaffeineContext *ctx, const struct Screen *screen)
+{
+    int i;
+
+    for (i = 0; i < KAFFEINE_MAX_DRAWINFOS; i++)
+        if (ctx->drawinfos[i].guest && ctx->drawinfos[i].screen == screen)
+            return TRUE;
+    return FALSE;
+}
+
+/* Whether the program keeps the screen of entry i of the table of
+   screens: a native screen is the program's while it is open from
+   OpenScreen() of the program, while the program holds a lock on it, has a
+   window there, a VisualInfo or a DrawInfo copy of it; while the program
+   holds the list of public screens, under which Intuition closes no public
+   screen, every 68k Screen stays, also when there was no memory for the
+   copy. */
+static inline BOOL Kaffeine_ScreenUsed(struct KaffeineContext *ctx, int i)
+{
+    /* pen leases (kaffeine_palette.c) keep it like a DrawInfo copy */
+    return ctx->pubscreens[i].owned || ctx->pubscreens[i].locks || ctx->pubscreen_list_locks ||
+           ctx->pubscreens[i].pens ||
+           Kaffeine_ScreenWindows(ctx, ctx->pubscreens[i].native) ||
+           Kaffeine_ScreenVisuals(ctx, ctx->pubscreens[i].native) ||
+           Kaffeine_ScreenDrawInfos(ctx, ctx->pubscreens[i].native);
+}
+
+/* What GetBitMapAttr() makes of bm as the BitMap inside a 68k Screen of
+   the program, entry matched by that address alone before anything native
+   is looked at: OTHER for no entry, or a screen that the program opened,
+   which the blit rules answer as before; REFUSED for an entry that cannot
+   answer (no native screen, the 68k Screen no longer standing for it, a
+   screen that the program no longer keeps, no native BitMap), which must
+   not fall through to a planar BitMap; BORROWED for a screen that the
+   program uses but did not open and still keeps, with *native its native
+   BitMap. Either shadow type counts, since LockPubScreen() keeps a 68k
+   Screen of type KAFFEINE_SHADOW_SCREEN that it finds (screen_entry()).
+   For the attribute queries alone: blits and drawing still refuse such a
+   BitMap, and the native pointer never reaches 68k code. */
+enum
+{
+    KAFFEINE_SCREEN_QUERY_OTHER,
+    KAFFEINE_SCREEN_QUERY_REFUSED,
+    KAFFEINE_SCREEN_QUERY_BORROWED
+};
+
+static inline int Kaffeine_ScreenBitMapQuery(struct KaffeineContext *ctx, ULONG bm,
+                                             struct BitMap **native)
+{
+    int i;
+
+    *native = NULL;
+    for (i = 0; bm >= M68K_SCR_BITMAP && i < KAFFEINE_MAX_PUBSCREENS; i++)
+    {
+        ULONG guest = ctx->pubscreens[i].guest;
+        struct Screen *scr = ctx->pubscreens[i].native;
+
+        if (!guest || bm - M68K_SCR_BITMAP != guest)
+            continue;
+        if (!scr)
+            return KAFFEINE_SCREEN_QUERY_REFUSED;
+        if (ctx->pubscreens[i].owned)
+            return Kaffeine_ShadowNative(ctx, guest, KAFFEINE_SHADOW_SCREEN) == scr ?
+                   KAFFEINE_SCREEN_QUERY_OTHER : KAFFEINE_SCREEN_QUERY_REFUSED;
+        if (Kaffeine_ScreenNative(ctx, guest) != scr || !Kaffeine_ScreenUsed(ctx, i) ||
+            !scr->RastPort.BitMap)
+            return KAFFEINE_SCREEN_QUERY_REFUSED;
+        *native = scr->RastPort.BitMap;
+        return KAFFEINE_SCREEN_QUERY_BORROWED;
+    }
+    return KAFFEINE_SCREEN_QUERY_OTHER;
 }
 
 #ifdef __cplusplus

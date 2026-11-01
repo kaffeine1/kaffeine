@@ -204,6 +204,11 @@ static BOOL program_memory(struct KaffeineContext *ctx, ULONG addr, ULONG size)
     return TRUE;
 }
 
+BOOL Kaffeine_ProgramMemory(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    return program_memory(ctx, addr, size);
+}
+
 /* Storage of a caller-owned classic RastPort for state and drawing calls:
    100 word aligned bytes of ordinary guest memory of the program. */
 static BOOL state_storage(struct KaffeineContext *ctx, ULONG guest)

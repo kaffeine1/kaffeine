@@ -343,6 +343,9 @@ extern "C" LONG RunCommand(BPTR seglist, ULONG stacksize, STRPTR args, ULONG siz
 { run_commands.push_back({seglist, stacksize, args, size}); return 73; }
 extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *ctx, const char *name)
 { ++native_lookups; return std::strcmp(name, "exec.library") == 0 ? ctx->m68k_sysbase : 0; }
+/* No 68k library here is called Picasso96API.library; test_library_paths
+   checks that open_library() hands that name to Kaffeine_P96Open(). */
+extern "C" ULONG Kaffeine_P96Open(KaffeineContext *, ULONG) { std::abort(); }
 extern "C" IPTR m68klib_test_stop(KaffeineContext *ctx, void *cpu)
 {
     LONG status = LONG(Kaffeine_GetD(cpu, 0));

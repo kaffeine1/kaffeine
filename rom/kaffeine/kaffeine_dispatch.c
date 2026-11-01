@@ -49,6 +49,15 @@ static BOOL layer_info_refresh(const char *name, ULONG lvo, BOOL manual)
                       (!strcmp(name, "gadtools.library") && (lvo == 90 || lvo == 96)));
 }
 
+/* The manual p96WritePixelArray() of kaffeine_p96.c draws as the graphics
+   calls do: native WritePixelArray() locks the layer of the RastPort, by
+   recursion the one that a refresh holds, and enters no Intuition, DOS or
+   broker code. No other Picasso96API vector, and no generated one. */
+static BOOL layer_info_p96_write(const char *name, ULONG lvo, BOOL manual)
+{
+    return manual && lvo == 102 && !strcmp(name, "Picasso96API.library");
+}
+
 BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
                                struct KaffeineCPU *cpu, ULONG pc,
                                struct KaffeineDispatchResult *result)
@@ -97,6 +106,7 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
              (strcmp(lib->name, "layers.library") && strcmp(lib->name, "graphics.library") &&
               strcmp(lib->name, "exec.library") &&
               !layer_info_refresh(lib->name, lvo, manual) &&
+              !layer_info_p96_write(lib->name, lvo, manual) &&
               (strcmp(lib->name, "utility.library") || !entry ||
                !layer_info_utility_arithmetic(lvo, manual))) ||
              (!strcmp(lib->name, "graphics.library") && lvo == 270) ||

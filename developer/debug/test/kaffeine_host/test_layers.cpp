@@ -2356,6 +2356,7 @@ int main()
         { "GadTools refresh aliases use tracked manual scopes and retain Info safety gates", test_refresh_aliases_and_gates },
         { "Refresh rejects nested, busy, native-update, wrong-window and wrong-owner scopes", test_refresh_refusals },
         { "Refresh abort releases inner layers before EndRefresh and outer Info before retirement", test_refresh_lifetime },
+        { "Only the manual Picasso96API vector 102 passes a refresh or Info scope, OOM update included", test_refresh_p96_write },
         { "Info locks refresh real topology, ignore guest semaphore bytes and bound nesting", test_info_lock_snapshot_and_nesting },
         { "Info locks reject foreign, stale, busy, callback and cross-task owners", test_info_lock_refusals },
         { "Info before layer order and same-info nested access are enforced", test_info_lock_order },

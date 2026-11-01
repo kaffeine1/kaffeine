@@ -119,6 +119,7 @@ at the end.
 | `gfx_window_bitmap.c` | Owned-window RastPort bitmap identity, readable depth and typed attributes shared with the screen, preserved through drawing and window retirement; the same source runs natively on ARM and through the 68k bridge. |
 | `gfx_bitmap_init.c` | AROS InitBitMap metadata initialization, zero and extreme narrowed values, all plane pointers preserved, and surrounding-storage guards; native ARM reference and classic 68k use the same source. |
 | `gfx_appicon_icon.c` | Two AppIcon registration/removal cycles using `GetDefDiskObject(WBTOOL)`, readable icon geometry and an ordinary message port with an empty queue. Native ARM and classic 68k use the same source (15 checks); the caller keeps each DiskObject until its AppIcon is removed. |
+| `gfx_p96.c` | `Picasso96API.library` as AmiPixelShop uses it: `OpenLibrary()` of version 2, 1 and by a path giving one base, NULL for version 3, `OldOpenLibrary()`; `p96BestModeIDTagList()` with AmiPixelShop's tags (640 by 480, depth 32, three 32-bit formats), a 4-byte mode of an allowed format, and INVALID_ID with the program going on for a format allowed and forbidden, depths 33, 64 and 256 and a width of 0x10320; `p96WritePixelArray()` of an 8 by 4 pattern from SrcX 3 and SrcY 2 of a larger buffer into a window on the default public screen, which it locks so that the window's `WScreen` is a 68k Screen whose BitMap `GetBitMapAttr()` can ask, in each of the six formats that the bridge copies, read back with `ReadRGBPixel()` with the pixels around it untouched, an empty rectangle writing nothing, and a rectangle past the window clipped at its edge. Without an argument it is a smoke test: on a screen of fewer than 24 bits the patterns are written but not compared, and AmiPixelShop's request may give INVALID_ID, each reported as a SKIP info line and counted as no check. `rgb` is the strict test, which needs a screen of 24 bits or more and a mode for AmiPixelShop's request, and reports the depth and the formats compared. `refresh` writes inside a refresh, on a screen of 24 bits or more: a simple refresh window paints the pattern's rectangle and a frame of one pixel around it in one colour, a borderless window of the program covers the right half of the pattern and closes, and once the REFRESHWINDOW message has come the whole pattern is written between `BeginRefresh()` and `EndRefresh()`. Only the damaged half may take it; the left half and the frame must keep their colour. `unsupported` calls `p96GetModeIDAttr()` and `badri` passes a NULL RenderInfo: both stop with rc 20. |
 | `gfx_window_defaults.c` | `OpenWindowTagList()` with a classic `NewWindow` and empty or NULL tags, explicit geometry/title/IDCMP overrides including zero IDCMP, and tag-only input. Checks effective window fields, limits, flags, readable title, event-port creation, empty `GetMsg()` and preservation of caller input. Also checks the legacy NewWindow CheckMark accepted by native AROS. The same source runs natively on ARM and through the 68k bridge (52 checks). |
 | `gfx_owned_screen.c` | Owned indexed screens through OpenScreenTagList/OpenScreen, chained tags, classic fonts and clip rectangles, native error output guards, drawing, window/screen identity, refused close and extended NewScreen. Optional `leave` mode leaves a named public screen and a window for context cleanup. |
 | `gfx_screen_cleanup_native.c` | Native AArch64 observer after `gfx_owned_screen leave` in the same boot; the named screen must no longer be lockable. |
@@ -1302,3 +1303,50 @@ The graphics host suite passes 31 groups, including ASan/UBSan. It checks
 that unused caller pointers never reach native metric queries and that
 malformed, freed, protected or overlapping output/caller storage stops before
 native calls or writes. The full host suite and 9,409-check JIT probe pass.
+
+### Picasso96 RGB bridge — 2026-11-01
+
+`gfx_p96 rgb` passes 31 checks in each of Shell and actual `Run` on AROS
+ARM64 under QEMU, with both Kaffeine JIT and Moira. Workbench is actually
+1024 by 768 at 24 bits, checked through native screen metadata and again
+by the 68k program. All four executions have identical output, empty error
+output and return code 0. The six supported pixel formats are read back
+pixel by pixel, with source offsets, surrounding pixels, an empty rectangle
+and a write clipped at the window edge checked.
+
+A separate probe passes in both launch paths and both backends with all six
+formats in packed rows and rows with seven extra padding bytes. It checks
+all four surrounding borders and 16 pixels on each side of a window-edge
+clip, including unchanged pixels outside the window. These are QEMU results;
+physical hardware and a complete Picasso96 implementation are not established.
+
+The bitmap-query host tests cover real public-screen constructors, both
+screen shadow types, each lifetime holder, rejected stale identities and a
+known-invalid entry whose bytes otherwise describe a planar bitmap. Layers
+private, layers, screens and windows pass 32, 38, 57 and 52 groups respectively,
+both normally and with ASan/UBSan. Borrowed-screen blits remain refused.
+
+A separate negative probe runs 45 cases in Shell and actual `Run` with
+Kaffeine JIT on the same ARM64 module: all 90 executions stop with the
+expected return code 20, exact step output and empty error output. The
+serial trace names the expected refusal for each execution. Cases cover
+all 26 unsupported version-2 vectors, five malformed tag lists and 14
+invalid pixel-write requests, including protected source storage, source
+address overflow, unsupported formats and invalid RastPort identities.
+
+`gfx_p96 refresh` passes 13 checks in each of Shell and actual `Run` with
+both Kaffeine JIT and Moira on ARM64. It creates real window damage by
+covering and uncovering half of a rectangle, then writes the whole pattern
+between `BeginRefresh` and `EndRefresh`. Readback checks the 16 damaged
+pixels and 44 unchanged pixels in the other half and surrounding frame.
+All four executions have identical output, return 0 and leave error output
+empty. The dispatcher admits only the manual Picasso96 pixel-write vector
+in this scope; mode queries and other Picasso96 vectors remain refused.
+
+AmiPixelShop 0.6.1, built for 68020 without an FPU, also opens its complete
+interface and a blank 640 by 480 document with Kaffeine JIT in both Shell
+and actual `Run`. Both executions respond to Ctrl+Q and return 0 with empty
+error output. This smoke test presets mode `0x00100000` and disables update
+checks; it does not exercise the first-start screen-mode requester,
+painting, clipboard, saving or loading. The native Workbench setup is
+1024 by 768 at 24 bits; screenshots verify the application's interface.
