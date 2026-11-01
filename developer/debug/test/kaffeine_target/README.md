@@ -1333,3 +1333,11 @@ serial trace names the expected refusal for each execution. Cases cover
 all 26 unsupported version-2 vectors, five malformed tag lists and 14
 invalid pixel-write requests, including protected source storage, source
 address overflow, unsupported formats and invalid RastPort identities.
+
+AmiPixelShop 0.6.1, built for 68020 without an FPU, also opens its complete
+interface and a blank 640 by 480 document with Kaffeine JIT in both Shell
+and actual `Run`. Both executions respond to Ctrl+Q and return 0 with empty
+error output. This smoke test presets mode `0x00100000` and disables update
+checks; it does not exercise the first-start screen-mode requester,
+painting, clipboard, saving or loading. The native Workbench setup is
+1024 by 768 at 24 bits; screenshots verify the application's interface.

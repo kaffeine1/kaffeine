@@ -236,6 +236,8 @@ static void check_pixels(struct Window *win)
     for (f = 0; f < 6; f++)
     {
         BOOL same = TRUE, around = TRUE;
+        ULONG above[PATTERN_W + 2], below[PATTERN_W + 2];
+        ULONG left[PATTERN_H], right[PATTERN_H];
 
         ri.Memory = buffer;
         ri.BytesPerRow = fill(formats[f]);
@@ -243,6 +245,21 @@ static void check_pixels(struct Window *win)
         ri.RGBFormat = formats[f];
         x0 = win->BorderLeft + 4 + f * (PATTERN_W + 4);
         y0 = win->BorderTop + 4;
+        /* Every background colour is valid. Keep all four borders, with
+           their corners, so the comparison detects changes, not a colour. */
+        if (exact)
+        {
+            for (i = 0; i < PATTERN_W + 2; i++)
+            {
+                above[i] = ReadRGBPixel(rp, x0 + i - 1, y0 - 1) & 0xFFFFFF;
+                below[i] = ReadRGBPixel(rp, x0 + i - 1, y0 + PATTERN_H) & 0xFFFFFF;
+            }
+            for (j = 0; j < PATTERN_H; j++)
+            {
+                left[j] = ReadRGBPixel(rp, x0 - 1, y0 + j) & 0xFFFFFF;
+                right[j] = ReadRGBPixel(rp, x0 + PATTERN_W, y0 + j) & 0xFFFFFF;
+            }
+        }
         p96WritePixelArray(&ri, SRC_X, SRC_Y, rp, x0, y0, PATTERN_W, PATTERN_H);
         Printf("info format %lu written at %lu,%lu\n", formats[f], x0, y0);
         if (!exact)
@@ -251,13 +268,14 @@ static void check_pixels(struct Window *win)
             for (i = 0; i < PATTERN_W; i++)
                 if ((ReadRGBPixel(rp, x0 + i, y0 + j) & 0xFFFFFF) != pattern(i, j))
                     same = FALSE;
-        /* the sentinel of the buffer beside and below the pattern stays out */
+        /* The buffer outside the copied rectangle must change no border. */
         for (j = 0; j < PATTERN_H; j++)
-            if ((ReadRGBPixel(rp, x0 + PATTERN_W, y0 + j) & 0xFFFFFF) == SENTINEL ||
-                (ReadRGBPixel(rp, x0 - 1, y0 + j) & 0xFFFFFF) == SENTINEL)
+            if ((ReadRGBPixel(rp, x0 + PATTERN_W, y0 + j) & 0xFFFFFF) != right[j] ||
+                (ReadRGBPixel(rp, x0 - 1, y0 + j) & 0xFFFFFF) != left[j])
                 around = FALSE;
-        for (i = 0; i < PATTERN_W; i++)
-            if ((ReadRGBPixel(rp, x0 + i, y0 + PATTERN_H) & 0xFFFFFF) == SENTINEL)
+        for (i = 0; i < PATTERN_W + 2; i++)
+            if ((ReadRGBPixel(rp, x0 + i - 1, y0 - 1) & 0xFFFFFF) != above[i] ||
+                (ReadRGBPixel(rp, x0 + i - 1, y0 + PATTERN_H) & 0xFFFFFF) != below[i])
                 around = FALSE;
         check(same, "the pattern reads back in its format, from SrcX and SrcY");
         check(around, "nothing around the pattern is written");
