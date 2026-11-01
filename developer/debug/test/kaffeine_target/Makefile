@@ -31,6 +31,8 @@ C_PROGRAMS += gfx_p96
 PROGRAMS += gfx_p96
 C_PROGRAMS += exec_guest_tasks exec_guest_task_window exec_guest_messages
 PROGRAMS += exec_guest_tasks exec_guest_task_window exec_guest_messages
+C_PROGRAMS += exec_break_forward
+PROGRAMS += exec_break_forward
 PROGRAMS += exec_messages exec_message_lifetime exec_packets gfx_planar_read icon_objects gfx_display_info
 EXEC_LIBRARIES_DIR := $(BUILD_DIR)/exec_libraries-files
 EXEC_LIBRARIES_LIBS := $(EXEC_LIBRARIES_DIR)/emu68test.library \
@@ -443,6 +445,12 @@ $(BUILD_DIR)/exec_diskfont-fixture.stamp: $(TEST_DIR)/make-bitmap-font.py | $(BU
 # Original byte fixture for the valid read-only DOS packet regression.
 $(BUILD_DIR)/exec_packets: | $(BUILD_DIR)/exec_packets-files/putmsg-read.bin
 $(BUILD_DIR)/exec_packets-files/putmsg-read.bin: $(TEST_DIR)/exec_packets-files/putmsg-read.bin | $(BUILD_DIR)
+	mkdir -p $(@D)
+	cp $< $@
+
+# The native script that sends Break to the CLI that launched exec_break_forward.
+$(BUILD_DIR)/exec_break_forward: | $(BUILD_DIR)/exec_break_forward-files/exec_break_forward-helper
+$(BUILD_DIR)/exec_break_forward-files/exec_break_forward-helper: $(TEST_DIR)/exec_break_forward-files/exec_break_forward-helper | $(BUILD_DIR)
 	mkdir -p $(@D)
 	cp $< $@
 

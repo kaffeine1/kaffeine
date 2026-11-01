@@ -1,0 +1,17 @@
+.KEY NAME/A,N/A
+.BRA {
+.KET }
+; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; Author: Michele Dipace (@kaffeine1)
+; Break of the CLI that launched {NAME}, as Status COMMAND finds it:
+; CTRL-C, then CTRL-D. The witnesses carry the execution number {N}.
+FailAt 21
+Status >ENV:ebfcli{N} COMMAND "{NAME}"
+Echo "rc $RC" >"{NAME}-status-{N}.txt"
+Copy ENV:ebfcli{N} "{NAME}-cli-{N}.txt" QUIET
+Status >"{NAME}-clis-{N}.txt"
+Break $ebfcli{N} C
+Echo "rc $RC" >"{NAME}-break-{N}.txt"
+Wait 1 SECS
+Break $ebfcli{N} D
+Echo "rc $RC" >>"{NAME}-break-{N}.txt"

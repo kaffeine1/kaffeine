@@ -107,6 +107,7 @@ at the end.
 | `exec_guest_task_window.c` | A child-owned IDCMP window, native Intuition ticks waking a guest child inside Forbid, replies, window cleanup and task removal without user input. |
 | `exec_message_lifetime.c` | Manual ports drained by RemHead, RemTail, Remove and inline Node links, followed by FreeVec or FreeMem. Reacquires the freed bytes with AllocAbs before reusing them, then checks an unrelated message roundtrip, payload guards and the reused buffer. |
 | `exec_packets.c` | Read-only ACTION_READ packets and shared DOS file position. |
+| `exec_break_forward.c` | Break of the CLI that launched the program reaches it in its Kaffeine driver: the program starts `exec_break_forward-helper` with `Run`, which sends CTRL-C and then CTRL-D with `Break` to the CLI that `Status COMMAND` names, and waits up to 30 seconds for both; neither CTRL-E nor CTRL-F may come. The helper keeps the Status and Break results as `NAME-status-N.txt`, `NAME-cli-N.txt`, `NAME-clis-N.txt` and `NAME-break-N.txt`. A break left on the launching CLI would stop its script (CTRL-D) or the Copy after the Run execution (CTRL-C). |
 | `gfx_planar_read.c` | Original 32 by 3 planar images at depths 1, 2 and 8. Manually initialized public RastPort/BitMap structures, all 288 in-range pixel values, Flags 0/BMF_STANDARD, and byte-for-byte preservation of both structures, planes and guards. |
 | `gfx_display_info.c` | NULL-handle display queries by native mode ID: classic DISP/DIMS/NAME/MNTR layouts, headers, every requested length0..104 (monitors0..120), partial rectangles, reserved-tail/guard preservation, unavailable modes and stable monitor names/scalars/identities. |
 | `gfx_layer_topology.c` | Stable Window/RastPort layer identities, live depth order while polling without OS calls, backfill sentinels, backdrop flag preservation and removal of a closed sibling. The native ARM build allows an input-handler turn after depth calls; current native priority classes are preserved. |
@@ -453,6 +454,7 @@ compile and evaluate this emitted Hook; see that directory's README.
 | `exec_diskfont` | `--files exec_diskfont build/exec_diskfont-files` |
 | `exec_libraries` | `--files exec_libraries build/exec_libraries-files` |
 | `exec_packets` | `--files exec_packets build/exec_packets-files` |
+| `exec_break_forward` | `--files exec_break_forward build/exec_break_forward-files` |
 | `hunk_process_native` (native parent) | `--files hunk_process_native build-hunk-process` (includes its 68k payload) |
 | each step of `bzip2` | `--files NAME build/bzip2-files` |
 | each step of `zstd` | `--files NAME build/zstd-files` |
