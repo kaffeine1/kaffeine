@@ -51,6 +51,7 @@ KAFFEINE_FILES := \
     kaffeine_thunks_mathffp \
     kaffeine_thunks_gfx \
     kaffeine_p96 \
+    kaffeine_asl \
     kaffeine_thunks_diskfont \
     kaffeine_icon \
     kaffeine_display \

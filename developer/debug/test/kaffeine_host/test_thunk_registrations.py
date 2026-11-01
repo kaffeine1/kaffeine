@@ -58,6 +58,7 @@ TABLES = (
     ("workbench", "kaffeine_workbench.c", "kaffeine_thunks_workbench"),
     ("layers", "kaffeine_layers.c", "kaffeine_thunks_layers_manual"),
     ("Picasso96API", "kaffeine_p96.c", "kaffeine_thunks_p96"),
+    ("asl", "kaffeine_asl.c", "kaffeine_thunks_asl"),
 )
 
 # The Picasso96 SDK in the tree: its inline header names the offset and the
@@ -655,7 +656,7 @@ ALLOWED_IGNORED_REGS = {
 }
 
 HANDLER_PREFIX_RE = re.compile(
-    r"^(?:wb_|thunk_(?:exec|dos|intuition|gfx|graphics|diskfont|utility|locale)_|"
+    r"^(?:wb_|thunk_(?:exec|dos|intuition|gfx|graphics|diskfont|utility|locale|asl)_|"
     r"kaffeine_(?:exec|dos|intuition|gfx|graphics|utility|locale|icon|"
     r"mathieeedoubbas|mathieeedoubtrans|mathieeesingbas|mathffp|timer|console)_|"
     r"Kaffeine_(?:List|MemHeader)?)"

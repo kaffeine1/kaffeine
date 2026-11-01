@@ -1,0 +1,13 @@
+; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; Author: Michele Dipace (@kaffeine1)
+; Literal case/execution: no substituted command or output path.
+FailAt 1
+Protect SYS:EMU68/WaitAslWindow +e
+FailAt 21
+SYS:EMU68/WaitAslWindow asl_accept 1 >SYS:EMU68/asl_accept-helper-out-1.txt *>SYS:EMU68/asl_accept-helper-err-1.txt
+Echo "rc $RC" >SYS:EMU68/asl_accept-helper-rc-1.txt
+If WARN
+    Quit 10
+EndIf
+FailAt 1
+Echo "done" >SYS:EMU68/asl_accept-helper-done-1.txt

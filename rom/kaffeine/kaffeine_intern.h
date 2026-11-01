@@ -89,6 +89,22 @@ struct KaffeineIcon
     struct DiskObject *native;
 };
 
+/* An ASL file requester of the program (kaffeine_asl.c): its 68k mirror,
+   the native request, the 68k Screen it opens on, whether its one
+   AslRequest() has begun, and the native copies of the strings that native
+   ASL keeps by pointer, every one kept until FreeAslRequest(). */
+#define KAFFEINE_MAX_ASL_REQUESTS 8
+#define KAFFEINE_ASL_RETAINED 16
+struct KaffeineAslRequest
+{
+    ULONG guest;
+    APTR native;
+    ULONG screen;
+    BOOL consumed;
+    UWORD retained;
+    char *kept[KAFFEINE_ASL_RETAINED];
+};
+
 /* A port from CreateMsgPort() and the native signal bit behind it. */
 #define KAFFEINE_MAX_IO_PORTS 16
 struct KaffeineIOPort
@@ -499,6 +515,7 @@ struct KaffeineContext
     IPTR (*handler_packet)(struct KaffeineContext *, ULONG, ULONG);
     ULONG message_ports[KAFFEINE_MAX_MESSAGE_PORTS];
     struct KaffeineIcon icons[KAFFEINE_MAX_ICONS];
+    struct KaffeineAslRequest asl_requests[KAFFEINE_MAX_ASL_REQUESTS];
     /* Borrowed display records: snapshots live until context destruction.
        Their native identities are never registered as generic shadows. */
     struct { const struct MonitorSpec *native; ULONG guest, size; }

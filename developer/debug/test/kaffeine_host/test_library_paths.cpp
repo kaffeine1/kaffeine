@@ -49,6 +49,7 @@ MANUAL_TABLE(workbench);
 MANUAL_TABLE(mathieeedoubbas);
 MANUAL_TABLE(mathieeedoubtrans);
 MANUAL_TABLE(mathieeesingbas);
+MANUAL_TABLE(asl);
 #undef MANUAL_TABLE
 
 extern "C" ULONG Kaffeine_SetupLibBase(KaffeineContext *ctx, UWORD id,
@@ -194,7 +195,8 @@ static const Manual manuals[] = {
     {"workbench.library", kaffeine_thunks_workbench, kaffeine_thunks_workbench_count},
     {"mathieeedoubbas.library", kaffeine_thunks_mathieeedoubbas, kaffeine_thunks_mathieeedoubbas_count},
     {"mathieeedoubtrans.library", kaffeine_thunks_mathieeedoubtrans, kaffeine_thunks_mathieeedoubtrans_count},
-    {"mathieeesingbas.library", kaffeine_thunks_mathieeesingbas, kaffeine_thunks_mathieeesingbas_count}
+    {"mathieeesingbas.library", kaffeine_thunks_mathieeesingbas, kaffeine_thunks_mathieeesingbas_count},
+    {"asl.library", kaffeine_thunks_asl, kaffeine_thunks_asl_count}
 };
 
 static const M68KLibThunkSet *generated(const char *name)
@@ -242,7 +244,9 @@ static void registrations_and_reuse()
         const Manual *manual = nullptr;
         for (const auto &candidate : manuals)
             if (!std::strcmp(candidate.name, gen.name)) manual = &candidate;
-        reuse(gen.name, manual, &gen);
+        /* asl.library gets the manual file requester alone, never its
+           generated wrappers (kaffeine_asl.c) */
+        reuse(gen.name, manual, std::strcmp(gen.name, "asl.library") ? &gen : nullptr);
     }
     for (const auto &manual : manuals)
         if (!generated(manual.name)) reuse(manual.name, &manual, nullptr);
