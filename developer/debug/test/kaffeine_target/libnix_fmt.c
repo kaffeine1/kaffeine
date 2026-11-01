@@ -14,10 +14,10 @@
     the hosts do in the default rounding mode, and lays it out as C99 says
     for the "C" locale (the point is '.'). The length is computed apart, so
     the output stops at sz - 1 bytes without counting further. Infinities
-    are inf or INF with their sign, as C99 says. C leaves the sign of a NaN
-    to the implementation: here a NaN is nan or NAN without a sign, and +
-    or a space add none, as the libc of macOS prints it (glibc prints the
-    sign). A 0 flag pads both with spaces.
+    and NaNs are inf, INF, nan or NAN, with the sign bit as a minus and the
+    -, + and space flags as for numbers, while # and 0 have no effect (C11
+    7.21.6.1, footnote 277), as glibc prints them. The libc of macOS prints
+    a NaN without a sign and ignores + and space there.
 */
 
 #include <limits.h>
@@ -316,8 +316,6 @@ int libnix_fmt_double(char *buf, size_t sz, const char *spec, double v)
         const char *word = (bits & 0xfffffffffffffULL) ? (upper ? "NAN" : "nan")
                                                        : (upper ? "INF" : "inf");
 
-        if (bits & 0xfffffffffffffULL)
-            sign = 0;
         len = (sign ? 1 : 0) + 3;
         pad = (unsigned long long)width > len ? (unsigned long long)width - len : 0;
         if (len + pad > INT_MAX)

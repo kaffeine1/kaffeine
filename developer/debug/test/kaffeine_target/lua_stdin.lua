@@ -68,8 +68,11 @@ print(string.format("math ok: sin2+cos2=%.6g atan4=%.8g modf=%g,%g", s2, math.at
 -- exact digits and signs of floating conversions, and a long one
 print(string.format("exact: %.0f %.0f %.2f %.17g", 1234567890123456.0, 2.0^53, 1e15 + 0.25, 0.1))
 print(string.format("sign: [%020.2f] [%-+12.3e] [% 010.1f]", -1.25, 12345.678, 2.5))
-local big = string.format("%.99f", 1e308)
-print(string.format("big: %d %s %s", #big, big:sub(1, 30), big:sub(300, 320)))
+-- 2^1023 by exact doublings, so that only the formatting is tested
+local p = 1.0
+for _ = 1, 1023 do p = p * 2.0 end
+local big = string.format("%.99f", p)
+print(string.format("big: %d %s %s %.20e", #big, big:sub(1, 30), big:sub(290, 330), p))
 
 local arr = {}
 for i = 1, 64 do

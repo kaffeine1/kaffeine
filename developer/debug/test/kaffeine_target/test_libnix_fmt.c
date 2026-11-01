@@ -8,10 +8,11 @@
     0, 1, too small, exact and large. "make check-libnix-fmt" runs it; an
     argument sets the number of random cases (200000 by default).
 
-    A NaN is compared with the policy of libnix_fmt.c, nan or NAN without a
-    sign padded with spaces, since C leaves its sign to the implementation
-    and glibc prints it. Everything finite and the infinities are compared
-    with the host as they are.
+    A NaN is compared with the rule of C11 7.21.6.1 and its footnote 277:
+    nan or NAN with the sign bit as a minus and the -, + and space flags as
+    for numbers, padded with spaces. The libc of macOS prints a NaN without
+    a sign and ignores + and space, glibc follows the rule. Everything
+    finite and the infinities are compared with the host as they are.
 
     %g and %G without # are compared with the host %#g or %#G of the same
     precision, whose trailing zeros are then removed and the field padded
@@ -84,17 +85,28 @@ static int expected_g(char *out, size_t size, const char *spec, double v)
     return snprintf(out, size, "%*s%s", pad, "", core);
 }
 
-/* The NaN of spec under the policy of libnix_fmt.c. */
-static int expected_nan(char *out, size_t size, const char *spec)
+/* The NaN v of spec under C11 7.21.6.1 and its footnote 277. */
+static int expected_nan(char *out, size_t size, const char *spec, double v)
 {
-    const char *p = spec + 1, *word;
-    int minus = 0, width = 0;
+    const char *p = spec + 1;
+    char word[5];
+    int minus = 0, plus = 0, space = 0, width = 0, n = 0;
 
-    while (*p && strchr("-+ #0", *p) != NULL)
-        minus |= *p++ == '-';
+    for (; *p && strchr("-+ #0", *p) != NULL; p++)
+    {
+        minus |= *p == '-';
+        plus |= *p == '+';
+        space |= *p == ' ';
+    }
     while (*p >= '0' && *p <= '9')
         width = width * 10 + (*p++ - '0');
-    word = strchr("EFG", spec[strlen(spec) - 1]) != NULL ? "NAN" : "nan";
+    if (signbit(v))
+        word[n++] = '-';
+    else if (plus)
+        word[n++] = '+';
+    else if (space)
+        word[n++] = ' ';
+    strcpy(word + n, strchr("EFG", spec[strlen(spec) - 1]) != NULL ? "NAN" : "nan");
     return minus ? snprintf(out, size, "%-*s", width, word) : snprintf(out, size, "%*s", width, word);
 }
 
@@ -102,7 +114,7 @@ static void compare(const char *spec, double v)
 {
     static char want[4096], got[4096];
     char conv = spec[strlen(spec) - 1];
-    int nw = isnan(v) ? expected_nan(want, sizeof(want), spec)
+    int nw = isnan(v) ? expected_nan(want, sizeof(want), spec, v)
              : (conv == 'g' || conv == 'G') && strchr(spec, '#') == NULL
                  ? expected_g(want, sizeof(want), spec, v)
                  : snprintf(want, sizeof(want), spec, v);

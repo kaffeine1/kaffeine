@@ -30,7 +30,9 @@ BEGIN {
     printf "exact: [%.0f] [%.0f] [%.2f] [%.17g] [%.30g]\n",
         1234567890123456, 9007199254740992, 1e15 + 0.25, 0.1, 0.1
     printf "sign: [%020.2f] [%-+12.3e] [% 010.1f]\n", -1.25, 12345.678, 2.5
-    printf "big: [%.20e] [%.0f]\n", 1e308, 2^70
+    # 2^1023 by exact doublings, so that only the formatting is tested
+    big = 2^1023
+    printf "big: [%.20e] [%.0f]\n", big, 2^70
     printf "long: [%d] [%s]\n", length(sprintf("%.1000f", 1.25)),
-        substr(sprintf("%.300f", 1e308), 300, 20)
+        substr(sprintf("%.300f", big), 290, 30)
 }
