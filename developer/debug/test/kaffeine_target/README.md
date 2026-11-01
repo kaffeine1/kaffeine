@@ -241,8 +241,9 @@ each file, and for the m68k links `lua_libnix.c` (for `snprintf()`,
 `strtod()` and NaN-aware soft-float double comparison and division helpers
 in front of `IEEEDPCmp()` and `IEEEDPDiv()`), `libnix_fmt.c` and the
 `libm.a` of libnix. It
-collects the twelve deterministic scripts of `lua-5.4.7-tests`,
-`bwcoercion.lua`, `stdin.lua` and `bad.lua` in `build/lua-files`, and
+collects the fifteen deterministic scripts of `lua-5.4.7-tests`,
+`bwcoercion.lua`, `all.lua` (for the copyright notice that each script
+names), `stdin.lua` and `bad.lua` in `build/lua-files`, and
 `make lua-refs` writes the reference outputs and error streams to
 `build/lua-refs`. A second binary built with `-m68020 -m68881` is not worth
 a step: neither Moira nor the Kaffeine JIT executes 68881 Line-F
@@ -787,8 +788,8 @@ same output too, in about 23 minutes.
 
 ## The Lua 5.4.7 steps
 
-`lua` is the stand-alone interpreter of Lua 5.4.7. Fourteen programs run it
-on the twelve deterministic scripts of `lua-5.4.7-tests` that need no C
+`lua` is the stand-alone interpreter of Lua 5.4.7. Seventeen programs run it
+on the fifteen deterministic scripts of `lua-5.4.7-tests` that need no C
 test library (`ltests`), on a script read from standard input and on a
 script that ends with an unhandled error. Each step passes only if its
 standard output and standard error are byte for byte those of the same
@@ -808,8 +809,27 @@ program built for the host:
 | `lua_literals` | `-e "_port=true _soft=true" EMU68/literals.lua` | `literals.lua`: lexer, short and long strings, escape sequences, decimal and hexadecimal numerals and `load` errors | 0 |
 | `lua_goto` | `-e "_port=true _soft=true" EMU68/goto.lua` | `goto.lua`: labels, visibility scopes, upvalue closing across jumps and compile-time label errors | 0 |
 | `lua_errors` | `-e "_port=true _soft=true" EMU68/errors.lua` | `errors.lua`: `error`, `pcall`, `xpcall`, `debug.traceback` and runtime and syntax diagnostics | 0 |
+| `lua_db` | `-e "_port=true _soft=true" EMU68/db.lua` | `db.lua`: `debug.getinfo`, `debug.getlocal`/`debug.setlocal`, `debug.getupvalue`/`debug.setupvalue`, `debug.sethook` (line, call, tail-call, return and count hooks, with `collectgarbage()` inside hooks), coroutine tracebacks and stripped binary chunks (`_soft` bounds the vararg unpack loop to 100 items and the recursive tail-call depth to 3000) | 0 |
+| `lua_gengc` | `-e "_port=true _soft=true" EMU68/gengc.lua` | `gengc.lua`: generational collector (`collectgarbage("generational")`), `old`/`touched1`/`touched2`/`survival`/`old1` table barriers, `firstold1` list maintenance, `OLD1` finalizers, coroutine upvalue barriers and all-weak table minor collections; stops at `if T == nil` (`>>> testC not active: skipping some generational tests <<<`) before the `T.newuserdata` C-test-module block | 0 |
+| `lua_verybig` | `-e "_port=true _soft=true" EMU68/verybig.lua` | `verybig.lua`: `testing RK` only (a function with 256 integer constants followed by arithmetic, method calls and closure accesses beyond the 256-entry `K` limit); under `_soft=true`, returns at line 50 (`if _soft then return 10 end`) before the `>64k` generated-file section on `os.tmpname()` | 0 |
 | `lua_stdin` | `-`, with `--input` of `stdin.lua` | `lua_stdin.lua`: nested `pcall`/`xpcall` and coroutine error recovery, `double` math and `table.sort`, `string.format` with `%g` and `%a`, exact `%f`, `%e` and `%g` digits and a 408-byte `%.99f`, file I/O on `EMU68/` and a temporary file, `os.clock()` and `os.time()`, exact `tonumber()` of decimals | 0 |
 | `lua_bad` | `EMU68/bad.lua` | `testing unhandled error` on stdout, and the `SYS:EMU68/lua_bad` stack traceback on stderr | 1 |
+
+Under `LUA_INIT` (`-e "_port=true _soft=true"`), `verybig.lua` runs only the
+`>256` RK-constants opcode section (`testing RK`, lines 4 to 48) and returns at
+`if _soft then return 10 end` (line 50) without executing the `testing large
+programs (>64k)` `os.tmpname()` / `dofile()` section; `gengc.lua` runs only the
+five portable Lua generational-GC sections (lines 4 to 124) without the `ltests`
+C test module (`T == nil`), printing `>>> testC not active: skipping some
+generational tests <<<` and `OK` before the `T.newuserdata` barrier section; and
+`db.lua` runs the full portable debug library script through `OK` with `_soft`
+bounding its vararg unpack loop (line 303) to 100 items and its recursive
+tail-call loop (line 659) to 3000 calls. `build/lua-files` also stages `all.lua`
+unexecuted so that the upstream `lua-5.4.7-tests` MIT copyright notice named at
+the head of each test script accompanies the staged files. `gc.lua` is excluded
+from `LUA_TESTS`: under the Kaffeine JIT its allocation-heavy sweep did not
+complete within a 600-second single-step VM timeout in Shell, so target
+completion of `gc.lua` is not established.
 
 Some other scripts of `lua-5.4.7-tests` run without the `ltests` C module
 but give output that changes from run to run or between the 64-bit
@@ -1462,3 +1482,69 @@ an owned 1024 by 768 24-bit screen without hooks, filter callbacks, pattern
 gadgets, multiselect or application file I/O. Repeated requests on the same
 handle, AmiPixelShop ASL workflows, Moira execution and physical hardware
 remain separate validation gates.
+
+### Additional portable Lua tests (2026-11-01)
+
+`lua_db`, `lua_gengc` and `lua_verybig` add three scripts to the existing
+Lua recipe. Build into an absolute output directory so the target path
+also works with `make -C`:
+
+```sh
+build_dir="$(pwd)/build/kaffeine-lua"
+make -C developer/debug/test/kaffeine_target \
+    BUILD_DIR="$build_dir" \
+    LUA_SRC=/path/to/lua-5.4.7 \
+    LUA_TESTS_SRC=/path/to/lua-5.4.7-tests \
+    "$build_dir/lua" lua-refs
+```
+
+The staging directory includes `all.lua` for the upstream copyright
+notice; that script is not executed. Changes to this Makefile invalidate
+the staging stamp, including when the added upstream scripts are older
+than an existing build. The reference recipe sets `TZ=UTC0`.
+
+Run the three steps in separate boots:
+
+```sh
+python3 developer/debug/test/kaffeine_target/run-raspi-qemu.py \
+    --image /path/to/base.img \
+    --kernel /path/to/aros-aarch64-raspi.img \
+    --bsp /path/to/aros-aarch64-bsp.rom \
+    --dtb /path/to/bcm2710-rpi-3-b.dtb \
+    --library /path/to/kaffeine.library \
+    --mtools /path/to/mtools/bin \
+    --run-dir /path/to/results/lua-three --separate \
+    --cpu jit --tcg-thread single --timeout 600 \
+    --files lua_verybig "$build_dir/lua-files" \
+    --args lua_verybig '-e "_port=true _soft=true" EMU68/verybig.lua' \
+    --expect lua_verybig "$build_dir/lua-refs/lua_verybig.out" \
+    --expect-err lua_verybig "$build_dir/lua-refs/lua_verybig.err" \
+    --files lua_gengc "$build_dir/lua-files" \
+    --args lua_gengc '-e "_port=true _soft=true" EMU68/gengc.lua' \
+    --expect lua_gengc "$build_dir/lua-refs/lua_gengc.out" \
+    --expect-err lua_gengc "$build_dir/lua-refs/lua_gengc.err" \
+    --files lua_db "$build_dir/lua-files" \
+    --args lua_db '-e "_port=true _soft=true" EMU68/db.lua' \
+    --expect lua_db "$build_dir/lua-refs/lua_db.out" \
+    --expect-err lua_db "$build_dir/lua-refs/lua_db.err" \
+    lua_verybig="$build_dir/lua" \
+    lua_gengc="$build_dir/lua" \
+    lua_db="$build_dir/lua"
+```
+
+Earlier AROS ARM64/QEMU runs with the Kaffeine JIT passed each script in
+Shell and an actual `Run` child: six executions, all with return code 0,
+empty stderr and byte-exact host output (11, 107 and 178 bytes for
+`verybig`, `gengc` and `db`). Those runs used the 68k Lua executable with
+SHA-256 `8e4371f0f3b81a1891937424d86720ef1a236bd7c08fd31a31aa5838bf8c07b6`
+and an earlier Kaffeine module with SHA-256
+`a9f617ce93adf8a1f037c2cc1fa15269b255760ab5be5564212f5897aa24490d`.
+The interpreter sources and compile rules are unchanged by this update;
+these historical results do not establish a new run on the current module.
+
+The scope is the portable/soft subset described above: RK constants only
+for `verybig`, no `ltests` userdata section for `gengc`, and bounded loops
+for `db`. Full `gc.lua` timed out during Shell within its 600-second budget
+and never reached `Run`; it remains incomplete and is excluded from the
+passing steps. This timeout does not demonstrate a JIT correctness defect.
+Non-soft tests, Moira and physical hardware remain separate work.

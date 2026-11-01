@@ -312,7 +312,7 @@ endif
 # lua_config.h in front of each file and, for the m68k, lua_libnix.c for
 # the floating-point snprintf(), strtod(), double comparison and division
 # cases where libnix differs from ISO C, with the exact %e, %f and %g of
-# libnix_fmt.c. The battery runs it on the twelve deterministic scripts of
+# libnix_fmt.c. The battery runs it on the fifteen deterministic scripts of
 # lua-5.4.7-tests that need no C test library, a standard-input step and an
 # unhandled-error step, which $(LUA_FILES) collects under EMU68/, and
 # compares its output with the one of the same program built for the host,
@@ -323,7 +323,7 @@ LUA_FILES := $(BUILD_DIR)/lua-files
 LUA_REFS := $(BUILD_DIR)/lua-refs
 LUA_SOURCES := $(filter-out %/luac.c,$(sort $(wildcard $(LUA_SRC)/src/*.c)))
 LUA_FLAGS := -I$(LUA_SRC)/src -include $(TEST_DIR)/lua_config.h
-LUA_TESTS := strings nextvar closure calls events vararg pm utf8 bitwise literals goto errors
+LUA_TESTS := strings nextvar closure calls events vararg pm utf8 bitwise literals goto errors db gengc verybig
 LUA_STEPS := $(LUA_TESTS) stdin bad
 LUA_INIT := -e "_port=true _soft=true"
 $(foreach s,$(LUA_TESTS),$(eval LUA_ARGS_$(s) := $(LUA_INIT) EMU68/$(s).lua))
@@ -770,11 +770,11 @@ $(MBEDTLS_REFS)/stamp: $(MBEDTLS_SRC)/programs/test/selftest.c $(MBEDTLS_SOURCES
 
 mbedtls-refs: $(MBEDTLS_REFS)/stamp
 
-$(LUA_FILES).stamp: $(patsubst %,$(LUA_TESTS_SRC)/%.lua,$(LUA_TESTS) bwcoercion) \
-                    $(TEST_DIR)/lua_stdin.lua $(TEST_DIR)/lua_bad.lua | $(BUILD_DIR)
+$(LUA_FILES).stamp: $(patsubst %,$(LUA_TESTS_SRC)/%.lua,$(LUA_TESTS) bwcoercion all) \
+                    $(TEST_DIR)/lua_stdin.lua $(TEST_DIR)/lua_bad.lua $(TEST_DIR)/Makefile | $(BUILD_DIR)
 	rm -rf $(LUA_FILES)
 	mkdir -p $(LUA_FILES)
-	cp $(patsubst %,$(LUA_TESTS_SRC)/%.lua,$(LUA_TESTS) bwcoercion) $(LUA_FILES)/
+	cp $(patsubst %,$(LUA_TESTS_SRC)/%.lua,$(LUA_TESTS) bwcoercion all) $(LUA_FILES)/
 	cp $(TEST_DIR)/lua_stdin.lua $(LUA_FILES)/stdin.lua
 	cp $(TEST_DIR)/lua_bad.lua $(LUA_FILES)/bad.lua
 	touch $@
