@@ -970,22 +970,27 @@ the 6501 blocks of `mbedtls_selftest` hold 51421 instructions, about eight
 each, and it enters them about 204 million times a run.
 
 I ran the 63 steps of bzip2, zstd, Lua, UnZip and awk the same way under the
-JIT, with a boot for each step: the 28 of bzip2, zstd and UnZip with the
-library of master `ce4869b`, and the 35 of Lua and awk, built in this tree
-with the exact formatter of `libnix_fmt.c` but before its exact `strtod()`
-(the binaries of commit `31e47b4ec3`), with the library of master `0ceb134`. Every step gives the output and the error output of the host build
-byte for byte, from the Shell and with Run, and the eight deliberate failures
-end with the codes of the table in the next section. `make check-libnix-fmt`
-passes with GCC and Clang on Linux as well as on macOS. On AmigaOS 3.2.3 under
-FS-UAE, with a 68030, 2 MB of chip, 8 MB of fast and 64 MB of Zorro III
-memory, all in one boot as `SYS:EMU68/NAME`, 62 of the 63 steps, with the
-same binaries, give the same output, error output and exit code. The
-exception is `lua_strings`: `strings.lua` looks for the largest power of ten
-below `math.huge` and at line 270 expects `10^j` to overflow to infinity, but
-on overflow the `IEEEDPPow()` of AmigaOS 3.2.3 gives the largest finite
-double, so the assertion fails there. Under the bridge `10^j` is infinity, as
-on the host. The long steps print 2^1023, built by exact doublings, so that
-they test the formatting alone.
+JIT, with a boot for each step: the 28 of bzip2, zstd and UnZip earlier, with
+the library of master `ce4869b`, and the 35 of Lua and awk, built in this tree
+with the exact formatter and the exact `strtod()` of `libnix_fmt.c`, with the
+library of master `0ceb134`. Every step gives the output and the error output
+of the host build byte for byte, from the Shell and with Run, and the eight
+deliberate failures end with the codes of the table in the next section. An
+independent probe of 260 decimal conversions through the whole adapters of
+Lua and awk, `atof()` included, gives the bits, the ends and the `errno` that
+it expects, from the Shell and with Run. `make check-libnix-fmt` passes with
+GCC and Clang on Linux as well as on macOS. On AmigaOS 3.2.3 under FS-UAE,
+with a 68030, 2 MB of chip, 8 MB of fast and 64 MB of Zorro III memory, as
+`SYS:EMU68/NAME`, the 28 steps of bzip2, zstd and UnZip in an earlier boot and
+the 35 of Lua and awk in one of their own, 62 of the 63 give the same output,
+error output and exit code, and the probe of 260 conversions and a probe of
+92 formatter checks through the same adapters pass as well. The exception is
+`lua_strings`: `strings.lua` looks for the largest power of ten below
+`math.huge` and at line 270 expects `10^j` to overflow to infinity, but on
+overflow the `IEEEDPPow()` of AmigaOS 3.2.3 gives the largest finite double,
+so the assertion fails there. Under the bridge `10^j` is infinity, as on the
+host. The long steps print 2^1023, built by exact doublings, so that they
+test the formatting alone.
 
 ## Expected containment and exit probes
 
