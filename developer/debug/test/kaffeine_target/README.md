@@ -973,7 +973,7 @@ I ran the 63 steps of bzip2, zstd, Lua, UnZip and awk the same way under the
 JIT, with a boot for each step: the 28 of bzip2, zstd and UnZip with the
 library of master `ce4869b`, and the 35 of Lua and awk, built in this tree
 with the exact formatter of `libnix_fmt.c` but before its exact `strtod()`
-(the binaries of commit `8434501634`), with the library of master `0ceb134`. Every step gives the output and the error output of the host build
+(the binaries of commit `31e47b4ec3`), with the library of master `0ceb134`. Every step gives the output and the error output of the host build
 byte for byte, from the Shell and with Run, and the eight deliberate failures
 end with the codes of the table in the next section. `make check-libnix-fmt`
 passes with GCC and Clang on Linux as well as on macOS. On AmigaOS 3.2.3 under
