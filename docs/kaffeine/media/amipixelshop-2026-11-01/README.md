@@ -42,10 +42,11 @@ matched the observed 2,259-byte saved size:
 
 The 640x480 RGBA canvas SHA-256 is
 `f7f3eed6bad2c170eb0bccd6c368b320688a207a59c27321b412dd0774bc4df1`.
-This blank-document check establishes the save/reopen path. Drawing, coloured
-pixel fidelity, other formats, mode selection, Moira and physical hardware
-remain additional checks. A separate Open/Cancel check also passed from both
-Shell and Run. `Work:` was assigned to a new empty drawer before either test.
+This blank-document check establishes the save/reopen path. A later
+[coloured-stroke check](../amipixelshop-colour-2026-11-01/README.md) adds drawing,
+APX1 pixel validation and exact saved/reopened canvas RGB comparison. Other
+formats, mode selection, Moira and physical hardware remain additional checks.
+A separate Open/Cancel check also passed from both Shell and Run. `Work:` was assigned to a new empty drawer before either test.
 
 ## Artifact identity
 

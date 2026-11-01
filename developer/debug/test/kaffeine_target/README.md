@@ -1483,8 +1483,10 @@ gadgets, multiselect or application file I/O. Repeated requests on the same
 handle, Moira execution and physical hardware remain separate validation gates.
 A separate [AmiPixelShop application check](../../../../docs/kaffeine/classic-applications.md#amipixelshop-file-workflow-2026-11-01-utc)
 uses the Kaffeine JIT to open/cancel a requester and to save a two-layer APX1
-document from Shell, then reopen it with Run; its screenshots and extracted
-file are independent application evidence.
+document from Shell, then reopen it with Run. Blank and red-stroke documents
+passed; the coloured case also checks decoded pixels and exact saved/reopened
+canvas RGB equality. Its screenshots and extracted files are independent
+application evidence.
 
 ### Additional portable Lua tests (2026-11-01)
 
