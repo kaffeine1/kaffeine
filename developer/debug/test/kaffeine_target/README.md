@@ -1325,3 +1325,11 @@ screen shadow types, each lifetime holder, rejected stale identities and a
 known-invalid entry whose bytes otherwise describe a planar bitmap. Layers
 private, layers, screens and windows pass 32, 37, 57 and 52 groups respectively,
 both normally and with ASan/UBSan. Borrowed-screen blits remain refused.
+
+A separate negative probe runs 45 cases in Shell and actual `Run` with
+Kaffeine JIT on the same ARM64 module: all 90 executions stop with the
+expected return code 20, exact step output and empty error output. The
+serial trace names the expected refusal for each execution. Cases cover
+all 26 unsupported version-2 vectors, five malformed tag lists and 14
+invalid pixel-write requests, including protected source storage, source
+address overflow, unsupported formats and invalid RastPort identities.
