@@ -1387,6 +1387,71 @@ static void test_owned_screen()
     assert(f.avail() == f.initial_heap);
 }
 
+/* Kaffeine_ScreenBitMapQuery() on the entries that LockPubScreen(),
+   UnlockPubScreen(), OpenScreenTagList() and CloseScreen() of the bridge
+   make and take away: a locked screen answers, also through a 68k Screen of
+   type KAFFEINE_SHADOW_SCREEN that LockPubScreen() found; an opened one is
+   left to the blit rules; nearby addresses, an entry without its native
+   screen or BitMap, a broken shadow and a screen that has gone do not. */
+static void test_bitmap_query()
+{
+    BitMap drawn{};
+    BitMap *out = nullptr;
+    auto query = [&](Fixture &f, ULONG bm) { return Kaffeine_ScreenBitMapQuery(&f.ctx, bm, &out); };
+    {
+        Fixture f;
+        auto &n = f.add("Workbench", true);
+        n.screen.RastPort.BitMap = &drawn;
+        const ULONG g = f.lock();
+        assert(g && Kaffeine_ShadowNative(&f.ctx, g, KAFFEINE_SHADOW_PUBSCREEN) == &n.screen);
+        assert(query(f, g + BM) == KAFFEINE_SCREEN_QUERY_BORROWED && out == &drawn);
+        for (ULONG near : { g + BM - 2, g + BM + 2, g, 0u, (ULONG)BM - 1 })
+            assert(query(f, near) == KAFFEINE_SCREEN_QUERY_OTHER && !out);
+        n.screen.RastPort.BitMap = nullptr;
+        assert(query(f, g + BM) == KAFFEINE_SCREEN_QUERY_REFUSED && !out);
+        n.screen.RastPort.BitMap = &drawn;
+        const int i = f.entry(g);
+        f.ctx.pubscreens[i].native = nullptr;
+        assert(query(f, g + BM) == KAFFEINE_SCREEN_QUERY_REFUSED && !out);
+        f.ctx.pubscreens[i].native = &n.screen;
+        Kaffeine_ShadowForget(&f.ctx, g, KAFFEINE_SHADOW_PUBSCREEN);
+        assert(query(f, g + BM) == KAFFEINE_SCREEN_QUERY_REFUSED);
+        assert(Kaffeine_ShadowAdd(&f.ctx, g, &n.screen, KAFFEINE_SHADOW_PUBSCREEN));
+        assert(f.lock() == g && query(f, g + BM) == KAFFEINE_SCREEN_QUERY_BORROWED);
+        f.unlock(g);
+        assert(query(f, g + BM) == KAFFEINE_SCREEN_QUERY_BORROWED);
+        f.unlock(g);
+        assert(f.entry(g) < 0 && query(f, g + BM) == KAFFEINE_SCREEN_QUERY_OTHER && !out);
+    }
+    {
+        Fixture f;
+        auto &n = f.add("Workbench", true);
+        n.screen.RastPort.BitMap = &drawn;
+        const ULONG g = Kaffeine_HeapAlloc(&f.ctx, SCREEN_SIZE, MEMF_ANY);
+        assert(g && Kaffeine_ShadowAdd(&f.ctx, g, &n.screen, KAFFEINE_SHADOW_SCREEN));
+        assert(f.lock() == g && !f.ctx.pubscreens[f.entry(g)].owned);
+        assert(query(f, g + BM) == KAFFEINE_SCREEN_QUERY_BORROWED && out == &drawn);
+        f.unlock(g);
+        assert(f.entry(g) < 0 && query(f, g + BM) == KAFFEINE_SCREEN_QUERY_OTHER);
+        Kaffeine_ShadowForget(&f.ctx, g, KAFFEINE_SHADOW_SCREEN);
+        Kaffeine_HeapFree(&f.ctx, g, SCREEN_SIZE);
+        assert(f.avail() == f.initial_heap);
+    }
+    {
+        Fixture f;
+        f.add("Workbench", true);
+        const ULONG opened = f.open(0, 0);
+        assert(opened && f.ctx.pubscreens[f.entry(opened)].owned);
+        assert(query(f, opened + BM) == KAFFEINE_SCREEN_QUERY_OTHER && !out);
+        void *native = Kaffeine_ShadowNative(&f.ctx, opened, KAFFEINE_SHADOW_SCREEN);
+        Kaffeine_ShadowForget(&f.ctx, opened, KAFFEINE_SHADOW_SCREEN);
+        assert(query(f, opened + BM) == KAFFEINE_SCREEN_QUERY_REFUSED && !out);
+        assert(Kaffeine_ShadowAdd(&f.ctx, opened, native, KAFFEINE_SHADOW_SCREEN));
+        assert(f.close(opened) == 1);
+        assert(f.entry(opened) < 0 && query(f, opened + BM) == KAFFEINE_SCREEN_QUERY_OTHER);
+    }
+}
+
 static void test_lock_failures()
 {
     for (int free : { -1, 0, 1, 2 })
@@ -3656,6 +3721,7 @@ int main()
         { "Names must terminate in guest memory before Intuition", test_bad_names },
         { "Only windows on this screen retain it until their shadows are gone", test_window_retention },
         { "An opened type-5 Screen is reused unchanged and never freed by unlock", test_owned_screen },
+        { "The BitMap query answers locked screens of either shadow type, leaves opened ones to the blit rules, refuses broken entries", test_bitmap_query },
         { "No memory, fewer than three shadows, private/missing native screens leave no lock, allocation or font", test_lock_failures },
         { "The 16-screen table gives an excess native lock back", test_screen_table_limit },
         { "The 32767-screen-lock limit gives an excess native lock back", test_screen_lock_limit },

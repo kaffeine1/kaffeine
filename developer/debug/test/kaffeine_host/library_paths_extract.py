@@ -44,6 +44,7 @@ output.write_text('''/* Copyright (C) 2026, The AROS Development Team. All right
 #include "kaffeine_intern.h"
 #include "kaffeine_thunks.h"
 #include "kaffeine_gfxbase.h"
+#include "kaffeine_p96.h"
 extern IPTR library_paths_unexpected_thunk(struct KaffeineContext *, void *);
 ''' + "\n".join(
     f"extern const struct M68KThunkEntry {name}[];\nextern const ULONG {name}_count;"

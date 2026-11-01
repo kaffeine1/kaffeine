@@ -53,6 +53,7 @@
 #include "kaffeine_palette.h"
 #include "kaffeine_tasks.h"
 #include "kaffeine_sched.h"
+#include "kaffeine_p96.h"
 #include "kaffeine_workbench.h"
 #include "kaffeine_icon.h"
 #include "kaffeine_layers.h"
@@ -208,6 +209,22 @@ static IPTR open_library(struct KaffeineContext *ctx, void *cpu, ULONG version)
             bug("[kaffeine] OpenLibrary: no name of at most 255 bytes at 0x%lx\n",
                 (unsigned long)at);
         return 0;
+    }
+    /* Picasso96API.library, by its file part as Exec takes it: the base
+       gives only version 2, which Kaffeine_OpenLibrary() could not check,
+       and no 68k library from disk can drive an AROS display */
+    {
+        const char *file = name;
+        for (const char *p = name; *p; p++)
+            if (*p == ':' || *p == '/')
+                file = p + 1;
+        if (!strcmp(file, "Picasso96API.library"))
+        {
+            base = Kaffeine_P96Open(ctx, version);
+            bug("[kaffeine] OpenLibrary %s %lu: %s\n", name, (unsigned long)version,
+                base ? "native" : "not given");
+            return (IPTR)base;
+        }
     }
     if ((base = Kaffeine_OpenLibrary(ctx, name)))
     {

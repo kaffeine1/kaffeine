@@ -10,6 +10,9 @@ extern "C" {
 #endif
 
 ULONG GetDisplayInfoData(DisplayInfoHandle handle, UBYTE *buf, ULONG size, ULONG tag, ULONG id);
+ULONG NextDisplayInfo(ULONG last_ID);
+struct TagItem;
+ULONG BestModeIDA(struct TagItem *TagItems);
 struct ViewPort;
 struct ColorMap;
 void LoadRGB4(struct ViewPort *, UWORD *, WORD);

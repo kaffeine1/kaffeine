@@ -1123,7 +1123,7 @@ validation work.
 | -702 | ResetMenuStrip | As SetMenuStrip, through native ResetMenuStrip, but a strip that the program built takes the copy that windows show or that waits, with the flags that the program changed, without memory; a new copy, for a strip without one, goes through native SetMenuStrip, which works out its page sizes |
 | -816 | SetWindowPointerA | No-op (avoids X11 blocking) (`kaffeine_thunks_gfx.c`) |
 
-**graphics.library (100 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_bitmaps.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
+**graphics.library (100 manual thunks; drawing/font calls in `kaffeine_thunks_gfx.c`, display queries in `kaffeine_display.c`, layer ROM locks in `kaffeine_layers.c`, bitmaps in `kaffeine_layers.c`, regions in `kaffeine_regions.c`, LoadRGB4 in `kaffeine_thunks.c`):**
 
 RastPort thunks use the registered 68k RastPort of a window, a screen or a
 private offscreen planar layer (see RastPorts and Fonts and Layer Snapshots
@@ -1140,7 +1140,7 @@ takes the exit code.
 
 | LVO | Function | Handling |
 |-----|----------|----------|
-| -30 | BltBitMap | Copies bitplanes between checked classic planar bitmaps and/or owned indexed screens with minterm `0xC0`; unsupported bitmaps, planes, masks or minterms stop with rc 20 (`kaffeine_bitmaps.c`) |
+| -30 | BltBitMap | Copies bitplanes between checked classic planar bitmaps and/or owned indexed screens with minterm `0xC0`; unsupported bitmaps, planes, masks or minterms stop with rc 20 (`kaffeine_layers.c`) |
 | -36 | BltTemplate | Converts all eight argument registers, validates the complete word-rounded source span and pre-clips planar destinations; source bytes cannot alias the caller-owned RastPort or its bitmap/planes |
 | -54 | TextLength | Checks UWORD(count) characters of guest text; caller-owned classic RastPorts use a resolved live TextFont and signed TxSpacing in a temporary native structure |
 | -60 | Text | Checks the text as TextLength; the pen position comes back |
@@ -1159,7 +1159,7 @@ takes the exit code.
 | -342 | SetAPen | Pen to the native RastPort |
 | -348 | SetBPen | Pen to the native RastPort |
 | -354 | SetDrMd | Mode to the native RastPort |
-| -390 | InitBitMap | Initializes the 8-byte 68k `BitMap` header (`BytesPerRow`, `Rows`, `Flags = 0`, `Depth`, `pad = 0`) from D0/D1/D2 without clearing plane pointers (`kaffeine_bitmaps.c`) |
+| -390 | InitBitMap | Initializes the 8-byte 68k `BitMap` header (`BytesPerRow`, `Rows`, `Flags = 0`, `Depth`, `pad = 0`) from D0/D1/D2 without clearing plane pointers (`kaffeine_layers.c`) |
 | -396 | ScrollRaster | Signed WORD offsets and bounds |
 | -432 | LockLayerRom | Validates a registered or owned guest `Layer`, locks its native layer if present and increments its guest lock count (`kaffeine_layers.c`) |
 | -438 | UnlockLayerRom | Releases a lock acquired by `LockLayerRom` or `AttemptLockLayerRom` (`kaffeine_layers.c`) |
@@ -1182,7 +1182,7 @@ takes the exit code.
 | -870 | GetDrMd | Native getter after the fields of the 68k RastPort |
 | -876 | GetOutlinePen | Native getter after the fields of the 68k RastPort |
 | -894 | SetABPenDrMd | Both pens and the mode to the native RastPort |
-| -960 | GetBitMapAttr | Returns `BMA_WIDTH`, `BMA_HEIGHT`, `BMA_DEPTH` or `BMA_FLAGS` for an owned screen `BitMap` or checked classic planar `BitMap` (`kaffeine_bitmaps.c`) |
+| -960 | GetBitMapAttr | Returns `BMA_WIDTH`, `BMA_HEIGHT`, `BMA_DEPTH` or `BMA_FLAGS` for an owned screen, a retained typed borrowed screen bitmap, or a checked classic planar bitmap. Screen identity and lifetime are validated before querying native metadata; known invalid handles stop with rc 20. Unknown attributes return zero only after validation (`kaffeine_layers.c`) |
 | -288 | SetRGB4 | Sets a palette entry on a registered screen ViewPort (`kaffeine_palette.c`) |
 | -576 | FreeColorMap | NULL is a no-op; freeing a borrowed screen ColorMap stops with rc 20 (`kaffeine_palette.c`) |
 | -582 | GetRGB4 | Reads a packed RGB4 palette entry from a checked borrowed screen ColorMap (`kaffeine_palette.c`) |
@@ -1651,6 +1651,40 @@ mixed WORD/LONG/string/BSTR positions, repetition and the returned pointer.
 | `M68K_LOC_MONNEGATIVECSPOS` | 166 | 1 | `UBYTE loc_MonNegativeCSPos` |
 | `M68K_LOC_RESERVED3` | 167 | 1 | `UBYTE loc_Reserved3` |
 
+**Picasso96API.library (28 manual thunks, `kaffeine_p96.c`):**
+
+AROS has no Picasso96API.library, so the bridge gives RTG programs the two
+calls of version 2 that they need most, on cybergraphics.library.
+p96BestModeIDTagList() reads the guest tag list item by item as numbers
+(the generic tag list copy would take a NominalWidth for a pointer), at
+most 64 items. It checks the request before cybergraphics sees it: a width
+or height above 0xffff, a depth above 32, no format left once
+FormatsForbidden is taken from FormatsAllowed, or a card tag such as
+VideoCompatible set give INVALID_ID, never 0, which is a mode, and the
+program goes on; BestModeIDA() would otherwise cut sizes to UWORDs and
+depths to a UBYTE. Missing sizes and depth are 800, 600 and 8, the defaults
+of BestCModeIDTagList(), and 0 counts as 1. Depths 25 to 32 ask for 24 bits
+on four bytes, since the drivers of AROS give their 4-byte modes a MaxDepth
+of 24. The mode of BestCModeIDTagList() is the answer when its format is
+allowed. When it is not, the bridge looks through at most 512 IDs of
+NextDisplayInfo() for the modes of allowed formats with the size and
+depth, ranks them as BestModeIDA() does, and keeps a mode only when
+BestModeIDA(), given that ID as BIDTAG_MonitorID, returns it, which applies
+the native filters (NotAvailable, the special flags, the bits a gun, a
+disabled monitor that NextDisplayInfo() still lists). Unlike BestModeIDA(),
+that search does not put the default monitor first. A database of more
+than 512 IDs gives INVALID_ID. p96WritePixelArray() takes the
+RenderInfo and the RastPort of a window or a screen, copies the six 24 and
+32-bit formats with WritePixelArray() from the first source pixel, after
+checking every source row in the memory of the program and the
+destination in the WORD coordinates of a RastPort, and stops the program
+for anything else, the other formats among them. The other 26 LVOs of
+version 2 stop the program with 20 and name the call. OpenLibrary() takes
+the library by its file part with its version in open_library(), gives
+versions up to 2 the base of the context, made once with a Library of
+version 2, and nothing to a later version; no 68k Picasso96API.library from
+disk is tried, since it could not drive an AROS display.
+
 **workbench.library (7 manual thunks, `kaffeine_workbench.c`):**
 
 The native workbench.library sends AppMessages to a native port that the
@@ -1701,7 +1735,7 @@ library returns 0.
 | -174 | NewDiskObject | Allocates a fresh native default icon for the requested type and returns an owned 68k `DiskObject` metadata snapshot (`kaffeine_icon.c`) |
 | -54, -72, -84, -108, -126, -138, -150..-168, -180..-198 | Remaining 14 vectors | Stop the guest with rc 20 (`kaffeine_icon_Unsupported`) |
 
-**cybergraphics.library (5 manual thunks, `kaffeine_thunks.c` / `kaffeine_bitmaps.c`):**
+**cybergraphics.library (5 manual thunks, `kaffeine_thunks.c` / `kaffeine_layers.c`):**
 
 LVOs `-96`, `-168`, `-174`, `-180` and `-186` override generated bitmap
 allocation and locking vectors with `kaffeine_bitmaps_Unsupported`, stopping
@@ -3224,9 +3258,15 @@ Screen of.
     LONG result is preserved; the AROS planar-driver path currently returns 8
     even for fewer selected planes. Independent ARM and 68k probes check actual
     pixels and return values in both transfer directions. `GetBitMapAttr()`
-    (-960) reads scalar attributes through the same typed identities, preserving
-    ordinary planar flags and querying actual native screen metadata. Unknown
-    attributes return zero. `InitBitMap()` (-390) initializes only the eight
+    (-960) reads scalar attributes through typed identities, preserving
+    ordinary planar flags and querying actual native screen metadata. It also
+    accepts a borrowed screen bitmap while a lock, window, public-screen list
+    lock, pen lease, VisualInfo or DrawInfo keeps that same screen alive. Both
+    supported screen shadow types are checked against the current screen table.
+    A known invalid entry is refused before any planar fallback; guest bitmap
+    fields cannot substitute a native identity. Unknown attributes return zero
+    only after validation. Borrowed-screen blit permissions are unchanged.
+    `InitBitMap()` (-390) initializes only the eight
     classic metadata bytes, using the native BYTE/UWORD argument widths and
     AROS's standard planar flag. All eight caller plane pointers remain
     unchanged. A complete, word-aligned 40-byte descriptor may live in static,

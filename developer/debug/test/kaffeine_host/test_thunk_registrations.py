@@ -4,10 +4,13 @@
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
 Author: Michele Dipace (@kaffeine1)
 
-The C preprocessor expands the production header macros for all twenty-one manual
+The C preprocessor expands the production header macros for all twenty-two manual
 thunk tables (exec, dos, intuition, graphics, utility, locale, mathieeedoubbas,
 mathieeedoubtrans, mathieeesingbas, mathffp, timer, console, keyboard, input,
-diskfont, gadtools, icon, workbench, cybergraphics, layers and keymap). Expected
+diskfont, gadtools, icon, workbench, cybergraphics, layers, keymap and
+Picasso96API). The vectors and registers of Picasso96API come from the inline
+header of the Picasso96 SDK in workbench/devs/diskimage, the only fd source of
+that library in the tree. Expected
 vector numbers come independently from the native AROS entry points and from
 the NDK 3.2 fd files (or AROS fd / .conf files for
 AROS-only AVL functions and explicitly listed extensions). Each manual handler and the helpers it delegates to
@@ -54,7 +57,22 @@ TABLES = (
     ("gadtools", "kaffeine_thunks.c", "kaffeine_thunks_gadtools_manual"),
     ("workbench", "kaffeine_workbench.c", "kaffeine_thunks_workbench"),
     ("layers", "kaffeine_layers.c", "kaffeine_thunks_layers_manual"),
+    ("Picasso96API", "kaffeine_p96.c", "kaffeine_thunks_p96"),
 )
+
+# The Picasso96 SDK in the tree: its inline header names the offset and the
+# registers of every function of Picasso96API.library ("jsr -60(a6)").
+P96_SDK_INLINE = "workbench/devs/diskimage/include/amigaos/inline/Picasso96API_protos.h"
+# Every Picasso96API.library vector of version 2 but p96BestModeIDTagList()
+# and p96WritePixelArray() stops the program in the first bridge.
+P96_REFUSED = frozenset(range(30, 198, 6)) - {60, 102}
+P96_SUPPORTED = {60: "thunk_p96_BestModeIDTagList", 102: "thunk_p96_WritePixelArray"}
+# The whole expansion of P96_UNSUPPORTED(name), white space collapsed: the
+# two statements and nothing else, so no read can come before the refusal.
+P96_UNSUPPORTED_BODY = (
+    'static IPTR thunk_p96_##name(struct KaffeineContext *ctx, void *cpu) '
+    '{ (void)cpu; return refuse(ctx, "p96" #name "(): an unsupported '
+    'Picasso96API.library call"); }')
 
 # NDK 3.2 workbench_lib.fd entries implemented by this bridge. Keep a 68k
 # oracle when no external NDK is supplied: AROS's .conf uses A3 for the
@@ -687,6 +705,22 @@ def parse_fd_file(path):
     return entries
 
 
+def parse_p96_inline(path):
+    """Offset -> (name, registers) of the VBCC inline header of the P96 SDK;
+    the ...Tags forms share the offset of their ...TagList function."""
+    entries = {}
+    text = path.read_text(encoding="latin-1")
+    for match in re.finditer(
+            r'__(p96\w+)\((.*?)\)\s*=\s*"\\tjsr\\t-(\d+)\(a6\)"', text):
+        name, args, offset = match.group(1), match.group(2), int(match.group(3))
+        regs = tuple(reg.upper() for reg in re.findall(r'__reg\("(\w+)"\)', args)
+                     if reg.lower() != "a6")
+        if name.endswith("Tags") and offset in entries:
+            continue
+        entries.setdefault(offset, (name, regs))
+    return entries
+
+
 def parse_conf_file(path):
     entries = {}
     in_config = False
@@ -767,6 +801,9 @@ def library_source_dir(root, library):
 
 
 def load_library_specs(root, library, ndk_fd_dir, aros_fd_dir):
+    if library == "Picasso96API":
+        sdk = parse_p96_inline(root / P96_SDK_INLINE)
+        return sdk, sdk
     conf_entries = parse_conf_file(
         library_source_dir(root, library) / (library + ".conf"))
     ndk_fd = ndk_fd_dir / (library + "_lib.fd") if ndk_fd_dir else None
@@ -1066,6 +1103,78 @@ def check_zero_lvo_register_audit():
     return len(controls)
 
 
+def p96_audit(source, entries, sdk):
+    """The failures of the Picasso96API.library table: its vectors must be
+    exactly those of the SDK, once each, -60 and -102 their own thunks,
+    every other one P96_UNSUPPORTED() of its SDK function, defined once,
+    and the macro exactly its two statements."""
+    failures = []
+    vectors = [vector for vector, _ in entries]
+    handlers = dict(entries)
+    if len(vectors) != len(set(vectors)) or set(vectors) != set(sdk):
+        failures.append("vectors " + str(sorted(vectors)) + " are not the " +
+                        str(len(sdk)) + " of the SDK")
+    for vector, handler in sorted(P96_SUPPORTED.items()):
+        if handlers.get(vector) != handler:
+            failures.append(str(-vector) + " is not " + handler)
+    for vector in sorted(set(sdk) - set(P96_SUPPORTED)):
+        handler = handlers.get(vector, "")
+        stem = handler[len("thunk_p96_"):] if handler.startswith("thunk_p96_") else ""
+        if (not stem or "p96" + stem != sdk[vector][0] or
+                len(re.findall(r"^P96_UNSUPPORTED\(" + re.escape(stem) + r"\)$",
+                               source, re.MULTILINE)) != 1):
+            failures.append(str(-vector) + " is not P96_UNSUPPORTED(" +
+                            sdk[vector][0][len("p96"):] + ")")
+    macro = re.findall(r"^#define P96_UNSUPPORTED\(name\)((?:[^\n]*\\\n)*[^\n]*)$",
+                       source, re.MULTILINE)
+    if (len(macro) != 1 or
+            " ".join(macro[0].replace("\\\n", " ").split()) != P96_UNSUPPORTED_BODY):
+        failures.append("P96_UNSUPPORTED() is not exactly (void)cpu and the refusal")
+    return failures
+
+
+def check_p96_audit(source, entries, sdk):
+    """In-memory controls: the audit passes the production table and source
+    and fails each of their mutants."""
+    handlers = dict(entries)
+
+    def without(*gone):
+        return [(v, h) for v, h in entries if v not in gone]
+
+    swapped = [(v, handlers[36] if v == 30 else handlers[30] if v == 36 else h)
+               for v, h in entries]
+    statement = "        (void)cpu; \\\n"
+    controls = [
+        (not p96_audit(source, entries, sdk), "production table"),
+        (p96_audit(source, without(60), sdk), "remove-60"),
+        (p96_audit(source, without(102), sdk), "remove-102"),
+        (p96_audit(source, without(60, 102), sdk), "remove-60-and-102"),
+        (p96_audit(source, without(30), sdk), "remove a refusal"),
+        (p96_audit(source, entries + [(66, handlers[66])], sdk), "duplicate vector"),
+        (p96_audit(source, entries + [(198, handlers[66])], sdk), "vector past the SDK"),
+        (p96_audit(source, [(v, handlers[66] if v == 60 else h) for v, h in entries], sdk),
+         "-60 refused"),
+        (p96_audit(source, swapped, sdk), "two refusals swapped"),
+        (p96_audit(source.replace(statement, statement + "        return 0; \\\n"),
+                   entries, sdk), "early return before the refusal"),
+        (p96_audit(source.replace(statement, statement + "        extra_read(cpu); \\\n"),
+                   entries, sdk), "helper read before the refusal"),
+        (p96_audit(source.replace(statement, "        (void)THUNK_D(0); \\\n"),
+                   entries, sdk), "register read in the macro"),
+        (p96_audit(source.replace("return refuse(ctx,", "return 0; refuse(ctx,"),
+                   entries, sdk), "refusal not returned"),
+        (p96_audit(source.replace("P96_UNSUPPORTED(AllocBitMap)\n",
+                                  "P96_UNSUPPORTED(AllocBitMap)\nP96_UNSUPPORTED(AllocBitMap)\n"),
+                   entries, sdk), "refusal defined twice"),
+        (p96_audit(source.replace("#define P96_UNSUPPORTED(name)", "#define P96_REFUSED(name)"),
+                   entries, sdk), "macro missing"),
+    ]
+    for passed, label in controls:
+        if not passed:
+            raise ValueError("Picasso96API.library table audit failed: " + label)
+    return len(controls)
+
+
 # Handlers whose name cannot be the one of the function they implement
 HANDLER_FUNCTIONS = {
     # Kaffeine_CreateContext() makes the context of the emulator itself
@@ -1080,6 +1189,8 @@ def expected_function_name(handler, library):
         ("gadtools", "Kaffeine_BeginRefresh"): "GT_BeginRefresh",
         ("gadtools", "Kaffeine_EndRefresh"): "GT_EndRefresh",
     }
+    if library == "Picasso96API" and handler.startswith("thunk_p96_"):
+        return "p96" + handler[len("thunk_p96_"):]
     return aliases.get((library, handler)) or HANDLER_FUNCTIONS.get(handler) or HANDLER_PREFIX_RE.sub("", handler)
 
 
@@ -1201,6 +1312,17 @@ def main():
     print("PASS constant-LVO register audit (" + str(check_zero_lvo_register_audit()) + " controls)")
     total_manual = 0
     seen_ignored = set()
+    seen_p96_refusals = set()
+    p96_source = strip_c_comments((core / "kaffeine_p96.c").read_text(encoding="latin-1"))
+    p96_sdk = parse_p96_inline(root / P96_SDK_INLINE)
+    p96_failures = p96_audit(p96_source, registrations["Picasso96API"], p96_sdk)
+    for failure in p96_failures:
+        print("FAIL Picasso96API.library:", failure)
+    if not p96_failures:
+        print("PASS Picasso96API.library table audit (" +
+              str(check_p96_audit(p96_source, registrations["Picasso96API"], p96_sdk)) +
+              " controls)")
+    failures_before = len(p96_failures)
     seen_console_refusals = set()
     seen_keymap_refusals = set()
     seen_icon_refusals = set()
@@ -1371,6 +1493,22 @@ def main():
                 else:
                     seen_graphics_palette_refusals.add(vector)
                 continue
+            if library == "Picasso96API" and vector in P96_REFUSED:
+                # Each refusal is P96_UNSUPPORTED(name) of kaffeine_p96.c for
+                # the SDK function at its vector, and the macro reads no
+                # register and stops the program.
+                want_func = expected_function_name(handler, library)
+                entry = ndk_spec.get(vector)
+                stem = handler[len("thunk_p96_"):]
+                if (entry is None or entry[0] != want_func or
+                        len(re.findall(r"^P96_UNSUPPORTED\(" + stem + r"\)$", p96_source,
+                                       re.MULTILINE)) != 1):
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, handler,
+                          "is not the refusal of", entry[0] if entry else "an SDK function")
+                else:
+                    seen_p96_refusals.add(vector)
+                continue
             want_func = expected_function_name(handler, library)
             entry = ndk_spec.get(vector)
             if AROS_ONLY_FUNCTIONS.get((library, vector)) == want_func:
@@ -1472,6 +1610,10 @@ def main():
     if seen_graphics_node_refusals != GRAPHICS_NODE_REFUSED:
         failures += 1
         print("FAIL graphics.library node refusal slots changed")
+    if seen_p96_refusals != P96_REFUSED:
+        failures += 1
+        print("FAIL Picasso96API.library refusal slots changed")
+    failures += failures_before
     if seen_cybergraphics_bitmap_refusals != CYBERGRAPHICS_BITMAP_REFUSED:
         failures += 1
         print("FAIL cybergraphics.library bitmap refusal slots changed")

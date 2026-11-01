@@ -449,53 +449,6 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
     return guest;
 }
 
-/* Whether a 68k Window of the program lies on that native screen */
-static BOOL screen_windows(struct KaffeineContext *ctx, const struct Screen *scr)
-{
-    UWORD s;
-
-    for (s = 0; s < ctx->num_shadows; s++)
-        if (ctx->shadow_map[s].type == KAFFEINE_SHADOW_WINDOW &&
-            ((struct Window *)ctx->shadow_map[s].native_ptr)->WScreen == scr)
-            return TRUE;
-    return FALSE;
-}
-
-/* A native screen is the program's while it is open from OpenScreen() of
-   the program, while the program holds a lock on it, has a window there,
-   a VisualInfo or a DrawInfo copy of it; while the program holds the list
-   of public screens, under which Intuition closes no public screen, every
-   68k Screen stays, also when there was no memory for the copy. */
-static BOOL screen_visuals(struct KaffeineContext *ctx, struct Screen *screen)
-{
-    int i;
-    for (i = 0; i < KAFFEINE_MAX_VISUALINFOS; i++)
-        if (ctx->visualinfos[i].native && ctx->visualinfos[i].screen == screen)
-            return TRUE;
-    return FALSE;
-}
-
-/* Whether a DrawInfo copy of the program keeps that native screen */
-static BOOL screen_drawinfos(struct KaffeineContext *ctx, const struct Screen *screen)
-{
-    int i;
-
-    for (i = 0; i < KAFFEINE_MAX_DRAWINFOS; i++)
-        if (ctx->drawinfos[i].guest && ctx->drawinfos[i].screen == screen)
-            return TRUE;
-    return FALSE;
-}
-
-static BOOL screen_used(struct KaffeineContext *ctx, int i)
-{
-    /* pen leases (kaffeine_palette.c) keep it like a DrawInfo copy */
-    return ctx->pubscreens[i].owned || ctx->pubscreens[i].locks || ctx->pubscreen_list_locks ||
-           ctx->pubscreens[i].pens ||
-           screen_windows(ctx, ctx->pubscreens[i].native) ||
-           screen_visuals(ctx, ctx->pubscreens[i].native) ||
-           screen_drawinfos(ctx, ctx->pubscreens[i].native);
-}
-
 /* Whether the 68k Screen of the entry is one that the bridge made, and
    fills in again */
 static BOOL screen_mirrored(struct KaffeineContext *ctx, int i)
@@ -573,7 +526,7 @@ static void screen_release(struct KaffeineContext *ctx, struct Screen *scr)
 {
     int i = scr ? screen_index(ctx, scr, 0) : -1;
 
-    if (i >= 0 && !screen_used(ctx, i))
+    if (i >= 0 && !Kaffeine_ScreenUsed(ctx, i))
         screen_forget(ctx, i);
 }
 
@@ -808,7 +761,7 @@ IPTR Kaffeine_UnlockPubScreenList(struct KaffeineContext *ctx, void *cpu)
     ctx->pubscreen_list = 0;
     ctx->pubscreen_list_nodes = 0;
     for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
-        if (ctx->pubscreens[i].guest && !screen_used(ctx, i))
+        if (ctx->pubscreens[i].guest && !Kaffeine_ScreenUsed(ctx, i))
             screen_forget(ctx, i);
     return 0;
 }
@@ -1284,8 +1237,8 @@ IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
     }
     /* a VisualInfo, a DrawInfo copy or a pen lease of the program still
        uses it */
-    if (screen_visuals(ctx, ctx->pubscreens[i].native) ||
-        screen_drawinfos(ctx, ctx->pubscreens[i].native) || ctx->pubscreens[i].pens)
+    if (Kaffeine_ScreenVisuals(ctx, ctx->pubscreens[i].native) ||
+        Kaffeine_ScreenDrawInfos(ctx, ctx->pubscreens[i].native) || ctx->pubscreens[i].pens)
         return FALSE;
     /* no 68k Layer may stand for a layer of a screen that closes; when
        Intuition refuses, the next snapshot is taken afresh */
@@ -1590,7 +1543,7 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
     for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
         if (ctx->pubscreens[i].owned)
         {
-            if (screen_windows(ctx, ctx->pubscreens[i].native))
+            if (Kaffeine_ScreenWindows(ctx, ctx->pubscreens[i].native))
                 bug("[kaffeine] screen %p that the program left has its windows, left open\n",
                     ctx->pubscreens[i].native);
             else if (CloseScreen(ctx->pubscreens[i].native))
