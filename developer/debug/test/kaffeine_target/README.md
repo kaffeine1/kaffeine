@@ -76,8 +76,20 @@ at the end.
 | `xz_config.h` | The `config.h` of XZ Utils 5.8.3, the same for `xz` and for its host build: what the configure of XZ Utils finds on both, without threads, the CRC instructions of some processors and the ways to find the memory and the processors of the machine. |
 | `xz_libnix.c` | What `xz` needs beyond libnix: `sigaction()` on `signal()`, `sigprocmask()` with nothing to block, `fcntl()` that gives no flags and sets none, `poll()` that finds every descriptor ready, and `fchmod()` and `fchown()`, which succeed without doing anything. |
 | `mbedtls_config.h` | The configuration of mbed TLS 3.6.7 for `mbedtls_selftest`, the same for its host build: the modules whose self-tests it runs, with every cipher mode and elliptic curve, without the network, the clock, files and entropy. |
+| `lua_config.h` | The configuration header of Lua 5.4.7, included in front of each file for both `lua` and its host build: sets `LUA_PATH_DEFAULT` to `"EMU68/?.lua;?.lua"`, fixes the decimal point to `'.'` and restricts `setlocale()` to the C locale, leaves `lua_strx2number` and `lua_number2strx` undefined so that both builds use Lua's own hexadecimal float parser and formatter, and on m68k routes `l_sprintf` and `lua_str2number` to `lua_libnix.c`. |
+| `lua_libnix.c` | What `lua` needs beyond libnix: `lua_libnix_snprintf()`, which hands each single `%e`, `%f` or `%g` conversion to `libnix_fmt.c`, `lua_libnix_strtod()`, which is the exact `libnix_fmt_strtod()`, and the soft-float double comparisons (`__eqdf2`, `__nedf2`, `__gtdf2`, `__gedf2`, `__ltdf2`, `__ledf2`, `__cmpdf2` and `__unorddf2`) and division (`__divdf3`), which answer as ISO C does for NaNs before they call `IEEEDPCmp()` and `IEEEDPDiv()`. |
+| `lua_stdin.lua` | The script that `lua_stdin` reads from standard input: exercises `pcall` and `xpcall` (`setjmp`/`longjmp`), IEEE 754 `double` math and `table.sort`, `string.format` with `%g` and `%a`, the exact digits and signs of `%f`, `%e` and `%g` and the 408 bytes of `%.99f` of 2^1023, file I/O on `EMU68/` and a temporary file, `os.clock()` and `os.time()`, and exact decimal to double conversions of `tonumber()`. |
+| `lua_bad.lua` | The script of `lua_bad`: flushes a line to standard output and raises an unhandled error in `fail_step()`, ending with return code 1 and a stack traceback on standard error. |
+| `unzip_config.h` | The configuration header included in front of Info-ZIP UnZip 6.0 for the m68k libnix build and the host build of its Unix port (`unix/unix.c`). |
+| `unzip_libnix.c` | Fixes `timezone` (`__gmtoffset`) and `tzset()` to UTC0 for the m68k libnix build of `unzip` without pulling in the `locale.library` constructor of `libnix20.a(__gmtoffset.o)`. |
+| `make-unzip-files.py` | Generates the deterministic Zip test archives (`tree.zip`, `bad_trunc.zip` and `bad_crc.zip`) in `build/unzip-files`. |
+| `awk_config.h` | The configuration header of the one true awk (release 20260426), included in front of each file for both the m68k and the host build: renames `concat()`, which libnix's `<string.h>` also declares, supplies `FOPEN_MAX`, restricts `setlocale()` and `MB_CUR_MAX` to the single-byte `"C"` locale so that `tolower()`/`toupper()` do not enter libnix's stub `mbtowc()`, and on AmigaOS undefines `SA_SIGINFO`, takes the return code of `system()` as it is, maps `srandom()`/`random()` to `srand()`/`rand()` and routes locale initialization, `snprintf()`, `strtod()` and `atof()` on m68k to `awk_libnix.c`. |
+| `awk_libnix.c` | What `awk` needs beyond libnix: an empty `environ` for `tran.c`, a `pclose()` stub returning `-1` with `EIO`, a 7-bit ASCII `_ctype_` table for the `"C"` locale so that POSIX character classes in `b.c` do not feed Latin-1 bytes into the UTF-8 decoder of `cclenter()`, an `snprintf()` that hands each single `%e`, `%f` or `%g` conversion, the `%.30g` of `tostring()` among them, to `libnix_fmt.c`, and a `strtod()` and an `atof()` that are the exact `libnix_fmt_strtod()`, with `ERANGE` as the hosts set it, which `is_valid_number()` reads. |
+| `libnix_fmt.c`, `libnix_fmt.h` | One exact `%e`, `%f` or `%g` conversion of a double for `lua_libnix.c` and `awk_libnix.c`, with integer arithmetic only: the exact decimal expansion of the binary value in base 10^9 limbs, rounded to nearest with ties to even, laid out as C99 says for the `"C"` locale, with the full length returned and at most `sz - 1` bytes stored. Infinities and NaNs take the sign bit and the `-`, `+` and space flags as C11 says, which the libc of macOS does not do for NaNs. Also an exact `strtod()` for both, `libnix_fmt_strtod()`, again without floating point: the significant digits as a big integer in base 2^32 words (800 of them, and a sticky digit for any later non-zero one), the quotient of the value by a power of two taken two or three bits beyond the precision of the result and rounded once, to nearest with ties to even, and `errno` set to `ERANGE` on overflow and on an inexact zero or subnormal result. |
+| `test_libnix_fmt.c` | Host test of `libnix_fmt.c` for `make check-libnix-fmt`: the bytes and the return value of the host `snprintf()` for fixed edge cases and a seeded sweep of random bit patterns and formats, with buffers of size 0, 1, too small, exact and large. `%g` is built from the host `%e` and `%f` by the rule of C11, since the host `%g` is wrong at both ends (macOS keeps a trailing zero on integer ties rounded down, glibc drops the zeros of `%#g` when rounding carries into a new digit), and a NaN with the rule of C11, since the libc of macOS prints it without a sign and ignores `+` and space. It also compares `libnix_fmt_strtod()` with the host `strtod()` (the bits, the end and `ERANGE`) on fixed edge cases, strings of 767 to 1000 digits, the exact midpoints of neighbouring doubles and decimals just above and below them, spellings of one value with the point moved, and random doubles and digit strings; `nan(a b)`, which the libc of macOS takes whole, hex, which it reads, and values that round up to `DBL_MIN`, for which glibc sets `ERANGE` and macOS does not, are checked against the rule of this parser instead, and two strings of 100 MB check that a saturated exponent is not cancelled by the digits. |
+| `awk_printf.awk` to `awk_bad.awk` | Seven awk scripts of my own for `awk`: `printf` conversions and widths, and exact conversions of decimal strings to numbers (`awk_printf.awk`), regular expressions with POSIX classes and alternation (`awk_regex.awk`), `getline` and `close()` (`awk_getline.awk`), output redirection to `T:awk_redir.txt` and reading it back (`awk_redir.awk`), string builtins (`awk_strings.awk`), `system("echo kaffeine")` (`awk_system.awk`), and a deliberate fatal error (`awk_bad.awk`). |
 | `m68ktest.h` | Check helpers of the C programs. Every check prints a line that starts with `ok` or `FAIL`, output goes through dos.library only and is flushed after each line, and each program ends with a summary line. |
-| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, and `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`. |
+| `Makefile` | Builds the programs into `build/`, bzip2 1.0.8 when `BZIP2_SRC` names its source, with its references from `make bzip2-refs`, `zstd` of Zstandard 1.5.7 when `ZSTD_SRC` names its source, with its references from `make zstd-refs`, `cjpeg`, `djpeg` and `jpegtran` of the IJG JPEG library 9f when `JPEG_SRC` names its source, `minigzip` and `zpipe` of zlib 1.3.1 when `ZLIB_SRC` names its source, with their references from `make zlib-refs`, `pngtest` of libpng 1.6.58 when `PNG_SRC` names its source as well, with its references from `make png-refs`, `xmlwf` of expat 2.8.2 when `EXPAT_SRC` names its source, with its references from `make xmlwf-refs`, `xz` of XZ Utils 5.8.3 when `XZ_SRC` names its source, with its references from `make xz-refs`, `mbedtls_selftest` of mbed TLS 3.6.7 when `MBEDTLS_SRC` names its source, with its reference from `make mbedtls-refs`, `lua` of Lua 5.4.7 when `LUA_SRC` names its source, with its references from `make lua-refs`, `unzip` of Info-ZIP UnZip 6.0 when `UNZIP_SRC` names its source, with its references from `make unzip-refs`, and `awk` of the one true awk when `AWK_SRC` names an unpacked awk tree, with its references from `make awk-refs`. |
 | `hunkdump.py` | Prints the hunks and the relocation format of an executable. |
 | `run-raspi-qemu.py` | Copies an SD image, installs the library, the programs and their launch scripts, boots the given kernel and BSP package, and reports VM completion separately from program results. |
 | `test_run_raspi_qemu.py` | Offline tests of result parsing and per-program completion, of the keys and mouse scripts and of the reports that move the pointer exactly, without QEMU or a cross compiler. |
@@ -148,9 +160,19 @@ starts or ends with stray bits. The zlib programs keep `-fno-peephole2`
 also with an `M68K_CFLAGS` of your own. None of the other programs here,
 bzip2 and the IJG JPEG library included, has the pattern today.
 
-Set `BZIP2_SRC` to an unpacked bzip2 1.0.8 source tree to include its test
-executable. Its sample input and reference output files are supplied by
-that source distribution.
+Set `BZIP2_SRC` to the bzip2 1.0.8 tree that the AROS build fetches for its
+Ports to include `bzip2`. The Makefile collects the three sample pairs of
+the distribution and two damaged copies of `sample1.bz2` in
+`build/bzip2-files`, and `make bzip2-refs` writes the reference outputs to
+`build/bzip2-refs`.
+
+Set `ZSTD_SRC` to the Zstandard 1.5.7 tree that the AROS build fetches for
+its Ports to include `zstd`, with libzstd built in. The m68k and the host
+build use the same flags, without threads, legacy formats, the benchmark, the
+dictionary builder, assembly or SIMD intrinsics; the m68k build links the
+`libm.a` of libnix for the double helpers of the sizes and ratios that `zstd`
+prints. The Makefile collects the files of the steps in `build/zstd-files`,
+and `make zstd-refs` writes the reference outputs to `build/zstd-refs`.
 
 Set `JPEG_SRC` to an unpacked IJG JPEG library 9f source tree, such as the
 one that the AROS build fetches for its Ports, to include `cjpeg`, `djpeg`
@@ -207,6 +229,41 @@ file of its `library` drawer with `mbedtls_config.h` as the configuration,
 which leaves the modules that it does not name empty, and
 `make mbedtls-refs` writes the reference output to `build/mbedtls-refs`.
 
+Set `LUA_SRC` to an unpacked `lua-5.4.7` directory, with `lua-5.4.7-tests`
+next to it (or named by `LUA_TESTS_SRC`), to include `lua`. The Makefile
+builds every file of `src/` except `luac.c` with `lua_config.h` in front of
+each file, and for the m68k links `lua_libnix.c` (for `snprintf()`,
+`strtod()` and NaN-aware soft-float double comparison and division helpers
+in front of `IEEEDPCmp()` and `IEEEDPDiv()`), `libnix_fmt.c` and the
+`libm.a` of libnix. It
+collects the twelve deterministic scripts of `lua-5.4.7-tests`,
+`bwcoercion.lua`, `stdin.lua` and `bad.lua` in `build/lua-files`, and
+`make lua-refs` writes the reference outputs and error streams to
+`build/lua-refs`. A second binary built with `-m68020 -m68881` is not worth
+a step: neither Moira nor the Kaffeine JIT executes 68881 Line-F
+instructions and `SysBase->AttnFlags` leaves the FPU flags clear, so the
+FPU check in the startup code of libnix exits with return code 20 before
+`main()`, as `c_compute_fpu` already tests.
+
+Set `UNZIP_SRC` to an unpacked Info-ZIP UnZip 6.0 (`unzip60`) tree to
+include `unzip`, built from the Unix port
+(`unix/unix.c`) with `unzip_config.h` included in front and, for the m68k,
+`unzip_libnix.c` so timestamps use UTC0 without opening `locale.library`.
+The Makefile generates the test archives in `build/unzip-files` with
+`make-unzip-files.py`, and `make unzip-refs` writes the reference outputs
+and error files to `build/unzip-refs` under `TZ=UTC0`.
+
+Set `AWK_SRC` to an unpacked awk tree (`onetrueawk/awk`, tag `20260426`) to
+include `awk`. The earlier `2ndEdition` tag (`20230911`) fails on big-endian
+machines: `first()` in `b.c` tested the first byte of the 32-bit rune array of
+a `CCL` node, which upstream fixed in commit `9666b77b36`, in releases from
+`20240311` on. The Makefile generates the parser and `proctab.c` in
+`build/awk-src` as "The awk steps" describes, links `awk_libnix.c`,
+`libnix_fmt.c` and the `libm.a` of libnix for the m68k, collects
+`test.countries`, `test.data`, the fourteen selected `p.*` and `t.*` programs
+of `testdir` and the seven `awk_*.awk` scripts in `build/awk-files`, and `make
+awk-refs` writes the reference outputs and error streams to `build/awk-refs`.
+
 ## Running on AROS AArch64
 
 `run-raspi-qemu.py --help` lists all options. Supply an AROS raspi-aarch64
@@ -252,9 +309,12 @@ calculations can remain quiet, so choose it for the workload.
 
 Options precede program names. `NAME=FILE` installs an executable under an
 alias, `--args NAME TEXT` supplies arguments, `--input NAME FILE` redirects
-input and `--expect NAME FILE` compares output byte for byte. `--keys` and
-`--mouse` drive the guest through QMP. `--keep-image` retains the modified
-copy for inspection.
+input, `--expect NAME FILE` compares output byte for byte, `--expect-err NAME
+FILE` compares the error output byte for byte and `--expect-rc NAME CODE`
+requires return code `CODE` instead of `0`; `CODE` goes from 0 to 20, since
+the launch scripts run the program under `FailAt 21`. `--keys` and `--mouse`
+drive the guest through QMP. `--keep-image` retains the modified copy for
+inspection.
 
 ### Independent loaded-hunk process probe
 
@@ -393,9 +453,14 @@ compile and evaluate this emitted Hook; see that directory's README.
 | `exec_libraries` | `--files exec_libraries build/exec_libraries-files` |
 | `exec_packets` | `--files exec_packets build/exec_packets-files` |
 | `hunk_process_native` (native parent) | `--files hunk_process_native build-hunk-process` (includes its 68k payload) |
+| each step of `bzip2` | `--files NAME build/bzip2-files` |
+| each step of `zstd` | `--files NAME build/zstd-files` |
 | each step of `pngtest` | `--files NAME build/pngtest-files` |
 | each step of `xmlwf` | `--files NAME build/xmlwf-files` |
 | each step of `xz` | `--files NAME build/xz-files` |
+| each step of `lua` | `--files NAME build/lua-files` |
+| each step of `unzip` | `--files NAME build/unzip-files` |
+| each step of `awk` | `--files NAME build/awk-files` |
 
 The bitmap font is generated from original fixture data by the Makefile.
 The packet fixture is an original 12-byte file. Requests of 5, 9 and 4 bytes
@@ -423,6 +488,86 @@ For example, with `J` the jpeg-9f directory, the first step is
 --expect jpeg_d_ppm $J/testimg.ppm jpeg_d_ppm=build/djpeg`. The same seven
 filters give the reference files when they are built for the host from the
 same sources and `jpeg_jconfig.h`.
+
+## The bzip2 steps
+
+The steps of `bzip2` take the six steps of the `test` target of bzip2 1.0.8,
+add `-9` (`--best`), `-s` (`--small`) on compression and three bad inputs,
+and run each as a program with its files in `EMU68/`. Each passes only if
+its output is byte for byte the one of the same program built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `bzip2_c1` to `bzip2_c3` | `-c -1 EMU68/sample1.ref`, `-c -2 EMU68/sample2.ref`, `-c -3 EMU68/sample3.ref` | `sample1.bz2` to `sample3.bz2` of the distribution | 0 |
+| `bzip2_c9` | `-c -9 EMU68/sample2.ref` | `sample2.ref` (212340 bytes) compressed in one 900 KB block | 0 |
+| `bzip2_cs` | `-c -s EMU68/sample2.ref` | `sample2.ref` compressed in small mode, which `bzip2` turns into `-2` (two 200 KB blocks) | 0 |
+| `bzip2_d1`, `bzip2_d2` | `-dc EMU68/sample1.bz2`, `-dc EMU68/sample2.bz2` | `sample1.ref`, `sample2.ref` | 0 |
+| `bzip2_d3` | `-dcs EMU68/sample3.bz2` | `sample3.ref`, decompressed in small mode | 0 |
+| `bzip2_bad_crc` | `-dc EMU68/sample1.bz2 EMU68/bad-crc.bz2` | `sample1.ref` and the 95000 bytes before the block CRC check | 2 |
+| `bzip2_bad_cut` | `-dcq EMU68/sample1.bz2 EMU68/bad-cut.bz2` | `sample1.ref` | 2 |
+| `bzip2_bad_magic` | `-dc EMU68/sample1.bz2 EMU68/sample1.ref` | `sample1.ref`, then `bzip2_bad_magic: EMU68/sample1.ref is not a bzip2 file.` on standard error | 2 |
+
+The arguments are in `BZIP2_ARGS_` and the step name, `BZIP2_ARGS_c1` for
+example. `-t` (`--test`) is left out because it writes nothing to standard
+output on a good file, and the runner counts a step with an empty standard
+output as incomplete.
+
+On a data error or an unexpected end of file `bzip2` stops at once with exit
+code 2 instead of going on to the next file, so each bad input has a step of
+its own after `sample1.bz2`, which gives the step its standard output.
+`bad-crc.bz2` is `sample1.bz2` with a byte of its block CRC changed;
+`bad-cut.bz2` is its first 16 KiB, and `bzip2_bad_cut` runs with `-q` so
+that `compressedStreamEOF()` does not call `perror()` with `errno` 0, whose
+message differs between the host C library and libnix.
+
+`bzip2` cuts the name it runs under at the last `/` and begins its messages
+with what remains, `NAME` when the guest runs `SYS:EMU68/NAME`, so `make
+bzip2-refs` runs the host build as `SYS:EMU68/NAME` too, next to an `EMU68`
+that names `build/bzip2-files`, writes its error output to `NAME.err`, and
+checks with `cmp` that `bzip2_c1` to `bzip2_c3` and `bzip2_d1` to `bzip2_d3`
+match `sample1.bz2` to `sample3.bz2` and `sample1.ref` to `sample3.ref` of
+the distribution. For example, `bzip2_c1` is `--files bzip2_c1
+build/bzip2-files --args bzip2_c1 "-c -1 EMU68/sample1.ref" --expect
+bzip2_c1 build/bzip2-refs/bzip2_c1.out --expect-err bzip2_c1
+build/bzip2-refs/bzip2_c1.err bzip2_c1=build/bzip2`.
+
+## The zstd steps
+
+The steps of `zstd` work on the files of `tests/golden-decompression`,
+`tests/golden-decompression-errors` and `tests/golden-compression` in the
+Zstandard distribution: four valid `.zst` frames (`block-128k.zst`,
+`empty-block.zst`, `rle-first-block.zst` and `zeroSeq_2B.zst`), three
+damaged ones (`off0.bin.zst`, `truncated_huff_state.zst` and
+`zeroSeq_extraneous.zst`), and four inputs (`PR-3517-block-splitter-corruption-test`,
+`http`, `huffman-compressed-larger` and `large-literal-and-match-lengths`)
+cut to their first 16 KiB at most so that each step runs in a reasonable
+time under Moira. Eight programs run `zstd` on them, and each passes only if
+its output is byte for byte the one of the same program built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `zstd_good` | `-dc` and the four files of `tests/golden-decompression` | what the files hold | 0 |
+| `zstd_bad` | `-dc`, the three files of `tests/golden-decompression-errors` and `zeroSeq_2B.zst` | an error for each of the first three on `stderr`, and the 13 bytes of `zeroSeq_2B.zst` on standard output | 1 |
+| `zstd_list` | `-l` and the four files of `tests/golden-decompression` | their frames, sizes, ratios and checks | 0 |
+| `zstd_c1`, `zstd_c3`, `zstd_c9`, `zstd_c19` | `-c -1`, `-c -3`, `-c -9` or `-c -19` and the four inputs of `tests/golden-compression` | the inputs compressed at that level | 0 |
+| `zstd_unpack` | `-dc`, with `--input` of the outputs of the four compression steps | the four inputs, four times | 0 |
+
+`-t` is left out: on a valid file it writes nothing to standard output, which
+the runner counts as an incomplete run. `zstd_bad` ends with `zeroSeq_2B.zst`,
+which `zstd` decompresses after the errors of the three damaged files, so
+that its standard output is not empty.
+
+The arguments are in `ZSTD_ARGS_` and the step name, `ZSTD_ARGS_c1` for
+example. `make zstd-refs` runs the host build under `SYS:EMU68/NAME` next to
+an `EMU68` that names `build/zstd-files`, writes its error output to
+`NAME.err`, and checks with `cmp -s` that `zstd_unpack` gives back the four
+inputs four times. For example, `zstd_c1` is `--files zstd_c1
+build/zstd-files --args zstd_c1 "-c -1
+EMU68/PR-3517-block-splitter-corruption-test EMU68/http
+EMU68/huffman-compressed-larger EMU68/large-literal-and-match-lengths"
+--expect zstd_c1 build/zstd-refs/zstd_c1.out --expect-err zstd_c1
+build/zstd-refs/zstd_c1.err zstd_c1=build/zstd`, and
+`zstd_unpack` adds `--input zstd_unpack build/zstd-refs/zstd_unpack.in`.
 
 ## The zlib steps
 
@@ -486,7 +631,8 @@ same in the guest and for the host: `S:User-Startup` runs the programs in
 EMU68/pngtest.png EMU68/png-3/cicp-display-p3_reencoded.png" --expect
 png_strict build/png-refs/png_strict.out png_strict=build/pngtest`.
 
-`png_badpal` ends with 1 on purpose. `tests/pngtest-all` expects these
+`png_badpal` ends with 1 on purpose (`PNG_RC_badpal` in the Makefile, passed
+with `--expect-rc png_badpal 1`). `tests/pngtest-all` expects these
 images to fail, and checks that each gives both
 `IDAT: Read palette index exceeding num_palette` and
 `Wrote palette index exceeding num_palette`; it runs them one at a time,
@@ -533,7 +679,8 @@ EMU68/optable.xml" --expect xmlwf_canon build/xmlwf-refs/xmlwf_canon.out
 xmlwf_canon=build/xmlwf`, and the standard input step adds `--input
 xmlwf_stdin build/xmlwf-files/AndroidManifest.xml`.
 
-`xmlwf_errors` ends with 2 on purpose. `avx.xml` holds one `<instruction>`
+`xmlwf_errors` ends with 2 on purpose (`XMLWF_RC_errors` in the Makefile,
+passed with `--expect-rc xmlwf_errors 2`). `avx.xml` holds one `<instruction>`
 after another with no element around them, so `xmlwf` reports junk after
 the document element; with `-s` the SVG icon is not standalone, since it
 names an external DTD; `-k` keeps `xmlwf` going to the manifest, which is
@@ -566,7 +713,9 @@ the one of the same program built for the host:
 The compression steps and `xz_unpack` also take the memory options of
 `tests/test_compress.sh`, `--memlimit-compress=48MiB
 --memlimit-decompress=5MiB --no-adjust --threads=1`. The arguments are in
-`XZ_ARGS_` and the step name, `XZ_ARGS_p1` for example. Each bad step ends
+`XZ_ARGS_` and the step name, `XZ_ARGS_p1` for example, and `XZ_RC_bad1` to
+`XZ_RC_bad6` give the return code 1 for `--expect-rc xz_bad1 1` to
+`--expect-rc xz_bad6 1`. Each bad step ends
 with a good file, which `xz` decompresses after the errors of the others, so
 that no step is without output.
 
@@ -577,17 +726,18 @@ compresses with `-3` and `-4`, which are left out: the encoder of `-1` takes
 9 MiB and that of `-2` 17 MiB, but that of `-3` takes 32 MiB, all the memory
 that kaffeine gives the guest, and `-4` stops with `Out of memory`.
 
-`xz` begins its messages with the name it runs under, `SYS:EMU68/NAME` in
-the guest, so `make xz-refs` runs the host build under that name too, next
-to an `EMU68` that names `build/xz-files`, and writes its error output to
+`xz` begins its messages with the name it runs under, `SYS:EMU68/NAME` in the
+guest, so `make xz-refs` runs the host build under that name too, next to an
+`EMU68` that names `build/xz-files`, and writes its error output to
 `NAME.err`. The runner keeps the error output of each run in
-`guest/NAME-shell-err.txt` and `guest/NAME-run-err.txt`. For example,
-`xz_p1` is `--files xz_p1 build/xz-files --args xz_p1 "-c -1
---memlimit-compress=48MiB --memlimit-decompress=5MiB --no-adjust
---threads=1 EMU68/compress_generated_abc EMU68/compress_generated_random
+`guest/NAME-shell-err.txt` and `guest/NAME-run-err.txt`, and compares it with
+`NAME.err` when `--expect-err` names that file. For example, `xz_p1` is
+`--files xz_p1 build/xz-files --args xz_p1 "-c -1 --memlimit-compress=48MiB
+--memlimit-decompress=5MiB --no-adjust --threads=1
+EMU68/compress_generated_abc EMU68/compress_generated_random
 EMU68/compress_generated_text" --expect xz_p1 build/xz-refs/xz_p1.out
-xz_p1=build/xz`, and `xz_unpack` adds `--input xz_unpack
-build/xz-refs/xz_unpack.in`.
+--expect-err xz_p1 build/xz-refs/xz_p1.err xz_p1=build/xz`, and `xz_unpack`
+adds `--input xz_unpack build/xz-refs/xz_unpack.in`.
 
 Under QEMU the 25 steps give the output and the error output of the host
 build from the Shell and with Run, in 38 minutes with a boot for each. On
@@ -628,6 +778,172 @@ the system, which takes more than five minutes under Moira: with an
 FS-UAE, on an A1200 with 2 MB of chip and 8 MB of fast memory, it gives the
 same output too, in about 23 minutes.
 
+## The Lua 5.4.7 steps
+
+`lua` is the stand-alone interpreter of Lua 5.4.7. Fourteen programs run it
+on the twelve deterministic scripts of `lua-5.4.7-tests` that need no C
+test library (`ltests`), on a script read from standard input and on a
+script that ends with an unhandled error. Each step passes only if its
+standard output and standard error are byte for byte those of the same
+program built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `lua_strings` | `-e "_port=true _soft=true" EMU68/strings.lua` | `strings.lua`: `string.format` (`%d`, `%x`, `%f`, `%g`, `%a`, `%q`), `tonumber`, `string.sub`, `string.gsub`, comparisons and buffers | 0 |
+| `lua_nextvar` | `-e "_port=true _soft=true" EMU68/nextvar.lua` | `nextvar.lua`: tables, array and hash parts, `next`, `pairs`, `ipairs`, `#` and numeric and generic `for` loops | 0 |
+| `lua_closure` | `-e "_port=true _soft=true" EMU68/closure.lua` | `closure.lua`: lexical scoping, upvalues, `debug.upvalueid` and `debug.upvaluejoin` | 0 |
+| `lua_calls` | `-e "_port=true _soft=true" EMU68/calls.lua` | `calls.lua`: function calls, tail calls, `pcall`, `load`, `string.dump` and undump of binary chunks | 0 |
+| `lua_events` | `-e "_port=true _soft=true" EMU68/events.lua` | `events.lua`: metatables and metamethods for arithmetic, bitwise, comparison, indexing and call operations | 0 |
+| `lua_vararg` | `-e "_port=true _soft=true" EMU68/vararg.lua` | `vararg.lua`: `...`, `select`, `table.pack` and `table.unpack` | 0 |
+| `lua_pm` | `-e "_port=true _soft=true" EMU68/pm.lua` | `pm.lua`: pattern matching (`string.find`, `string.match`, `string.gmatch`, `string.gsub`), frontier and balanced patterns | 0 |
+| `lua_utf8` | `-e "_port=true _soft=true" EMU68/utf8.lua` | `utf8.lua`: `utf8.char`, `utf8.codepoint`, `utf8.codes`, `utf8.len` and `utf8.offset` | 0 |
+| `lua_bitwise` | `-e "_port=true _soft=true" EMU68/bitwise.lua` | `bitwise.lua`: 64-bit bitwise operators, string-to-integer coercion (`bwcoercion.lua`) and the `bit32` preload library | 0 |
+| `lua_literals` | `-e "_port=true _soft=true" EMU68/literals.lua` | `literals.lua`: lexer, short and long strings, escape sequences, decimal and hexadecimal numerals and `load` errors | 0 |
+| `lua_goto` | `-e "_port=true _soft=true" EMU68/goto.lua` | `goto.lua`: labels, visibility scopes, upvalue closing across jumps and compile-time label errors | 0 |
+| `lua_errors` | `-e "_port=true _soft=true" EMU68/errors.lua` | `errors.lua`: `error`, `pcall`, `xpcall`, `debug.traceback` and runtime and syntax diagnostics | 0 |
+| `lua_stdin` | `-`, with `--input` of `stdin.lua` | `lua_stdin.lua`: nested `pcall`/`xpcall` and coroutine error recovery, `double` math and `table.sort`, `string.format` with `%g` and `%a`, exact `%f`, `%e` and `%g` digits and a 408-byte `%.99f`, file I/O on `EMU68/` and a temporary file, `os.clock()` and `os.time()`, exact `tonumber()` of decimals | 0 |
+| `lua_bad` | `EMU68/bad.lua` | `testing unhandled error` on stdout, and the `SYS:EMU68/lua_bad` stack traceback on stderr | 1 |
+
+Some other scripts of `lua-5.4.7-tests` run without the `ltests` C module
+but give output that changes from run to run or between the 64-bit
+little-endian host and the 32-bit big-endian 68k. For example, `math.lua` and
+`constructs.lua` seed `math.random` from the time and an address, `sort.lua`
+prints times measured with `os.clock()`, `tpack.lua` prints the sizes, byte
+order and alignment of C types, and `locals.lua` leaves `tracegc` running from
+line 608, so that a `.` goes to standard error on every garbage collection
+cycle.
+
+The steps in `LUA_STEPS` and their arguments in `LUA_ARGS_<step>` cover what
+`math.lua` and `sort.lua` exercise deterministically through `lua_stdin.lua`.
+`lua_bad` flushes a line to standard output before raising its uncaught error
+so that its output stream is not empty, and `make lua-refs` runs each step as
+`SYS:EMU68/lua_<step>` next to an `EMU68` that names `build/lua-files`. For
+example, `lua_strings` is `--files lua_strings build/lua-files --args
+lua_strings '-e "_port=true _soft=true" EMU68/strings.lua' --expect
+lua_strings build/lua-refs/lua_strings.out --expect-err lua_strings
+build/lua-refs/lua_strings.err lua_strings=build/lua`, and `lua_stdin` adds
+`--input lua_stdin build/lua-files/stdin.lua`.
+
+## The UnZip 6.0 steps
+
+`unzip` of Info-ZIP UnZip 6.0 is built from its Unix port (`unix/unix.c`)
+with libnix. `make-unzip-files.py` builds three deterministic archives in
+`build/unzip-files`:
+
+- `tree.zip` (1,151 bytes): an archive comment and five members with fixed
+  MS-DOS dates and fixed Unix permissions (`create_system` 3): `empty.txt`
+  (empty, stored, `0644`), `sub/stored.txt` (stored, `0644`),
+  `sub/nested/deflated.txt` (deflated, `0755`), `sub/commented.txt`
+  (deflated, `0600`, with a member comment) and a deflated file under
+  `deep/path_alpha/path_beta/path_gamma/path_delta/` (`0700`). The
+  directories exist only in the member paths, so UnZip prints no `creating:`
+  lines and its output is the same on every extraction: `checkdir()` creates
+  them with `mkdir()` the first time and finds them with `stat()` after.
+  Every member keeps owner write permission, so the second extraction can
+  delete and replace the files in `T:unzip_tree`.
+- `bad_trunc.zip` (1,091 bytes): `tree.zip` with its last 60 bytes removed
+  so the end-of-central-directory record is missing (`PK_NOZIP`, exit code 9).
+- `bad_crc.zip` (277 bytes): a two-member archive (`ok.txt` stored and
+  `corrupt.txt` deflated) whose CRC-32 for `corrupt.txt` is XORed with
+  `0xDEADBEEF` in both the local and central headers (`PK_ERR`, exit code 2).
+
+`make-unzip-files.py` leaves the three archives with mode `0755`. On
+AmigaOS and on the FAT volume of the AROS image every file is executable
+(`FIBF_EXECUTE` clear), so libnix's `stat()` gives `S_IXUSR` and UnZip adds
+`note:  EMU68/bad_trunc.zip may be a plain executable, not an archive` to
+the error output of `unzip_bad_trunc` (`maybe_exe` in `process.c`); with mode
+`0755` the host build of `make unzip-refs` writes the same note.
+
+The nine steps are listed in `UNZIP_STEPS`, with their arguments in
+`UNZIP_ARGS_<step>`, and pass only if their output (with `--expect
+build/unzip-refs/NAME.out`) and error output (with `--expect-err
+build/unzip-refs/NAME.err`) are byte for byte those that `make unzip-refs`
+writes under `TZ=UTC0`:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `unzip_list` | `-l EMU68/tree.zip` | archive comment, member comment, lengths, dates, times and names | 0 |
+| `unzip_verbose` | `-v EMU68/tree.zip` | methods (`Stored`, `Defl:N`), compressed sizes, ratios, dates, CRC-32s and comments | 0 |
+| `unzip_zipinfo` | `-Z EMU68/tree.zip` | `zipinfo` listing with Unix permission strings (`-rw-r--r--`, `-rwxr-xr-x`, `-rw-------`, `-rwx------`), methods and dates | 0 |
+| `unzip_test` | `-t EMU68/tree.zip` | integrity test (`OK`) of all five members | 0 |
+| `unzip_pipe` | `-p EMU68/tree.zip sub/nested/deflated.txt` | the 880 uncompressed bytes of `sub/nested/deflated.txt` on `stdout` | 0 |
+| `unzip_extract` | `-o EMU68/tree.zip -d T:unzip_tree` | extracts all five members and their directory tree into `T:unzip_tree`, listing each member on `stdout` | 0 |
+| `unzip_overwrite` | `-o EMU68/tree.zip -d T:unzip_tree` | second extraction over `T:unzip_tree`, replacing existing files | 0 |
+| `unzip_bad_trunc` | `-l EMU68/bad_trunc.zip` | `Archive:` header on `stdout`, missing central directory error in `unzip_bad_trunc.err` | 9 |
+| `unzip_bad_crc` | `-p EMU68/bad_crc.zip` | unpacked bytes of `ok.txt` and `corrupt.txt` on `stdout`, `bad CRC 6759aa20  (should be b9f414cf)` in `unzip_bad_crc.err` | 2 |
+
+Note that `UzpMessagePrnt()` in `fileio.c` routes `MSG_STDERR` diagnostics
+to `stderr` only when `-t` is not set (`!uO.tflag`), so `unzip_bad_trunc`
+uses `-l` and `unzip_bad_crc` uses `-p` to produce both a non-empty `stdout`
+reference (`.out`) and a non-empty `stderr` reference (`.err`).
+
+During `unzip_extract` and `unzip_overwrite`, UnZip reaches dos.library
+through libnix: `mkdir()` calls `CreateDir()` and then `chmod()`, `chmod()`
+turns the Unix mode into a protection mask for `SetProtection()` (the owner
+bits inverted, the group and other bits as they are, so the five modes of the
+archive give five different masks), `utime()` turns the Unix time into a
+`DateStamp` for `SetFileDate()`, `stat()` uses `Lock()` and `Examine()`, and
+`unlink()` calls `DeleteFile()` before a file is replaced.
+
+## The awk steps
+
+`awk` is built from an unpacked awk tree (`onetrueawk/awk`, tag `20260426`).
+The Makefile runs `$(YACC)` (`bison -d -y -b awkgram` by
+default) on `awkgram.y` to generate `awkgram.tab.c` and `awkgram.tab.h` in
+`build/awk-src`, compiles `maketab.c` with `HOST_CC`, and runs
+`build/awk-src/maketab build/awk-src/awkgram.tab.h` to write
+`build/awk-src/proctab.c`. Both the m68k and the host build compile those two
+generated sources together with `b.c`, `main.c`, `parse.c`, `tran.c`, `lib.c`,
+`run.c` and `lex.c`, with `awk_config.h` in front of each file.
+
+Twenty-one steps run `awk`: six `p.*` programs from `testdir` (from *The AWK
+Programming Language*) on `EMU68/test.countries` twice as `Compare.p` runs
+them, eight `t.*` regression programs from `testdir` on `EMU68/test.data` as
+`Compare.t` runs them, six programs of my own for `printf`, regular
+expressions, `getline`, output redirection in `T:`, string builtins and
+`system()`, and one deliberate fatal-error probe. Each step passes only if its
+output and error streams match those of the same program built for the host:
+
+| Program | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `awk_p5` | `-f EMU68/p.5 EMU68/test.countries EMU68/test.countries` | formatted country, area, population and continent table | 0 |
+| `awk_p24` | `-f EMU68/p.24 EMU68/test.countries EMU68/test.countries` | records 1 to 5 of each input file with `FILENAME` | 0 |
+| `awk_p25` | `-f EMU68/p.25 EMU68/test.countries EMU68/test.countries` | population density formatted with `%10s %6.1f` | 0 |
+| `awk_p36` | `-f EMU68/p.36 EMU68/test.countries EMU68/test.countries` | tab-separated records with computed field `$5` | 0 |
+| `awk_p43` | `-f EMU68/p.43 EMU68/test.countries EMU68/test.countries` | total area by continent in an associative array | 0 |
+| `awk_ptable` | `-f EMU68/p.table EMU68/test.countries EMU68/test.countries` | two-pass aligned table formatter with user functions | 0 |
+| `awk_tarray` | `-f EMU68/t.array EMU68/test.data` | array indexing by `NR` and `split()` in `END` | 0 |
+| `awk_tbuiltins` | `-f EMU68/t.builtins EMU68/test.data` | `length()`, `log()`, `sqrt()`, `int()` and `exp()` on numeric records | 0 |
+| `awk_tfun5` | `-f EMU68/t.fun5 EMU68/test.data` | user function filling a caller array through `split()` | 0 |
+| `awk_tgetline1` | `-f EMU68/t.getline1 EMU68/test.data` | `getline` advancing across three records per iteration | 0 |
+| `awk_tprintf` | `-f EMU68/t.printf EMU68/test.data` | `printf` and `sprintf("%8d %10.10s", $1, $2)` | 0 |
+| `awk_troff` | `-f EMU68/t.roff EMU68/test.data` | word-wrapped 60-column text filling | 0 |
+| `awk_tsplit4` | `-f EMU68/t.split4 EMU68/test.data` | `split()` with the regular expression `/[ \t][ \t]*/` | 0 |
+| `awk_tsub2` | `-f EMU68/t.sub2 EMU68/test.data` | `sub()` with `&&` and `&\&&` replacements | 0 |
+| `awk_printf` | `-f EMU68/awk_printf.awk` | `%d`, `%i`, `%o`, `%x`, `%X`, `%u`, `%c`, `%s`, `%e`, `%E`, `%f`, `%g`, `%G` and widths, exact digits of large values, the 1002-byte length of `%.1000f`, and exact decimal strings to numbers | 0 |
+| `awk_regex` | `-f EMU68/awk_regex.awk EMU68/test.countries` | POSIX character classes, negated ranges, alternation and `match()` | 0 |
+| `awk_getline` | `-f EMU68/awk_getline.awk` | `getline` from `EMU68/test.countries` and `EMU68/test.data`, `close()` and re-reading | 0 |
+| `awk_redir` | `-f EMU68/awk_redir.awk` | `>` and `>>` redirection to `T:awk_redir.txt`, `close()` and reading it back | 0 |
+| `awk_strings` | `-f EMU68/awk_strings.awk` | `split()`, `substr()`, `index()`, `length()`, `sub()`, `gsub()`, `tolower()`, `toupper()` and `sprintf()` | 0 |
+| `awk_system` | `-f EMU68/awk_system.awk` | `system("echo kaffeine")` (`kaffeine` and `rc=0`) | 0 |
+| `awk_bad` | `-f EMU68/awk_bad.awk EMU68/test.countries` | a line on standard output before the fatal `printf` error on standard error | 2 |
+
+In libnix, `system()` returns the return code of `SystemTagList()` as it is,
+while `run.c` reads it with the `WIFEXITED()` and `WEXITSTATUS()` of a POSIX
+wait status, so `awk_config.h` redefines both on AmigaOS and `awk_system`
+gets the exact AmigaDOS return code (`0`). The `popen()` of libnix is a stub
+that fails with `EIO` and libnix has no `pclose()`, so `awk_libnix.c` supplies
+a `pclose()` stub for `run.c` to link, and no step uses a `"cmd" | getline` or
+`print | "cmd"` pipe.
+
+The step names are in `AWK_STEPS` and their arguments in `AWK_ARGS_<step>`.
+`awk` begins its error messages with `cmdname` (`argv[0]`), so `make awk-refs`
+runs each step as `SYS:EMU68/awk_<step>` next to an `EMU68` that names
+`build/awk-files`. For example, `awk_p5` is `--files awk_p5 build/awk-files
+--args awk_p5 "-f EMU68/p.5 EMU68/test.countries EMU68/test.countries"
+--expect awk_p5 build/awk-refs/awk_p5.out --expect-err awk_p5
+build/awk-refs/awk_p5.err awk_p5=build/awk`.
+
 ## The CLI programs under the Kaffeine JIT
 
 I ran the 48 steps of zlib, pngtest, xmlwf, xz and the mbed TLS self-test
@@ -653,6 +969,29 @@ At the end of each run the JIT writes its counters to `serial-aux.log`:
 the 6501 blocks of `mbedtls_selftest` hold 51421 instructions, about eight
 each, and it enters them about 204 million times a run.
 
+I ran the 63 steps of bzip2, zstd, Lua, UnZip and awk the same way under the
+JIT, with a boot for each step: the 28 of bzip2, zstd and UnZip earlier, with
+the library of master `ce4869b`, and the 35 of Lua and awk, built in this tree
+with the exact formatter and the exact `strtod()` of `libnix_fmt.c`, with the
+library of master `0ceb134`. Every step gives the output and the error output
+of the host build byte for byte, from the Shell and with Run, and the eight
+deliberate failures end with the codes of the table in the next section. An
+independent probe of 260 decimal conversions through the whole adapters of
+Lua and awk, `atof()` included, gives the bits, the ends and the `errno` that
+it expects, from the Shell and with Run. `make check-libnix-fmt` passes with
+GCC and Clang on Linux as well as on macOS. On AmigaOS 3.2.3 under FS-UAE,
+with a 68030, 2 MB of chip, 8 MB of fast and 64 MB of Zorro III memory, as
+`SYS:EMU68/NAME`, the 28 steps of bzip2, zstd and UnZip in an earlier boot and
+the 35 of Lua and awk in one of their own, 62 of the 63 give the same output,
+error output and exit code, and the probe of 260 conversions and a probe of
+92 formatter checks through the same adapters pass as well. The exception is
+`lua_strings`: `strings.lua` looks for the largest power of ten below
+`math.huge` and at line 270 expects `10^j` to overflow to infinity, but on
+overflow the `IEEEDPPow()` of AmigaOS 3.2.3 gives the largest finite double,
+so the assertion fails there. Under the bridge `10^j` is infinity, as on the
+host. The long steps print 2^1023, built by exact doublings, so that they
+test the formatting alone.
+
 ## Expected containment and exit probes
 
 | Program or alias | Argument | Expected exit |
@@ -665,14 +1004,46 @@ each, and it enters them about 204 million times a run.
 | `exec_memory_procure=exec_memory` | `procure` | 20 |
 | `exec_memory_vacate=exec_memory` | `vacate` | 20 |
 | `cpu_faults_mmu=cpu_faults` | `mmu` | 20 |
+| `bzip2_bad_crc=bzip2`, `bzip2_bad_cut=bzip2`, `bzip2_bad_magic=bzip2` | `-dc` (or `-dcq`), `sample1.bz2` and a damaged or non-bzip2 file | 2 for a corrupt, truncated or non-bzip2 stream |
+| `zstd_bad=zstd` | `-dc`, the three files of `tests/golden-decompression-errors` and `zeroSeq_2B.zst` | 1 for the three damaged streams |
 | `png_badpal=pngtest` | `-m` and the nine `badpal` images | 1, as `tests/pngtest-all` expects |
 | `xmlwf_errors=xmlwf` | `-k -s` and three of the documents | 2 for the two that are not well formed or not standalone |
 | `xz_bad1=xz` to `xz_bad6=xz` | `-dc`, bad and unsupported files and a good one | 1, as `tests/test_files.sh` expects of each bad file |
+| `lua_bad=lua` | `EMU68/bad.lua` | 1 for the unhandled Lua error |
+| `unzip_bad_trunc=unzip` | `-l EMU68/bad_trunc.zip` | 9 (`PK_NOZIP`) for the truncated central directory |
+| `unzip_bad_crc=unzip` | `-p EMU68/bad_crc.zip` | 2 (`PK_ERR`) for the corrupted member CRC-32 |
+| `awk_bad=awk` | `-f EMU68/awk_bad.awk EMU68/test.countries` | 2 for the missing `printf` argument |
 
-These thirty-two Shell/Run executions are deliberate nonzero cases. They must
-be checked against their expected behavior; raw nonzero status alone is
-not a regression verdict. Valid ordinary queues are positive tests in
-`exec_messages`.
+These forty-eight Shell/Run executions are deliberate nonzero cases. Pass
+`--expect-rc NAME CODE` with the program or alias name of the first column and
+the exit code of the third so the runner requires that exact return code in
+both the Shell and Run executions and still checks the output (and the
+`--expect` reference file, when given):
+
+- `--expect-rc cpu_faults 20`, `--expect-rc c_compute_fpu 20`,
+  `--expect-rc exec_timer_sendio 20`, `--expect-rc exec_public_putmsg 20`,
+  `--expect-rc exec_memory_procure 20`, `--expect-rc exec_memory_vacate 20`
+  and `--expect-rc cpu_faults_mmu 20` for the seven containment probes that
+  stop with `RETURN_FAIL` (20), and `--expect-rc dos_strings_exit 7` for the
+  `Exit(7)` probe;
+- `--expect-rc png_badpal 1` (`PNG_RC_badpal` in the Makefile),
+  `--expect-rc xmlwf_errors 2` (`XMLWF_RC_errors`) and
+  `--expect-rc xz_bad1 1` to `--expect-rc xz_bad6 1` (`XZ_RC_bad1` to
+  `XZ_RC_bad6`);
+- `--expect-rc bzip2_bad_crc 2`, `--expect-rc bzip2_bad_cut 2` and
+  `--expect-rc bzip2_bad_magic 2` (`BZIP2_RC_bad_crc` to `BZIP2_RC_bad_magic`),
+  `--expect-rc zstd_bad 1` (`ZSTD_RC_bad`), `--expect-rc lua_bad 1`
+  (`LUA_RC_bad`), `--expect-rc unzip_bad_trunc 9` and
+  `--expect-rc unzip_bad_crc 2` (`UNZIP_RC_bad_trunc`, `UNZIP_RC_bad_crc`),
+  and `--expect-rc awk_bad 2` (`AWK_RC_bad`).
+
+The error output counts only with `--expect-err`: with `--expect-rc` alone, a
+program that crashes after some output with the expected code would pass, so
+the CLI steps also take the `NAME.err` of their references.
+
+With `--expect-rc`, a return code of 0 or any other code fails the execution;
+without it, raw nonzero status alone is not a regression verdict. Valid
+ordinary queues are positive tests in `exec_messages`.
 
 ## Verified results and limits
 
@@ -726,6 +1097,14 @@ python3 developer/debug/test/kaffeine_target/test_run_raspi_qemu.py
 These checks exercise parsing, completion markers, input scripts, output
 comparison and the QEMU CPU-thread options without booting QEMU or using a
 68k cross compiler.
+
+```sh
+make -C developer/debug/test/kaffeine_target check-libnix-fmt
+```
+
+This builds `libnix_fmt.c` for the host and compares it with the host
+`snprintf()` and `strtod()`; an argument to `build/test_libnix_fmt` sets the
+number of random cases.
 
 
 ## Raspberry framebuffer palette validation — 27 October 2026

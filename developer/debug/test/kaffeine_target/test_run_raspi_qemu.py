@@ -153,6 +153,165 @@ class ExpectedOutputTests(unittest.TestCase):
         self.assertFalse(report['passed'])
 
 
+class ExpectedReturnCodeTests(unittest.TestCase):
+    """--expect-rc: deliberate nonzero exits pass only on their exact code."""
+
+    def assess(self, output=PASS_OUTPUT, rc='rc 20\n', expected=None, expected_rc=20):
+        return runner.parse_result('cpu_faults', 'shell', output, rc, True, expected, expected_rc)
+
+    def test_expected_return_code_passes_with_plain_checks_and_expected_bytes(self):
+        for code in (1, 2, 7, 20):
+            with self.subTest(code=code):
+                result = self.assess(rc='rc %d\n' % code, expected_rc=code)
+                self.assertEqual(result['status'], 'pass')
+                self.assertEqual(result['return_code'], code)
+                self.assertEqual(result['failures'], [])
+        data = b'bad palette warning\n'
+        result = self.assess(data.decode('latin-1'), 'rc 1\n', expected=data, expected_rc=1)
+        self.assertEqual(result['status'], 'pass')
+        self.assertTrue(result['output_matches'])
+        self.assertEqual(result['failures'], [])
+
+    def test_zero_or_another_return_code_fails_and_names_the_expected_code(self):
+        for got, want in ((0, 20), (1, 20), (20, 1), (0, 7), (5, 2)):
+            with self.subTest(got=got, want=want):
+                result = self.assess(rc='rc %d\n' % got, expected_rc=want)
+                self.assertEqual(result['status'], 'fail')
+                self.assertEqual(result['return_code'], got)
+                self.assertEqual(result['failures'],
+                                 ['return code %d (expected rc %d)' % (got, want)])
+
+    def test_matching_return_code_still_fails_when_output_fails(self):
+        result = self.assess('FAIL bounds\ncpu_faults: 4 checks, 0 failed\n', 'rc 20\n')
+        self.assertEqual(result['status'], 'fail')
+        self.assertEqual(result['failures'], ['1 FAIL line(s)'])
+        result = self.assess('cpu_faults: 4 checks, 1 failed\n', 'rc 20\n')
+        self.assertEqual(result['status'], 'fail')
+        self.assertEqual(result['failures'], ['test summary reports failed checks'])
+        result = self.assess('wrong\n', 'rc 1\n', expected=b'expected\n', expected_rc=1)
+        self.assertEqual(result['status'], 'fail')
+        self.assertFalse(result['output_matches'])
+        self.assertIn('output differs from the expected', result['failures'][0])
+
+    def test_default_zero_return_code_behaviour_is_unchanged(self):
+        for expected_rc in (0, None):
+            with self.subTest(expected_rc=expected_rc):
+                self.assertEqual(self.assess(rc='rc 0\n', expected_rc=expected_rc)['status'],
+                                 'pass')
+                result = self.assess(rc='rc 20\n', expected_rc=expected_rc)
+                self.assertEqual(result['status'], 'fail')
+                self.assertEqual(result['failures'], ['return code 20'])
+
+    def test_assess_boot_and_summary_report_expected_rc(self):
+        files = {'done.txt': 'done\n', 'probe-run-done.txt': 'done\n',
+                 'ok-run-done.txt': 'done\n',
+                 'probe-shell.txt': PASS_OUTPUT, 'probe-shell-rc.txt': 'rc 20\n',
+                 'probe-run.txt': PASS_OUTPUT, 'probe-run-rc.txt': 'rc 0\n',
+                 'ok-shell.txt': PASS_OUTPUT, 'ok-shell-rc.txt': 'rc 0\n',
+                 'ok-run.txt': PASS_OUTPUT, 'ok-run-rc.txt': 'rc 0\n'}
+        vm = {'completed': True, 'stop_reason': 'completed'}
+        report = runner.assess_boot(['probe', 'ok'], files.get, vm, expected_rc={'probe': 20})
+        self.assertFalse(report['passed'])
+        self.assertEqual([r['status'] for r in report['results']],
+                         ['pass', 'fail', 'pass', 'pass'])
+        self.assertIn('expected rc 20', report['results'][1]['failures'][0])
+        with tempfile.TemporaryDirectory() as directory:
+            report['directory'] = directory
+            argv = ['run-raspi-qemu.py', '--image', 'unused.img', '--kernel', 'unused.kernel',
+                    '--bsp', 'unused.bsp', '--dtb', 'unused.dtb', '--mtools', 'unused-tools',
+                    '--run-dir', directory, '--expect-rc', 'probe', '20', 'probe', 'ok']
+            out = io.StringIO()
+            with mock.patch.object(runner, 'boot', return_value=report) as boot, \
+                    mock.patch.object(runner.sys, 'argv', argv), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(runner.main(), 1)
+            self.assertEqual(boot.call_args.args[0].expected_rc, {'probe': 20})
+            self.assertIn('expected rc 20', out.getvalue())
+        files['probe-run-rc.txt'] = 'rc 20\n'
+        self.assertTrue(runner.assess_boot(['probe', 'ok'], files.get, vm,
+                                           expected_rc={'probe': 20})['passed'])
+
+
+class ExpectedErrorOutputTests(unittest.TestCase):
+    """--expect-err: the error output must be byte for byte the given file."""
+
+    def assess(self, error_output, expected_err, rc='rc 2\n', expected_rc=2):
+        return runner.parse_result('awk_bad', 'shell', 'before\n', rc, True, None, expected_rc,
+                                   error_output, expected_err)
+
+    def test_matching_error_output_passes(self):
+        result = self.assess('awk: not enough args\n', b'awk: not enough args\n')
+        self.assertEqual(result['status'], 'pass')
+        self.assertTrue(result['error_output_matches'])
+        result = self.assess('', b'', rc='rc 0\n', expected_rc=0)
+        self.assertEqual(result['status'], 'pass')
+        self.assertTrue(result['error_output_matches'])
+
+    def test_other_or_extra_error_output_fails_even_with_the_expected_rc(self):
+        for got, want, offset in (('awk: crash\n', b'awk: not enough args\n', 5),
+                                  ('awk: not enough args\nguru\n', b'awk: not enough args\n', 21),
+                                  ('', b'awk: not enough args\n', 0),
+                                  ('stray\n', b'', 0)):
+            with self.subTest(got=got):
+                result = self.assess(got, want)
+                self.assertEqual(result['status'], 'fail')
+                self.assertFalse(result['error_output_matches'])
+                self.assertEqual(result['failures'], [
+                    'error output differs from the expected %d bytes at byte %d of %d'
+                    % (len(want), offset, len(got))])
+
+    def test_missing_error_output_is_incomplete(self):
+        result = self.assess(None, b'')
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertIn('missing error output', result['errors'])
+
+    def test_error_output_is_not_judged_without_expect_err(self):
+        result = self.assess('anything at all\n', None)
+        self.assertEqual(result['status'], 'pass')
+        self.assertIsNone(result['error_output_matches'])
+
+    def test_assess_boot_reads_both_error_outputs_and_main_takes_the_option(self):
+        files = {'done.txt': 'done\n', 'awk_bad-run-done.txt': 'done\n',
+                 'awk_bad-shell.txt': 'before\n', 'awk_bad-shell-rc.txt': 'rc 2\n',
+                 'awk_bad-shell-err.txt': 'awk: not enough args\n',
+                 'awk_bad-run.txt': 'before\n', 'awk_bad-run-rc.txt': 'rc 2\n',
+                 'awk_bad-run-err.txt': 'awk: not enough args\nextra\n'}
+        vm = {'completed': True, 'stop_reason': 'completed'}
+        report = runner.assess_boot(['awk_bad'], files.get, vm, expected_rc={'awk_bad': 2},
+                                    expected_err={'awk_bad': b'awk: not enough args\n'})
+        self.assertFalse(report['passed'])
+        self.assertEqual([r['status'] for r in report['results']], ['pass', 'fail'])
+        files['awk_bad-run-err.txt'] = 'awk: not enough args\n'
+        self.assertTrue(runner.assess_boot(['awk_bad'], files.get, vm, expected_rc={'awk_bad': 2},
+                                           expected_err={'awk_bad': b'awk: not enough args\n'})
+                        ['passed'])
+        with tempfile.TemporaryDirectory() as directory:
+            ref = Path(directory) / 'awk_bad.err'
+            ref.write_bytes(b'awk: not enough args\n')
+            report['directory'] = directory
+            base = ['run-raspi-qemu.py', '--image', 'unused.img', '--kernel', 'unused.kernel',
+                    '--bsp', 'unused.bsp', '--dtb', 'unused.dtb', '--mtools', 'unused-tools',
+                    '--run-dir', directory]
+            argv = base + ['--expect-err', 'awk_bad', str(ref), 'awk_bad']
+            with mock.patch.object(runner, 'boot', return_value=report) as boot, \
+                    mock.patch.object(runner.sys, 'argv', argv), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                runner.main()
+            self.assertEqual(boot.call_args.args[0].expected_err,
+                             {'awk_bad': b'awk: not enough args\n'})
+            for extra in (['--expect-err', 'awk_bda', str(ref), 'awk_bad'],
+                          ['--expect-err', 'awk_bad', str(ref) + '.missing', 'awk_bad'],
+                          ['--expect-err', 'awk_bad', str(ref),
+                           '--expect-err', 'awk_bad', str(ref), 'awk_bad']):
+                with self.subTest(extra=extra):
+                    with mock.patch.object(runner, 'boot', return_value=report) as boot, \
+                            mock.patch.object(runner.sys, 'argv', base + extra), \
+                            contextlib.redirect_stderr(io.StringIO()), \
+                            self.assertRaises(SystemExit):
+                        runner.main()
+                    boot.assert_not_called()
+
+
 class CompletionTests(unittest.TestCase):
     def test_startup_done_does_not_complete_background_run(self):
         files = {'done.txt': 'done\n', 'sample-run.txt': PASS_OUTPUT,
@@ -341,6 +500,45 @@ class BootVerdictTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 runner.main()
             self.assertEqual(boot.call_args.args[0].expected, {'sample': b'BZh1'})
+
+    def test_cli_validates_expect_rc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = self.assess()
+            report['directory'] = directory
+            base = ['run-raspi-qemu.py', '--image', 'unused.img', '--kernel', 'unused.kernel',
+                    '--bsp', 'unused.bsp', '--dtb', 'unused.dtb', '--mtools', 'unused-tools',
+                    '--run-dir', directory]
+            for extra in (['--expect-rc', 'sampel', '20', 'sample=build/cpu_faults'],
+                          ['--expect-rc', 'Sample', '20', 'sample=build/cpu_faults'],
+                          ['--expect-rc', 'build/cpu_faults', '20', 'sample=build/cpu_faults'],
+                          ['--expect-rc', 'sample', 'twenty', 'sample'],
+                          ['--expect-rc', 'sample', '2\u00b2', 'sample'],
+                          ['--expect-rc', 'sample', '', 'sample'],
+                          ['--expect-rc', 'sample', '-1', 'sample'],
+                          ['--expect-rc', 'sample', '21', 'sample'],
+                          ['--expect-rc', 'sample', '255', 'sample'],
+                          ['--expect-rc', 'sample', '1', '--expect-rc', 'sample', '2', 'sample']):
+                with self.subTest(extra=extra):
+                    argv = base + extra
+                    with mock.patch.object(runner, 'boot', return_value=report) as boot, \
+                            mock.patch.object(runner.sys, 'argv', argv), \
+                            contextlib.redirect_stderr(io.StringIO()), \
+                            self.assertRaises(SystemExit):
+                        runner.main()
+                    boot.assert_not_called()
+            argv = base + ['--expect-rc', 'first', '20', '--expect-rc', 'second', '7',
+                           'first=build/cpu_faults', 'second=build/dos_strings', 'third']
+            with mock.patch.object(runner, 'boot', return_value=report) as boot, \
+                    mock.patch.object(runner.sys, 'argv', argv), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                runner.main()
+            self.assertEqual(boot.call_args.args[0].expected_rc, {'first': 20, 'second': 7})
+            argv = base + ['--expect-rc', 'low', '0', '--expect-rc', 'high', '20', 'low', 'high']
+            with mock.patch.object(runner, 'boot', return_value=report) as boot, \
+                    mock.patch.object(runner.sys, 'argv', argv), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                runner.main()
+            self.assertEqual(boot.call_args.args[0].expected_rc, {'low': 0, 'high': 20})
 
 
 class QemuSchedulingTests(unittest.TestCase):

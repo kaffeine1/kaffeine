@@ -35,14 +35,62 @@ EXEC_LIBRARIES_LIBS := $(EXEC_LIBRARIES_DIR)/emu68test.library \
                        $(EXEC_LIBRARIES_DIR)/emu68test_l.library
 
 # bzip2 1.0.8, from the source the AROS build fetches for its Ports: set
-# BZIP2_SRC to the unpacked bzip2-1.0.8 directory to build it. The battery
-# runs the six steps of its own self-test and compares the outputs with
-# the reference files of the distribution.
+# BZIP2_SRC to the unpacked bzip2-1.0.8 directory to build it, with
+# bzip2_amiga.c for fchmod() and fchown(). The battery runs it through the
+# six steps of its own self-test, -9, -s, and three bad inputs on the files
+# that $(BZIP2_FILES) collects under EMU68/, and compares its output with
+# the one of the same program built for the host, which "make bzip2-refs"
+# writes to $(BZIP2_REFS).
 BZIP2_SRC ?=
+BZIP2_FILES := $(BUILD_DIR)/bzip2-files
+BZIP2_REFS := $(BUILD_DIR)/bzip2-refs
 BZIP2_SOURCES := $(addprefix $(BZIP2_SRC)/,blocksort.c huffman.c crctable.c randtable.c \
                    compress.c decompress.c bzlib.c bzip2.c)
+BZIP2_STEPS := c1 c2 c3 c9 cs d1 d2 d3 bad_crc bad_cut bad_magic
+BZIP2_ARGS_c1 := -c -1 EMU68/sample1.ref
+BZIP2_ARGS_c2 := -c -2 EMU68/sample2.ref
+BZIP2_ARGS_c3 := -c -3 EMU68/sample3.ref
+BZIP2_ARGS_c9 := -c -9 EMU68/sample2.ref
+BZIP2_ARGS_cs := -c -s EMU68/sample2.ref
+BZIP2_ARGS_d1 := -dc EMU68/sample1.bz2
+BZIP2_ARGS_d2 := -dc EMU68/sample2.bz2
+BZIP2_ARGS_d3 := -dcs EMU68/sample3.bz2
+BZIP2_ARGS_bad_crc := -dc EMU68/sample1.bz2 EMU68/bad-crc.bz2
+BZIP2_ARGS_bad_cut := -dcq EMU68/sample1.bz2 EMU68/bad-cut.bz2
+BZIP2_ARGS_bad_magic := -dc EMU68/sample1.bz2 EMU68/sample1.ref
+$(foreach s,bad_crc bad_cut bad_magic,$(eval BZIP2_RC_$(s) := 2))
 ifneq ($(BZIP2_SRC),)
 PROGRAMS += bzip2
+endif
+
+# zstd of Zstandard 1.5.7, from the source the AROS build fetches for its
+# Ports: set ZSTD_SRC to its zstd-1.5.7 directory to build it, without
+# threads, legacy formats, the benchmark or the dictionary builder. The
+# battery runs it on the files that $(ZSTD_FILES) collects under EMU68/, and
+# compares its output with the one of the same program built for the host,
+# which "make zstd-refs" writes to $(ZSTD_REFS).
+ZSTD_SRC ?=
+ZSTD_FILES := $(BUILD_DIR)/zstd-files
+ZSTD_REFS := $(BUILD_DIR)/zstd-refs
+ZSTD_SOURCES := $(wildcard $(patsubst %,$(ZSTD_SRC)/lib/%/*.c,common compress decompress)) \
+                $(addprefix $(ZSTD_SRC)/programs/,zstdcli.c util.c timefn.c fileio.c fileio_asyncio.c)
+ZSTD_FLAGS := -DXXH_NAMESPACE=ZSTD_ -DZSTD_DISABLE_ASM -DZSTD_NO_INTRINSICS \
+              -DZSTD_NOBENCH -DZSTD_NODICT -DZSTD_NOTRACE -DZSTD_LEGACY_SUPPORT=0 \
+              -I$(ZSTD_SRC)/lib -I$(ZSTD_SRC)/lib/common
+ZSTD_GOOD := $(addprefix EMU68/,block-128k.zst empty-block.zst rle-first-block.zst zeroSeq_2B.zst)
+ZSTD_BAD := $(addprefix EMU68/,off0.bin.zst truncated_huff_state.zst zeroSeq_extraneous.zst)
+ZSTD_INPUTS := $(addprefix EMU68/,PR-3517-block-splitter-corruption-test http \
+               huffman-compressed-larger large-literal-and-match-lengths)
+ZSTD_PACK := c1 c3 c9 c19
+ZSTD_STEPS := good bad list $(ZSTD_PACK) unpack
+ZSTD_ARGS_good := -dc $(ZSTD_GOOD)
+ZSTD_ARGS_bad := -dc $(ZSTD_BAD) EMU68/zeroSeq_2B.zst
+ZSTD_RC_bad := 1
+ZSTD_ARGS_list := -l $(ZSTD_GOOD)
+$(foreach l,1 3 9 19,$(eval ZSTD_ARGS_c$(l) := -c -$(l) $(ZSTD_INPUTS)))
+ZSTD_ARGS_unpack := -dc
+ifneq ($(ZSTD_SRC),)
+PROGRAMS += zstd
 endif
 
 # cjpeg, djpeg and jpegtran of the IJG JPEG library 9f, from the source the
@@ -134,6 +182,7 @@ PNG_XFAIL3 := $(call png_crashers,huge_sTER_chunk huge_tEXt_chunk huge_tIME_chun
 PNG_BADPAL := $(patsubst %,EMU68/badpal/%.png,regression-palette-8 small-palette-1 \
               small-palette-2 small-palette-4 small-palette-8 test-palette-1 \
               test-palette-2 test-palette-4 test-palette-8)
+PNG_RC_badpal := 1
 ifneq ($(PNG_SRC),)
 ifneq ($(ZLIB_SRC),)
 PROGRAMS += pngtest
@@ -171,6 +220,7 @@ XMLWF_META := -m -d - EMU68/muimaster.xml
 XMLWF_COPY := -c -d - EMU68/Locale.svg
 XMLWF_STDIN := -d -
 XMLWF_ERRORS := -k -s EMU68/avx.xml EMU68/Locale.svg EMU68/AndroidManifest.xml
+XMLWF_RC_errors := 2
 ifneq ($(EXPAT_SRC),)
 PROGRAMS += xmlwf
 endif
@@ -222,6 +272,7 @@ XZ_ARGS_bad3 := -dc $(wordlist 23,33,$(XZ_BAD)) $(XZ_HELLO)
 XZ_ARGS_bad4 := -dc $(wordlist 34,43,$(XZ_BAD)) $(XZ_HELLO)
 XZ_ARGS_bad5 := -dc $(wordlist 44,53,$(XZ_BAD)) $(XZ_HELLO)
 XZ_ARGS_bad6 := -dc $(wordlist 54,62,$(XZ_BAD)) $(XZ_HELLO)
+$(foreach n,1 2 3 4 5 6,$(eval XZ_RC_bad$(n) := 1))
 XZ_ARGS_quiet := -dcqQ EMU68/unsupported-check.xz
 XZ_ARGS_list := -lvv $(patsubst %,EMU68/good-%.xz,0cat-empty 0catpad-empty 1-check-none \
                 1-check-crc32 1-check-crc64 1-check-sha256 1-3delta-lzma2 1-arm64-lzma2-1 \
@@ -246,6 +297,121 @@ MBEDTLS_FLAGS := -DMBEDTLS_CONFIG_FILE='"$(TEST_DIR)/mbedtls_config.h"' \
                  -I$(MBEDTLS_SRC)/include -I$(MBEDTLS_SRC)/library
 ifneq ($(MBEDTLS_SRC),)
 PROGRAMS += mbedtls_selftest
+endif
+
+# lua of Lua 5.4.7: set LUA_SRC to its lua-5.4.7 directory (with
+# lua-5.4.7-tests next to it or in $(LUA_TESTS_SRC)) to build it, with
+# lua_config.h in front of each file and, for the m68k, lua_libnix.c for
+# the floating-point snprintf(), strtod(), double comparison and division
+# cases where libnix differs from ISO C, with the exact %e, %f and %g of
+# libnix_fmt.c. The battery runs it on the twelve deterministic scripts of
+# lua-5.4.7-tests that need no C test library, a standard-input step and an
+# unhandled-error step, which $(LUA_FILES) collects under EMU68/, and
+# compares its output with the one of the same program built for the host,
+# which "make lua-refs" writes to $(LUA_REFS).
+LUA_SRC ?=
+LUA_TESTS_SRC ?= $(firstword $(wildcard $(LUA_SRC)-tests $(LUA_SRC)/lua-5.4.7-tests $(LUA_SRC)/tests))
+LUA_FILES := $(BUILD_DIR)/lua-files
+LUA_REFS := $(BUILD_DIR)/lua-refs
+LUA_SOURCES := $(filter-out %/luac.c,$(sort $(wildcard $(LUA_SRC)/src/*.c)))
+LUA_FLAGS := -I$(LUA_SRC)/src -include $(TEST_DIR)/lua_config.h
+LUA_TESTS := strings nextvar closure calls events vararg pm utf8 bitwise literals goto errors
+LUA_STEPS := $(LUA_TESTS) stdin bad
+LUA_INIT := -e "_port=true _soft=true"
+$(foreach s,$(LUA_TESTS),$(eval LUA_ARGS_$(s) := $(LUA_INIT) EMU68/$(s).lua))
+LUA_ARGS_stdin := -
+LUA_ARGS_bad := EMU68/bad.lua
+LUA_RC_bad := 1
+ifneq ($(LUA_SRC),)
+PROGRAMS += lua
+endif
+
+# unzip of Info-ZIP UnZip 6.0: set UNZIP_SRC to an unpacked unzip60
+# directory to build the Unix port
+# (unix/unix.c) with libnix, with unzip_config.h included in front and, for
+# the m68k, unzip_libnix.c so timestamps stay in UTC0 without opening
+# locale.library. The battery runs it through nine steps on the deterministic
+# archives that make-unzip-files.py writes to $(UNZIP_FILES) under EMU68/,
+# and compares its output with the one of the same program built for the
+# host, which "make unzip-refs" writes to $(UNZIP_REFS) under TZ=UTC0.
+UNZIP_SRC ?=
+UNZIP_FILES := $(BUILD_DIR)/unzip-files
+UNZIP_REFS := $(BUILD_DIR)/unzip-refs
+UNZIP_CORE := unzip crc32 crypt envargs explode extract fileio globals \
+              inflate list match process ttyio ubz2err unreduce unshrink \
+              zipinfo unix/unix
+UNZIP_SOURCES := $(addprefix $(UNZIP_SRC)/,$(addsuffix .c,$(UNZIP_CORE)))
+UNZIP_FLAGS := -I$(UNZIP_SRC) -include $(TEST_DIR)/unzip_config.h
+UNZIP_STEPS := list verbose zipinfo test pipe extract overwrite bad_trunc bad_crc
+UNZIP_ARGS_list := -l EMU68/tree.zip
+UNZIP_ARGS_verbose := -v EMU68/tree.zip
+UNZIP_ARGS_zipinfo := -Z EMU68/tree.zip
+UNZIP_ARGS_test := -t EMU68/tree.zip
+UNZIP_ARGS_pipe := -p EMU68/tree.zip sub/nested/deflated.txt
+UNZIP_ARGS_extract := -o EMU68/tree.zip -d T:unzip_tree
+UNZIP_ARGS_overwrite := -o EMU68/tree.zip -d T:unzip_tree
+UNZIP_ARGS_bad_trunc := -l EMU68/bad_trunc.zip
+UNZIP_ARGS_bad_crc := -p EMU68/bad_crc.zip
+UNZIP_RC_bad_trunc := 9
+UNZIP_RC_bad_crc := 2
+ifneq ($(UNZIP_SRC),)
+PROGRAMS += unzip
+endif
+
+# awk of the one true awk (20260426), from an unpacked awk tree:
+# set AWK_SRC to its directory to build it, with awk_config.h in front of
+# each file, awkgram.tab.c and awkgram.tab.h generated from awkgram.y by
+# $(YACC), proctab.c generated from awkgram.tab.h by maketab built for the
+# host, and, for the m68k, awk_libnix.c for environ, pclose(), locale
+# initialization, snprintf() and strtod(), with the exact %e, %f and %g of
+# libnix_fmt.c. The battery runs it on six
+# deterministic p.* programs from testdir on test.countries, eight
+# deterministic t.* programs from testdir on test.data, six programs of my
+# own (printf, regex, getline, redir, strings and system) and a fatal-error
+# step (bad), which $(AWK_FILES) collects under EMU68/, and compares its
+# output with the one of the same program built for the host, which
+# "make awk-refs" writes to $(AWK_REFS).
+AWK_SRC ?=
+ifeq ($(origin YACC),default)
+YACC := bison -d -y
+endif
+YACC ?= bison -d -y
+AWK_BUILD := $(BUILD_DIR)/awk-src
+AWK_FILES := $(BUILD_DIR)/awk-files
+AWK_REFS := $(BUILD_DIR)/awk-refs
+AWK_SOURCES := $(addprefix $(AWK_SRC)/,b.c main.c parse.c tran.c lib.c run.c lex.c)
+AWK_GEN_SOURCES := $(AWK_BUILD)/awkgram.tab.c $(AWK_BUILD)/proctab.c
+AWK_FLAGS := -I$(AWK_BUILD) -I$(AWK_SRC) -include $(TEST_DIR)/awk_config.h
+AWK_P_TESTS := p.5 p.24 p.25 p.36 p.43 p.table
+AWK_T_TESTS := t.array t.builtins t.fun5 t.getline1 t.printf t.roff t.split4 t.sub2
+AWK_P_STEPS := p5 p24 p25 p36 p43 ptable
+AWK_T_STEPS := tarray tbuiltins tfun5 tgetline1 tprintf troff tsplit4 tsub2
+AWK_OWN_STEPS := printf regex getline redir strings system bad
+AWK_STEPS := $(AWK_P_STEPS) $(AWK_T_STEPS) $(AWK_OWN_STEPS)
+AWK_ARGS_p5 := -f EMU68/p.5 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_p24 := -f EMU68/p.24 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_p25 := -f EMU68/p.25 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_p36 := -f EMU68/p.36 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_p43 := -f EMU68/p.43 EMU68/test.countries EMU68/test.countries
+AWK_ARGS_ptable := -f EMU68/p.table EMU68/test.countries EMU68/test.countries
+AWK_ARGS_tarray := -f EMU68/t.array EMU68/test.data
+AWK_ARGS_tbuiltins := -f EMU68/t.builtins EMU68/test.data
+AWK_ARGS_tfun5 := -f EMU68/t.fun5 EMU68/test.data
+AWK_ARGS_tgetline1 := -f EMU68/t.getline1 EMU68/test.data
+AWK_ARGS_tprintf := -f EMU68/t.printf EMU68/test.data
+AWK_ARGS_troff := -f EMU68/t.roff EMU68/test.data
+AWK_ARGS_tsplit4 := -f EMU68/t.split4 EMU68/test.data
+AWK_ARGS_tsub2 := -f EMU68/t.sub2 EMU68/test.data
+AWK_ARGS_printf := -f EMU68/awk_printf.awk
+AWK_ARGS_regex := -f EMU68/awk_regex.awk EMU68/test.countries
+AWK_ARGS_getline := -f EMU68/awk_getline.awk
+AWK_ARGS_redir := -f EMU68/awk_redir.awk
+AWK_ARGS_strings := -f EMU68/awk_strings.awk
+AWK_ARGS_system := -f EMU68/awk_system.awk
+AWK_ARGS_bad := -f EMU68/awk_bad.awk EMU68/test.countries
+AWK_RC_bad := 2
+ifneq ($(AWK_SRC),)
+PROGRAMS += awk
 endif
 PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
@@ -313,9 +479,85 @@ $(BUILD_DIR)/c_stdio: EXTRA_LINK = $(STDIO_FLOAT)
 $(BUILD_DIR)/c_stdio_vec: $(TEST_DIR)/c_stdio.c $(TEST_DIR)/libgcc_ieee.c | $(BUILD_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -DMALLOC_ON_ALLOCVEC $(M68K_LDFLAGS) -o $@ $< $(STDIO_FLOAT)
 
+HOST_CC ?= cc
+
+# The files of the bzip2 steps, installed with --files next to each step:
+# the three sample pairs of the distribution, sample1.bz2 with a byte of its
+# block CRC changed, and its first 16 KiB as a truncated stream.
+$(BZIP2_FILES).stamp: $(addprefix $(BZIP2_SRC)/,sample1.ref sample2.ref sample3.ref \
+                      sample1.bz2 sample2.bz2 sample3.bz2) | $(BUILD_DIR)
+	rm -rf $(BZIP2_FILES)
+	mkdir -p $(BZIP2_FILES)
+	cp $^ $(BZIP2_FILES)/
+	cp $(BZIP2_SRC)/sample1.bz2 $(BZIP2_FILES)/bad-crc.bz2
+	printf '\000' | dd of=$(BZIP2_FILES)/bad-crc.bz2 bs=1 seek=10 count=1 conv=notrunc 2>/dev/null
+	head -c 16384 $(BZIP2_SRC)/sample1.bz2 > $(BZIP2_FILES)/bad-cut.bz2
+	touch $@
+
 $(BUILD_DIR)/bzip2: $(BZIP2_SOURCES) $(TEST_DIR)/bzip2_amiga.c $(TEST_DIR)/libgcc_ieee.c \
-                   $(TEST_DIR)/libgcc_ieee_ports.c | $(BUILD_DIR)
+                   $(TEST_DIR)/libgcc_ieee_ports.c | $(BUILD_DIR) $(BZIP2_FILES).stamp
 	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $^ -lm
+
+# The bzip2 references: the outputs of the steps through bzip2 built for the
+# host, run where EMU68 names $(BZIP2_FILES). Each bad step decompresses
+# sample1.bz2 first so that its output is not empty, and ends with 2;
+# bad_cut runs with -q so that bzip2 does not call perror() with errno 0.
+$(BZIP2_REFS)/stamp: $(BZIP2_SOURCES) $(BZIP2_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 -o $(@D)/bzip2 $(BZIP2_SOURCES)
+	ln -s $(BZIP2_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(BZIP2_STEPS),cp bzip2 SYS:EMU68/bzip2_$(s) && \
+	    { SYS:EMU68/bzip2_$(s) $(BZIP2_ARGS_$(s)) > bzip2_$(s).out 2> bzip2_$(s).err; \
+	    test $$? = $(if $(BZIP2_RC_$(s)),$(BZIP2_RC_$(s)),0); } &&) true
+	cd $(@D) && cmp -s bzip2_c1.out EMU68/sample1.bz2 && \
+	    cmp -s bzip2_c2.out EMU68/sample2.bz2 && \
+	    cmp -s bzip2_c3.out EMU68/sample3.bz2 && \
+	    cmp -s bzip2_d1.out EMU68/sample1.ref && \
+	    cmp -s bzip2_d2.out EMU68/sample2.ref && \
+	    cmp -s bzip2_d3.out EMU68/sample3.ref
+	touch $@
+
+bzip2-refs: $(BZIP2_REFS)/stamp
+
+# The files of the zstd steps, installed with --files next to each step:
+# the archives of tests/golden-decompression and
+# tests/golden-decompression-errors, and the first 16 KiB of each file of
+# tests/golden-compression.
+$(ZSTD_FILES).stamp: $(wildcard $(ZSTD_SRC)/tests/golden-decompression/*.zst \
+                     $(ZSTD_SRC)/tests/golden-decompression-errors/*.zst \
+                     $(ZSTD_SRC)/tests/golden-compression/*) | $(BUILD_DIR)
+	rm -rf $(ZSTD_FILES)
+	mkdir -p $(ZSTD_FILES)
+	cp $(ZSTD_SRC)/tests/golden-decompression/*.zst \
+	   $(ZSTD_SRC)/tests/golden-decompression-errors/*.zst $(ZSTD_FILES)/
+	for f in $(ZSTD_SRC)/tests/golden-compression/*; do \
+	    head -c 16384 "$$f" > $(ZSTD_FILES)/$$(basename "$$f") || exit 1; done
+	touch $@
+
+# -lm brings the double helpers of the sizes and ratios that zstd prints
+$(BUILD_DIR)/zstd: $(ZSTD_SOURCES) | $(BUILD_DIR) $(ZSTD_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) $(ZSTD_FLAGS) $(M68K_LDFLAGS) -o $@ $(ZSTD_SOURCES) -lm
+
+# The zstd references: the outputs of the steps through zstd built for the
+# host, run where EMU68 names $(ZSTD_FILES). zstd_bad ends with 1, and
+# zstd_unpack reads zstd_unpack.in, the outputs of the four compression
+# steps one after the other.
+$(ZSTD_REFS)/stamp: $(ZSTD_SOURCES) $(ZSTD_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 $(ZSTD_FLAGS) -o $(@D)/zstd $(ZSTD_SOURCES)
+	ln -s $(ZSTD_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(filter-out unpack,$(ZSTD_STEPS)),cp zstd SYS:EMU68/zstd_$(s) && \
+	    { SYS:EMU68/zstd_$(s) $(ZSTD_ARGS_$(s)) > zstd_$(s).out 2> zstd_$(s).err; \
+	    test $$? = $(if $(ZSTD_RC_$(s)),$(ZSTD_RC_$(s)),0); } &&) true
+	cd $(@D) && cat $(patsubst %,zstd_%.out,$(ZSTD_PACK)) > zstd_unpack.in
+	cd $(@D) && cp zstd SYS:EMU68/zstd_unpack && \
+	    SYS:EMU68/zstd_unpack $(ZSTD_ARGS_unpack) < zstd_unpack.in > zstd_unpack.out 2> zstd_unpack.err
+	cd $(@D) && cat $(ZSTD_INPUTS) $(ZSTD_INPUTS) $(ZSTD_INPUTS) $(ZSTD_INPUTS) | cmp -s - zstd_unpack.out
+	touch $@
+
+zstd-refs: $(ZSTD_REFS)/stamp
 
 $(JPEG_BUILD)/stamp: $(wildcard $(JPEG_SRC)/*.c $(JPEG_SRC)/*.h) $(TEST_DIR)/jpeg_jconfig.h | $(BUILD_DIR)
 	rm -rf $(JPEG_BUILD)
@@ -348,7 +590,6 @@ $(BUILD_DIR)/zpipe: $(ZLIB_SRC)/examples/zpipe.c $(ZLIB_SOURCES) $(ZLIB_BUILD)/z
 # host from the same sources, without AMIGA. The tenth byte of a gzip
 # header names the system that wrote it, so the references get the 1 of
 # the Amiga there, as the m68k build writes.
-HOST_CC ?= cc
 $(ZLIB_REFS)/stamp: $(ZLIB_SRC)/test/minigzip.c $(ZLIB_SRC)/examples/zpipe.c $(ZLIB_SOURCES) \
                     $(ZLIB_BUILD)/zconf.h
 	mkdir -p $(@D)
@@ -395,7 +636,7 @@ $(PNG_REFS)/stamp: $(PNG_SRC)/pngtest.c $(PNG_SOURCES) $(ZLIB_SOURCES) $(PNG_BUI
 	cd $(@D) && ./pngtest --xfail $(PNG_XFAIL1) > png_xfail1.out 2> png_xfail1.err
 	cd $(@D) && ./pngtest --xfail $(PNG_XFAIL2) > png_xfail2.out 2> png_xfail2.err
 	cd $(@D) && ./pngtest --xfail $(PNG_XFAIL3) > png_xfail3.out 2> png_xfail3.err
-	cd $(@D) && { ./pngtest -m $(PNG_BADPAL) > png_badpal.out 2> png_badpal.err; test $$? = 1; }
+	cd $(@D) && { ./pngtest -m $(PNG_BADPAL) > png_badpal.out 2> png_badpal.err; test $$? = $(PNG_RC_badpal); }
 	rm -f $(@D)/pngout.png
 	touch $@
 
@@ -438,7 +679,7 @@ $(XMLWF_REFS)/stamp: $(EXPAT_SRC)/xmlwf/xmlwf.c $(EXPAT_SOURCES) $(EXPAT_BUILD)/
 	cd $(@D) && ./xmlwf $(XMLWF_META) > xmlwf_meta.out
 	cd $(@D) && ./xmlwf $(XMLWF_COPY) > xmlwf_copy.out
 	cd $(@D) && ./xmlwf $(XMLWF_STDIN) < EMU68/AndroidManifest.xml > xmlwf_stdin.out
-	cd $(@D) && { ./xmlwf $(XMLWF_ERRORS) > xmlwf_errors.out; test $$? = 2; }
+	cd $(@D) && { ./xmlwf $(XMLWF_ERRORS) > xmlwf_errors.out; test $$? = $(XMLWF_RC_errors); }
 	touch $@
 
 xmlwf-refs: $(XMLWF_REFS)/stamp
@@ -481,7 +722,7 @@ $(XZ_REFS)/stamp: $(XZ_SOURCES) $(XZ_BUILD)/config.h $(XZ_FILES).stamp
 	ln -s $(XZ_FILES) $(@D)/EMU68
 	cd $(@D) && $(foreach s,$(filter-out unpack,$(XZ_STEPS)),cp xz SYS:EMU68/xz_$(s) && \
 	    { SYS:EMU68/xz_$(s) $(XZ_ARGS_$(s)) > xz_$(s).out 2> xz_$(s).err; \
-	    test $$? = $(if $(filter bad%,$(s)),1,0); } &&) true
+	    test $$? = $(if $(XZ_RC_$(s)),$(XZ_RC_$(s)),0); } &&) true
 	cd $(@D) && cat $(patsubst %,xz_%.out,$(XZ_PACK)) > xz_unpack.in
 	cd $(@D) && cp xz SYS:EMU68/xz_unpack && \
 	    SYS:EMU68/xz_unpack $(XZ_ARGS_unpack) < xz_unpack.in > xz_unpack.out 2> xz_unpack.err
@@ -504,6 +745,114 @@ $(MBEDTLS_REFS)/stamp: $(MBEDTLS_SRC)/programs/test/selftest.c $(MBEDTLS_SOURCES
 
 mbedtls-refs: $(MBEDTLS_REFS)/stamp
 
+$(LUA_FILES).stamp: $(patsubst %,$(LUA_TESTS_SRC)/%.lua,$(LUA_TESTS) bwcoercion) \
+                    $(TEST_DIR)/lua_stdin.lua $(TEST_DIR)/lua_bad.lua | $(BUILD_DIR)
+	rm -rf $(LUA_FILES)
+	mkdir -p $(LUA_FILES)
+	cp $(patsubst %,$(LUA_TESTS_SRC)/%.lua,$(LUA_TESTS) bwcoercion) $(LUA_FILES)/
+	cp $(TEST_DIR)/lua_stdin.lua $(LUA_FILES)/stdin.lua
+	cp $(TEST_DIR)/lua_bad.lua $(LUA_FILES)/bad.lua
+	touch $@
+
+# -lm brings the IEEE double helpers and the floating-point printf() of libnix
+$(BUILD_DIR)/lua: $(LUA_SOURCES) $(TEST_DIR)/lua_libnix.c $(TEST_DIR)/lua_config.h \
+                  $(TEST_DIR)/libnix_fmt.c $(TEST_DIR)/libnix_fmt.h | $(BUILD_DIR) \
+                  $(LUA_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) $(LUA_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $(LUA_SOURCES) $(TEST_DIR)/lua_libnix.c $(TEST_DIR)/libnix_fmt.c -lm
+
+# The lua references: the outputs of the steps through lua built for the
+# host, run where EMU68 names $(LUA_FILES). lua begins its error messages
+# with its name as it was started, SYS:EMU68/NAME in the guest, so each step
+# runs as that here too, and writes its error output to NAME.err. lua_stdin
+# reads EMU68/stdin.lua from its input, and lua_bad ends with 1.
+$(LUA_REFS)/stamp: $(LUA_SOURCES) $(TEST_DIR)/lua_config.h $(LUA_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 -Wno-deprecated-declarations $(LUA_FLAGS) -o $(@D)/lua $(LUA_SOURCES) -lm
+	ln -s $(LUA_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(filter-out stdin,$(LUA_STEPS)),cp lua SYS:EMU68/lua_$(s) && \
+	    { TZ=UTC0 SYS:EMU68/lua_$(s) $(LUA_ARGS_$(s)) > lua_$(s).out 2> lua_$(s).err; \
+	    test $$? = $(if $(LUA_RC_$(s)),$(LUA_RC_$(s)),0); } &&) true
+	cd $(@D) && cp lua SYS:EMU68/lua_stdin && \
+	    TZ=UTC0 SYS:EMU68/lua_stdin $(LUA_ARGS_stdin) < EMU68/stdin.lua > lua_stdin.out 2> lua_stdin.err
+	touch $@
+
+lua-refs: $(LUA_REFS)/stamp
+
+$(UNZIP_FILES).stamp: $(TEST_DIR)/make-unzip-files.py | $(BUILD_DIR)
+	rm -rf $(UNZIP_FILES)
+	$(PYTHON) $(TEST_DIR)/make-unzip-files.py $(UNZIP_FILES)
+	touch $@
+
+$(BUILD_DIR)/unzip: $(UNZIP_SOURCES) $(TEST_DIR)/unzip_libnix.c $(TEST_DIR)/unzip_config.h | $(BUILD_DIR) \
+                    $(UNZIP_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) $(UNZIP_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $(UNZIP_SOURCES) $(TEST_DIR)/unzip_libnix.c
+
+# The unzip references: the outputs of the steps through unzip built for
+# the host, run under TZ=UTC0 where EMU68 names $(UNZIP_FILES).
+# unzip_bad_trunc ends with 9 (PK_NOZIP) and unzip_bad_crc ends with 2
+# (PK_ERR). The extracted tree T:unzip_tree is removed after the steps run.
+$(UNZIP_REFS)/stamp: $(UNZIP_SOURCES) $(TEST_DIR)/unzip_config.h $(UNZIP_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 -Wno-deprecated-non-prototype -Wno-format-security $(UNZIP_FLAGS) \
+	    -o $(@D)/unzip $(UNZIP_SOURCES)
+	ln -s $(UNZIP_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(UNZIP_STEPS),cp unzip SYS:EMU68/unzip_$(s) && \
+	    { TZ=UTC0 SYS:EMU68/unzip_$(s) $(UNZIP_ARGS_$(s)) > unzip_$(s).out 2> unzip_$(s).err; \
+	    test $$? = $(if $(UNZIP_RC_$(s)),$(UNZIP_RC_$(s)),0); } &&) \
+	    rm -rf 'T:unzip_tree'
+	touch $@
+
+unzip-refs: $(UNZIP_REFS)/stamp
+
+# A multi-target pattern rule runs Yacc once for both outputs, including
+# under parallel builds, and works with GNU make 3.81 as well.
+$(AWK_BUILD)/%.tab.c $(AWK_BUILD)/%.tab.h: $(AWK_SRC)/%.y
+	mkdir -p $(@D)
+	cd $(@D) && $(YACC) -b $* $(abspath $<)
+	test -f $(AWK_BUILD)/$*.tab.c || mv $(AWK_BUILD)/y.tab.c $(AWK_BUILD)/$*.tab.c
+	test -f $(AWK_BUILD)/$*.tab.h || mv $(AWK_BUILD)/y.tab.h $(AWK_BUILD)/$*.tab.h
+
+$(AWK_BUILD)/proctab.c: $(AWK_SRC)/maketab.c $(AWK_BUILD)/awkgram.tab.h $(AWK_SRC)/awk.h $(AWK_SRC)/proto.h
+	mkdir -p $(@D)
+	$(HOST_CC) -O2 -I$(AWK_BUILD) -I$(AWK_SRC) -o $(AWK_BUILD)/maketab $<
+	$(AWK_BUILD)/maketab $(AWK_BUILD)/awkgram.tab.h > $@
+
+# The scripts and input files of the steps, installed with --files next to each step
+$(AWK_FILES).stamp: $(addprefix $(AWK_SRC)/testdir/,test.countries test.data $(AWK_P_TESTS) $(AWK_T_TESTS)) \
+                    $(patsubst %,$(TEST_DIR)/awk_%.awk,$(AWK_OWN_STEPS)) | $(BUILD_DIR)
+	rm -rf $(AWK_FILES)
+	mkdir -p $(AWK_FILES)
+	cp $(addprefix $(AWK_SRC)/testdir/,test.countries test.data $(AWK_P_TESTS) $(AWK_T_TESTS)) $(AWK_FILES)/
+	cp $(patsubst %,$(TEST_DIR)/awk_%.awk,$(AWK_OWN_STEPS)) $(AWK_FILES)/
+	touch $@
+
+# -lm brings the IEEE double helpers and the floating-point printf() of libnix
+$(BUILD_DIR)/awk: $(AWK_SOURCES) $(AWK_GEN_SOURCES) $(TEST_DIR)/awk_libnix.c $(TEST_DIR)/awk_config.h \
+                  $(TEST_DIR)/libnix_fmt.c $(TEST_DIR)/libnix_fmt.h | $(BUILD_DIR) $(AWK_FILES).stamp
+	$(M68K_CC) $(M68K_CFLAGS) $(AWK_FLAGS) $(M68K_LDFLAGS) \
+	    -o $@ $(AWK_GEN_SOURCES) $(AWK_SOURCES) $(TEST_DIR)/awk_libnix.c $(TEST_DIR)/libnix_fmt.c -lm
+
+# The awk references: the outputs of the steps through awk built for the
+# host, run where EMU68 names $(AWK_FILES). awk begins its error messages
+# with its name as it was started, SYS:EMU68/NAME in the guest, so each step
+# runs as that here too, and writes its error output to NAME.err. awk_bad
+# ends with 2.
+$(AWK_REFS)/stamp: $(AWK_SOURCES) $(AWK_GEN_SOURCES) $(TEST_DIR)/awk_config.h $(AWK_FILES).stamp
+	rm -rf $(@D)
+	mkdir -p '$(@D)/SYS:EMU68'
+	$(HOST_CC) -O2 $(AWK_FLAGS) -o $(@D)/awk $(AWK_GEN_SOURCES) $(AWK_SOURCES) -lm
+	ln -s $(AWK_FILES) $(@D)/EMU68
+	cd $(@D) && $(foreach s,$(AWK_STEPS),cp awk SYS:EMU68/awk_$(s) && \
+	    { SYS:EMU68/awk_$(s) $(AWK_ARGS_$(s)) > awk_$(s).out 2> awk_$(s).err; \
+	    test $$? = $(if $(AWK_RC_$(s)),$(AWK_RC_$(s)),0); } &&) rm -f $(@D)/T:awk_redir.txt
+	touch $@
+
+awk-refs: $(AWK_REFS)/stamp
+
 # c_compute for the 68020 with 68881 instructions; fsqrt without the libm
 # fallback that sets errno
 $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
@@ -519,25 +868,35 @@ $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LI
 $(EXEC_LIBRARIES_DIR)/emu68test_l.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -DLONG_TABLE -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<
 
-# bzip2, the JPEG programs, the zlib ones, pngtest, xmlwf, xz and
-# mbedtls_selftest too, also when they were built with a BZIP2_SRC,
-# JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC, XZ_SRC or MBEDTLS_SRC that this
-# make lacks
+# bzip2, zstd, the JPEG programs, the zlib ones, pngtest, xmlwf, xz,
+# mbedtls_selftest, lua, unzip and awk too, also when they were built
+# with a BZIP2_SRC, ZSTD_SRC, JPEG_SRC, ZLIB_SRC, PNG_SRC, EXPAT_SRC,
+# XZ_SRC, MBEDTLS_SRC, LUA_SRC, UNZIP_SRC or AWK_SRC that this make lacks
 clean:
-	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BUILD_DIR)/exec_public_native
+	rm -f $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS) $(BUILD_DIR)/bzip2 $(BZIP2_FILES).stamp $(BUILD_DIR)/zstd $(ZSTD_FILES).stamp $(BUILD_DIR)/exec_public_native
 	rm -f $(BUILD_DIR)/cjpeg $(BUILD_DIR)/djpeg $(BUILD_DIR)/jpegtran
 	rm -f $(BUILD_DIR)/minigzip $(BUILD_DIR)/zpipe $(BUILD_DIR)/pngtest $(PNG_FILES).stamp
 	rm -f $(BUILD_DIR)/xmlwf $(XMLWF_FILES).stamp $(BUILD_DIR)/xz $(XZ_FILES).stamp
-	rm -f $(BUILD_DIR)/mbedtls_selftest
-	rm -rf $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
+	rm -f $(BUILD_DIR)/mbedtls_selftest $(BUILD_DIR)/lua $(LUA_FILES).stamp $(BUILD_DIR)/unzip $(UNZIP_FILES).stamp $(BUILD_DIR)/awk $(AWK_FILES).stamp
+	rm -rf $(BZIP2_FILES) $(BZIP2_REFS) $(ZSTD_FILES) $(ZSTD_REFS) $(JPEG_BUILD) $(ZLIB_BUILD) $(ZLIB_REFS) $(PNG_BUILD) $(PNG_FILES) $(PNG_REFS)
 	rm -rf $(EXPAT_BUILD) $(XMLWF_FILES) $(XMLWF_REFS) $(XZ_BUILD) $(XZ_FILES) $(XZ_REFS)
-	rm -rf $(MBEDTLS_REFS)
+	rm -rf $(MBEDTLS_REFS) $(LUA_FILES) $(LUA_REFS) $(UNZIP_FILES) $(UNZIP_REFS) $(AWK_BUILD) $(AWK_FILES) $(AWK_REFS)
 
 # Offline result/parser tests: no cross compiler, mtools or QEMU needed.
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-.PHONY: all clean check-runner zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs
+# libnix_fmt.c built for the host and compared with the host snprintf() and
+# strtod()
+$(BUILD_DIR)/test_libnix_fmt: $(TEST_DIR)/test_libnix_fmt.c $(TEST_DIR)/libnix_fmt.c \
+                              $(TEST_DIR)/libnix_fmt.h | $(BUILD_DIR)
+	$(HOST_CC) -O2 -Wall -Wno-format-nonliteral -I$(TEST_DIR) -o $@ \
+	    $(TEST_DIR)/test_libnix_fmt.c $(TEST_DIR)/libnix_fmt.c -lm
+
+check-libnix-fmt: $(BUILD_DIR)/test_libnix_fmt
+	$(BUILD_DIR)/test_libnix_fmt
+
+.PHONY: all clean check-runner check-libnix-fmt bzip2-refs zstd-refs zlib-refs png-refs xmlwf-refs xz-refs mbedtls-refs lua-refs unzip-refs awk-refs
 
 # Native AArch64 framebuffer check: never build this with M68K_CC.
 $(BUILD_DIR)/gfx_framebuffer_palette_native: $(TEST_DIR)/gfx_framebuffer_palette_native.c | $(BUILD_DIR)

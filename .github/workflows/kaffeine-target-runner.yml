@@ -7,12 +7,20 @@ on:
       - '.github/workflows/kaffeine-target-runner.yml'
       - 'developer/debug/test/kaffeine_target/run-raspi-qemu.py'
       - 'developer/debug/test/kaffeine_target/test_run_raspi_qemu.py'
+      - 'developer/debug/test/kaffeine_target/libnix_fmt.c'
+      - 'developer/debug/test/kaffeine_target/libnix_fmt.h'
+      - 'developer/debug/test/kaffeine_target/test_libnix_fmt.c'
+      - 'developer/debug/test/kaffeine_target/Makefile'
   push:
     branches: [master]
     paths:
       - '.github/workflows/kaffeine-target-runner.yml'
       - 'developer/debug/test/kaffeine_target/run-raspi-qemu.py'
       - 'developer/debug/test/kaffeine_target/test_run_raspi_qemu.py'
+      - 'developer/debug/test/kaffeine_target/libnix_fmt.c'
+      - 'developer/debug/test/kaffeine_target/libnix_fmt.h'
+      - 'developer/debug/test/kaffeine_target/test_libnix_fmt.c'
+      - 'developer/debug/test/kaffeine_target/Makefile'
   workflow_dispatch:
 
 permissions:
@@ -37,3 +45,18 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Test CLI, result reports and input scripts without a VM
         run: python -I -B developer/debug/test/kaffeine_target/test_run_raspi_qemu.py
+
+  exact-formatter:
+    name: Exact decimal formatter (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare exact decimal conversions with the host C library
+        run: >-
+          make -C developer/debug/test/kaffeine_target
+          check-libnix-fmt HOST_CC=${{ matrix.cc }}
