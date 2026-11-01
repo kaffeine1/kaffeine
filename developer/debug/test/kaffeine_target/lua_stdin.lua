@@ -3,7 +3,8 @@
 --
 -- Standard-input step for Lua 5.4.7: exercises setjmp/longjmp error
 -- recovery, IEEE-754 double math and table.sort, string.format with %g and
--- %a, file I/O on EMU68/ and a temporary file, os.clock() and os.time().
+-- %a, file I/O on EMU68/ and a temporary file, os.clock() and os.time(),
+-- and exact decimal to double conversions.
 
 print("testing stdin script")
 
@@ -126,4 +127,16 @@ local diff = os.difftime(t2, t1)
 local utc = os.date("!%Y-%m-%d %H:%M:%S wday=%w yday=%j", 1768478400)
 assert(diff == 91845.0 and utc == "2026-01-15 12:00:00 wday=4 yday=015")
 print(string.format("time ok: diff=%g utc=%s", diff, utc))
+
+-- 5. decimal to double, exact: the case of the review and its spellings, a
+-- tie and a value just above it, 30 digits, the normal boundary, subnormals
+-- and the overflow edge
+local str2d = {}
+for _, s in ipairs({ "9007199254740991.0", "90071992547409910e-1", "9007199254740993.0",
+    "9007199254740993.00000000000000000001", "123456789012345678901234567890",
+    "2.2250738585072013e-308", "2.2250738585072011e-308", "4.9406564584124654e-324",
+    "2.4703282292062328e-324", "1.7976931348623158e308", "1e400" }) do
+  str2d[#str2d + 1] = string.format("%.17g", tonumber(s))
+end
+print("str2d: " .. table.concat(str2d, " "))
 print("OK")

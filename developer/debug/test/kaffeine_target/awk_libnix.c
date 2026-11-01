@@ -21,9 +21,10 @@
       "%.30g" of tostring() among them, to the exact formatter of
       libnix_fmt.c, which also returns the C99 length of long results.
     - In libnix, strtod() calls sscanf("%lf%ln"), whose vfscanf() stores 0.0
-      and advances endptr past "." when no digits are present;
-      awk_libnix_strtod() parses decimal floats, infinities and NaNs and leaves
-      *endptr at nptr when no number matches.
+      and advances endptr past "." when no digits are present, and rounds
+      after 16 decimal digits; awk_libnix_strtod(), which awk_config.h also
+      gives atof() for split(), is the exact libnix_fmt_strtod(), with
+      ERANGE set as the hosts set it, which is_valid_number() reads.
 */
 
 #include <ctype.h>
@@ -40,6 +41,7 @@
 
 #undef snprintf
 #undef strtod
+#undef atof
 
 static char *empty_env[] = { NULL };
 char **environ = empty_env;
@@ -93,160 +95,12 @@ int awk_libnix_snprintf(char *buf, size_t sz, const char *fmt, ...)
     return r;
 }
 
-static int match_ci(const char *s, const char *word, size_t n)
-{
-    size_t i;
-
-    for (i = 0; i < n; i++)
-    {
-        if (tolower((unsigned char)s[i]) != word[i])
-            return 0;
-    }
-    return 1;
-}
-
 double awk_libnix_strtod(const char *nptr, char **endptr)
 {
-    const char *p = nptr;
-    unsigned long long mant = 0;
-    int neg = 0, sig = 0, any = 0, frac_exp = 0, exp_neg = 0;
-    long exp10 = 0, e = 0;
-    double val;
+    return libnix_fmt_strtod(nptr, endptr);
+}
 
-    if (endptr)
-        *endptr = (char *)nptr;
-    while (isspace((unsigned char)*p))
-        p++;
-    if (*p == '-' || *p == '+')
-        neg = (*p++ == '-');
-
-    if (match_ci(p, "inf", 3))
-    {
-        p += 3;
-        if (match_ci(p, "inity", 5))
-            p += 5;
-        if (endptr)
-            *endptr = (char *)p;
-        return neg ? -HUGE_VAL : HUGE_VAL;
-    }
-    if (match_ci(p, "nan", 3))
-    {
-        p += 3;
-        if (*p == '(')
-        {
-            const char *q = p + 1;
-
-            while (*q && *q != ')' && !isspace((unsigned char)*q))
-                q++;
-            if (*q == ')')
-                p = q + 1;
-        }
-        if (endptr)
-            *endptr = (char *)p;
-        return NAN;
-    }
-
-    while (isdigit((unsigned char)*p))
-    {
-        any = 1;
-        if (mant != 0 || *p != '0')
-        {
-            if (sig < 19)
-            {
-                mant = mant * 10 + (unsigned)(*p - '0');
-                sig++;
-            }
-            else
-            {
-                frac_exp++;
-            }
-        }
-        p++;
-    }
-    if (*p == '.')
-    {
-        p++;
-        while (isdigit((unsigned char)*p))
-        {
-            any = 1;
-            if (mant != 0 || *p != '0')
-            {
-                if (sig < 19)
-                {
-                    mant = mant * 10 + (unsigned)(*p - '0');
-                    sig++;
-                    frac_exp--;
-                }
-            }
-            else
-            {
-                frac_exp--;
-            }
-            p++;
-        }
-    }
-    if (!any)
-        return 0.0;
-
-    if (*p == 'e' || *p == 'E')
-    {
-        const char *ep = p + 1;
-
-        if (*ep == '-' || *ep == '+')
-            exp_neg = (*ep++ == '-');
-        if (isdigit((unsigned char)*ep))
-        {
-            while (isdigit((unsigned char)*ep))
-            {
-                if (e < 100000)
-                    e = e * 10 + (*ep - '0');
-                ep++;
-            }
-            p = ep;
-            exp10 = exp_neg ? -e : e;
-        }
-    }
-
-    if (endptr)
-        *endptr = (char *)p;
-    if (mant == 0)
-        return neg ? -0.0 : 0.0;
-
-    exp10 += frac_exp;
-    val = (double)mant;
-    if (exp10 > 0)
-    {
-        if (exp10 > 308)
-        {
-            val *= pow(10.0, 308);
-            exp10 -= 308;
-            if (exp10 > 308)
-            {
-                errno = ERANGE;
-                return neg ? -HUGE_VAL : HUGE_VAL;
-            }
-        }
-        val *= pow(10.0, (double)exp10);
-        if (val == HUGE_VAL)
-            errno = ERANGE;
-    }
-    else if (exp10 < 0)
-    {
-        long neg_exp = -exp10;
-
-        if (neg_exp > 308)
-        {
-            val /= pow(10.0, 308);
-            neg_exp -= 308;
-            if (neg_exp > 308)
-            {
-                errno = ERANGE;
-                return neg ? -0.0 : 0.0;
-            }
-        }
-        val /= pow(10.0, (double)neg_exp);
-        if (val == 0.0)
-            errno = ERANGE;
-    }
-    return neg ? -val : val;
+double awk_libnix_atof(const char *nptr)
+{
+    return libnix_fmt_strtod(nptr, NULL);
 }

@@ -18,8 +18,18 @@
     -, + and space flags as for numbers, while # and 0 have no effect (C11
     7.21.6.1, footnote 277), as glibc prints them. The libc of macOS prints
     a NaN without a sign and ignores + and space there.
+
+    The strtod() of the other direction is exact too, for the same reason:
+    libnix rounds after 16 digits, and an adapter that scales a 64-bit
+    mantissa by powers of ten rounds twice, while the IEEEDPPow() and the
+    multiplications of AmigaOS 3.2.3 are not correctly rounded. It keeps
+    the significant digits as a big integer D in base 2^32 words, takes the
+    quotient of D * 10^E by a power of two to two or three bits beyond the
+    precision of the result, and rounds that once, to nearest with ties to
+    even, with a sticky bit for the remainder.
 */
 
+#include <errno.h>
 #include <limits.h>
 #include <stddef.h>
 #include <string.h>
@@ -420,4 +430,337 @@ int libnix_fmt_double(char *buf, size_t sz, const char *spec, double v)
     if (sz)
         buf[out.len] = '\0';
     return (int)(len + pad);
+}
+
+/* libnix_fmt_strtod(): the value D * 10^E of the significant digits D, in
+   base 2^32 words, least significant first. 10^1124 shifted left by 55
+   bits, the largest number the conversion builds, has 3789 bits. */
+#define BIN_WORDS 128
+#define SCAN_DIGITS 800         /* a midpoint of two doubles has at most 767 */
+
+struct bin {
+    unsigned int w[BIN_WORDS];
+    int n;                      /* words in use, the top one not 0 */
+};
+
+static void bin_mul_add(struct bin *a, unsigned int mul, unsigned int add)
+{
+    unsigned long long carry = add;
+    int i;
+
+    for (i = 0; i < a->n; i++)
+    {
+        unsigned long long t = (unsigned long long)a->w[i] * mul + carry;
+
+        a->w[i] = (unsigned int)t;
+        carry = t >> 32;
+    }
+    if (carry != 0)
+        a->w[a->n++] = (unsigned int)carry;
+}
+
+static int bin_bits(const struct bin *a)
+{
+    unsigned int top;
+    int bits;
+
+    if (a->n == 0)
+        return 0;
+    top = a->w[a->n - 1];
+    for (bits = (a->n - 1) * 32; top != 0; top >>= 1)
+        bits++;
+    return bits;
+}
+
+static void bin_shift_left(struct bin *a, int k)
+{
+    int words = k / 32, bits = k % 32, i;
+
+    if (a->n == 0)
+        return;
+    a->w[a->n] = 0;
+    for (i = a->n; i >= 0; i--)
+    {
+        unsigned int v = a->w[i] << bits;
+
+        if (bits != 0 && i > 0)
+            v |= a->w[i - 1] >> (32 - bits);
+        a->w[i + words] = v;
+    }
+    for (i = 0; i < words; i++)
+        a->w[i] = 0;
+    a->n += words + 1;
+    while (a->n > 0 && a->w[a->n - 1] == 0)
+        a->n--;
+}
+
+static void bin_shift_right1(struct bin *a)
+{
+    int i;
+
+    for (i = 0; i < a->n; i++)
+        a->w[i] = (a->w[i] >> 1) | (i + 1 < a->n ? a->w[i + 1] << 31 : 0);
+    while (a->n > 0 && a->w[a->n - 1] == 0)
+        a->n--;
+}
+
+static int bin_compare(const struct bin *a, const struct bin *b)
+{
+    int i;
+
+    if (a->n != b->n)
+        return a->n < b->n ? -1 : 1;
+    for (i = a->n - 1; i >= 0; i--)
+        if (a->w[i] != b->w[i])
+            return a->w[i] < b->w[i] ? -1 : 1;
+    return 0;
+}
+
+/* a -= b, for a >= b */
+static void bin_subtract(struct bin *a, const struct bin *b)
+{
+    unsigned int borrow = 0;
+    int i;
+
+    for (i = 0; i < a->n; i++)
+    {
+        unsigned long long s = (unsigned long long)a->w[i]
+                               - (i < b->n ? b->w[i] : 0) - borrow;
+
+        a->w[i] = (unsigned int)s;
+        borrow = (unsigned int)(s >> 63);
+    }
+    while (a->n > 0 && a->w[a->n - 1] == 0)
+        a->n--;
+}
+
+/* floor(a / t) for a quotient below 2^56, leaving the remainder in a and
+   t shifted. */
+static unsigned long long bin_divide(struct bin *a, struct bin *t)
+{
+    unsigned long long q = 0;
+    int i;
+
+    bin_shift_left(t, 55);
+    for (i = 55; i >= 0; i--)
+    {
+        q <<= 1;
+        if (bin_compare(a, t) >= 0)
+        {
+            bin_subtract(a, t);
+            q |= 1;
+        }
+        bin_shift_right1(t);
+    }
+    return q;
+}
+
+static double from_bits(unsigned long long bits)
+{
+    union { unsigned long long u; double d; } x;
+
+    x.u = bits;
+    return x.d;
+}
+
+static int c_space(char c)
+{
+    return c == ' ' || (c >= '\t' && c <= '\r');
+}
+
+static int c_lower(char c)
+{
+    return c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c;
+}
+
+static int c_alnum(char c)
+{
+    return (c >= '0' && c <= '9') || (c_lower(c) >= 'a' && c_lower(c) <= 'z');
+}
+
+static int match_lower(const char *s, const char *word)
+{
+    while (*word)
+        if (c_lower(*s++) != *word++)
+            return 0;
+    return 1;
+}
+
+double libnix_fmt_strtod(const char *nptr, char **endptr)
+{
+    static const unsigned int pow10[10] = {
+        1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u,
+        100000000u, 1000000000u
+    };
+    /* static: the ports run with small stacks, and nothing here recurses */
+    static struct bin a, t;
+    const char *p = nptr;
+    unsigned long long sign = 0, q, rest, half;
+    unsigned int chunk = 0;
+    int any = 0, point = 0, sticky = 0, chunk_digits = 0;
+    int b, lsb, drop, inexact, k;
+    long nd = 0, adjust = 0, e = 0, exp10;
+
+    if (endptr)
+        *endptr = (char *)nptr;
+    while (c_space(*p))
+        p++;
+    if (*p == '-' || *p == '+')
+        sign = *p++ == '-' ? 1ULL << 63 : 0;
+
+    if (match_lower(p, "inf"))
+    {
+        p += match_lower(p, "infinity") ? 8 : 3;
+        if (endptr)
+            *endptr = (char *)p;
+        return from_bits(sign | 0x7ff0000000000000ULL);
+    }
+    if (match_lower(p, "nan"))
+    {
+        p += 3;
+        if (*p == '(')
+        {
+            const char *s = p + 1;
+
+            while (c_alnum(*s) || *s == '_')
+                s++;
+            if (*s == ')')
+                p = s + 1;
+        }
+        if (endptr)
+            *endptr = (char *)p;
+        return from_bits(sign | 0x7ff8000000000000ULL);
+    }
+
+    /* The significant digits go to a, nine at a time, and adjust counts the
+       digits of the fraction among them, or of the integer part past them.
+       After SCAN_DIGITS digits, a non-zero digit only sets sticky, which
+       becomes one digit 1 after them: no midpoint lies between D with that
+       digit and the exact value. */
+    a.n = 0;
+    for (;; p++)
+    {
+        if (*p == '.' && !point)
+        {
+            point = 1;
+            continue;
+        }
+        if (*p < '0' || *p > '9')
+            break;
+        any = 1;
+        if (nd == 0 && *p == '0')
+        {
+            if (point)
+                adjust--;
+        }
+        else if (nd < SCAN_DIGITS)
+        {
+            chunk = chunk * 10 + (unsigned int)(*p - '0');
+            if (++chunk_digits == 9)
+            {
+                bin_mul_add(&a, pow10[9], chunk);
+                chunk = 0;
+                chunk_digits = 0;
+            }
+            nd++;
+            if (point)
+                adjust--;
+        }
+        else
+        {
+            if (*p != '0')
+                sticky = 1;
+            if (!point)
+                adjust++;
+        }
+    }
+    if (!any)
+        return 0.0;
+    if (sticky)
+    {
+        chunk = chunk * 10 + 1;
+        chunk_digits++;
+        nd++;
+        adjust--;
+    }
+    bin_mul_add(&a, pow10[chunk_digits], chunk);
+
+    if (*p == 'e' || *p == 'E')
+    {
+        const char *s = p + 1;
+        int neg = 0;
+
+        if (*s == '-' || *s == '+')
+            neg = *s++ == '-';
+        if (*s >= '0' && *s <= '9')
+        {
+            for (; *s >= '0' && *s <= '9'; s++)
+                if (e < 100000000L)
+                    e = e * 10 + (*s - '0');
+            if (neg)
+                e = -e;
+            p = s;
+        }
+        else
+            e = 0;
+    }
+    if (endptr)
+        *endptr = (char *)p;
+    if (nd == 0)
+        return from_bits(sign);
+
+    /* D < 10^nd, so D * 10^E < 10^(nd + E): above 10^310 is past DBL_MAX,
+       below 10^-323 is under half the smallest subnormal. */
+    exp10 = e + adjust;
+    if (nd + exp10 > 310)
+    {
+        errno = ERANGE;
+        return from_bits(sign | 0x7ff0000000000000ULL);
+    }
+    if (nd + exp10 < -323)
+    {
+        errno = ERANGE;
+        return from_bits(sign);
+    }
+
+    /* q = floor(D * 10^E / 2^b), b chosen for a q of 55 or 56 bits, or
+       -1076 for the subnormals: two or three bits under the last bit of
+       the result, with sticky for the remainder. */
+    t.n = 1;
+    t.w[0] = 1;
+    for (k = (int)(exp10 < 0 ? -exp10 : exp10); k > 0; k -= 9)
+        bin_mul_add(exp10 < 0 ? &t : &a, pow10[k > 9 ? 9 : k], 0);
+    b = bin_bits(&a) - bin_bits(&t) - 55;
+    if (b < -1076)
+        b = -1076;
+    if (b < 0)
+        bin_shift_left(&a, -b);
+    else
+        bin_shift_left(&t, b);
+    q = bin_divide(&a, &t);
+    for (k = 0; (q >> k) != 0; k++)
+        ;
+    lsb = b + k - 53;
+    if (lsb < -1074)
+        lsb = -1074;
+    drop = lsb - b;
+    half = 1ULL << (drop - 1);
+    rest = q & ((half << 1) - 1);
+    inexact = rest != 0 || a.n != 0;
+    q >>= drop;
+    if (rest > half || (rest == half && (a.n != 0 || (q & 1))))
+        q++;
+    if (q == 1ULL << 53)
+    {
+        q >>= 1;
+        lsb++;
+    }
+    if (lsb > 971)
+    {
+        errno = ERANGE;
+        return from_bits(sign | 0x7ff0000000000000ULL);
+    }
+    if (inexact && q < 1ULL << 52)
+        errno = ERANGE;
+    return from_bits(sign | (((unsigned long long)(lsb + 1074) << 52) + q));
 }

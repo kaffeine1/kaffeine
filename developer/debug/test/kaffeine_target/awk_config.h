@@ -14,8 +14,8 @@
     without sa_sigaction or FPE_INTDIV), maps the wait status macros of
     run.c's system() builtin to the unshifted return code of libnix's
     SystemTagList() call, maps srandom()/random() to srand()/rand(), and
-    routes locale initialization, snprintf() and strtod() on m68k to
-    awk_libnix.c.
+    routes locale initialization, snprintf(), strtod() and atof() on m68k
+    to awk_libnix.c.
 */
 
 #ifndef AWK_CONFIG_H
@@ -73,10 +73,13 @@ static inline char *awk_c_setlocale(int cat, const char *locale)
 #ifdef __mc68000__
 extern int awk_libnix_snprintf(char *buf, size_t sz, const char *fmt, ...);
 extern double awk_libnix_strtod(const char *nptr, char **endptr);
+extern double awk_libnix_atof(const char *nptr);
 #undef snprintf
 #define snprintf awk_libnix_snprintf
 #undef strtod
 #define strtod awk_libnix_strtod
+#undef atof
+#define atof awk_libnix_atof
 #endif
 
 #endif

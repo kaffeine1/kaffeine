@@ -11,9 +11,9 @@
     exact formatter of libnix_fmt.c. In libnix, strtod()
     calls sscanf("%lf%ln"), whose vfscanf() stores 0.0 and advances endptr
     past the first non-digit character when no number is present, and rounds
-    after 16 decimal digits on 2^63; lua_libnix_strtod() parses decimal
-    floats with a 64-bit integer mantissa of up to 19 significant digits and
-    leaves *endptr at nptr when no digits match. In libm.a of libnix,
+    after 16 decimal digits on 2^63; lua_libnix_strtod() is the exact
+    libnix_fmt_strtod(), which leaves *endptr at nptr when no number
+    matches. In libm.a of libnix,
     __eqdf2, __nedf2, __gtdf2, __gedf2, __ltdf2, __ledf2 and __cmpdf2 are all
     aliases for IEEEDPCmp(), which has no unordered return value: on AmigaOS
     3.2.3 IEEEDPCmp(NaN, NaN) is 0 and IEEEDPCmp(NaN, DBL_MAX) is +1. The
@@ -166,120 +166,5 @@ int lua_libnix_snprintf(char *buf, size_t sz, const char *fmt, ...)
 
 double lua_libnix_strtod(const char *nptr, char **endptr)
 {
-    const char *p = nptr;
-    unsigned long long mant = 0;
-    int neg = 0, sig = 0, any = 0, frac_exp = 0, exp_neg = 0;
-    long exp10 = 0, e = 0;
-    double val;
-
-    if (endptr)
-        *endptr = (char *)nptr;
-    while (isspace((unsigned char)*p))
-        p++;
-    if (*p == '-' || *p == '+')
-        neg = (*p++ == '-');
-
-    while (isdigit((unsigned char)*p))
-    {
-        any = 1;
-        if (mant != 0 || *p != '0')
-        {
-            if (sig < 19)
-            {
-                mant = mant * 10 + (unsigned)(*p - '0');
-                sig++;
-            }
-            else
-            {
-                frac_exp++;
-            }
-        }
-        p++;
-    }
-    if (*p == '.')
-    {
-        p++;
-        while (isdigit((unsigned char)*p))
-        {
-            any = 1;
-            if (mant != 0 || *p != '0')
-            {
-                if (sig < 19)
-                {
-                    mant = mant * 10 + (unsigned)(*p - '0');
-                    sig++;
-                    frac_exp--;
-                }
-            }
-            else
-            {
-                frac_exp--;
-            }
-            p++;
-        }
-    }
-    if (!any)
-        return 0.0;
-
-    if (*p == 'e' || *p == 'E')
-    {
-        const char *ep = p + 1;
-
-        if (*ep == '-' || *ep == '+')
-            exp_neg = (*ep++ == '-');
-        if (isdigit((unsigned char)*ep))
-        {
-            while (isdigit((unsigned char)*ep))
-            {
-                if (e < 100000)
-                    e = e * 10 + (*ep - '0');
-                ep++;
-            }
-            p = ep;
-            exp10 = exp_neg ? -e : e;
-        }
-    }
-
-    if (endptr)
-        *endptr = (char *)p;
-    if (mant == 0)
-        return neg ? -0.0 : 0.0;
-
-    exp10 += frac_exp;
-    val = (double)mant;
-    if (exp10 > 0)
-    {
-        if (exp10 > 308)
-        {
-            val *= pow(10.0, 308);
-            exp10 -= 308;
-            if (exp10 > 308)
-            {
-                errno = ERANGE;
-                return neg ? -HUGE_VAL : HUGE_VAL;
-            }
-        }
-        val *= pow(10.0, (double)exp10);
-        if (val == HUGE_VAL)
-            errno = ERANGE;
-    }
-    else if (exp10 < 0)
-    {
-        long neg_exp = -exp10;
-
-        if (neg_exp > 308)
-        {
-            val /= pow(10.0, 308);
-            neg_exp -= 308;
-            if (neg_exp > 308)
-            {
-                errno = ERANGE;
-                return neg ? -0.0 : 0.0;
-            }
-        }
-        val /= pow(10.0, (double)neg_exp);
-        if (val == 0.0)
-            errno = ERANGE;
-    }
-    return neg ? -val : val;
+    return libnix_fmt_strtod(nptr, endptr);
 }

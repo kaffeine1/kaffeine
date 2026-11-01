@@ -886,7 +886,8 @@ clean:
 check-runner:
 	$(PYTHON) -m unittest discover -s $(TEST_DIR) -p 'test_run_raspi_qemu.py' -v
 
-# libnix_fmt.c built for the host and compared with the host snprintf()
+# libnix_fmt.c built for the host and compared with the host snprintf() and
+# strtod()
 $(BUILD_DIR)/test_libnix_fmt: $(TEST_DIR)/test_libnix_fmt.c $(TEST_DIR)/libnix_fmt.c \
                               $(TEST_DIR)/libnix_fmt.h | $(BUILD_DIR)
 	$(HOST_CC) -O2 -Wall -Wno-format-nonliteral -I$(TEST_DIR) -o $@ \

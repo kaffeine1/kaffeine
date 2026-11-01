@@ -3,8 +3,9 @@
 #
 # printf and sprintf conversions (%d, %i, %o, %x, %X, %u, %c, %s, %e, %E, %f,
 # %g, %G and %%) with positive and negative field widths, precisions, zero
-# padding and dynamic width/precision arguments, and the exact digits and
-# full length of large and long floating conversions.
+# padding and dynamic width/precision arguments, the exact digits and full
+# length of large and long floating conversions, and exact decimal to double
+# conversions.
 
 BEGIN {
     printf "int: [%d] [%i] [%6d] [%-6d] [%06d] [%+d] [% d]\n",
@@ -35,4 +36,15 @@ BEGIN {
     printf "big: [%.20e] [%.0f]\n", big, 2^70
     printf "long: [%d] [%s]\n", length(sprintf("%.1000f", 1.25)),
         substr(sprintf("%.300f", big), 290, 30)
+    # decimal to double, exact: the case of the review and its spellings, a
+    # tie and a value just above it, 30 digits, the normal boundary, values
+    # that end subnormal and inexact (ERANGE, so 0 in awk, as on the hosts)
+    # and the overflow edge
+    printf "str2d: [%.17g] [%.17g] [%.17g] [%.17g]\n",
+        "9007199254740991.0" + 0, "90071992547409910e-1" + 0,
+        "9007199254740993" + 0, "9007199254740993.00000000000000000001" + 0
+    printf "str2d-edge: [%.17g] [%.17g] [%.17g] [%.17g] [%.17g] [%.17g]\n",
+        "123456789012345678901234567890" + 0, "2.2250738585072013e-308" + 0,
+        "2.2250738585072011e-308" + 0, "4.9406564584124654e-324" + 0,
+        "1.7976931348623158e308" + 0, "1e400" + 0
 }
