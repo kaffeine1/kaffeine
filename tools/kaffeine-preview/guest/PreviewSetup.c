@@ -50,7 +50,7 @@ static BOOL screen_preferences(void)
     BOOL ok;
 
     if (mode == (ULONG)INVALID_ID) {
-        PutStr("PreviewSetup: no 32-bit desktop mode is available.\n");
+        PutStr((CONST_STRPTR)"PreviewSetup: no 32-bit desktop mode is available.\n");
         return FALSE;
     }
     /* IFF FORM/PREF: packed six-byte PRHD and 28-byte SCRM, big endian. */
@@ -64,18 +64,18 @@ static BOOL screen_preferences(void)
     be16(prefs + 54, 1024);
     be16(prefs + 56, 768);
     be16(prefs + 58, 32);
-    file = Open("ENV:SYS/screenmode.prefs", MODE_NEWFILE);
+    file = Open((CONST_STRPTR)"ENV:SYS/screenmode.prefs", MODE_NEWFILE);
     if (file == BNULL)
         return FALSE;
     ok = Write(file, prefs, sizeof(prefs)) == sizeof(prefs);
     if (!Close(file))
         ok = FALSE;
     if (ok)
-        Printf("PreviewSetup: requested 1024x768x32, mode 0x%08lx.\n", mode);
+        Printf((CONST_STRPTR)"PreviewSetup: requested 1024x768x32, mode 0x%08lx.\n", mode);
     return ok;
 }
 
-static BOOL make_icon(CONST_STRPTR name, LONG type, STRPTR tool)
+static BOOL make_icon(const char *name, LONG type, STRPTR tool)
 {
     struct DiskObject *icon = GetDefDiskObject(type);
     STRPTR saved_tool;
@@ -94,7 +94,7 @@ static BOOL make_icon(CONST_STRPTR name, LONG type, STRPTR tool)
     }
     icon->do_CurrentX = NO_ICON_POSITION;
     icon->do_CurrentY = NO_ICON_POSITION;
-    ok = PutDiskObject(name, icon);
+    ok = PutDiskObject((CONST_STRPTR)name, icon);
     /* FreeDiskObject owns the original arrays, not our static strings. */
     icon->do_DefaultTool = saved_tool;
     icon->do_ToolTypes = saved_types;
@@ -107,7 +107,7 @@ static int screen_status(void)
     struct Screen *screen = LockPubScreen(NULL);
     ULONG depth, width, height, mode;
     if (screen == NULL) {
-        PutStr("PreviewSetup: no public screen.\n");
+        PutStr((CONST_STRPTR)"PreviewSetup: no public screen.\n");
         return RETURN_FAIL;
     }
     width = screen->Width;
@@ -115,7 +115,7 @@ static int screen_status(void)
     depth = GetBitMapAttr(screen->RastPort.BitMap, BMA_DEPTH);
     mode = GetVPModeID(&screen->ViewPort);
     UnlockPubScreen(NULL, screen);
-    Printf("Preview desktop: %lux%lux%lu, mode 0x%08lx.\n",
+    Printf((CONST_STRPTR)"Preview desktop: %lux%lux%lu, mode 0x%08lx.\n",
            width, height, depth, mode);
     return width >= 1024 && height >= 768 && depth >= 24
         ? RETURN_OK : RETURN_FAIL;
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "status") == 0)
         return screen_status();
     if (argc != 1) {
-        PutStr("Usage: PreviewSetup [status]\n");
+        PutStr((CONST_STRPTR)"Usage: PreviewSetup [status]\n");
         return RETURN_FAIL;
     }
     if (!screen_preferences()
@@ -136,9 +136,9 @@ int main(int argc, char **argv)
         || !make_icon("SYS:KaffeinePreview/Test-JIT", WBPROJECT, (STRPTR)"C:Execute")
         || !make_icon("SYS:KaffeinePreview/Test-Moira", WBPROJECT, (STRPTR)"C:Execute")
         || !make_icon("SYS:KaffeinePreview/ReadMe", WBPROJECT, (STRPTR)"C:Type")) {
-        PutStr("PreviewSetup: desktop preparation failed.\n");
+        PutStr((CONST_STRPTR)"PreviewSetup: desktop preparation failed.\n");
         return RETURN_FAIL;
     }
-    PutStr("PreviewSetup: desktop preferences and launch icons prepared.\n");
+    PutStr((CONST_STRPTR)"PreviewSetup: desktop preferences and launch icons prepared.\n");
     return RETURN_OK;
 }

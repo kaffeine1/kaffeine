@@ -24,7 +24,10 @@ the modules in `requirements-build.txt`, and the host utilities required by
 AROS configure. GNU make must also be named `make` on the build's PATH:
 MetaMake invokes it recursively. Apple's system make 3.81 cannot generate
 the archive response files used by the current build rules. Use an isolated
-host-tools directory instead of changing system programs.
+host-tools directory instead of changing system programs. Bison must have its
+matching data directory too: a copied Bison executable alone may look for a
+nonexistent relative `share/bison` directory. Pass `BISON=/absolute/path/to/bison`
+to make when selecting a complete host installation.
 
 Initialize the repository's pinned submodules before building. In addition
 to the Moira core, catalog submodules provide English message definitions
