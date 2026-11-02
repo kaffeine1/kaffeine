@@ -520,7 +520,7 @@ intuition,-48,ClearDMRequest,window=a0,BOOL ClearDMRequest(struct Window *window
 intuition,-54,ClearMenuStrip,window=a0,VOID ClearMenuStrip(struct Window *window),"T,X",overridden,Kaffeine_ClearMenuStrip,Shadow-resolved struct pointer (m68k_to_host_or_shadow/resolve_rp); Overridden at runtime by Kaffeine_ClearMenuStrip
 intuition,-60,ClearPointer,window=a0,VOID ClearPointer(struct Window *window),T,harmless on the current target only by accident,,Shadow-resolved struct pointer (m68k_to_host_or_shadow/resolve_rp)
 intuition,-78,CloseWorkBench,,LONG CloseWorkBench(VOID),S,none,,Scalar arguments and scalar/void return only
-intuition,-84,CurrentTime,"seconds=a0, micros=a1","VOID CurrentTime(ULONG *seconds, ULONG *micros)","B,O",crash or memory corruption,,Guest buffer/string pointer passed via m68k_to_host without bounds check
+intuition,-84,CurrentTime,"seconds=a0, micros=a1","VOID CurrentTime(ULONG *seconds, ULONG *micros)","B,O,X",overridden,thunk_intuition_CurrentTime,Guest buffer/string pointer passed via m68k_to_host without bounds check; Overridden at runtime by thunk_intuition_CurrentTime
 intuition,-90,DisplayAlert,"alertnumber=d0, string=a0, height=d1","BOOL DisplayAlert(ULONG alertNumber, CONST_STRPTR string, ULONG height)",B,crash or memory corruption,,Guest buffer/string pointer passed via m68k_to_host without bounds check
 intuition,-96,DisplayBeep,screen=a0,VOID DisplayBeep(struct Screen *screen),T,harmless on the current target only by accident,,Shadow-resolved struct pointer (m68k_to_host_or_shadow/resolve_rp)
 intuition,-102,DoubleClick,"sSeconds=d0, sMicros=d1, cSeconds=d2, cMicros=d3","BOOL DoubleClick(ULONG sSeconds, ULONG sMicros, ULONG cSeconds, ULONG cMicros)",S,none,,Scalar arguments and scalar/void return only

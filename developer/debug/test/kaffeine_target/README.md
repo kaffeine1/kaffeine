@@ -1033,8 +1033,7 @@ outputs and same-pointer aliasing have their own guarded calls. No clock is
 set, no wall-clock value is a golden, and this is not a timing benchmark.
 
 A complete successful run has 31 checks, empty stderr, RC 0 and the final
-line `intuition_currenttime: 31 checks, 0 failed`. Those are the expected
-outputs; adding this source does not establish an ARM target result.
+line `intuition_currenttime: 31 checks, 0 failed`.
 Successful D0 preservation is Kaffeine's explicit policy for this void
 operation, stronger than the old generated thunk's return of zero. It is
 not an Intuition API guarantee for arbitrary native systems. Old-module
@@ -1050,6 +1049,23 @@ line. Never use these modes with the old raw-pointer generated thunk.
 The host unit covers protected regions, partial overlap, boundary addresses
 and validation before any native call or partial write; the target probe
 does not infer those properties from its controlled exit alone.
+
+On 2 November 2026, the same 68k executable passed all 31 checks from both
+the Shell and actual `Run` with Moira and Kaffeine JIT on AROS ARM64 in
+QEMU, using one TCG thread. All eight fixed-module containment executions
+(two bad arguments, two backends, Shell and Run) returned 20 with the exact
+native diagnostic `CurrentTime(): invalid guest output, stopping (20)`.
+The UART logs contained no CPU fault, JIT stop or unimplemented call.
+Require that diagnostic when checking containment: RC 20 alone also occurs
+for CPU faults. The ordinary control on the older library completed with
+14 failed checks in each execution, including explicit byte-swapped-only
+clock matches, independently of its D0 failures.
+
+The tested native module was built from `70e2f781b15392216afa669c005ecfa750b4abd9`
+(SHA-256 `dd793fa9196d3ff28df8256c0663f13010ba61a8b64b59509759aafc5a68b450`);
+the 68k probe SHA-256 was
+`ecdb2534328711aff778a475c2d07bcb125319ef0b62fa9eca4a4d7a9bd146cb`.
+This is QEMU evidence; physical ARM hardware has not been tested.
 
 ## Expected containment and exit probes
 

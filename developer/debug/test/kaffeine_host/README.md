@@ -131,7 +131,9 @@ one pointer or overlapping destinations end as on a 68k Intuition. NULL
 destinations are skipped and D0 survives. Each non-NULL destination is checked
 whole before the native call: a span past the arena, wrapping, or touching a
 bridge structure, video or lock range stops the program with rc 20 and writes
-nothing.
+nothing. The focused executable passes 21 fixtures, including a generated-table
+fallback control. This host result is separate from the
+[AROS ARM64 target results](../kaffeine_target/README.md#intuition-currenttime-probe).
 
 ### Classic service processes
 
