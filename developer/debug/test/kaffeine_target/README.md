@@ -1523,6 +1523,19 @@ normally with return code 0 and empty standard error. Six original
 frames document this bounded transform; other transforms remain untested
 by this check.
 
+The [layered project save, reopen and resave workflow](../../../../docs/kaffeine/classic-applications.md#amipixelshop-layered-project-save-reopen-and-resave-2026-11-02-utc)
+adds persistence across fresh processes: Shell Save As writes a 160x120
+two-layer APX1 project, a native copy preserves the original, and actual
+Run reopens it, moves the transparent Layer 1 ten pixels right and uses
+Ctrl+S to resave the same path without another ASL requester. Both
+applications close cleanly with Ctrl+Q and return 0 with empty standard
+error. Independent decoding checks both 357-byte files, including separate
+layer RGBA, tile padding and metadata; five canvas frames match fixed
+geometry exactly, with 800 pixels changed by the move. Seven original
+frames and both native project files document this bounded workflow.
+Arbitrary transparency, other layer features and physical hardware remain
+separate checks.
+
 ### Additional portable Lua tests (2026-11-01)
 
 `lua_db`, `lua_gengc` and `lua_verybig` add three scripts to the existing
