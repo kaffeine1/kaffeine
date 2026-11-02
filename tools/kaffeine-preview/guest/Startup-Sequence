@@ -13,6 +13,11 @@ Assign LOCALE: SYS:Locale
 Assign LIBS: SYS:Classes ADD
 Assign WANDERER: SYS:System/Wanderer
 Assign IMAGES: SYS:System/Images DEFER
+Assign THEMES: SYS:Prefs/Presets/Themes
+Assign THEME: THEMES:AROSDefault
+If EXISTS THEME:Images
+    Assign IMAGES: THEME:Images PREPEND
+EndIf
 Assign HELP: LOCALE:Help DEFER
 Path C: SYS:System S: QUIET
 SetEnv KAFFEINE_CPU jit

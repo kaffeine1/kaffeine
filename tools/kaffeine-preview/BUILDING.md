@@ -77,7 +77,7 @@ make -j1 workbench-libs-locale workbench-libs-icon workbench-libs-workbench \
   workbench-libs-codesets-library workbench-libs-codesets-charsets \
   workbench-libs-z workbench-libs-png workbench-libs-freetype-module \
   workbench-system-wanderer workbench-c workbench-devs-keymaps \
-  workbench-s workbench-fonts
+  workbench-s workbench-fonts workbench-images-themes
 ```
 
 The kernel target links `task.resource` into the core ELF; it does not need
@@ -101,6 +101,12 @@ The startup selects a requested JIT default in RAM, prepares screen
 preferences before IPrefs and opens Wanderer. The two test icons explicitly
 select their own backend. They report their requested choice; actual backend
 messages and JIT counters come from the library in the session UART logs.
+
+Include the built `Prefs/Presets/Themes` directory in the disk. Wanderer's
+drawer toolbar and Execute Command tool load images through `THEME:`.
+The preview startup assigns `THEMES:` and `THEME:` to the supplied default
+theme before starting the desktop; copying the native executables alone
+can boot but leaves an insert-volume requester when opening drawers.
 
 Include the build-generated **`AROS.boot`** in the disk's root. The boot
 target writes the CPU signature (`aarch64` for this profile). A FAT partition
