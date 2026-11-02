@@ -1,0 +1,5 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
+Mako==1.4.3
+MarkupSafe==3.0.4
+PyYAML==6.0.3

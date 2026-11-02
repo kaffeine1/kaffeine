@@ -1,0 +1,11 @@
+; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; Author: Michele Dipace (@kaffeine1)
+FailAt 21
+Stack 1048576
+Set KAFFEINE_CPU moira
+Echo "Requested backend: Moira interpreter."
+Echo "Actual backend diagnostics are in the session serial logs."
+SYS:KaffeinePreview/PreviewSmoke >SYS:KaffeinePreview/Results/moira-smoke.txt
+Echo "rc $RC" >SYS:KaffeinePreview/Results/moira-smoke-rc.txt
+Type SYS:KaffeinePreview/Results/moira-smoke.txt
+Type SYS:KaffeinePreview/Results/moira-smoke-rc.txt

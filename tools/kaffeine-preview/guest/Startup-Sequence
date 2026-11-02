@@ -1,0 +1,39 @@
+; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; Author: Michele Dipace (@kaffeine1)
+; Minimal desktop startup for the isolated QEMU community preview.
+FailAt 21
+MakeDir RAM:T RAM:Clipboards RAM:ENV RAM:ENV/SYS
+Assign T: RAM:T
+Assign CLIPS: RAM:Clipboards
+Assign ENV: RAM:ENV
+Assign ENVARC: SYS:Prefs/Env-Archive
+Assign KEYMAPS: DEVS:Keymaps
+Assign FONTS: SYS:Fonts
+Assign LOCALE: SYS:Locale
+Assign LIBS: SYS:Classes ADD
+Assign WANDERER: SYS:System/Wanderer
+Assign IMAGES: SYS:System/Images DEFER
+Assign THEMES: SYS:Prefs/Presets/Themes
+Assign THEME: THEMES:AROSDefault
+If EXISTS THEME:Images
+    Assign IMAGES: THEME:Images PREPEND
+EndIf
+Assign HELP: LOCALE:Help DEFER
+Path C: SYS:System S: QUIET
+SetEnv KAFFEINE_CPU jit
+PreviewSetup >SYS:KaffeinePreview/Results/setup.txt
+Echo "rc $RC" >SYS:KaffeinePreview/Results/setup-rc.txt
+If EXISTS C:AddUSBClasses
+    Run <NIL: >NIL: QUIET AddUSBClasses
+EndIf
+If EXISTS C:PsdStackLoader
+    PsdStackLoader >NIL:
+EndIf
+IPrefs
+If EXISTS S:User-Startup
+    Execute S:User-Startup
+EndIf
+WANDERER:Wanderer
+If NOT ERROR
+    EndCLI
+EndIf

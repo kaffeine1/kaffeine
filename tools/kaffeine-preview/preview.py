@@ -11,8 +11,10 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import zipfile
@@ -24,6 +26,8 @@ LOGS = ("serial.log", "serial-aux.log", "qemu.log")
 LOG_LIMIT = 32 * 1024 * 1024
 REPORT_LIMIT = 64 * 1024
 STATES = {"success", "failure", "unsupported", "timeout", "not-tested"}
+IMPORT_BYTES = 256 * 1024 * 1024
+IMPORT_FILES = 4096
 
 
 class PreviewError(Exception):
@@ -189,7 +193,115 @@ def supervise(proc, session, seconds):
             "elapsed_seconds": round(time.monotonic() - start, 3)}
 
 
-def run(root, session, qemu, seconds):
+def import_application(source, disk, mcopy):
+    """Copy an explicitly selected app into this session, before QEMU opens it."""
+    source = Path(source).absolute()
+    if source.is_symlink() or not source.is_dir():
+        raise PreviewError("Choose a real application directory, without links")
+    source = source.resolve()
+    if source == disk.parent or source in disk.parents or disk.parent in source.parents:
+        raise PreviewError("The application and session directories must be separate")
+    executable = shutil.which(mcopy)
+    if not executable:
+        raise PreviewError("Application import needs mtools; specify mcopy with --mcopy")
+    # Keep the mcopy basename: mtools installations may dispatch via symlinks.
+    executable = str(Path(executable).absolute())
+    with disk.open("rb") as handle:
+        header = handle.read(512)
+        if (len(header) != 512 or header[510:512] != b"\x55\xaa"
+                or header[450] != 0x0c
+                or int.from_bytes(header[454:458], "little") != 2048
+                or any(header[462:510])):
+            raise PreviewError("This application importer requires the preview FAT32 disk layout")
+        sectors = int.from_bytes(header[458:462], "little")
+        if sectors < 65536 or (2048 + sectors) * 512 > disk.stat().st_size:
+            raise PreviewError("Invalid preview partition size")
+        handle.seek(1048576)
+        boot = handle.read(512)
+        if (len(boot) != 512 or boot[510:512] != b"\x55\xaa"
+                or boot[11:13] != b"\x00\x02"
+                or boot[82:90] != b"FAT32   "):
+            raise PreviewError("Invalid preview FAT32 boot sector")
+    def traversal_error(error):
+        raise PreviewError("Could not read the complete application directory") from error
+
+    pending, directories, names, total = [], [], set(), 0
+    for folder, dirs, files in os.walk(source, followlinks=False, onerror=traversal_error):
+        for name in sorted(dirs + files):
+            path = Path(folder) / name
+            relative = path.relative_to(source)
+            if (len(relative.parts) > 16 or len(relative.as_posix()) > 220
+                    or path.is_symlink()):
+                raise PreviewError("Application import refuses links or excessively deep paths")
+            stem = name.split(".")[0].upper()
+            if (not re.fullmatch(r"[A-Za-z0-9_. +()-]+", name)
+                    or name in {".", ".."} or name.endswith((".", " "))
+                    or stem in {"CON", "PRN", "AUX", "NUL"}
+                    or re.fullmatch(r"(?:COM|LPT)[0-9]", stem)):
+                raise PreviewError("Application contains a filename unsupported by the preview importer")
+            key = relative.as_posix().casefold()
+            if key in names:
+                raise PreviewError("Application filenames collide on the guest filesystem")
+            names.add(key)
+            if len(names) > 8192:
+                raise PreviewError("Application exceeds the 8192-entry import limit")
+            if path.is_dir():
+                directories.append(relative)
+                continue
+            if not path.is_file():
+                raise PreviewError("Application import accepts only regular files and directories")
+            info = path.stat()
+            total += info.st_size
+            pending.append((path, relative, info))
+            if len(pending) > IMPORT_FILES or total > IMPORT_BYTES:
+                raise PreviewError("Application exceeds the 4096-file or 256 MiB import limit")
+    if not pending:
+        raise PreviewError("The selected application directory is empty")
+    with tempfile.TemporaryDirectory(prefix=".import-", dir=disk.parent) as temp:
+        staged = Path(temp) / "Imported"
+        staged.mkdir()
+        for relative in directories:
+            (staged / relative).mkdir(parents=True, exist_ok=True)
+        for path, relative, info in pending:
+            target = staged / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                     | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(os.open(path, flags), "rb") as handle, target.open("xb") as out:
+                before = os.fstat(handle.fileno())
+                if not stat.S_ISREG(before.st_mode) or (
+                        before.st_ino, before.st_dev, before.st_size, before.st_mtime_ns) != (
+                        info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns):
+                    raise PreviewError("Application changed during import; retry with a stable copy")
+                remaining = info.st_size
+                while remaining:
+                    block = handle.read(min(1024 * 1024, remaining))
+                    if not block:
+                        raise PreviewError("Application changed during import; retry with a stable copy")
+                    out.write(block)
+                    remaining -= len(block)
+                if handle.read(1):
+                    raise PreviewError("Application changed during import; retry with a stable copy")
+                after = os.fstat(handle.fileno())
+                if after.st_size != before.st_size or after.st_mtime_ns != before.st_mtime_ns:
+                    raise PreviewError("Application changed during import; retry with a stable copy")
+            if target.stat().st_size != info.st_size:
+                raise PreviewError("Incomplete application staging copy")
+        env = dict(os.environ, MTOOLSRC=os.devnull)
+        with (disk.parent / "import.log").open("xb") as log:
+            try:
+                result = subprocess.run([executable, "-s", "-i", str(disk) + "@@1048576",
+                                         str(staged), "::KaffeinePreview/Applications/"],
+                                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                        env=env, timeout=60, check=False)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise PreviewError("Application import could not finish; see the local import.log") from error
+        if result.returncode:
+            raise PreviewError("Application import failed; see the local import.log")
+    return {"files": len(pending), "bytes": total}
+
+
+def run(root, session, qemu, seconds, import_app=None, mcopy="mcopy"):
     root, session = Path(root).resolve(), Path(session).absolute()
     m, files = verify(root)
     executable = shutil.which(qemu)
@@ -211,6 +323,14 @@ def run(root, session, qemu, seconds):
             "backend": "not-observed", "machine": "raspi3b", "tcg_threads": 1,
             "session_limit_seconds": seconds}
     write_json(session / "identity.json", info)
+    if import_app is not None:
+        try:
+            imported = import_application(import_app, session / "disk.img", mcopy)
+        except BaseException:
+            write_json(session / "result.json", {"stop_reason": "import-failed"})
+            raise
+        write_json(session / "import.json", imported)
+        print("Application imported into SYS:KaffeinePreview/Applications/Imported.")
     command = qemu_command(executable, files, session)
     print("Close the QEMU window or press Ctrl-C here to end the session.")
     print("Select jit or moira inside the guest Shell; see README.md.")
@@ -273,9 +393,13 @@ def main(argv=None):
     launch.add_argument("--session", type=Path, required=True, help="new directory; never reused")
     launch.add_argument("--qemu", default="qemu-system-aarch64")
     launch.add_argument("--minutes", type=int, choices=range(1, 61), default=15)
+    launch.add_argument("--import-app", type=Path, help="selected app directory; needs mtools")
+    launch.add_argument("--mcopy", default="mcopy", help="mtools mcopy executable")
     start = commands.add_parser("start", help="start a fresh session beside this extracted kit")
     start.add_argument("--bundle", type=Path, default=Path(__file__).resolve().parent)
     start.add_argument("--qemu", default="qemu-system-aarch64")
+    start.add_argument("--import-app", type=Path, help="selected app directory; needs mtools")
+    start.add_argument("--mcopy", default="mcopy", help="mtools mcopy executable")
     collect = commands.add_parser("report", help="create a local, reviewable report ZIP")
     collect.add_argument("session", type=Path)
     collect.add_argument("output", type=Path)
@@ -290,10 +414,12 @@ def main(argv=None):
         elif args.command == "assemble":
             assemble(args.bundle, args.output)
         elif args.command == "run":
-            return run(args.bundle, args.session, args.qemu, args.minutes * 60)
+            return run(args.bundle, args.session, args.qemu, args.minutes * 60,
+                       args.import_app, args.mcopy)
         elif args.command == "start":
             name = time.strftime("%Y%m%d-%H%M%S", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
-            return run(args.bundle, args.bundle.resolve() / "sessions" / name, args.qemu, 900)
+            return run(args.bundle, args.bundle.resolve() / "sessions" / name, args.qemu, 900,
+                       args.import_app, args.mcopy)
         else:
             report(args.session, args.output, args.result, args.include_logs)
     except (PreviewError, OSError, ValueError, KeyError, TypeError) as error:

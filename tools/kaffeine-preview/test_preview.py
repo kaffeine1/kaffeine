@@ -319,6 +319,8 @@ class PreviewTests(unittest.TestCase):
 
     def test_default_report_excludes_logs_disks_and_unknown_metadata(self):
         session = self.metadata()
+        (session / "import.log").write_text("PRIVATE application paths", encoding="utf-8")
+        (session / "import.json").write_text('{"private": true}', encoding="utf-8")
         (session / "qemu.log").write_bytes(b"private log text")
         out = self.base / "report.zip"
         preview.report(session, out, "not-tested", False)
@@ -374,9 +376,185 @@ class PreviewTests(unittest.TestCase):
             first = run.call_args.args
             self.assertEqual(first[0], self.root)
             self.assertEqual(first[1].parent, self.root.resolve() / "sessions")
-            self.assertEqual(first[2:], ("qemu-system-aarch64", 900))
+            self.assertEqual(first[2:], ("qemu-system-aarch64", 900, None, "mcopy"))
             self.assertEqual(preview.main(["start", "--bundle", str(self.root)]), 0)
             self.assertNotEqual(first[1], run.call_args.args[1])
+
+    def import_fixture(self):
+        disk = self.base / "import-session" / "disk.img"
+        disk.parent.mkdir()
+        header = bytearray(512)
+        header[446] = 0x80
+        header[450] = 0x0c
+        header[454:458] = (2048).to_bytes(4, "little")
+        header[458:462] = (131072 - 2048).to_bytes(4, "little")
+        header[510:512] = b"\x55\xaa"
+        boot = bytearray(512)
+        boot[11:13] = b"\x00\x02"
+        boot[82:90] = b"FAT32   "
+        boot[510:512] = b"\x55\xaa"
+        with disk.open("wb") as handle:
+            handle.write(header)
+            handle.seek(1048576)
+            handle.write(boot)
+            handle.truncate(64 * 1024 * 1024)
+        app = self.base / "selected app"
+        app.mkdir()
+        (app / "App").write_bytes(b"original selected program")
+        (app / "Empty").mkdir()
+        return disk, app
+
+    def test_import_stages_contents_before_transport_and_removes_staging(self):
+        disk, app = self.import_fixture()
+        observed = []
+
+        def transport(command, **kwargs):
+            staged = Path(command[4])
+            self.assertTrue((staged / "Empty").is_dir())
+            self.assertEqual((staged / "App").read_bytes(), (app / "App").read_bytes())
+            self.assertEqual(command[3], str(disk) + "@@1048576")
+            self.assertEqual(command[5], "::KaffeinePreview/Applications/")
+            self.assertEqual(kwargs["env"]["MTOOLSRC"], os.devnull)
+            observed.append(staged)
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(preview.shutil, "which", return_value=sys.executable), \
+                patch.object(preview.subprocess, "run", side_effect=transport):
+            result = preview.import_application(app, disk, "mcopy")
+        self.assertEqual(result, {"files": 1, "bytes": len((app / "App").read_bytes())})
+        self.assertEqual(len(observed), 1)
+        self.assertFalse(observed[0].exists())
+        self.assertTrue((app / "App").is_file())
+
+    def test_import_rejects_links_and_guest_case_collisions_before_transport(self):
+        disk, app = self.import_fixture()
+        for name in ("App", "app"):
+            (app / name).write_bytes(b"file")
+        if len(list(app.glob("[Aa]pp"))) == 2:
+            with patch.object(preview.shutil, "which", return_value=sys.executable), \
+                    patch.object(preview.subprocess, "run") as transport:
+                with self.assertRaises(preview.PreviewError):
+                    preview.import_application(app, disk, "mcopy")
+                transport.assert_not_called()
+        try:
+            (app / "link").symlink_to(app / "App")
+        except OSError:
+            return  # Windows CI can disallow symlink creation.
+        with patch.object(preview.shutil, "which", return_value=sys.executable), \
+                patch.object(preview.subprocess, "run") as transport:
+            with self.assertRaises(preview.PreviewError):
+                preview.import_application(app, disk, "mcopy")
+            transport.assert_not_called()
+
+    def test_import_refuses_wrong_disk_layout_without_transport(self):
+        disk, app = self.import_fixture()
+        with disk.open("r+b") as handle:
+            handle.seek(454)
+            handle.write((63).to_bytes(4, "little"))
+        with patch.object(preview.shutil, "which", return_value=sys.executable), \
+                patch.object(preview.subprocess, "run") as transport:
+            with self.assertRaises(preview.PreviewError):
+                preview.import_application(app, disk, "mcopy")
+            transport.assert_not_called()
+
+    def test_import_refuses_size_excess_without_transport(self):
+        disk, app = self.import_fixture()
+        with patch.object(preview.shutil, "which", return_value=sys.executable), \
+                patch.object(preview, "IMPORT_BYTES", 2), \
+                patch.object(preview.subprocess, "run") as transport:
+            with self.assertRaises(preview.PreviewError):
+                preview.import_application(app, disk, "mcopy")
+            transport.assert_not_called()
+
+    def test_unreadable_subdirectory_refuses_partial_import_before_transport(self):
+        disk, app = self.import_fixture()
+
+        def partial_walk(root, **kwargs):
+            yield str(root), ["Empty"], ["App"]
+            callback = kwargs.get("onerror")
+            if callback is not None:
+                callback(PermissionError("Simulated unreadable application subdirectory"))
+
+        with patch.object(preview.shutil, "which", return_value=sys.executable), \
+                patch.object(preview.os, "walk", side_effect=partial_walk), \
+                patch.object(preview.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as transport:
+            with self.assertRaises(preview.PreviewError):
+                preview.import_application(app, disk, "mcopy")
+            transport.assert_not_called()
+        self.assertFalse(list(disk.parent.glob(".import-*")))
+
+    def test_import_transport_failure_removes_staging_and_does_not_launch_qemu(self):
+        disk, app = self.import_fixture()
+        (self.root / "disk.bin").write_bytes(disk.read_bytes())
+        for entry in self.manifest["files"]:
+            if entry["role"] == "disk":
+                entry["bytes"] = disk.stat().st_size
+                entry["sha256"] = preview.digest(disk)
+        self.save_manifest()
+        session = self.base / "failed-import"
+        with patch.object(preview.shutil, "which", return_value=sys.executable), \
+                patch.object(preview.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)), \
+                patch.object(preview.platform, "system", return_value="fixture-host"), \
+                patch.object(preview.platform, "machine", return_value="fixture-cpu"), \
+                patch.object(preview.platform, "release", return_value="fixture-release"), \
+                patch.object(preview.subprocess, "Popen") as child:
+            with self.assertRaises(preview.PreviewError):
+                preview.run(self.root, session, sys.executable, 10, app)
+            child.assert_not_called()
+        self.assertEqual(preview.read_json(session / "result.json")["stop_reason"], "import-failed")
+        self.assertFalse(list(session.glob(".import-*")))
+        self.assertEqual(preview.digest(self.root / "disk.bin"), preview.digest(disk))
+
+    def test_import_options_reach_launcher_without_shell_interpolation(self):
+        with patch.object(preview, "run", return_value=0) as run:
+            result = preview.main(["run", "--bundle", str(self.root), "--session", str(self.base / "s"),
+                                   "--import-app", str(self.base / "app with spaces"),
+                                   "--mcopy", "./mtools/mcopy"])
+            self.assertEqual(result, 0)
+            self.assertEqual(run.call_args.args[4:], (self.base / "app with spaces", "./mtools/mcopy"))
+
+    def test_growing_source_does_not_expand_staging_beyond_admitted_size(self):
+        disk, app = self.import_fixture()
+        original_size = (app / "App").stat().st_size
+        real_open, real_fstat = Path.open, os.fstat
+        grew, written = [], []
+
+        def grow_after_snapshot(fd):
+            info = real_fstat(fd)
+            if not grew:
+                with real_open(app / "App", "ab") as handle:
+                    handle.write(b"x" * 65536)
+                grew.append(True)
+            return info
+
+        class TrackedOutput:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return self.handle.__exit__(*args)
+
+            def write(self, block):
+                written.append(len(block))
+                if sum(written) > original_size:
+                    raise AssertionError("Staging exceeded the admitted file size")
+                return self.handle.write(block)
+
+        def tracked_open(path, *args, **kwargs):
+            handle = real_open(path, *args, **kwargs)
+            return TrackedOutput(handle) if path.name == "App" and path.parent.name == "Imported" else handle
+
+        with patch.object(preview.shutil, "which", return_value=sys.executable), \
+                patch.object(Path, "open", tracked_open), \
+                patch.object(preview.os, "fstat", side_effect=grow_after_snapshot), \
+                patch.object(preview.subprocess, "run") as transport:
+            with self.assertRaises(preview.PreviewError):
+                preview.import_application(app, disk, "mcopy")
+            transport.assert_not_called()
+        self.assertEqual(written, [original_size])
 
 
 if __name__ == "__main__":
