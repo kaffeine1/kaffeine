@@ -1,13 +1,24 @@
 # Kaffeine community preview tools
 
-This is preparation for an experimental **AROS ARM64 / QEMU raspi3b**
-tester package. **There is no downloadable runtime preview in this change.**
-The commands need a separately built, audited and qualified payload with a
-`manifest.json`. The source tree and existing demonstration disks are not
-such a payload. The native installer for arbitrary AROS installations is
-deferred: Kaffeine also depends on changes in native DOS and boot components.
+The experimental **AROS ARM64 / QEMU raspi3b**
+[community preview 001](https://github.com/kaffeine1/kaffeine/releases/tag/preview-arm64-001)
+is available for a first pilot group. Download its ZIP, checksum and
+qualification record from the release page. The 451,581,722-byte ZIP
+includes the clean matched system, original 68000 test, full matching
+sources and license notices. No proprietary application is bundled.
 
-## Tester workflow (once a qualified payload is released)
+Actual runtime acceptance covers macOS ARM64 with QEMU 11.0.0: a 24-bit
+desktop, both GUI test icons, actual JIT/Moira backend messages, save/reopen
+byte comparison, optional import, normal stop, one-minute timeout and
+report allowlists. The six host/Python CI jobs test the launcher offline;
+they do not qualify guest boots on Linux/Windows or physical hardware.
+
+Use the release payload and its included README. The source tree and
+demonstration disks are not replacement payloads. A native installer for
+arbitrary AROS installations is deferred: Kaffeine also depends on changes
+in native DOS and boot components. Mainline integration remains the goal.
+
+## Tester workflow
 
 Install Python 3.9 or newer and QEMU with `qemu-system-aarch64`, then extract
 the preview ZIP into a new folder. QEMU is installed separately and is not
