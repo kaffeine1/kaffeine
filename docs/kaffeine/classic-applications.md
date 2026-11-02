@@ -237,9 +237,9 @@ with empty standard error and closed cleanly.
 Independent checks decoded the actual 3,369-byte PNG and verified its
 structure, bounded complete zlib stream and RGB pixels. The saved and
 reopened canvas regions are byte-identical to the PNG and match the source
-paint arithmetic applied to the earlier APX1 coverage reference: 3,658
-nonwhite pixels in a 129x30 stroke. See the [six frames, saved PNG and
-reference limits](media/amipixelshop-png-2026-11-02/README.md).
+paint arithmetic applied to the earlier APX1 coverage reference, itself
+produced by the JIT: 3,658 nonwhite pixels in a 129x30 stroke. See the
+[six frames, saved PNG and reference limits](media/amipixelshop-png-2026-11-02/README.md).
 
 ![AmiPixelShop displaying the reloaded PNG through the Kaffeine JIT](media/amipixelshop-png-2026-11-02/reopened.png)
 
