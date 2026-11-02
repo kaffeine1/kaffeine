@@ -49,7 +49,8 @@ prefix substituted:
 ```sh
 ../kaffeine/configure --target=raspi-aarch64 \
   --with-aros-toolchain=yes --with-aros-toolchain-install=/path/to/toolchain \
-  --disable-crosstools --disable-ccache
+  --with-gcc-version=10.5.0 --with-portssources=/path/to/portssources \
+  --disable-crosstools --disable-ccache ac_cv_prog_cc_c23=no
 make -j1 tools compiler tools-crosstools-gcc-libatomic
 make -j1 kernel-raspi-aarch64 kernel-package-raspi-aarch64-qemu \
   distfiles-raspi-aarch64le-bootimg compiler-stdc compiler-stdcio \
@@ -62,6 +63,26 @@ the matching GCC sources and installs it into the new SDK. Use the
 `--with-gcc-version` option matching your compiler (10.5.0 for the initial
 build). The three `compiler-*c*` runtime targets are separate from the
 `compiler` target's headers and link libraries.
+
+The initial native desktop/runtime component set was:
+
+```sh
+make -j1 workbench-libs-locale workbench-libs-icon workbench-libs-workbench \
+  workbench-libs-iffparse workbench-libs-datatypes workbench-libs-diskfont \
+  workbench-libs-asl workbench-libs-muimaster workbench-libs-muiscreen \
+  workbench-libs-cgfx workbench-libs-commodities workbench-libs-rexxsyslib \
+  workbench-libs-version workbench-libs-mathffp workbench-libs-mathtrans \
+  workbench-libs-mathieeesingbas workbench-libs-mathieeesingtrans \
+  workbench-libs-mathieeedoubbas workbench-libs-mathieeedoubtrans \
+  workbench-libs-codesets-library workbench-libs-codesets-charsets \
+  workbench-libs-z workbench-libs-png workbench-libs-freetype-module \
+  workbench-system-wanderer workbench-c workbench-devs-keymaps \
+  workbench-s workbench-fonts
+```
+
+The kernel target links `task.resource` into the core ELF; it does not need
+a duplicate BSP entry. Runtime libraries have to be present in the image,
+even when their link libraries and headers were already built for the SDK.
 
 Use the QEMU BSP explicitly as `-initrd`; the normal `config.txt` continues
 to select the normal hardware BSP. Keep separate build directories for
@@ -117,6 +138,16 @@ screen and fails if it is smaller than 1024x768 or below 24-bit color.
 The requested mode alone is not proof of the screen that actually opened.
 The framebuffer stores pixels in 32 bits, while its truecolor mode advertises
 24 bits of color. Requesting a 32-bit color depth would reject that mode.
+
+For example, compile this helper using your new build's SDK:
+
+```sh
+/path/to/toolchain/aarch64-aros-gcc --sysroot /path/to/build/bin/raspi-aarch64/AROS/Developer \
+  -O2 -Wall -Wextra -Werror -o PreviewSetup guest/PreviewSetup.c
+```
+
+Let the initial startup console close before checking a changed public-screen
+mode. Keep the actual observed screen status separate from the request.
 
 Assembly and cross-compilation are build evidence. A QEMU boot, successful
 file comparison and the finished preview's launch/report behavior remain

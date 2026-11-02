@@ -70,6 +70,12 @@ installation or download. Use a fresh session to test a different app.
 
 ### Select the actual 68k backend inside AROS
 
+In the preview desktop, open the Kaffeine disk and its **KaffeinePreview**
+drawer. **Test-JIT** and **Test-Moira** run the original included 68000 test:
+save a text file, close it, reopen it and compare every byte. The scripts
+show the requested backend; the library supplies actual backend diagnostics
+in the session UART logs. **Results** retains the test's output and file.
+
 Open an AROS Shell. For example, with your own compatible 68k application:
 
 ```text
