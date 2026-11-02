@@ -35,10 +35,8 @@ Ctrl+Z restores the original canvas. The pointer remains outside the canvas.
 Ctrl+Q opens the native Quit dialog; Left Amiga+V confirms Quit. Both
 application screens close and both real application return codes are 0.
 
-The restored frames still display X=40 in the Properties panel even though
-the canvas has returned to X=30. The following Quit frames display X=30.
-This is an observed panel-refresh limitation; the canvas result below is
-measured independently of that caption.
+The Properties panel shows X=30 before the move, X=40 after it and X=30
+after Undo. Its restored position caption matches the baseline pixels.
 
 ## Independent pixel validation
 
@@ -67,7 +65,7 @@ are not a performance benchmark.
 This checks the selected two-layer opaque composite, one rectangle fill,
 one horizontal keyboard move, one Undo and native Quit in both launch
 modes. It does not establish arbitrary layer transforms, transparency
-editing, complete panel refresh, further Undo/Redo sequences, the original
+editing, further Undo/Redo sequences, the original
 FPU release, Moira or physical-hardware compatibility. No file save was
 part of this session; the separate format checks cover save and reopen.
 

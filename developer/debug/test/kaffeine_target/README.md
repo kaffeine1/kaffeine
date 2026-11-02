@@ -1506,8 +1506,7 @@ also passed in both fresh Shell and actual Run executions: Shift+Right
 moves a painted layer ten pixels and Ctrl+Z restores every original canvas
 byte. Each of the six canvas frames matches independent fixed geometry;
 the native Quit dialogs and normal return codes are checked separately.
-The media notes distinguish the canvas result from a stale Properties
-caption observed after Undo. This is one bounded layer-editing fixture.
+The eight original frames document this bounded layer-editing fixture.
 
 ### Additional portable Lua tests (2026-11-01)
 

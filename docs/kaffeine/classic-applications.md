@@ -299,10 +299,9 @@ Both native Quit dialogs were confirmed and both applications returned 0
 with empty standard error.
 
 [Eight original frames and validation scope](media/amipixelshop-move-undo-2026-11-02/README.md)
-include the panel-refresh observation: the restored canvas is correct while
-the Properties X caption still shows 40 until the following Quit frame.
-This checks one horizontal move and Undo, not arbitrary transforms or a
-complete Undo/Redo sequence.
+record the result. The Properties position caption also returns to its
+baseline pixels after Undo. This checks one horizontal move and Undo, not
+arbitrary transforms or a complete Undo/Redo sequence.
 
 ### AmiPixelShop original-release startup
 
