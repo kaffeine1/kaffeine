@@ -317,6 +317,22 @@ and Redo restores its moved pixels. Each transition changes 600 pixels.
 record this single Move/Undo/Redo sequence; longer histories and other
 transforms remain separate checks.
 
+### AmiPixelShop horizontal layer flip (2026-11-02 UTC)
+
+The same source-built 68020 executable and Kaffeine JIT also passed a
+horizontal layer flip in fresh Shell and actual `Run` executions. Two
+black rectangles form an asymmetric L on transparent Layer 1 over the
+white Background. Properties **Flip H** moves its stem from left to
+right within the layer's content bounds. All four canvases match
+independent fixed geometry exactly: 700 black pixels, 18,500 white
+pixels and 600 changed pixels in each execution. Both native Quit
+dialogs close normally with real return code 0 and empty standard error.
+
+[Six original frames and validation scope](media/amipixelshop-layer-flip-2026-11-02/README.md)
+record this bounded flip. The asymmetric, offset shape distinguishes a
+correct layer flip from no operation, a vertical flip or a whole-canvas
+flip; arbitrary transforms remain separate checks.
+
 ### AmiPixelShop original-release startup
 
 [AmiPixelShop 0.6.1-beta](https://github.com/radi7777/AmiPixelShop/releases/tag/v0.6.1-beta)

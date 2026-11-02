@@ -94,3 +94,6 @@ application binaries and disk images are not distributed.
 AmiPixelShop is by radi7777; its original
 [MIT license and copyright notice](../amipixelshop-2026-11-01/AmiPixelShop-LICENSE.txt)
 are retained unchanged.
+
+The next [horizontal layer flip check](../amipixelshop-layer-flip-2026-11-02/README.md)
+uses an asymmetric L with the same executable and Kaffeine JIT.
