@@ -222,8 +222,11 @@ def import_application(source, disk, mcopy):
                 or boot[11:13] != b"\x00\x02"
                 or boot[82:90] != b"FAT32   "):
             raise PreviewError("Invalid preview FAT32 boot sector")
+    def traversal_error(error):
+        raise PreviewError("Could not read the complete application directory") from error
+
     pending, directories, names, total = [], [], set(), 0
-    for folder, dirs, files in os.walk(source, followlinks=False):
+    for folder, dirs, files in os.walk(source, followlinks=False, onerror=traversal_error):
         for name in sorted(dirs + files):
             path = Path(folder) / name
             relative = path.relative_to(source)

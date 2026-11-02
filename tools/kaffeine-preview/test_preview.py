@@ -466,6 +466,23 @@ class PreviewTests(unittest.TestCase):
                 preview.import_application(app, disk, "mcopy")
             transport.assert_not_called()
 
+    def test_unreadable_subdirectory_refuses_partial_import_before_transport(self):
+        disk, app = self.import_fixture()
+
+        def partial_walk(root, **kwargs):
+            yield str(root), ["Empty"], ["App"]
+            callback = kwargs.get("onerror")
+            if callback is not None:
+                callback(PermissionError("Simulated unreadable application subdirectory"))
+
+        with patch.object(preview.shutil, "which", return_value=sys.executable), \
+                patch.object(preview.os, "walk", side_effect=partial_walk), \
+                patch.object(preview.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as transport:
+            with self.assertRaises(preview.PreviewError):
+                preview.import_application(app, disk, "mcopy")
+            transport.assert_not_called()
+        self.assertFalse(list(disk.parent.glob(".import-*")))
+
     def test_import_transport_failure_removes_staging_and_does_not_launch_qemu(self):
         disk, app = self.import_fixture()
         (self.root / "disk.bin").write_bytes(disk.read_bytes())
