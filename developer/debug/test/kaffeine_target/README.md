@@ -1514,6 +1514,15 @@ match independent fixed geometry: Redo restores every moved canvas byte.
 Both real application return codes are 0, with empty standard error and
 normal native Quit. Ten original frames document this bounded sequence.
 
+The [horizontal layer flip workflow](../../../../docs/kaffeine/classic-applications.md#amipixelshop-horizontal-layer-flip-2026-11-02-utc)
+also passed in fresh Shell and actual Run executions. An asymmetric L
+on Layer 1 flips within its own bounds over the white Background; all
+four canvas frames match independent geometry exactly, with 700 black
+pixels and 600 changed pixels per flip. Both native Quit dialogs close
+normally with return code 0 and empty standard error. Six original
+frames document this bounded transform; other transforms remain untested
+by this check.
+
 ### Additional portable Lua tests (2026-11-01)
 
 `lua_db`, `lua_gengc` and `lua_verybig` add three scripts to the existing
