@@ -1495,6 +1495,12 @@ save/reopen: the actual file and drawing/saved/reopened canvas pixels match
 an independent geometric reference. Its one-plane result does not establish
 general lossless RGB IFF export.
 
+The [JPEG workflow](../../../../docs/kaffeine/classic-applications.md#amipixelshop-jpeg-workflow-2026-11-02-utc)
+also passed Shell Save As and fresh Run Open for a 160x120 rectangle.
+The full 80-MCU scan is valid; drawing/saved pixels match independent
+geometry and reopened pixels match the same-source scalar STB CPU decode
+exactly. JPEG changes 408 source pixels; no lossless JPEG claim is made.
+
 ### Additional portable Lua tests (2026-11-01)
 
 `lua_db`, `lua_gengc` and `lua_verybig` add three scripts to the existing

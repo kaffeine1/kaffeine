@@ -69,11 +69,13 @@ against that coverage and the source colour arithmetic.
 
 This checks one stroke painted directly on an opaque Background, RGB PNG
 Save As and fresh Run Open. PNG transparency, export of an unmerged layered
-document, merge after painting, other tools, JPEG, broader IFF workflows,
+document, merge after painting, other tools, broader JPEG and IFF workflows,
 the first-start mode requester, Moira and physical hardware remain separate
 checks.
 A later [two-colour indexed IFF check](../amipixelshop-iff-2026-11-02/README.md)
 uses a separate black rectangle fixture and an independent geometric reference.
+A separate [160x120 JPEG check](../amipixelshop-jpeg-2026-11-02/README.md)
+compares the lossy reload with a scalar host CPU decode.
 
 The source-built 68k executable and library are unchanged from the APX1 check:
 

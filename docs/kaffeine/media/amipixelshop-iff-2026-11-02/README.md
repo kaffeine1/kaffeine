@@ -72,8 +72,9 @@ fresh Run Open. The exporter quantizes RGB documents to a palette; it does
 not write 24-plane ILBM. Arbitrary multicolour or soft-edged RGB artwork may
 change through quantization. This result does not establish lossless RGB
 IFF export generally, transparency, multilayer preservation or other tools.
-The original FPU release, JPEG, Moira and physical hardware remain separate
-checks.
+The original FPU release, Moira and physical hardware remain separate checks.
+A [160x120 JPEG workflow](../amipixelshop-jpeg-2026-11-02/README.md) has its own
+lossy-file and scalar CPU comparison.
 
 The application and library are unchanged from the APX1 and PNG checks:
 
