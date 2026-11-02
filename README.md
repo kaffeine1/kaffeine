@@ -40,6 +40,8 @@ open source, and its code and documentation are public for everyone. This
 supports my development work; AROS and the other upstream components,
 including the original `m68kemu.library`, retain their respective authors
 and licenses.
+
+If you prefer a one-time contribution, you can [support my work on Ko-fi](https://ko-fi.com/kaffeine1).
 <!-- patreon-support:end -->
 
 ## Current implementation
