@@ -877,7 +877,7 @@ PRESERVED_D0_HANDLERS = {
     "Kaffeine_AddSemaphore", "Kaffeine_RemSemaphore", "Kaffeine_ObtainSemaphoreShared",
     "kaffeine_utility_FreeTagItems", "kaffeine_utility_RefreshTagItemClones",
     "kaffeine_locale_CloseCatalog", "kaffeine_locale_CloseLocale",
-    "kaffeine_locale_FormatDate",
+    "kaffeine_locale_FormatDate", "thunk_intuition_CurrentTime",
 }
 
 
