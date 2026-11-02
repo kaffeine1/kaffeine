@@ -104,15 +104,17 @@ def verify(root):
         raise PreviewError("Invalid build identity or unsupported target")
     if not isinstance(m["files"], list) or not 6 <= len(m["files"]) <= 256:
         raise PreviewError("Expected boot files, matching sources and license notices")
-    paths, roles, found = set(), set(), {}
+    paths, roles, found = {name.casefold() for name in RESERVED}, set(), {}
     for entry in m["files"]:
         if not isinstance(entry, dict) or set(entry) != {"path", "role", "sha256", "bytes"}:
             raise PreviewError("Invalid file entry")
         name, role = entry["path"], entry["role"]
         path = bundle_file(root, name)
-        if name.casefold() in paths or name.casefold() in {x.casefold() for x in RESERVED}:
-            raise PreviewError("Duplicate or reserved package name")
-        paths.add(name.casefold())
+        normalized = name.casefold()
+        if any(normalized == other or normalized.startswith(other + "/")
+               or other.startswith(normalized + "/") for other in paths):
+            raise PreviewError("Duplicate or conflicting package name")
+        paths.add(normalized)
         if role not in ROLES | {"notice"} or (role != "notice" and role in roles):
             raise PreviewError("Duplicate or unknown package role")
         roles.add(role)

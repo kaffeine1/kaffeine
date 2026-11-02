@@ -125,6 +125,40 @@ class PreviewTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(preview.PreviewError):
                 preview.bundle_file(self.root, name)
 
+    def test_reserved_delivery_filename_cannot_be_a_payload_directory(self):
+        kernel = next(e for e in self.manifest["files"] if e["role"] == "kernel")
+        for parent in ("README.md", "start.CMD"):
+            with self.subTest(parent=parent):
+                directory = self.root / parent
+                directory.mkdir()
+                (directory / "kernel.bin").write_bytes(b"kernel")
+                kernel["path"] = parent + "/kernel.bin"
+                self.save_manifest()
+                with self.assertRaises(preview.PreviewError):
+                    preview.verify(self.root)
+                out = self.base / "must-not-exist.zip"
+                with self.assertRaises(preview.PreviewError):
+                    preview.assemble(self.root, out)
+                self.assertFalse(out.exists())
+
+    def test_case_insensitive_payload_file_directory_conflict_in_either_order(self):
+        # File systems differ: model the two existing files independently of
+        # their spelling to test a Linux-built package destined for Windows.
+        kernel = next(e for e in self.manifest["files"] if e["role"] == "kernel")
+        bsp = next(e for e in self.manifest["files"] if e["role"] == "bsp")
+        kernel["path"], bsp["path"] = "payload/kernel.bin", "PAYLOAD"
+        actual_file = preview.bundle_file
+
+        def mapped(root, name):
+            return actual_file(root, {"payload/kernel.bin": "kernel.bin", "PAYLOAD": "bsp.bin"}.get(name, name))
+
+        for entries in (self.manifest["files"][:], list(reversed(self.manifest["files"]))):
+            self.manifest["files"] = entries
+            self.save_manifest()
+            with patch.object(preview, "bundle_file", side_effect=mapped):
+                with self.assertRaises(preview.PreviewError):
+                    preview.verify(self.root)
+
     def make_link(self, target, link, directory=False):
         try:
             link.symlink_to(target, target_is_directory=directory)
