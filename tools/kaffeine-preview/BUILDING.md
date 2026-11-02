@@ -1,0 +1,74 @@
+# Building the QEMU preview components
+
+The experimental framebuffer profile builds a separate
+`aros-aarch64-qemu-bsp.rom`. It keeps the common Raspberry Pi system modules
+and `fbgfx`, and excludes `vcgfx` and its Gallium build dependency. The normal
+hardware BSP target retains VideoCore and its existing module list.
+This profile is for the first QEMU preview; physical Raspberry Pi support
+and 3D graphics need their own qualification.
+
+These instructions prepare components, not a finished distributable image.
+Follow the clean-image, source inventory and extracted-ZIP acceptance steps
+in the [preview guide](https://github.com/kaffeine1/kaffeine/blob/master/tools/kaffeine-preview/README.md)
+before publishing a binary prerelease.
+
+## Build prerequisites
+
+Use a prebuilt AROS AArch64 GNU toolchain, GNU make 4 or newer, Python with
+the modules in `requirements-build.txt`, and the host utilities required by
+AROS configure. GNU make must also be named `make` on the build's PATH:
+MetaMake invokes it recursively. Apple's system make 3.81 cannot generate
+the archive response files used by the current build rules. Use an isolated
+host-tools directory instead of changing system programs.
+
+Initialize the repository's pinned submodules before building. In addition
+to the Moira core, catalog submodules provide English message definitions
+used to generate C headers, even for an English-only image. Missing DOS
+catalogs can leave the build using the system `strings.h` instead of the
+generated message header.
+
+The initial build was prepared on macOS ARM64 using GCC 10.5.0 targeting
+AROS and explicit Command Line Tools SDK paths for host Clang. Configure's
+target features must select the new build's Developer sysroot; do not silently
+compile against an older installed AROS SDK. Keep the compiler, bootstrap,
+BSP, native libraries and `kaffeine.library` provenance together.
+
+## Component targets
+
+From a fresh out-of-source build directory, with your private toolchain
+prefix substituted:
+
+```sh
+../kaffeine/configure --target=raspi-aarch64 \
+  --with-aros-toolchain=yes --with-aros-toolchain-install=/path/to/toolchain \
+  --disable-crosstools --disable-ccache
+make -j1 tools compiler
+make -j1 kernel-package-raspi-aarch64-qemu \
+  distfiles-raspi-aarch64le-bootimg kernel-kaffeine-library
+```
+
+Use the QEMU BSP explicitly as `-initrd`; the normal `config.txt` continues
+to select the normal hardware BSP. Keep separate build directories for
+hardware distribution and the preview. Build the native desktop and its
+runtime libraries as well before assembling a new SD image. Do not copy
+the `Developer` tree, build scratch files or an old demonstration disk
+into the runtime image.
+
+## Original 68k file smoke test
+
+`guest/PreviewSmoke.s` is a small original 68000 HUNK program with no SDK
+header or C-runtime dependency. Assemble it with vasm:
+
+```sh
+vasmm68k_mot -quiet -m68000 -Fhunkexe -o PreviewSmoke guest/PreviewSmoke.s
+```
+
+The image must create `SYS:KaffeinePreview/Results` first. The program saves
+`smoke.txt`, closes it, reopens it and compares its length and every byte.
+It returns 0 only after all checks pass, or 20 on failure. It does not claim
+which backend executed it; record the actual library backend message and
+JIT counters from the same invocation. Validate Shell and `Run` separately.
+
+Assembly and cross-compilation are build evidence. A QEMU boot, successful
+file comparison and the finished preview's launch/report behavior remain
+separate acceptance steps.
