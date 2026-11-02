@@ -1489,6 +1489,11 @@ canvas RGB equality. Its screenshots and extracted files are independent
 application evidence. The [RGB PNG workflow](../../../../docs/kaffeine/classic-applications.md#amipixelshop-png-workflow-2026-11-02-utc)
 also passed Save As from Shell and fresh Run Open, including the ASL filename
 extension edit, decoded PNG pixels and exact canvas RGB comparison.
+The [indexed IFF workflow](../../../../docs/kaffeine/classic-applications.md#amipixelshop-indexed-iff-workflow-2026-11-02-utc)
+adds rectangle selection, black fill, deselection and a two-colour ILBM
+save/reopen: the actual file and drawing/saved/reopened canvas pixels match
+an independent geometric reference. Its one-plane result does not establish
+general lossless RGB IFF export.
 
 ### Additional portable Lua tests (2026-11-01)
 
