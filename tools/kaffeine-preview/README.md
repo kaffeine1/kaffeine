@@ -145,7 +145,7 @@ Before uploading a **prerelease** for a small first group of testers:
    the full matching sources, dependencies, build instructions and notices
    available alongside the binaries. Review the actual image inventory,
    including the open generated-table/NDK provenance point in
-   [Licenses and provenance](../../docs/kaffeine/LICENSING.md).
+   [Licenses and provenance](https://github.com/kaffeine1/kaffeine/blob/master/docs/kaffeine/LICENSING.md).
 2. Create a fresh image from reviewed redistributable inputs. Include the
    matched DOS/loader changes, kernel, BSP, DTB and `kaffeine.library`.
    Extract the library back out and verify its recorded hash. Do not reuse
