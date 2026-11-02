@@ -13,6 +13,22 @@ Read the [project manifesto](docs/kaffeine/MANIFESTO.md)
 ([original Italian](docs/kaffeine/MANIFESTO.it.md)) for the vision,
 architectural boundaries and observable milestones.
 
+## Try the community preview
+
+The first [AROS ARM64 / QEMU tester preview](https://github.com/kaffeine1/kaffeine/releases/tag/preview-arm64-001)
+is available as an experimental pilot. It includes a clean matched system,
+Kaffeine's 68k JIT and Moira, an original save/reopen test, matching sources
+and license notices. Download the ZIP and checksum, extract it, and follow
+the included README. Python and QEMU are installed separately.
+
+Actual guest testing covers **macOS ARM64 with QEMU 11.0.0** and a
+1024×768×24 desktop. Linux/Windows have offline launcher CI coverage;
+their guest boots and physical Raspberry Pi hardware need separate testing.
+See the [launch, application import and local report guide](tools/kaffeine-preview/README.md)
+and submit findings through the [community test form](https://github.com/kaffeine1/kaffeine/issues/new/choose).
+The goal remains AROS mainline integration; this is a matched preview,
+not a native installer for arbitrary AROS systems.
+
 <!-- patreon-support:start -->
 ## Support development
 
@@ -102,7 +118,7 @@ or see the [launch method, same-session JIT counters and saved-project checks](d
 
 ## Documentation and tests
 
-- [Community preview preparation, portable launcher and local test reports](tools/kaffeine-preview/README.md) (tools only; runtime package not released).
+- [Community preview download, portable launcher and local test reports](tools/kaffeine-preview/README.md).
 - [Upstream m68kemu comparison and contribution candidates](docs/kaffeine/upstream-pr1905-comparison.md).
 - [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
 - [TurboText 68k demonstration with the Kaffeine JIT](docs/kaffeine/turbotext-jit-demo.md).
