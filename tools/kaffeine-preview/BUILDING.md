@@ -1,3 +1,8 @@
+<!--
+Copyright (C) 2026, The AROS Development Team. All rights reserved.
+Author: Michele Dipace (@kaffeine1)
+-->
+
 # Building the QEMU preview components
 
 The experimental framebuffer profile builds a separate
@@ -42,10 +47,18 @@ prefix substituted:
 ../kaffeine/configure --target=raspi-aarch64 \
   --with-aros-toolchain=yes --with-aros-toolchain-install=/path/to/toolchain \
   --disable-crosstools --disable-ccache
-make -j1 tools compiler
-make -j1 kernel-package-raspi-aarch64-qemu \
-  distfiles-raspi-aarch64le-bootimg kernel-kaffeine-library
+make -j1 tools compiler tools-crosstools-gcc-libatomic
+make -j1 kernel-raspi-aarch64 kernel-package-raspi-aarch64-qemu \
+  distfiles-raspi-aarch64le-bootimg compiler-stdc compiler-stdcio \
+  compiler-posixc kernel-kaffeine-library
 ```
+
+GNU configure links C++ components with `libatomic`. A prebuilt compiler
+does not necessarily include it: the explicit target above builds it from
+the matching GCC sources and installs it into the new SDK. Use the
+`--with-gcc-version` option matching your compiler (10.5.0 for the initial
+build). The three `compiler-*c*` runtime targets are separate from the
+`compiler` target's headers and link libraries.
 
 Use the QEMU BSP explicitly as `-initrd`; the normal `config.txt` continues
 to select the normal hardware BSP. Keep separate build directories for
@@ -68,6 +81,14 @@ The image must create `SYS:KaffeinePreview/Results` first. The program saves
 It returns 0 only after all checks pass, or 20 on failure. It does not claim
 which backend executed it; record the actual library backend message and
 JIT counters from the same invocation. Validate Shell and `Run` separately.
+
+`guest/PreviewSetup.c` prepares preview-only 1024x768x32 screen preferences
+and launch icons. Compile it with the new SDK, and run it after creating
+`ENV:SYS` but before starting IPrefs. It writes only RAM preferences and
+the preview drawer's icons; it does not change saved system preferences.
+After Wanderer opens, `PreviewSetup status` observes the actual public
+screen and fails if it is smaller than 1024x768 or below 24-bit color.
+The requested mode alone is not proof of the screen that actually opened.
 
 Assembly and cross-compilation are build evidence. A QEMU boot, successful
 file comparison and the finished preview's launch/report behavior remain
