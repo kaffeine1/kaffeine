@@ -87,11 +87,25 @@ Broader editor features and indexed-color composition remain separate checks.
 or read the [launch method, same-session JIT counters and exact saved-file checks](docs/kaffeine/turbotext-jit-demo.md).
 This recording uses native AROS Execute with TurboText's `WAIT` option.
 
+## AmiPixelShop with the Kaffeine JIT, 2 November 2026
+
+AmiPixelShop 0.6.1, built for a Motorola 68020 without an FPU, draws, saves,
+reopens and edits a two-layer project on AROS ARM64 with the Kaffeine JIT.
+The recording starts on a 24-bit AROS desktop and uses two native CLI
+project icons. Both application invocations return 0; saved layers and
+captured canvases were checked after shutdown.
+
+[![AmiPixelShop 68k displaying its reopened and resaved drawing on AROS ARM64 with the Kaffeine JIT backend message](docs/kaffeine/media/amipixelshop-jit-2026-11-02/amipixelshop-jit-preview.png)](docs/kaffeine/media/amipixelshop-jit-2026-11-02/README.md)
+
+**[Watch the JIT video (MP4, 2:20)](docs/kaffeine/media/amipixelshop-jit-2026-11-02/amipixelshop-68k-kaffeine-jit-aros-arm64.mp4)**
+or see the [launch method, same-session JIT counters and saved-project checks](docs/kaffeine/media/amipixelshop-jit-2026-11-02/README.md).
+
 ## Documentation and tests
 
 - [Upstream m68kemu comparison and contribution candidates](docs/kaffeine/upstream-pr1905-comparison.md).
 - [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
 - [TurboText 68k demonstration with the Kaffeine JIT](docs/kaffeine/turbotext-jit-demo.md).
+- [AmiPixelShop 68k demonstration with the Kaffeine JIT](docs/kaffeine/media/amipixelshop-jit-2026-11-02/README.md).
 - [Current behavior, architecture and verified limits](README.KAFFEINE.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
 - [Bounded native backfill hooks](docs/kaffeine/native-backfill.md).
