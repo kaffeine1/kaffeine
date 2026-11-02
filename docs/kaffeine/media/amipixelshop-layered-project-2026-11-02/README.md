@@ -128,3 +128,7 @@ are not distributed.
 AmiPixelShop is by radi7777; its original
 [MIT license and copyright notice](../amipixelshop-2026-11-01/AmiPixelShop-LICENSE.txt)
 are retained unchanged.
+
+A [later recorded JIT demonstration](../amipixelshop-jit-2026-11-02/README.md)
+shows this workflow through two real native CLI desktop icons, with
+same-session backend messages and completion counters.

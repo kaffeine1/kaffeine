@@ -8,12 +8,25 @@ are not distributed here.
 | Program | Observed behavior | Scope and next check |
 | --- | --- | --- |
 | Redit 2.0 | Edit, save, quit, reopen, edit again and save with both Moira and JIT; extracted text files match the entered content | Both launches return 0; the JIT cycle was repeated after the full-index change. Further editor features remain unverified |
-| Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
+| Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | A separate JIT recheck displays valid date/time matching the native guest clock. Moira clock UI, file-date/`Future` labels and broader application features remain unverified |
 | TurboText 2.0 | Original launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT edits, saves, closes and reopens a new text file, then closes normally | Both original `WAIT` invocations return 0; first-save and final files match the nine entered bytes. Broader editing and indexed composition remain separate checks |
 | AmiPixelShop 0.6.1-beta (original release) | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; later P96 and first-start mode-requester requirements were not exercised by this startup check |
 | AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel; APX1 Save As and fresh Run Open of blank and coloured two-layer documents, plus layered project reopen, move and Ctrl+S resave; RGB PNG, indexed IFF/ILBM and JPEG Save As and fresh Run Open on an opaque Background | Both modes return 0. Reopened canvases match decoded files. The layered fixture preserves a transparent foreground over white. The APX1/PNG/IFF fixtures are lossless; the JPEG matches the scalar host CPU decode. Arbitrary transparency, other tools and broader format coverage remain separate checks |
 
 ## Additional startup checks (2026-10-29)
+
+### Directory Opus clock recheck (2026-11-02)
+
+After the [CurrentTime guest-endian fix (PR #92)](https://github.com/kaffeine1/kaffeine/pull/92),
+Directory Opus 4.12 JR displayed valid clock/date fields with the Kaffeine JIT
+on AROS ARM64 in QEMU. Shell and a fresh actual `Run` both returned 0 with
+empty standard error. The [two original frames](media/dopus-clock-2026-11-02/README.md)
+show `01-Jan-78`, with `12:00:25A` and `12:00:41A`; both times agree with
+native timer/date observations and the check's five-second display margin.
+The guest clock was unchanged and started at the AROS 1978 epoch. This checks
+formatting against guest time, not synchronization to the current civil date.
+File-date/`Future` labels, the clock UI with Moira and physical hardware remain
+separate checks.
 
 ### TurboText save and reopen (2026-10-31)
 
@@ -360,6 +373,17 @@ record the result on uniprocessor AROS ARM64 in QEMU, with 1024x768,
 24-bit screens and one TCG worker. This checks one controlled transparent
 layer and an existing-path resave, not arbitrary transparency, all layer
 features, the original FPU release or physical hardware.
+
+### AmiPixelShop JIT demonstration video (2026-11-02 UTC)
+
+The [recorded demonstration](media/amipixelshop-jit-2026-11-02/README.md)
+starts on a 24-bit AROS desktop and launches the 68020/no-FPU build from
+two real native CLI project icons. It shows drawing a layered project,
+Save As, a fresh actual `Run` reopening that file, moving the loaded layer,
+Ctrl+S and two clean exits. Same-session runtime captions identify the
+Kaffeine JIT and its completion counters. Saved-layer and canvas checks
+passed for the recorded session; retained actions keep their captured timing
+with idle waits shortened.
 
 ### AmiPixelShop original-release startup
 
