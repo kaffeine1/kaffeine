@@ -11,7 +11,7 @@ are not distributed here.
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
 | TurboText 2.0 | Original launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT edits, saves, closes and reopens a new text file, then closes normally | Both original `WAIT` invocations return 0; first-save and final files match the nine entered bytes. Broader editing and indexed composition remain separate checks |
 | AmiPixelShop 0.6.1-beta (original release) | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; later P96 and first-start mode-requester requirements were not exercised by this startup check |
-| AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel; APX1 Save As and fresh Run Open of blank and coloured two-layer documents; RGB PNG Save As and fresh Run Open on an opaque Background; a two-colour rectangle saved and reopened as indexed IFF/ILBM | Both modes return 0. Decoded pixels and saved/reopened canvas RGB match for the documented workflows. Other tools, transparency and formats remain to be tested |
+| AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel; APX1 Save As and fresh Run Open of blank and coloured two-layer documents; RGB PNG, indexed IFF/ILBM and JPEG Save As and fresh Run Open on an opaque Background | Both modes return 0. Reopened canvases match decoded files. The APX1/PNG/IFF fixtures are lossless; the JPEG matches the scalar host CPU decode. Other tools, transparency and broader format coverage remain to be tested |
 
 ## Additional startup checks (2026-10-29)
 
@@ -223,7 +223,7 @@ the workflow to complete. Ensure that `Work:` resolves before reproducing it.
 
 These checks use the source-built executable below. The original release's
 startup result remains separate. Further application checks include other tools and brush shapes,
-PNG transparency and layered export, JPEG, broader IFF workflows, the
+PNG transparency and layered export, broader JPEG and IFF workflows, the
 first-start mode requester, Moira and physical hardware.
 
 ### AmiPixelShop PNG workflow (2026-11-02 UTC)
@@ -265,6 +265,27 @@ quantizes RGB artwork and does not write 24-plane ILBM. General RGB
 losslessness, transparency and multilayer IFF remain unverified.
 
 ![AmiPixelShop displaying the reloaded two-colour IFF through the Kaffeine JIT](media/amipixelshop-iff-2026-11-02/reopened.png)
+
+### AmiPixelShop JPEG workflow (2026-11-02 UTC)
+
+The same 68020 executable and Kaffeine JIT saved a 160x120 black rectangle
+as JPEG from Shell and reopened it through a fresh actual `Run`. Workbench
+and the application remained 1024x768, 24-bit. Both executions returned 0
+with empty standard error and closed cleanly.
+
+The actual 1,709-byte file is baseline JFIF, quality 90, 4:2:0. Its header,
+all 80 MCUs / 480 blocks, byte stuffing, terminal padding and exact EOF were
+checked. Drawing and saved pixels match an independent black-on-white
+geometric reference; reopened pixels match the same-source scalar STB host
+CPU decode exactly. JPEG changes 408 source pixels, with maximum channel
+difference 8; compression accounts for the difference between the saved
+and reopened pixels.
+
+[Five original frames, the saved JPEG and exact scope](media/amipixelshop-jpeg-2026-11-02/README.md)
+record this bounded lossy workflow. Other JPEG sizes and artwork remain
+unverified; this result does not establish general application compatibility.
+
+![AmiPixelShop displaying the reloaded JPEG through the Kaffeine JIT](media/amipixelshop-jpeg-2026-11-02/reopened.png)
 
 ### AmiPixelShop original-release startup
 
