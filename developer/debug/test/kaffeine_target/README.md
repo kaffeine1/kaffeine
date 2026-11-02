@@ -1486,7 +1486,9 @@ uses the Kaffeine JIT to open/cancel a requester and to save a two-layer APX1
 document from Shell, then reopen it with Run. Blank and red-stroke documents
 passed; the coloured case also checks decoded pixels and exact saved/reopened
 canvas RGB equality. Its screenshots and extracted files are independent
-application evidence.
+application evidence. The [RGB PNG workflow](../../../../docs/kaffeine/classic-applications.md#amipixelshop-png-workflow-2026-11-02-utc)
+also passed Save As from Shell and fresh Run Open, including the ASL filename
+extension edit, decoded PNG pixels and exact canvas RGB comparison.
 
 ### Additional portable Lua tests (2026-11-01)
 

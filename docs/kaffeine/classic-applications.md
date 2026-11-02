@@ -11,7 +11,7 @@ are not distributed here.
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
 | TurboText 2.0 | Original launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT edits, saves, closes and reopens a new text file, then closes normally | Both original `WAIT` invocations return 0; first-save and final files match the nine entered bytes. Broader editing and indexed composition remain separate checks |
 | AmiPixelShop 0.6.1-beta (original release) | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; later P96 and first-start mode-requester requirements were not exercised by this startup check |
-| AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel from Shell and Run; Save As and fresh Run Open of blank and red-stroke 640x480 two-layer documents | Both executions return 0. Decoded APX1 pixels preserve the Background and stroke; the saved and reopened coloured canvas RGB matches exactly. Other tools and formats remain to be tested |
+| AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel; APX1 Save As and fresh Run Open of blank and coloured two-layer documents; RGB PNG Save As and fresh Run Open on an opaque Background | Both modes return 0. Decoded pixels and saved/reopened canvas RGB match for the documented workflows. Other tools, transparency and formats remain to be tested |
 
 ## Additional startup checks (2026-10-29)
 
@@ -223,7 +223,28 @@ the workflow to complete. Ensure that `Work:` resolves before reproducing it.
 
 These checks use the source-built executable below. The original release's
 startup result remains separate. Further application checks include other tools and brush shapes,
-PNG/JPEG/IFF files, the first-start mode requester, Moira and physical hardware.
+PNG transparency and layered export, JPEG/IFF files, the first-start mode
+requester, Moira and physical hardware.
+
+### AmiPixelShop PNG workflow (2026-11-02 UTC)
+
+The same source-built 68020 executable also saved and reopened a 640x480 RGB
+PNG with the Kaffeine JIT. The empty Layer 1 was merged into the white
+Background before painting one red stroke. Save As wrote `Untitled-1.png`
+from Shell; a fresh `Run` execution opened it through ASL. Both returned 0
+with empty standard error and closed cleanly.
+
+Independent checks decoded the actual 3,369-byte PNG and verified its
+structure, bounded complete zlib stream and RGB pixels. The saved and
+reopened canvas regions are byte-identical to the PNG and match the source
+paint arithmetic applied to the earlier APX1 coverage reference, itself
+produced by the JIT: 3,658 nonwhite pixels in a 129x30 stroke. See the
+[six frames, saved PNG and reference limits](media/amipixelshop-png-2026-11-02/README.md).
+
+![AmiPixelShop displaying the reloaded PNG through the Kaffeine JIT](media/amipixelshop-png-2026-11-02/reopened.png)
+
+This result covers RGB PNG on one opaque Background. Transparent PNG and
+layered export remain separate from this check.
 
 ### AmiPixelShop original-release startup
 

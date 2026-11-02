@@ -56,9 +56,11 @@ The 921,600-byte RGB SHA-256 is
 
 This establishes one coloured brush stroke persisting through APX1 Save As,
 exit and fresh Run Open. It does not cover other tools, all brush shapes,
-PNG/JPEG/IFF workflows, the first-start mode requester, Moira or physical
-hardware. The tested executable is a source-built 68020 variant; the original
-FPU release's startup result remains separate.
+JPEG/IFF workflows, the first-start mode requester, Moira or physical
+hardware. A later [opaque RGB PNG check](../amipixelshop-png-2026-11-02/README.md)
+adds PNG Save As, fresh Run Open and exact RGB comparison. The tested
+executable is a source-built 68020 variant; the original FPU release's startup
+result remains separate.
 
 ## Artifact identity
 
