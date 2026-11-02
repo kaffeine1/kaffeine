@@ -260,6 +260,10 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(preview.read_json(session / "result.json")["stop_reason"], "session-timeout")
 
     def test_relative_executable_is_resolved_before_child_cwd_changes(self):
+        # Windows CI keeps the checkout and interpreter on different drives.
+        # Resolve a real relative executable from its own drive, then restore cwd.
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(Path(sys.executable).parent)
         relative = os.path.relpath(sys.executable, Path.cwd())
         self.assertFalse(Path(relative).is_absolute())
         for number, requested in enumerate((relative, "qemu-system-aarch64")):
