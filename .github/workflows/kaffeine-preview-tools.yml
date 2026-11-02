@@ -1,0 +1,35 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
+name: Kaffeine preview tools
+on:
+  pull_request:
+    paths:
+      - 'tools/kaffeine-preview/**'
+      - '.github/workflows/kaffeine-preview-tools.yml'
+      - '.github/ISSUE_TEMPLATE/kaffeine-community-test.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'tools/kaffeine-preview/**'
+      - '.github/workflows/kaffeine-preview-tools.yml'
+      - '.github/ISSUE_TEMPLATE/kaffeine-community-test.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-tools:
+    name: Offline preview tools (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ['3.9', '3.14']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Check package integrity, process lifecycle and report privacy without QEMU
+        run: python -I -B tools/kaffeine-preview/test_preview.py
