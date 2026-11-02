@@ -4,6 +4,7 @@
 """Offline delivery/lifecycle tests. No QEMU or AROS application is run."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -257,6 +258,23 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(len(children), 1)
         self.assertIsNotNone(children[0].poll())
         self.assertEqual(preview.read_json(session / "result.json")["stop_reason"], "session-timeout")
+
+    def test_relative_executable_is_resolved_before_child_cwd_changes(self):
+        relative = os.path.relpath(sys.executable, Path.cwd())
+        self.assertFalse(Path(relative).is_absolute())
+        for number, requested in enumerate((relative, "qemu-system-aarch64")):
+            session = self.base / ("relative-executable-" + str(number))
+
+            def command(executable, files, destination):
+                self.assertTrue(Path(executable).is_absolute())
+                self.assertEqual(Path(executable), Path(sys.executable).resolve())
+                return [executable, "-c", "print('stand-in executable launched')"]
+
+            with patch.object(preview.shutil, "which", return_value=relative) as which, \
+                    patch.object(preview, "qemu_command", side_effect=command):
+                self.assertEqual(preview.run(self.root, session, requested, 10), 0)
+                which.assert_called_once_with(requested)
+            self.assertEqual(preview.read_json(session / "result.json")["qemu_return_code"], 0)
 
     def test_log_limit_reaps_child(self):
         session = self.base / "large-log-session"

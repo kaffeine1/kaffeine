@@ -195,6 +195,7 @@ def run(root, session, qemu, seconds):
     executable = shutil.which(qemu)
     if not executable:
         raise PreviewError("Install QEMU and specify qemu-system-aarch64 with --qemu")
+    executable = str(Path(executable).resolve())
     session.mkdir(parents=True, exist_ok=False)
     # Reuse is deliberately explicit at the file level: each run starts fresh.
     shutil.copyfile(files["disk"], session / "disk.img")
