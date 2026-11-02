@@ -11,7 +11,7 @@ are not distributed here.
 | Directory Opus 4.12 JR | Both Moira and JIT: opens on Workbench using ordinary preferences, copies a 73-byte text file and a 1024-byte binary file, renames the text, quits normally, reopens and lists both persisted files; extracted bytes match the sources. Shell and Run return 0 | The clock/date fields still display invalid values. Broader file operations and application features remain unverified |
 | TurboText 2.0 | Original launcher and support libraries run unmodified. On a 24-bit Workbench, the Kaffeine JIT edits, saves, closes and reopens a new text file, then closes normally | Both original `WAIT` invocations return 0; first-save and final files match the nine entered bytes. Broader editing and indexed composition remain separate checks |
 | AmiPixelShop 0.6.1-beta (original release) | Original release tested as `AmiPixelShop 64 64` with both backends; Shell and Run return 20 before opening the UI. Startup calls Exec `Alert()` with D7 `$00068881` | Startup is blocked. Inline FPU support is absent; later P96 and first-start mode-requester requirements were not exercised by this startup check |
-| AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel; APX1 Save As and fresh Run Open of blank and coloured two-layer documents; RGB PNG, indexed IFF/ILBM and JPEG Save As and fresh Run Open on an opaque Background | Both modes return 0. Reopened canvases match decoded files. The APX1/PNG/IFF fixtures are lossless; the JPEG matches the scalar host CPU decode. Other tools, transparency and broader format coverage remain to be tested |
+| AmiPixelShop 0.6.1 (68020 build without FPU) | With the Kaffeine JIT: Open/Cancel; APX1 Save As and fresh Run Open of blank and coloured two-layer documents, plus layered project reopen, move and Ctrl+S resave; RGB PNG, indexed IFF/ILBM and JPEG Save As and fresh Run Open on an opaque Background | Both modes return 0. Reopened canvases match decoded files. The layered fixture preserves a transparent foreground over white. The APX1/PNG/IFF fixtures are lossless; the JPEG matches the scalar host CPU decode. Arbitrary transparency, other tools and broader format coverage remain separate checks |
 
 ## Additional startup checks (2026-10-29)
 
@@ -332,6 +332,34 @@ dialogs close normally with real return code 0 and empty standard error.
 record this bounded flip. The asymmetric, offset shape distinguishes a
 correct layer flip from no operation, a vertical flip or a whole-canvas
 flip; arbitrary transforms remain separate checks.
+
+### AmiPixelShop layered project save, reopen and resave (2026-11-02 UTC)
+
+The same source-built 68020 executable and Kaffeine JIT completed a
+two-layer APX1 project roundtrip. Shell paints a 700-pixel black L on the
+initial transparent Layer 1 over a white Background in a 160x120 document,
+uses Save As, then exits cleanly. Native DOS Copy preserves that first
+file outside `Work:` before a fresh actual `Run` opens the saved project.
+The second execution selects the Move tool, shifts the loaded Layer 1 ten
+pixels right and uses Ctrl+S to resave the existing path without another
+ASL requester. Both executions close with Ctrl+Q, without a Quit dialog,
+and return 0 with empty standard error.
+
+The two extracted files are each 357 bytes but have different hashes.
+Independent decoding verifies APX1 version 3, both layer names and tile
+presence maps, active layer 1, exact separate-layer RGBA and tile padding,
+with no optional chunks or trailing bytes. The transparent foreground
+and white Background remain separate after reopening and resaving.
+Five canvas frames match fixed geometric references exactly: baseline,
+saved and reopened preserve the original L; moved and resaved preserve
+its ten-pixel translation. Each has 700 black and 18,500 white pixels;
+the move changes 800 RGB pixels.
+
+[Seven original frames, both saved projects and validation scope](media/amipixelshop-layered-project-2026-11-02/README.md)
+record the result on uniprocessor AROS ARM64 in QEMU, with 1024x768,
+24-bit screens and one TCG worker. This checks one controlled transparent
+layer and an existing-path resave, not arbitrary transparency, all layer
+features, the original FPU release or physical hardware.
 
 ### AmiPixelShop original-release startup
 

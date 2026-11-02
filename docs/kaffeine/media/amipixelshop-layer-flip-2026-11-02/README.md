@@ -73,7 +73,9 @@ two-layer opaque composite in both launch modes. It does not establish
 arbitrary transforms, selections during transforms, transparency editing,
 the original FPU release, Moira or physical-hardware compatibility.
 No file save was part of this session; the separate format checks cover
-save and reopen.
+save and reopen. The later [layered project roundtrip](../amipixelshop-layered-project-2026-11-02/README.md)
+adds APX1 Save As, fresh Run Open, a ten-pixel layer move and Ctrl+S resave
+of the existing path, with separate-layer RGBA and both saved files checked.
 
 - AmiPixelShop SHA-256:
   `14f5d373e46d5665f89f08eb827caf33949346761d44b69fdf516c2ebbbdab4d`.
