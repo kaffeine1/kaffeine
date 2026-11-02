@@ -41,7 +41,7 @@ static BOOL screen_preferences(void)
         { BIDTAG_NominalHeight, 768 },
         { BIDTAG_DesiredWidth, 1024 },
         { BIDTAG_DesiredHeight, 768 },
-        { BIDTAG_Depth, 32 },
+        { BIDTAG_Depth, 24 },
         { TAG_DONE, 0 }
     };
     ULONG mode = BestModeIDA(tags);
@@ -50,7 +50,7 @@ static BOOL screen_preferences(void)
     BOOL ok;
 
     if (mode == (ULONG)INVALID_ID) {
-        PutStr((CONST_STRPTR)"PreviewSetup: no 32-bit desktop mode is available.\n");
+        PutStr((CONST_STRPTR)"PreviewSetup: no 24-bit desktop mode is available.\n");
         return FALSE;
     }
     /* IFF FORM/PREF: packed six-byte PRHD and 28-byte SCRM, big endian. */
@@ -63,7 +63,7 @@ static BOOL screen_preferences(void)
     be32(prefs + 50, mode);
     be16(prefs + 54, 1024);
     be16(prefs + 56, 768);
-    be16(prefs + 58, 32);
+    be16(prefs + 58, 24);
     file = Open((CONST_STRPTR)"ENV:SYS/screenmode.prefs", MODE_NEWFILE);
     if (file == BNULL)
         return FALSE;
@@ -71,7 +71,7 @@ static BOOL screen_preferences(void)
     if (!Close(file))
         ok = FALSE;
     if (ok)
-        Printf((CONST_STRPTR)"PreviewSetup: requested 1024x768x32, mode 0x%08lx.\n", mode);
+        Printf((CONST_STRPTR)"PreviewSetup: requested 1024x768x24, mode 0x%08lx.\n", mode);
     return ok;
 }
 

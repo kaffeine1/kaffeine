@@ -108,13 +108,15 @@ It returns 0 only after all checks pass, or 20 on failure. It does not claim
 which backend executed it; record the actual library backend message and
 JIT counters from the same invocation. Validate Shell and `Run` separately.
 
-`guest/PreviewSetup.c` prepares preview-only 1024x768x32 screen preferences
+`guest/PreviewSetup.c` prepares preview-only 1024x768x24 screen preferences
 and launch icons. Compile it with the new SDK, and run it after creating
 `ENV:SYS` but before starting IPrefs. It writes only RAM preferences and
 the preview drawer's icons; it does not change saved system preferences.
 After Wanderer opens, `PreviewSetup status` observes the actual public
 screen and fails if it is smaller than 1024x768 or below 24-bit color.
 The requested mode alone is not proof of the screen that actually opened.
+The framebuffer stores pixels in 32 bits, while its truecolor mode advertises
+24 bits of color. Requesting a 32-bit color depth would reject that mode.
 
 Assembly and cross-compilation are build evidence. A QEMU boot, successful
 file comparison and the finished preview's launch/report behavior remain
