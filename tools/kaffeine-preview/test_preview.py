@@ -477,6 +477,9 @@ class PreviewTests(unittest.TestCase):
         session = self.base / "failed-import"
         with patch.object(preview.shutil, "which", return_value=sys.executable), \
                 patch.object(preview.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)), \
+                patch.object(preview.platform, "system", return_value="fixture-host"), \
+                patch.object(preview.platform, "machine", return_value="fixture-cpu"), \
+                patch.object(preview.platform, "release", return_value="fixture-release"), \
                 patch.object(preview.subprocess, "Popen") as child:
             with self.assertRaises(preview.PreviewError):
                 preview.run(self.root, session, sys.executable, 10, app)

@@ -81,6 +81,12 @@ preferences before IPrefs and opens Wanderer. The two test icons explicitly
 select their own backend. They report their requested choice; actual backend
 messages and JIT counters come from the library in the session UART logs.
 
+Include the build-generated **`AROS.boot`** in the disk's root. The boot
+target writes the CPU signature (`aarch64` for this profile). A FAT partition
+and `S:Startup-Sequence` are insufficient by themselves:
+[DOS checks this signature](../../rom/dos/isbootable.c) before accepting a
+volume as bootable on a non-68k target.
+
 For deliverable builds, map the source prefix in compiler diagnostics using
 GCC/Clang's `-ffile-prefix-map=/absolute/source/root=kaffeine`. Preserve each
 target's normal compiler flags. Audit the actual runtime inventory for host
