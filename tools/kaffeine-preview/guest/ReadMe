@@ -1,0 +1,34 @@
+Copyright (C) 2026, The AROS Development Team. All rights reserved.
+Author: Michele Dipace (@kaffeine1)
+
+Kaffeine experimental ARM64 preview
+
+Double-click Test-JIT to run the original 68k file test with the requested
+Kaffeine JIT backend, or Test-Moira for an interpreter comparison.
+The test writes a small text file, closes it, reopens it and checks every
+byte. A PASS and rc 0 describe this test only.
+
+The preview starts with a requested JIT default in RAM. Actual backend
+messages and JIT counters are in the host session's two serial logs.
+Keep those messages when reporting a backend-specific problem.
+
+For your own imported application, open Applications/Imported. Some apps
+need a Shell launch, assigns or additional libraries; follow their own
+instructions and record your launch method. In a Shell use:
+
+  Stack 1048576
+  Set KAFFEINE_CPU jit
+  SYS:KaffeinePreview/Applications/Imported/YourProgram
+
+Repeat with Set KAFFEINE_CPU moira to compare. Use a new document, save it,
+close and reopen it, and check its contents. Results are retained in this
+session's disk, not in the package's original disk.
+
+Close applications before closing the VM. The host launcher limits each
+session to 15 minutes by default. Read the host README for changing the
+limit and for creating a local report. Inspect a report before sharing it.
+No report is uploaded automatically; application and document files are
+not collected in reports.
+
+This QEMU preview is experimental. A successful test is not a promise that
+all 68k applications or physical Raspberry Pi models are compatible.

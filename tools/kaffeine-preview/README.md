@@ -41,6 +41,33 @@ stops its own QEMU process. A timeout or a log exceeding 32 MiB triggers a
 stop; the latter threshold is checked every 0.2 seconds, not a hard file
 quota. Keep a copy of any test work you want to retain before the limit.
 
+### Import an application you want to test
+
+Use a separate directory containing only the application files you want to
+copy. Optional import needs **mtools** on the host; QEMU alone is enough for
+the included smoke test. Install mtools separately and specify its `mcopy`
+executable if it is not on PATH:
+
+```sh
+python3 preview.py run --session ../test-my-app --import-app ../MyApplication --mcopy /path/to/mcopy
+```
+
+The selected directory is copied into
+`SYS:KaffeinePreview/Applications/Imported` on the **new session disk before
+QEMU starts**. Its contents are staged privately first, and host folders are
+not shared with the running guest. The package's original disk is unchanged.
+Import accepts regular files and directories, up to 256 MiB, 4096 files and
+8192 total entries, with at most 16 directory levels. Names must use ASCII
+letters, digits, spaces or `_.+()-`, without trailing spaces/dots or Windows
+device aliases. Links, case-insensitive filename collisions and non-preview
+disk layouts are refused. A failed import stops before launching QEMU.
+The local `import.log` is excluded from automatic reports.
+
+Inside AROS, open the imported drawer or launch the program from a Shell.
+Import copies files; follow the application's own instructions for assigns,
+extra libraries and launch options. There is no automatic application
+installation or download. Use a fresh session to test a different app.
+
 ### Select the actual 68k backend inside AROS
 
 Open an AROS Shell. For example, with your own compatible 68k application:

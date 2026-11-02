@@ -70,6 +70,23 @@ runtime libraries as well before assembling a new SD image. Do not copy
 the `Developer` tree, build scratch files or an old demonstration disk
 into the runtime image.
 
+## Preview startup assets
+
+`guest/Startup-Sequence`, `Test-JIT`, `Test-Moira` and `ReadMe` are the minimal
+preview's original startup/help assets. Create their destination drawers
+and install them in `S:` and `SYS:KaffeinePreview` respectively. Include the
+native desktop libraries, tools, keymaps and fonts required by those files.
+The startup selects a requested JIT default in RAM, prepares screen
+preferences before IPrefs and opens Wanderer. The two test icons explicitly
+select their own backend. They report their requested choice; actual backend
+messages and JIT counters come from the library in the session UART logs.
+
+For deliverable builds, map the source prefix in compiler diagnostics using
+GCC/Clang's `-ffile-prefix-map=/absolute/source/root=kaffeine`. Preserve each
+target's normal compiler flags. Audit the actual runtime inventory for host
+paths after linking; stripping debug sections alone does not remove paths
+embedded in assertion strings. Retain the useful relative file names.
+
 ## Original 68k file smoke test
 
 `guest/PreviewSmoke.s` is a small original 68000 HUNK program with no SDK
