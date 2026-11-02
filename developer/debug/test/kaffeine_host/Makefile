@@ -84,6 +84,8 @@ GADGET_CPPFLAGS := -I$(TEST_DIR)/gadgets_stubs $(GFX_CPPFLAGS)
 GADGET_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o menus.o mirror.o copy.o rastport.o memory.o taglist.o)
 GADGET_OBJS += $(BUILD_DIR)/gadgets_bridge.o $(BUILD_DIR)/classic_bridge.o
 GUEST_BOUNDS_OBJS := $(addprefix $(BUILD_DIR)/guest_bounds_,cpu.o dispatch.o)
+CURRENTTIME_OBJS := $(BUILD_DIR)/currenttime_thunk.o $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o
+CURRENTTIME_OBJS += $(addprefix $(BUILD_DIR)/currenttime_,cpu.o dispatch.o)
 READARGS_PARSER_OBJ := $(BUILD_DIR)/dos_readargs_host.o
 READARGS_OBJS := $(addprefix $(BUILD_DIR)/readargs_,cpu.o dispatch.o memory.o readargs.o) $(READARGS_PARSER_OBJ)
 NDK_FD_DIR ?=
@@ -130,6 +132,7 @@ TESTS += test_m68klib
 TESTS += test_hosted_jit
 TESTS += test_process_tags
 TESTS += test_guest_tasks
+TESTS += test_currenttime
 TEST_BINS := $(addprefix $(BUILD_DIR)/,$(TESTS))
 
 all: $(TEST_BINS)
@@ -462,6 +465,21 @@ $(BUILD_DIR)/guest_bounds_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 $(BUILD_DIR)/test_guest_bounds: $(GUEST_BOUNDS_OBJS)
 $(BUILD_DIR)/test_guest_bounds: EXTRA_OBJS = $(GUEST_BOUNDS_OBJS)
 
+# The manual CurrentTime thunk and Kaffeine_IORefuse(), extracted verbatim,
+# with both LVO 84 rows, the real dispatcher and the production guest boundary.
+# The extractor also inspects these headers for duplicate macro LVO rows.
+$(BUILD_DIR)/currenttime_thunk.c: $(TEST_DIR)/currenttime_extract.py $(KAFFEINE_DIR)/kaffeine_thunks.c $(KAFFEINE_DIR)/kaffeine_thunks_gen.c $(KAFFEINE_DIR)/kaffeine_exec_io.c $(wildcard $(KAFFEINE_DIR)/kaffeine_*.h) | $(BUILD_DIR)
+	$(PYTHON) $< $(KAFFEINE_DIR) $@
+
+$(BUILD_DIR)/currenttime_thunk.o: $(BUILD_DIR)/currenttime_thunk.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/currenttime_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_currenttime: $(CURRENTTIME_OBJS)
+$(BUILD_DIR)/test_currenttime: EXTRA_OBJS = $(CURRENTTIME_OBJS)
+
 check-thunk-registrations:
 	$(PYTHON) $(TEST_DIR)/test_thunk_registrations.py --cc "$(CC)" $(REG_CHECK_ARGS)
 
@@ -490,11 +508,13 @@ clean:
 	rm -f $(BUILD_DIR)/hosted_jit.o $(BUILD_DIR)/hosted_jit.d
 	rm -f $(SCALING_OBJS) $(SCALING_OBJS:.o=.d) $(BENCH_OBJS) $(BENCH_OBJS:.o=.d) $(BUILD_DIR)/bench_exec_memory $(BUILD_DIR)/bench_exec_memory.d
 	rm -f $(GUEST_BOUNDS_OBJS) $(GUEST_BOUNDS_OBJS:.o=.d)
+	rm -f $(CURRENTTIME_OBJS) $(CURRENTTIME_OBJS:.o=.d) $(BUILD_DIR)/currenttime_thunk.c
 	rm -f $(SCHED_OBJS) $(SCHED_OBJS:.o=.d)
 	rm -f $(TEST_BINS) $(addsuffix .d,$(TEST_BINS)) $(DOS_LOADSEG_OBJ) $(DOS_LOADSEG_OBJ:.o=.d) $(EXEC_LISTS_OBJ) $(EXEC_LISTS_OBJ:.o=.d) $(DOS_THUNK_OBJS) $(DOS_THUNK_OBJS:.o=.d) $(MEMHEADER_OBJS) $(MEMHEADER_OBJS:.o=.d) $(UTILITY_THUNK_OBJS) $(UTILITY_THUNK_OBJS:.o=.d) $(LOCALE_THUNK_OBJS) $(LOCALE_THUNK_OBJS:.o=.d) $(MATHIEEE_THUNK_OBJS) $(MATHIEEE_THUNK_OBJS:.o=.d) $(READARGS_OBJS) $(READARGS_OBJS:.o=.d) $(CLI_OBJS) $(CLI_OBJS:.o=.d) $(EXEC_COMPAT_OBJS) $(EXEC_COMPAT_OBJS:.o=.d) $(GFX_THUNK_OBJS) $(GFX_THUNK_OBJS:.o=.d) $(MEMORY_OBJS) $(MEMORY_OBJS:.o=.d) $(TASK_OBJS) $(TASK_OBJS:.o=.d) $(IO_OBJS) $(IO_OBJS:.o=.d)
 
 -include $(addsuffix .d,$(TEST_BINS)) $(DOS_LOADSEG_OBJ:.o=.d) $(EXEC_LISTS_OBJ:.o=.d) $(DOS_THUNK_OBJS:.o=.d) $(MEMHEADER_OBJS:.o=.d) $(UTILITY_THUNK_OBJS:.o=.d) $(LOCALE_THUNK_OBJS:.o=.d) $(MATHIEEE_THUNK_OBJS:.o=.d) $(READARGS_OBJS:.o=.d) $(CLI_OBJS:.o=.d) $(EXEC_COMPAT_OBJS:.o=.d) $(GFX_THUNK_OBJS:.o=.d) $(MEMORY_OBJS:.o=.d) $(TASK_OBJS:.o=.d) $(IO_OBJS:.o=.d)
 -include $(GUEST_BOUNDS_OBJS:.o=.d)
+-include $(CURRENTTIME_OBJS:.o=.d)
 -include $(SCHED_OBJS:.o=.d)
 -include $(MATHFFP_THUNK_OBJS:.o=.d)
 -include $(LIBRARY_PATHS_OBJS:.o=.d)

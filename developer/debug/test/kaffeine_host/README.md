@@ -86,7 +86,7 @@ Darwin-specific JIT constraints.
 ## Coverage
 
 The Makefile is the authoritative list of executables. The current suite
-has 49 test executables and a thunk-registration audit.
+has 52 test executables and a thunk-registration audit.
 
 | Area | Coverage |
 | --- | --- |
@@ -119,6 +119,21 @@ protected output spans, native errors, rollback and cleanup. Classic
 CreateExtIO NT_MESSAGE markers work before the first DoIO. Input handler
 registration/event commands return IOERR_NOCMD without reaching a native
 handler; direct device vectors stop with rc 20.
+
+### Intuition CurrentTime
+
+`test_currenttime` compiles the manual CurrentTime() thunk and
+Kaffeine_IORefuse() verbatim from production (`currenttime_extract.py`) and
+calls them through the real dispatcher with the LVO 84 rows of the manual and
+generated tables. A recording native CurrentTime() receives only host
+temporaries. The guest gets both ULONGs big-endian, seconds before micros, so
+one pointer or overlapping destinations end as on a 68k Intuition. NULL
+destinations are skipped and D0 survives. Each non-NULL destination is checked
+whole before the native call: a span past the arena, wrapping, or touching a
+bridge structure, video or lock range stops the program with rc 20 and writes
+nothing. The focused executable passes 21 fixtures, including a generated-table
+fallback control. This host result is separate from the
+[AROS ARM64 target results](../kaffeine_target/README.md#intuition-currenttime-probe).
 
 ### Classic service processes
 
@@ -298,8 +313,8 @@ each mutation. The original rom/kaffeine stays unchanged.
 `make test` also runs `test_thunk_registrations.py`. Its default inputs are
 the AROS configuration files in this tree. Optional NDK and AROS FD inputs
 can extend the audit; use the script's `--help` for the available options.
-The audit covers 339 explicit native-vector cases and 584 manual thunk
-registrations across 20 tables. External SDK files are not included in this
+The audit covers 356 explicit native-vector cases and 660 manual thunk
+registrations across 23 tables. External SDK files are not included in this
 repository.
 
 ## Sanitizers and build variants

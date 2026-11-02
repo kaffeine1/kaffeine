@@ -10,6 +10,7 @@ at the end.
 
 | File | Purpose |
 | --- | --- |
+| `intuition_currenttime.c` | `CurrentTime()` outputs against native `timer.device` `GetSysTime()` brackets, canonical microseconds and neighboring sentinels, four one-tick-separated samples that distinguish big-endian values from byte-swapped values, independent NULL outputs, both NULL and same-pointer aliasing. A bounded raw LVO 84 helper separately checks Kaffeine's successful void-call D0 preservation. Default/`NORMAL` expects 31 fixed checks; source preparation alone is not target acceptance. `BADSECOND` and `BADMICROS` are separate fixed-module-only controlled-stop probes, never old-module baselines. |
 | `hello_seglist.s` | 68k program with CODE, DATA and BSS hunks. Every absolute operand needs a relocation to DATA or BSS, so its message is printed only if the rebased copy is correct. |
 | `cpu_faults.c` | Deliberate out-of-arena long accesses at 0xFFFFFFFC, aligned word accesses at 0xFFFFFFFE, inline-assembler odd word accesses and byte accesses at 0xFFFFFFFF, then `FMOVE.L FPCR,D0` without FPU startup. Prints and flushes a STEP line before each step. Expected guest result: bounds checks pass, Line-F ends the command with `RETURN_FAIL` (20), and its Shell/Run caller continues. With the argument `mmu` it runs only `PFLUSHA`, which must also end with rc 20. |
 | `cpu_full_index.c` | Original 68020 non-indirect full-index bytecode: `CLR.B (3696,A2,A0.L*4)` and `LEA` of the same operand. Checks the computed address, a single-byte write in guarded storage, CCR and preserved base/index registers. Built with `-m68020`; passes 5 checks in both Shell and Run with Moira and JIT on AROS ARM64 in QEMU. |
@@ -1018,6 +1019,53 @@ overflow the `IEEEDPPow()` of AmigaOS 3.2.3 gives the largest finite double,
 so the assertion fails there. Under the bridge `10^j` is infinity, as on the
 host. The long steps print 2^1023, built by exact doublings, so that they
 test the formatting alone.
+
+## Intuition CurrentTime probe
+
+`intuition_currenttime` (or `intuition_currenttime NORMAL`) uses four
+`CurrentTime()` calls between independently converted `GetSysTime()` calls,
+with one-tick delays between samples. Native Intuition implements
+`CurrentTime()` using that same clock and units. The probe requires a
+non-palindromic clock sample and a big-endian-only bracket match, and rejects
+a sample that matches only after byte swapping. These checks distinguish an
+endian regression from the separately tested return-register policy. NULL
+outputs and same-pointer aliasing have their own guarded calls. No clock is
+set, no wall-clock value is a golden, and this is not a timing benchmark.
+
+A complete successful run has 31 checks, empty stderr, RC 0 and the final
+line `intuition_currenttime: 31 checks, 0 failed`.
+Successful D0 preservation is Kaffeine's explicit policy for this void
+operation, stronger than the old generated thunk's return of zero. It is
+not an Intuition API guarantee for arbitrary native systems. Old-module
+controls must use only the ordinary mode: their endian-specific failure
+labels are assessed independently of any D0 failures and their exact
+failure count depends on the sampled clock.
+
+`intuition_currenttime BADSECOND` and `intuition_currenttime BADMICROS`
+are fixed-module-only containment cases. Each prints and flushes a STEP
+line before passing the aligned out-of-arena address `0xfffffffc` as one
+output; the command must stop with RC 20 without returning to the next
+line. Never use these modes with the old raw-pointer generated thunk.
+The host unit covers protected regions, partial overlap, boundary addresses
+and validation before any native call or partial write; the target probe
+does not infer those properties from its controlled exit alone.
+
+On 2 November 2026, the same 68k executable passed all 31 checks from both
+the Shell and actual `Run` with Moira and Kaffeine JIT on AROS ARM64 in
+QEMU, using one TCG thread. All eight fixed-module containment executions
+(two bad arguments, two backends, Shell and Run) returned 20 with the exact
+native diagnostic `CurrentTime(): invalid guest output, stopping (20)`.
+The UART logs contained no CPU fault, JIT stop or unimplemented call.
+Require that diagnostic when checking containment: RC 20 alone also occurs
+for CPU faults. The ordinary control on the older library completed with
+14 failed checks in each execution, including explicit byte-swapped-only
+clock matches, independently of its D0 failures.
+
+The tested native module was built from `70e2f781b15392216afa669c005ecfa750b4abd9`
+(SHA-256 `dd793fa9196d3ff28df8256c0663f13010ba61a8b64b59509759aafc5a68b450`);
+the 68k probe SHA-256 was
+`ecdb2534328711aff778a475c2d07bcb125319ef0b62fa9eca4a4d7a9bd146cb`.
+This is QEMU evidence; physical ARM hardware has not been tested.
 
 ## Expected containment and exit probes
 

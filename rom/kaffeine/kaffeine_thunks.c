@@ -662,8 +662,27 @@ invalid:
     return 20;
 }
 
+/* intuition -84: CurrentTime(A0=seconds, A1=micros). Native CurrentTime()
+   stores host-endian ULONGs, so it only fills two native temporaries. Each
+   non-NULL guest destination is checked whole before anything runs, then
+   written big-endian, seconds first, so one pointer or overlapping
+   destinations end as a guest call would leave them. A void call keeps the
+   guest's D0. */
+static IPTR thunk_intuition_CurrentTime(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG seconds = THUNK_A(0), micros = THUNK_A(1), secs, micro;
+    if ((seconds && !Kaffeine_GuestBytes(ctx, seconds, 4)) ||
+        (micros && !Kaffeine_GuestBytes(ctx, micros, 4)))
+        return Kaffeine_IORefuse(ctx, "CurrentTime(): invalid guest output");
+    CurrentTime(&secs, &micro);
+    if (seconds) m68k_write32(ctx, seconds, secs);
+    if (micros) m68k_write32(ctx, micros, micro);
+    return THUNK_D(0);
+}
+
 /* ── Intuition manual thunks (shadow struct) ── */
 const struct M68KThunkEntry kaffeine_thunks_intuition_manual[] = {
+    { 84, thunk_intuition_CurrentTime },
     { 330, thunk_intuition_IntuiTextLength },
     { 348, thunk_intuition_AutoRequest },
     KAFFEINE_INTUITION_REMEMBER_THUNKS,
