@@ -1508,6 +1508,12 @@ byte. Each of the six canvas frames matches independent fixed geometry;
 the native Quit dialogs and normal return codes are checked separately.
 The eight original frames document this bounded layer-editing fixture.
 
+The [Move, Undo and Redo workflow](../../../../docs/kaffeine/classic-applications.md#amipixelshop-move-undo-and-redo-2026-11-02-utc)
+adds Ctrl+Shift+Z after Undo in both launch modes. All eight state frames
+match independent fixed geometry: Redo restores every moved canvas byte.
+Both real application return codes are 0, with empty standard error and
+normal native Quit. Ten original frames document this bounded sequence.
+
 ### Additional portable Lua tests (2026-11-01)
 
 `lua_db`, `lua_gengc` and `lua_verybig` add three scripts to the existing

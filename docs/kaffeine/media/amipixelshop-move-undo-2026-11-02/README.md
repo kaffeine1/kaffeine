@@ -60,6 +60,10 @@ Both execution traces identify the Kaffeine JIT and record 3,757 blocks /
 18,139 translated instructions. These counters identify this test; they
 are not a performance benchmark.
 
+A subsequent [four-state workflow](../amipixelshop-redo-2026-11-02/README.md)
+also checks one Redo in each launch mode against the same independent
+geometry references.
+
 ## Scope and identity
 
 This checks the selected two-layer opaque composite, one rectangle fill,
