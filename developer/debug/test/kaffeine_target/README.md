@@ -1501,6 +1501,13 @@ The full 80-MCU scan is valid; drawing/saved pixels match independent
 geometry and reopened pixels match the same-source scalar STB CPU decode
 exactly. JPEG changes 408 source pixels; no lossless JPEG claim is made.
 
+The [Move and Undo workflow](../../../../docs/kaffeine/classic-applications.md#amipixelshop-move-and-undo-2026-11-02-utc)
+also passed in both fresh Shell and actual Run executions: Shift+Right
+moves a painted layer ten pixels and Ctrl+Z restores every original canvas
+byte. Each of the six canvas frames matches independent fixed geometry;
+the native Quit dialogs and normal return codes are checked separately.
+The eight original frames document this bounded layer-editing fixture.
+
 ### Additional portable Lua tests (2026-11-01)
 
 `lua_db`, `lua_gengc` and `lua_verybig` add three scripts to the existing

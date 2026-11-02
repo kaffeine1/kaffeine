@@ -287,6 +287,22 @@ unverified; this result does not establish general application compatibility.
 
 ![AmiPixelShop displaying the reloaded JPEG through the Kaffeine JIT](media/amipixelshop-jpeg-2026-11-02/reopened.png)
 
+### AmiPixelShop Move and Undo (2026-11-02 UTC)
+
+The same 68020 executable and Kaffeine JIT also passed a layer Move and
+Undo check, repeated in fresh Shell and actual `Run` executions. A 160x120
+white document with a black rectangle on Layer 1 uses Shift+Right to move
+the layer ten pixels, then Ctrl+Z to restore it. Each baseline, moved and
+restored canvas matches independent fixed geometry exactly: Move changes
+600 pixels and Undo restores every original RGB byte in both executions.
+Both native Quit dialogs were confirmed and both applications returned 0
+with empty standard error.
+
+[Eight original frames and validation scope](media/amipixelshop-move-undo-2026-11-02/README.md)
+record the result. The Properties position caption also returns to its
+baseline pixels after Undo. This checks one horizontal move and Undo, not
+arbitrary transforms or a complete Undo/Redo sequence.
+
 ### AmiPixelShop original-release startup
 
 [AmiPixelShop 0.6.1-beta](https://github.com/radi7777/AmiPixelShop/releases/tag/v0.6.1-beta)
