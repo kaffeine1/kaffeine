@@ -303,6 +303,20 @@ record the result. The Properties position caption also returns to its
 baseline pixels after Undo. This checks one horizontal move and Undo, not
 arbitrary transforms or a complete Undo/Redo sequence.
 
+### AmiPixelShop Move, Undo and Redo (2026-11-02 UTC)
+
+A follow-up with the same source-built 68020 executable and Kaffeine JIT
+adds one Redo to the 160x120 layer-editing fixture. Both fresh Shell and
+actual `Run` execute Shift+Right, Ctrl+Z and Ctrl+Shift+Z, then close normally
+through the native Quit dialog with return code 0 and empty standard error.
+All eight canvas frames match independent fixed geometry exactly:
+Move shifts the rectangle ten pixels, Undo restores its original pixels,
+and Redo restores its moved pixels. Each transition changes 600 pixels.
+
+[Ten original frames and validation scope](media/amipixelshop-redo-2026-11-02/README.md)
+record this single Move/Undo/Redo sequence; longer histories and other
+transforms remain separate checks.
+
 ### AmiPixelShop original-release startup
 
 [AmiPixelShop 0.6.1-beta](https://github.com/radi7777/AmiPixelShop/releases/tag/v0.6.1-beta)
