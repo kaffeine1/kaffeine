@@ -1,0 +1,62 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
+name: Kaffeine community test
+description: Report a successful or unsuccessful Kaffeine preview test
+title: "[Kaffeine test] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please report one application/workflow per issue. Review attachments for private content.
+        QEMU exit status, runtime backend evidence and application results are separate observations.
+  - type: input
+    id: build
+    attributes:
+      label: Preview build ID and source commit
+      description: From report.json or the preview manifest; say custom build if applicable.
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host OS, CPU and QEMU version (or physical hardware)
+    validations:
+      required: true
+  - type: input
+    id: application
+    attributes:
+      label: Application version and 68k build variant
+      description: Include CPU/FPU requirements and the source/download link, when known.
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Application result
+      options:
+        - Success
+        - Failure
+        - Unsupported operation or requirement
+        - Timeout (cause unknown)
+        - Not tested / launcher problem
+    validations:
+      required: true
+  - type: textarea
+    id: backend
+    attributes:
+      label: Actual backend evidence and Moira comparison
+      description: Quote the observed JIT/Moira message or counters. If unknown, say unknown. Include launch method (Shell, Run, icon).
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps, expected result and actual result
+      description: Include screen resolution/color depth. For save tests, describe save, close, reopen and content comparison separately.
+    validations:
+      required: true
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Reviewed report, logs or screenshots (optional)
+      description: Attach the local report ZIP here. Do not attach disks, private documents, ROMs or application binaries. Note any log truncation or redaction.

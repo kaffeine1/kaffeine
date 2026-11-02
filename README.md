@@ -102,6 +102,7 @@ or see the [launch method, same-session JIT counters and saved-project checks](d
 
 ## Documentation and tests
 
+- [Community preview preparation, portable launcher and local test reports](tools/kaffeine-preview/README.md) (tools only; runtime package not released).
 - [Upstream m68kemu comparison and contribution candidates](docs/kaffeine/upstream-pr1905-comparison.md).
 - [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
 - [TurboText 68k demonstration with the Kaffeine JIT](docs/kaffeine/turbotext-jit-demo.md).
