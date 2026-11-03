@@ -502,6 +502,25 @@ IPTR thunk_gfx_OpenFont(struct KaffeineContext *ctx, void *cpu)
     return Kaffeine_FontAdopt(ctx, OpenFont((struct TextAttr *)&input.attr));
 }
 
+/* A classic TextFontExtension has guest pointers and a different layout.
+   Fonts currently expose intrinsic-style snapshots without extensions.
+   Until an owned guest extension exists, ExtendFont must report failure;
+   neither call may cast the snapshot into native graphics.library. In
+   particular StripFont must not remove a shared native font's extension. */
+IPTR thunk_gfx_ExtendFont(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)ctx;
+    (void)cpu;
+    return 0;
+}
+
+IPTR thunk_gfx_StripFont(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)ctx;
+    (void)cpu;
+    return 0;
+}
+
 /* graphics -78: CloseFont(A1=textFont) */
 IPTR thunk_gfx_CloseFont(struct KaffeineContext *ctx, void *cpu)
 {

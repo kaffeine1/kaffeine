@@ -427,6 +427,11 @@ PROGRAM_FILES := $(addprefix $(BUILD_DIR)/,$(PROGRAMS))
 
 all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
 
+# This probe asserts Kaffeine's explicit unsupported-extension contract;
+# build it on request, not as a stock-Amiga compatibility battery member.
+$(BUILD_DIR)/gfx_font_extension: $(TEST_DIR)/gfx_font_extension.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $<
+
 $(BUILD_DIR) $(EXEC_LIBRARIES_DIR):
 	mkdir -p $@
 

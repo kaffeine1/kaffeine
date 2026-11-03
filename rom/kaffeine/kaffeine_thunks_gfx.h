@@ -30,6 +30,8 @@ IPTR thunk_gfx_SetABPenDrMd(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_ScrollRaster(struct KaffeineContext *ctx, void *cpu);
 
 IPTR thunk_gfx_CloseFont(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_ExtendFont(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_StripFont(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetFont(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_InitGels(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_GelsUnsupported(struct KaffeineContext *ctx, void *cpu);
@@ -79,6 +81,8 @@ IPTR thunk_gfx_FreeRaster(struct KaffeineContext *ctx, void *cpu);
     { 60,  thunk_gfx_Text }, \
     { 66,  thunk_gfx_SetFont }, \
     { 78,  thunk_gfx_CloseFont }, \
+    { 816, thunk_gfx_ExtendFont }, \
+    { 822, thunk_gfx_StripFont }, \
     { 96, thunk_gfx_GelsUnsupported }, \
     { 102, thunk_gfx_GelsUnsupported }, \
     { 108, thunk_gfx_GelsUnsupported }, \
