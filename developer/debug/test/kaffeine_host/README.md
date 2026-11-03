@@ -354,6 +354,13 @@ native AROS scheduling, complete application startup or hardware operation.
 
 ## Target validation
 
+The diskfont dispatcher test also checks the unsupported extension boundary:
+`ExtendFont` returns FALSE and `StripFont` leaves the font unchanged. Neither
+falls through to native graphics for a valid font snapshot, a partial alias,
+NULL or an unowned address, with or without guest tags. Guest memory, native
+font metadata and allocation counts remain unchanged. A guest
+`TextFontExtension` is not implemented; native extensions stay private.
+
 Use the [target suite](../kaffeine_target/README.md) for public API behavior
 on AROS and for comparison with native AmigaOS. QEMU completion, guest
 program completion, expected exit status and output comparisons are separate

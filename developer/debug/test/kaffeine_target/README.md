@@ -552,6 +552,13 @@ The packet fixture is an original 12-byte file. Requests of 5, 9 and 4 bytes
 return 5, 7 and 0; ordinary Read and Seek share the position. No AmigaOS ROM,
 application or proprietary font is supplied with these tests.
 
+`gfx_font_extension` is an explicitly built Kaffeine-only boundary probe,
+outside the stock-Amiga battery. It expects unsupported `ExtendFont` to
+return FALSE and `StripFont` to leave the unextended font unchanged,
+including with invalid addresses and unconverted tags. It checks the
+complete classic TextFont before and after these calls. It does not test
+successful TextFontExtension creation or establish application acceptance.
+
 ## The IJG JPEG self-test
 
 The seven steps of the library's own `make test` run as seven programs,

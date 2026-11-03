@@ -530,6 +530,14 @@ CASES = (
 # Explicit table of manual handlers that intentionally ignore one or more
 # fd arguments, with the exact ignored register set and the reason.
 ALLOWED_IGNORED_REGS = {
+    "thunk_gfx_ExtendFont": (
+        frozenset({"A0", "A1"}),
+        "ExtendFont() returns FALSE until guest TextFontExtension ownership is implemented",
+    ),
+    "thunk_gfx_StripFont": (
+        frozenset({"A0"}),
+        "StripFont() leaves unextended guest snapshots and shared native extensions unchanged",
+    ),
     "thunk_diskfont_NewFontContents": (frozenset({"A0", "A1"}), "native FontContents are unsupported"),
     "thunk_gfx_OpenMonitor": (frozenset({"A1", "D0"}), "owned native monitors are unsupported"),
     "thunk_gfx_CloseMonitor": (frozenset({"A0"}), "borrowed snapshots cannot close native monitors"),

@@ -713,6 +713,7 @@ static void test_registration()
         { 36, thunk_gfx_BltTemplate },
         { 54, thunk_gfx_TextLength }, { 60, thunk_gfx_Text }, { 66, thunk_gfx_SetFont },
         { 78, thunk_gfx_CloseFont },
+        { 816, thunk_gfx_ExtendFont }, { 822, thunk_gfx_StripFont },
         { 96, thunk_gfx_GelsUnsupported },
         { 102, thunk_gfx_GelsUnsupported },
         { 108, thunk_gfx_GelsUnsupported },

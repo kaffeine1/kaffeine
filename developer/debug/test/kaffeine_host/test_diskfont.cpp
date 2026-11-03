@@ -221,7 +221,7 @@ static const KaffeineCPUOps ops = {get_d,get_a,set_d,set_a,get_sr,set_sr,get_pc,
 static IPTR poison(KaffeineContext *, void *) { ++poisoned; std::abort(); }
 static const M68KThunkEntry graphics[] = {KAFFEINE_GRAPHICS_COMPAT_THUNKS, KAFFEINE_GRAPHICS_RASTPORT_THUNKS};
 static const M68KThunkEntry disk_poison[] = {{30,poison},{42,poison}};
-static const M68KThunkEntry gfx_poison[] = {{66,poison},{72,poison},{78,poison}};
+static const M68KThunkEntry gfx_poison[] = {{66,poison},{72,poison},{78,poison},{816,poison},{822,poison}};
 
 struct Fixture
 {
@@ -724,11 +724,36 @@ static void test_font_contents_refusal()
     assert(blocks.empty());
 }
 
+static void test_extension_refusal()
+{
+    Fonts fonts;reset(fonts);
+    {
+        Fixture f;
+        const ULONG font=f.open();assert(font);
+        f.tag(Fixture::tags,0x80008001,0xDEADBEEF);
+        f.tag(Fixture::tags+8,TAG_DONE,0);
+        const auto native_before=fonts.mono;
+        const auto before=f.bytes();const auto allocs=allocation_calls;
+        for(ULONG input:{0u,font,font+2,0xFFFFFFFFu})
+            for(ULONG tags:{0u,Fixture::tags,0xFFFFFFFFu})
+            {
+                assert(f.call(false,816,input,tags)==0);
+                assert(f.bytes()==before&&allocation_calls==allocs&&!poisoned);
+                f.call(false,822,input,tags);
+                assert(f.bytes()==before&&allocation_calls==allocs&&!poisoned);
+                assert(!std::memcmp(&fonts.mono,&native_before,sizeof(native_before)));
+            }
+        f.close(font);
+    }
+    assert(blocks.empty());
+}
+
 int main()
 {
     static_assert(sizeof(void *)==8 && sizeof(IPTR)==8 && sizeof(ULONG)==4 && sizeof(WORD)==2);
     const std::pair<const char *, void(*)()> tests[] = {
         {"native FontContents is refused before pointer conversion or fallback",test_font_contents_refusal},
+        {"unsupported font extensions never reach native graphics or mutate fonts",test_extension_refusal},
         {"exact monochrome TextFont, data and shared OpenFont identity",test_bitmap_identity},
         {"native extension marker stays private and intrinsic styles survive",test_native_extension_marker},
         {"native tagged copies, scalar DPI and all tag controls",test_tags},
