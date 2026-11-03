@@ -217,42 +217,12 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     return result;
 }
 
-/*****************************************************************************
-
-    NAME */
-#include <proto/kaffeine.h>
-
-        AROS_LH4(LONG, RunHunk,
-
-/*  SYNOPSIS */
-        AROS_LHA(BPTR,        segList,   D1),
-        AROS_LHA(ULONG,       stackSize, D2),
-        AROS_LHA(CONST_STRPTR, argPtr,   D3),
-        AROS_LHA(ULONG,       argSize,   D4),
-
-/*  LOCATION */
-        struct KaffeineLibBase *, KaffeineBase, 5, Kaffeine)
-
-/*  FUNCTION
-        Execute an m68k AmigaOS hunk binary under emulation.
-        All library calls from the m68k code are trapped and
-        dispatched to native AROS implementations.
-
-    INPUTS
-        segList   - Loaded m68k hunk segment list (from LoadSeg)
-        stackSize - Stack size for the emulated process
-        argPtr    - Command arguments string
-        argSize   - Length of arguments
-
-    RESULT
-        Return code from the m68k program, or -1 on failure. A seglist
-        without the relocation record kept by LoadSeg() (GSLI_68KRelocs)
-        is refused.
-
-*****************************************************************************/
+/* The generic command route never waits for or consumes process messages.
+   The explicit Workbench route transfers one native startup to this helper. */
+static LONG run_hunks(struct KaffeineLibBase *KaffeineBase, BPTR segList,
+                       ULONG stackSize, CONST_STRPTR argPtr, ULONG argSize,
+                       struct Message *startup)
 {
-    AROS_LIBFUNC_INIT
-
     struct KaffeineContext *ctx;
     IPTR relocs = 0;
     struct TagItem segtags[] =
@@ -265,22 +235,17 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     BOOL transferred = FALSE;
     char program[256];
     struct Process *owner = (struct Process *)FindTask(NULL);
-    struct Message *startup = NULL;
 
-    /* A native Workbench message can arrive after DosEntry starts us.
-       Take it on its real owner's port before GetSegListInfo or any other
-       DOS call. The execution driver may safely reply to the held message. */
-    if (owner->pr_Task.tc_Node.ln_Type == NT_PROCESS && !owner->pr_CLI)
+    /* Only the explicit Workbench entry accepts an already-taken message.
+       A non-CLI RunCommand or bare HUNK process may have no startup at all. */
+    if (startup)
     {
-        struct WBStartup *wb;
-        WaitPort(&owner->pr_MsgPort);
-        startup = GetMsg(&owner->pr_MsgPort);
-        wb = (struct WBStartup *)startup;
-        if (!startup || startup->mn_Length < sizeof(*wb) ||
-            startup->mn_Node.ln_Type != NT_MESSAGE ||
+        struct WBStartup *wb = (struct WBStartup *)startup;
+        if (owner->pr_Task.tc_Node.ln_Type != NT_PROCESS || owner->pr_CLI ||
+            startup->mn_Length < sizeof(*wb) || startup->mn_Node.ln_Type != NT_MESSAGE ||
             wb->sm_Process != &owner->pr_MsgPort || wb->sm_Segment != segList)
         {
-            if (startup) ReplyMsg(startup);
+            ReplyMsg(startup);
             return RETURN_FAIL;
         }
     }
@@ -318,6 +283,61 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     if (!transferred) dispose_context(ctx);
     return result;
 
+}
+
+/*****************************************************************************
+
+    NAME */
+#include <proto/kaffeine.h>
+
+        AROS_LH4(LONG, RunHunk,
+
+/*  SYNOPSIS */
+        AROS_LHA(BPTR,        segList,   D1),
+        AROS_LHA(ULONG,       stackSize, D2),
+        AROS_LHA(CONST_STRPTR, argPtr,   D3),
+        AROS_LHA(ULONG,       argSize,   D4),
+
+/*  LOCATION */
+        struct KaffeineLibBase *, KaffeineBase, 5, Kaffeine)
+
+/*  FUNCTION
+        Execute an m68k AmigaOS hunk binary under emulation.
+        All library calls from the m68k code are trapped and
+        dispatched to native AROS implementations.
+
+    INPUTS
+        segList   - Loaded m68k hunk segment list (from LoadSeg)
+        stackSize - Stack size for the emulated process
+        argPtr    - Command arguments string
+        argSize   - Length of arguments
+
+    RESULT
+        Return code from the m68k program, or -1 on failure. A seglist
+        without the relocation record kept by LoadSeg() (GSLI_68KRelocs)
+        is refused.
+
+*****************************************************************************/
+{
+    AROS_LIBFUNC_INIT
+    return run_hunks(KaffeineBase, segList, stackSize, argPtr, argSize, NULL);
+    AROS_LIBFUNC_EXIT
+}
+
+/* Native Workbench startup ABI, available from version 1.1. The caller
+   already took the message before any DOS operation; the bridge owns its
+   one reply on every path. No implicit receive is imposed on RunHunk. */
+#include <proto/kaffeine.h>
+        AROS_LH3(LONG, RunWorkbenchHunk,
+        AROS_LHA(BPTR, segList, D1),
+        AROS_LHA(ULONG, stackSize, D2),
+        AROS_LHA(APTR, startup, A0),
+        struct KaffeineLibBase *, KaffeineBase, 7, Kaffeine)
+{
+    AROS_LIBFUNC_INIT
+    if (!startup) return RETURN_FAIL;
+    return run_hunks(KaffeineBase, segList, stackSize, NULL, 0,
+                      (struct Message *)startup);
     AROS_LIBFUNC_EXIT
 }
 

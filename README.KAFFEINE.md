@@ -172,7 +172,7 @@ The current test and target baseline includes:
 | AROS AArch64 in QEMU | Synthetic CLI/GUI probes, the 6-step `bzip2 1.0.8` self-test and the 7-step IJG JPEG `9f` self-test pass in both Shell and `Run` modes |
 | Personal Paint 7.2.1.0 with Moira on AROS AArch64 in QEMU | Original 68k executable opens from a desktop icon through the `CLI` route, draws, saves a 1024×768 ILBM image and returns to the desktop; [video, screenshots and output](docs/kaffeine/personal-paint-demo.md) are available |
 | Personal Paint 7.2.1.0 with the JIT on AROS AArch64 in QEMU | [JIT validation](docs/kaffeine/jit-backend.md#validation) includes editor startup/exit from Shell and `Run`, IFF/ILBM saving and a pixel-checked 320×200/256-color drawing save/modify/reload cycle; loading saved 1024×768 images remains limited |
-| Typed Workbench startup on AROS AArch64/QEMU | Original 68k payloads receive copied classic arguments, borrowed directory locks and a real guest seglist. Native TOOL icon launch without `CLI` passes 17 checks in both Shell and `Run` with the JIT; cleanup and ordinary CLI controls pass 58 checks per invocation |
+| Typed Workbench startup on AROS AArch64/QEMU | Original 68k payloads receive copied classic arguments, borrowed directory locks and a real guest seglist. Native TOOL icon launch without `CLI` passes 17 checks in both Shell and `Run` with both backends; the combined startup, cleanup, command and CLI controller passes 60 checks per invocation |
 | Native AmigaOS reference | Message, packet, `ExAll`, `icon.library`, `AppIcon`, layer, region, bitmap, screen and `NewWindow` observations match the bridged AROS contract |
 
 The target suite includes deliberate nonzero refusal/exit probes alongside
@@ -206,11 +206,14 @@ of a mouse double-click or a claim about every application's startup.
 Community preview 001 and the published application videos retain their
 previously qualified launch paths.
 
-A native non-CLI caller of `RunHunk` supplies the Workbench startup message
-on its own process port, as for native program startup. The bridge takes
-that message before calling DOS, then publishes its typed copy in the
-guest root Process. Its directory locks remain borrowed until the native
-reply; guest storage stays quarantined for the lifetime of the arena.
+Native Workbench startup uses the paired `workbench.library` 45.7 and
+`kaffeine.library` 1.1 changes. Workbench selects an explicit native entry
+for 68k TOOLs. That entry takes the startup message before any DOS call and
+transfers it to `RunWorkbenchHunk` (native vector 7). The generic `RunHunk`
+and `RunCommand` routes receive no implicit startup: a non-CLI caller may
+already have consumed its own message, or may have none. Borrowed startup
+locks retire before the native reply; guest storage stays quarantined for
+the lifetime of the arena.
 
 ## Building and testing
 

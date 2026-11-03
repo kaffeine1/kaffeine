@@ -76,7 +76,11 @@ int main(int argc, char **argv)
     emulator = OpenLibrary("kaffeine.library", 0);
     IconBase = OpenLibrary("icon.library", 44);
     WorkbenchBase = OpenLibrary("workbench.library", 44);
-    if (!check(emulator && IconBase && WorkbenchBase, "pin emulator and native icon/Workbench libraries")) goto finish;
+    if (!check(emulator && IconBase && WorkbenchBase &&
+               (emulator->lib_Version > 1 || emulator->lib_Revision >= 1) &&
+               (WorkbenchBase->lib_Version > 45 ||
+                (WorkbenchBase->lib_Version == 45 && WorkbenchBase->lib_Revision >= 7)),
+               "pin compatible startup ABI and native icon/Workbench libraries")) goto finish;
     for (i = 0; i < 2; ++i)
     {
         BPTR dir = CreateDir(folders[i]);

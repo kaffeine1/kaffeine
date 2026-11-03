@@ -6,7 +6,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* RunHunk captures the native startup before its first DOS call. Publish
+/* Workbench captures the native startup before its first DOS call. Publish
    runs later, in the stable driver, after the root Process shadow exists. */
 BOOL Kaffeine_StartupPublish(struct KaffeineContext *);
 BOOL Kaffeine_StartupReply(struct KaffeineContext *, ULONG, IPTR *);

@@ -43,16 +43,18 @@ static LONG child_entry(void)
 {
     struct Process *me = (struct Process *)FindTask(NULL);
     struct Message *left;
+    struct Message *startup;
     LONG rc;
     ObtainSemaphore(&guard);
     live_port = &me->pr_MsgPort;
     live_task = &me->pr_Task;
     ReleaseSemaphore(&guard);
     Wait(SIGF_SINGLE);
-    rc = AROS_LC4(LONG, RunHunk,
+    startup = GetMsg(&me->pr_MsgPort);
+    rc = AROS_LC3(LONG, RunWorkbenchHunk,
         AROS_LCA(BPTR, code, D1), AROS_LCA(ULONG, 65536, D2),
-        AROS_LCA(CONST_STRPTR, NULL, D3), AROS_LCA(ULONG, 0, D4),
-        struct Library *, emulator, 5, Kaffeine);
+        AROS_LCA(APTR, startup, A0),
+        struct Library *, emulator, 7, Kaffeine);
     /* Baseline cleanup is deliberately detectable. It cannot turn a
        missing bridge into a pass or leave a queued pointer to dead data. */
     left = GetMsg(&me->pr_MsgPort);
@@ -116,8 +118,9 @@ static int run_case(int argc, char **argv)
     /* A local variable is copied into the native wrapper and domain driver;
        do not change the machine's global ENV selection. */
     if (!check(SetVar("KAFFEINE_CPU", backend, strlen(backend), GVF_LOCAL_ONLY), "select copied local backend")) goto finish;
-    emulator = OpenLibrary("kaffeine.library", 0);
-    if (!check(emulator != NULL, "pin kaffeine.library through native retirement")) goto finish;
+    emulator = OpenLibrary("kaffeine.library", 1);
+    if (!check(emulator && (emulator->lib_Version > 1 || emulator->lib_Revision >= 1),
+               "pin the explicit startup ABI through native retirement")) goto finish;
     code = LoadSeg(payload);
     if (!check(code && GetSegListInfo(code, info) == 2 && hunk && relocs, "registered 68k HUNK and relocation record")) goto finish;
     for (i = 0; i < 3; ++i)
@@ -198,10 +201,12 @@ finish:
 
 int main(int argc, char **argv)
 {
-    if (argc > 2 && (!strcmp(argv[2], "cleanup-suite") || !strcmp(argv[2], "all-suite")))
+    if (argc > 2 && (!strcmp(argv[2], "cleanup-suite") || !strcmp(argv[2], "all-suite") ||
+                    !strcmp(argv[2], "integration-suite")))
     {
         char *case_args[] = {argv[0], argv[1], "SYS:EMU68/wbstartup_untaken", "cleanup"};
-        BOOL all = !strcmp(argv[2], "all-suite");
+        BOOL integration = !strcmp(argv[2], "integration-suite");
+        BOOL all = integration || !strcmp(argv[2], "all-suite");
         if (all) run_case(2, case_args);
         run_case(4, case_args);
         case_args[2] = "SYS:EMU68/wbstartup_unreplied";
@@ -211,6 +216,17 @@ int main(int argc, char **argv)
             struct TagItem cli[] = {{SYS_Asynch, FALSE}, {TAG_DONE, 0}};
             check(SystemTagList("SYS:EMU68/hello_short", cli) == 0,
                   "ordinary CLI HUNK path still executes relocated DATA and BSS");
+            printf("wbstartup_native: %u checks, %u failures\n", checks, failures);
+        }
+        if (integration && !failures)
+        {
+            char command[160];
+            struct TagItem cli[] = {{SYS_Asynch, FALSE}, {TAG_DONE, 0}};
+            fflush(stdout);
+            snprintf(command, sizeof(command), "SYS:EMU68/wbstartup_command_native %s", argv[1]);
+            check(SystemTagList(command, cli) == 0, "non-CLI command regression controller passes");
+            snprintf(command, sizeof(command), "SYS:EMU68/wbstartup_icon_native %s", argv[1]);
+            check(SystemTagList(command, cli) == 0, "native Workbench TOOL integration controller passes");
             printf("wbstartup_native: %u checks, %u failures\n", checks, failures);
         }
         return failures ? 20 : 0;

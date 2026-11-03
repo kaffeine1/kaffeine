@@ -490,6 +490,9 @@ $(BUILD_DIR)/wbstartup_native: $(TEST_DIR)/wbstartup_native.c | $(BUILD_DIR)
 $(BUILD_DIR)/wbstartup_icon_native: $(TEST_DIR)/wbstartup_icon_native.c | $(BUILD_DIR)
 	$(NATIVE_CC) -O2 -Wall -Wextra -Werror -Wno-pointer-sign -o $@ $<
 
+$(BUILD_DIR)/wbstartup_command_native: $(TEST_DIR)/wbstartup_command_native.c | $(BUILD_DIR)
+	$(NATIVE_CC) -O2 -Wall -Wextra -Werror -Wno-pointer-sign -o $@ $<
+
 # This payload needs the native parent and is not a standalone battery case.
 $(BUILD_DIR)/hunk_process_child: $(TEST_DIR)/hunk_process_child.c | $(BUILD_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $<

@@ -3,8 +3,8 @@
 
    Typed native Workbench startup, copied into the classic 68k layout.
    The native sender retains ownership of every lock, name and segment.
-   As in native C startup, RunHunk takes the message before calling DOS;
-   the guest's independent execution driver publishes and replies to it. */
+   The explicit native Workbench entry takes the message before calling
+   DOS; the guest's independent driver publishes and replies to it. */
 #include "kaffeine_startup.h"
 #include "kaffeine_locks.h"
 #include "kaffeine_messages.h"

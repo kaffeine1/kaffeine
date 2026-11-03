@@ -336,6 +336,7 @@ make -C developer/debug/test/kaffeine_target \
     "$PWD/build-wbstartup/wbstartup_guest" \
     "$PWD/build-wbstartup/wbstartup_native" \
     "$PWD/build-wbstartup/wbstartup_icon_native" \
+    "$PWD/build-wbstartup/wbstartup_command_native" \
     "$PWD/build-wbstartup/wbstartup_untaken" \
     "$PWD/build-wbstartup/wbstartup_unreplied" \
     "$PWD/build-wbstartup/hello_short"
@@ -350,14 +351,16 @@ Workbench startup message. Keep an external VM deadline.
 
 The sender creates a non-CLI native wrapper, publishes its live port behind
 an Exec gate, then sends a real startup before releasing the gate. The
-wrapper calls `RunHunk`; no stale returned Process pointer is dereferenced.
+wrapper takes that message and transfers it to the explicit native
+`RunWorkbenchHunk` ABI (kaffeine.library 1.1, vector 7); no stale returned
+Process pointer is dereferenced.
 Three independent argument locks and names must become classic WBArgs in
 the 68k arena. The payload checks the root port, argument count and names,
 the actual guest seglist entry, and reads different four-byte files through
 two argument directories. The sender checks its exact binary result, zero
 exit code, an unchanged native payload, one native reply and full wrapper
 retirement. A detectable fallback reply only cleans up unsupported baselines;
-it cannot make them pass. This exercises the `RunHunk` message contract;
+it cannot make them pass. This exercises the explicit startup message contract;
 actual native DOS/Workbench icon launch is a separate integration check.
 
 `--args wbstartup_native "jit all-suite"` adds two original cleanup HUNKs:
@@ -370,7 +373,7 @@ Shell and actual `Run` with the JIT.
 `wbstartup_icon_native` instead writes and rereads a native TOOL icon,
 verifies that `CLI` is absent, then calls `OpenWorkbenchObjectA` with two
 project arguments. It uses the real Workbench handler and DOS HUNK loader,
-rather than the controller's direct `RunHunk` wrapper. The same 68k payload
+rather than the controller's direct startup-ABI wrapper. The same 68k payload
 must produce a fresh byte-exact result and the native tool must retire.
 The controller snapshots and restores the exact global ENV backend. Build
 and run it only on a disposable image, passing `jit` as its first argument;
@@ -379,6 +382,22 @@ QEMU this passes 17 checks from Shell and 17 from `Run`, with native JIT
 translation counts. This tests icon launch through the Workbench API, not
 an automated mouse double-click. Neither probe establishes broad application
 or physical-hardware compatibility.
+
+`wbstartup_command_native` supplies three non-CLI regressions using an
+original HUNK that returns 7: a direct `RunHunk` call without any startup,
+a native GUI owner that consumes/replies its own startup and then invokes
+`RunCommand`, and a bare `NP_Seglist` process with no Workbench protocol.
+All must reach their entry and retire without waiting for a new message.
+The controller passes 21 checks from Shell and `Run` with both backends.
+
+For the combined check, install all the binaries above and use
+`--args wbstartup_native "jit integration-suite"` (or `moira`). It runs the
+startup/cleanup/CLI checks followed by both native controllers, checking
+their return codes. Each outer invocation passes 60 checks; the nested
+command and icon controllers also report their 21/17 checks separately.
+Use the paired runtime changes (`kaffeine.library` 1.1 and
+`workbench.library` 45.7) for the icon test. Generic `RunHunk`/`RunCommand`
+never receive an implicit startup message based on `pr_CLI` alone.
 
 ### Independent loaded-hunk process probe
 
