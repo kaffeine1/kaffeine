@@ -5,6 +5,34 @@ Schmieder's `m68kemu.library`; the upstream continuation by `terminills`
 addresses much of the same compatibility work. The useful next step is
 to converge contracts and share focused fixes and regression tests.
 
+## Upstream status, 3 November 2026
+
+[PR #1905](https://github.com/aros-development-team/AROS/pull/1905) has been
+merged into AROS mainline. The revision table and findings below remain a
+historical comparison of the sources inspected on 28 October, rather than
+a list of defects in current mainline.
+
+Focused contributions now merged upstream include:
+
+- Checked memory spans and their host-test integration:
+  [#1922](https://github.com/aros-development-team/AROS/pull/1922) and
+  [#1943](https://github.com/aros-development-team/AROS/pull/1943).
+- Classic library-version argument normalization and native/first-load
+  version checks: [#2048](https://github.com/aros-development-team/AROS/pull/2048)
+  and [#2051](https://github.com/aros-development-team/AROS/pull/2051).
+- Private MemHeader validation:
+  [#2049](https://github.com/aros-development-team/AROS/pull/2049).
+- Raspberry Pi framebuffer geometry and palette-request validation:
+  [#1990](https://github.com/aros-development-team/AROS/pull/1990).
+- Raspberry Pi ARM64 processor mailbox-header build dependencies:
+  [#2057](https://github.com/aros-development-team/AROS/pull/2057).
+
+Generic software LUT8 composition and deferred palette refresh remain in
+the separate [#1949](https://github.com/aros-development-team/AROS/pull/1949).
+The maintainer has reported a ROM-size limit on the m68k build. Merged
+contributions do not establish runtime compatibility for every application
+or target; their individual test scopes still apply.
+
 ## Upstream follow-up, 29 October 2026
 
 The checked guest-memory span fix was merged upstream in

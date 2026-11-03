@@ -80,6 +80,10 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   also returned exit code zero. Loading saved 1024×768 IFF and PNG images
   still reports “The image is too large”; full application compatibility
   and Workbench `WBStartup` message handling remain open.
+- Separate Personal Paint JIT checks cover a pixel-checked 320×200,
+  256-color save/modify/reload cycle and saving a 1024×768 image.
+  Reopening the larger image remains limited. These are separate from
+  the Moira demonstration; see the [JIT evidence](docs/kaffeine/jit-backend.md#validation).
 
 The guest `ExecBase.MemList` contains read-only capacity descriptors for
 the chip-accessible containment heap, excluding the custom-register window
