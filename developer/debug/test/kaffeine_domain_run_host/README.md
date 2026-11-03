@@ -30,6 +30,10 @@ The actual driver is tested for:
 - Root completion before an independent child/domain finishes, with the
   private gate and library pin retained until final driver disposal. The
   first root result wins over repeat notifications and the final child code.
+- The typed startup-completion hook runs on the native driver before root
+  stream retirement and before the caller can return, including when an
+  independent child retains the context. This is a recording hook; message
+  conversion and the real native reply have separate unit/target coverage.
 - All three full-width caller streams explicitly passed with close flags
   FALSE. Borrowed guest identities are retired and detached before the gate
   permits caller return/close. Repeated completion is idempotent; native DOS
