@@ -474,6 +474,22 @@ $(ASL_FILE_PROBE_SCRIPTS): $(ASL_FILE_PROBE_DIR)/%: $(TEST_DIR)/asl_file_probe-f
 # Optional native companion, built separately by the AROS target reviewer.
 # It must run as native code, so never use M68K_CC for this target.
 NATIVE_CC ?= aarch64-aros-gcc
+# The original Workbench payload needs its native sender; never run alone.
+$(BUILD_DIR)/wbstartup_guest: $(TEST_DIR)/wbstartup_guest.s | $(BUILD_DIR)
+	$(VASM) -quiet -Fhunkexe -nosym -kick1hunks -o $@ $<
+
+$(BUILD_DIR)/wbstartup_untaken: $(TEST_DIR)/wbstartup_cleanup.s | $(BUILD_DIR)
+	$(VASM) -quiet -Fhunkexe -nosym -kick1hunks -DWBSTARTUP_UNTAKEN=1 -o $@ $<
+
+$(BUILD_DIR)/wbstartup_unreplied: $(TEST_DIR)/wbstartup_cleanup.s | $(BUILD_DIR)
+	$(VASM) -quiet -Fhunkexe -nosym -kick1hunks -o $@ $<
+
+$(BUILD_DIR)/wbstartup_native: $(TEST_DIR)/wbstartup_native.c | $(BUILD_DIR)
+	$(NATIVE_CC) -O2 -Wall -Wextra -Werror -Wno-pointer-sign -o $@ $<
+
+$(BUILD_DIR)/wbstartup_icon_native: $(TEST_DIR)/wbstartup_icon_native.c | $(BUILD_DIR)
+	$(NATIVE_CC) -O2 -Wall -Wextra -Werror -Wno-pointer-sign -o $@ $<
+
 # This payload needs the native parent and is not a standalone battery case.
 $(BUILD_DIR)/hunk_process_child: $(TEST_DIR)/hunk_process_child.c | $(BUILD_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $<

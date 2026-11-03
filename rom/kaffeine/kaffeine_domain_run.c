@@ -12,6 +12,7 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_domain_run.h"
 #include "kaffeine_filehandle.h"
+#include "kaffeine_startup.h"
 
 #ifndef KAFFEINE_DOMAIN_START_TICKS
 #define KAFFEINE_DOMAIN_START_TICKS 250
@@ -68,6 +69,7 @@ static void root_complete(struct KaffeineContext *ctx, LONG result)
 {
     struct DomainDriver *driver = ctx->root_completion_data;
     unsigned i;
+    Kaffeine_StartupFinish(ctx);
     /* The caller may close its streams as soon as the gate opens. Retire
        their borrowed identities first, without closing caller-owned handles. */
     for (i = 0; i < 3; ++i)

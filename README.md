@@ -67,8 +67,11 @@ selects a 1024×768, 256-color canvas inside Personal Paint, draws with
 rectangles, circles and text, saves an IFF/ILBM image and returns to the
 desktop. The decoded file matches the visible canvas pixel for pixel.
 Icon launch uses the standard `CLI` tooltype and CPU blitting; the CPU
-backend is Moira. Loading saved 1024×768 images, full Workbench `WBStartup`
-handling and broader application compatibility remain open checks.
+backend is Moira. Loading saved 1024×768 images and broader application
+compatibility remain open checks. A separate native ARM64 regression now
+starts an original 68k TOOL through Workbench without the `CLI` tooltype,
+using typed `WBStartup` arguments and the Kaffeine JIT. This development
+change is not included in community preview 001.
 
 Separate [JIT checks](docs/kaffeine/jit-backend.md#validation) open the same
 68k editor from Shell and `Run`, draw and exit normally. A 320×200,

@@ -36,12 +36,15 @@
 #include "kaffeine_jit.h"
 #include "kaffeine_domain_run.h"
 #include "kaffeine_offsets.h"
+#include "kaffeine_startup.h"
+#include <workbench/startup.h>
 
 /* The signals, ports and open devices of the guest belong to the native
    task that runs it, as does a lock of the list of public screens, an Exec
    semaphore: release them there, before that task ends. */
 static void cleanup_owned(struct KaffeineContext *ctx)
 {
+    Kaffeine_StartupFinish(ctx);
     /* ASL requests the program left, which no screen or window outlives */
     Kaffeine_AslCleanup(ctx);
     Kaffeine_WindowsCleanup(ctx);
@@ -101,12 +104,18 @@ static LONG start_owned(struct KaffeineContext *ctx)
     ctx->root_streams[1] = m68k_read32(ctx, ctx->guest_exec_task + M68K_PR_COS);
     ctx->root_streams[2] = m68k_read32(ctx, ctx->guest_exec_task + M68K_PR_CES);
     ctx->task_ops = &Kaffeine_GuestTaskOps;
+    if (!Kaffeine_StartupPublish(ctx))
+    {
+        cleanup_owned(ctx);
+        return RETURN_FAIL;
+    }
     Kaffeine_AutoOpenLibs(ctx);
     return execute_owned(ctx);
 }
 
 static void dispose_context(struct KaffeineContext *ctx)
 {
+    Kaffeine_StartupFinish(ctx);
     Kaffeine_ReadArgsCleanup(ctx);
     Kaffeine_LocaleCleanup(ctx);
     Kaffeine_MatchCleanup(ctx);
@@ -255,21 +264,47 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     LONG result = -1;
     BOOL transferred = FALSE;
     char program[256];
+    struct Process *owner = (struct Process *)FindTask(NULL);
+    struct Message *startup = NULL;
+
+    /* A native Workbench message can arrive after DosEntry starts us.
+       Take it on its real owner's port before GetSegListInfo or any other
+       DOS call. The execution driver may safely reply to the held message. */
+    if (owner->pr_Task.tc_Node.ln_Type == NT_PROCESS && !owner->pr_CLI)
+    {
+        struct WBStartup *wb;
+        WaitPort(&owner->pr_MsgPort);
+        startup = GetMsg(&owner->pr_MsgPort);
+        wb = (struct WBStartup *)startup;
+        if (!startup || startup->mn_Length < sizeof(*wb) ||
+            startup->mn_Node.ln_Type != NT_MESSAGE ||
+            wb->sm_Process != &owner->pr_MsgPort || wb->sm_Segment != segList)
+        {
+            if (startup) ReplyMsg(startup);
+            return RETURN_FAIL;
+        }
+    }
 
     /* LoadSeg() relocated the segments for their native addresses. */
     if (!GetSegListInfo(segList, segtags) || !relocs)
     {
         D(bug("[kaffeine] RunHunk: no relocation record for seglist %p\n", segList));
+        if (startup) ReplyMsg(startup);
         return -1;
     }
 
     ctx = Kaffeine_CreateContext(KaffeineBase);
     if (!ctx)
+    {
+        if (startup) ReplyMsg(startup);
         return -1;
+    }
+    ctx->startup_native = startup;
     Kaffeine_GadgetsSetup(ctx);
     Kaffeine_LayersSetup(ctx);
 
-    entry = Kaffeine_LoadHunks(ctx, segList, (const struct HunkRelocTable *)relocs);
+    entry = startup ? Kaffeine_LoadStartupHunks(ctx, segList, (const struct HunkRelocTable *)relocs) :
+                      Kaffeine_LoadHunks(ctx, segList, (const struct HunkRelocTable *)relocs);
     if (entry)
     {
         /* The Shell names its CLI's command before RunCommand(); that name

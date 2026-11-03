@@ -323,6 +323,63 @@ the launch scripts run the program under `FailAt 21`. `--keys` and `--mouse`
 drive the guest through QMP. `--keep-image` retains the modified copy for
 inspection.
 
+### Workbench startup message probe
+
+`wbstartup_native.c` is an ARM-native sender for the original 68000
+`wbstartup_guest.s`. The assembly payload uses no SDK headers or C runtime.
+Build both explicitly:
+
+```sh
+make -C developer/debug/test/kaffeine_target \
+    BUILD_DIR="$PWD/build-wbstartup" \
+    VASM=vasmm68k_mot NATIVE_CC=aarch64-aros-gcc \
+    "$PWD/build-wbstartup/wbstartup_guest" \
+    "$PWD/build-wbstartup/wbstartup_native" \
+    "$PWD/build-wbstartup/wbstartup_icon_native" \
+    "$PWD/build-wbstartup/wbstartup_untaken" \
+    "$PWD/build-wbstartup/wbstartup_unreplied" \
+    "$PWD/build-wbstartup/hello_short"
+```
+
+Run the native sender on a disposable ARM64 image with one active Exec CPU,
+passing `moira` or `jit` as its first argument. The payload defaults to
+`SYS:EMU68/wbstartup_guest`. With the runner, use
+`--files wbstartup_native build-wbstartup` and
+`--args wbstartup_native jit`. Never run the payload alone: it requires a
+Workbench startup message. Keep an external VM deadline.
+
+The sender creates a non-CLI native wrapper, publishes its live port behind
+an Exec gate, then sends a real startup before releasing the gate. The
+wrapper calls `RunHunk`; no stale returned Process pointer is dereferenced.
+Three independent argument locks and names must become classic WBArgs in
+the 68k arena. The payload checks the root port, argument count and names,
+the actual guest seglist entry, and reads different four-byte files through
+two argument directories. The sender checks its exact binary result, zero
+exit code, an unchanged native payload, one native reply and full wrapper
+retirement. A detectable fallback reply only cleans up unsupported baselines;
+it cannot make them pass. This exercises the `RunHunk` message contract;
+actual native DOS/Workbench icon launch is a separate integration check.
+
+`--args wbstartup_native "jit all-suite"` adds two original cleanup HUNKs:
+one leaves startup in its queue; the other takes it without replying.
+Each must return 7 while the bridge returns the real native message once.
+An ordinary CLI HUNK with relocated DATA/BSS must still print its expected
+line and return zero. This combined controller passes 58 checks in both
+Shell and actual `Run` with the JIT.
+
+`wbstartup_icon_native` instead writes and rereads a native TOOL icon,
+verifies that `CLI` is absent, then calls `OpenWorkbenchObjectA` with two
+project arguments. It uses the real Workbench handler and DOS HUNK loader,
+rather than the controller's direct `RunHunk` wrapper. The same 68k payload
+must produce a fresh byte-exact result and the native tool must retire.
+The controller snapshots and restores the exact global ENV backend. Build
+and run it only on a disposable image, passing `jit` as its first argument;
+the actual backend must also be checked in the serial log. On AROS ARM64 in
+QEMU this passes 17 checks from Shell and 17 from `Run`, with native JIT
+translation counts. This tests icon launch through the Workbench API, not
+an automated mouse double-click. Neither probe establishes broad application
+or physical-hardware compatibility.
+
 ### Independent loaded-hunk process probe
 
 `hunk_process_native.c` is an ARM-native parent; `hunk_process_child.c` is

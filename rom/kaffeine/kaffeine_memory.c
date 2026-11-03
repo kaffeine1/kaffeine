@@ -1249,6 +1249,16 @@ ULONG Kaffeine_LoadLibraryHunks(struct KaffeineContext *ctx, BPTR segList,
     return copy_seglist(ctx, segList, relocs, TRUE, &seglist, NULL) ? seglist : 0;
 }
 
+/* A Workbench root needs an actual guest BPTR chain in sm_Segment. Its
+   native seglist remains owned by DOS, outside the module-token catalogue. */
+ULONG Kaffeine_LoadStartupHunks(struct KaffeineContext *ctx, BPTR native,
+                               const struct HunkRelocTable *relocs)
+{
+    ULONG entry = copy_seglist(ctx, native, relocs, TRUE, &ctx->startup_seglist, NULL);
+    if (entry) ctx->entry_point = ctx->seg_start = entry;
+    return entry;
+}
+
 /* A bounded domain import passes native descriptors to the same copier.
    Both storage and capacity are private, never taken from guest headers. */
 ULONG Kaffeine_LoadDomainHunks(struct KaffeineContext *ctx, BPTR native,

@@ -86,7 +86,7 @@ Darwin-specific JIT constraints.
 ## Coverage
 
 The Makefile is the authoritative list of executables. The current suite
-has 52 test executables and a thunk-registration audit.
+has 53 test executables and a thunk-registration audit.
 
 | Area | Coverage |
 | --- | --- |
@@ -134,6 +134,18 @@ bridge structure, video or lock range stops the program with rc 20 and writes
 nothing. The focused executable passes 21 fixtures, including a generated-table
 fallback control. This host result is separate from the
 [AROS ARM64 target results](../kaffeine_target/README.md#intuition-currenttime-probe).
+
+### Workbench startup
+
+`test_startup` links the production typed startup adapter and bounded Exec
+queues, with recording native reply, allocation and lock collaborators.
+Its 22 cases cover the classic big-endian message/argument layout, copied
+names and ToolWindow, borrowed locks, one native reply, duplicate replies,
+untaken and unreplied startup cleanup, queued replies, forwarding refusal,
+damaged queues, bounded strings/counts/aggregate size and allocation/lock
+rollback. Published storage remains quarantined until arena destruction.
+This host contract test does not execute Workbench, DOS or a 68k startup;
+the native companion below supplies that separate target check.
 
 ### Classic service processes
 

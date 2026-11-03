@@ -73,6 +73,10 @@ static BOOL ordinary(struct KaffeineContext *ctx, ULONG port, ULONG size,
 {
     unsigned i;
     const struct KaffeineFileSlab *slab;
+    if (ctx->startup_message &&
+        Kaffeine_Overlap(port, size, ctx->startup_message, ctx->startup_size) &&
+        !(ctx->startup_native && on_port == ctx->startup_port &&
+          port == ctx->startup_message && size == 40)) return FALSE;
     for (slab = ctx->file_slabs; slab; slab = slab->next)
         if (Kaffeine_Overlap(port, size, slab->guest, KAFFEINE_FILE_SLAB_SIZE)) return FALSE;
     for (i = 0; i < KAFFEINE_MAX_FILES; ++i)

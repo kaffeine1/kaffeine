@@ -36,6 +36,7 @@
 #include "kaffeine_taglist.h"
 #include "kaffeine_window.h"
 #include "kaffeine_workbench.h"
+#include "kaffeine_startup.h"
 #include "kaffeine_sched.h"
 
 #include <aros/debug.h>
@@ -1131,6 +1132,8 @@ IPTR Kaffeine_GetMsg(struct KaffeineContext *ctx, void *cpu)
 IPTR Kaffeine_ReplyMsg(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG guest = THUNK_A(1);
+    IPTR startup_result;
+    if (Kaffeine_StartupReply(ctx, guest, &startup_result)) return startup_result;
     struct IntuiMessage *im = message_native(ctx, guest, KAFFEINE_SHADOW_INTUIMESSAGE);
 
     if (!im && Kaffeine_AppReplyMsg(ctx, guest))

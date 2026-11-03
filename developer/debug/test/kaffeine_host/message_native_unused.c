@@ -60,6 +60,16 @@ __attribute__((weak)) void BltTemplate(unsigned char *source, short xs, short mo
 { (void)source; (void)xs; (void)mod; (void)rp; (void)xd; (void)yd; (void)w; (void)h; abort(); }
 
 #include "lock_boundary_unit.h"
+#include "kaffeine_startup.h"
+
+/* Older window fixtures have no startup protocol. The focused startup
+   fixture links the real adapter; reject accidental coverage here. */
+__attribute__((weak)) BOOL Kaffeine_StartupReply(struct KaffeineContext *ctx, ULONG msg, IPTR *result)
+{
+    (void)msg; (void)result;
+    if (ctx->startup_native || ctx->startup_message) abort();
+    return FALSE;
+}
 
 __attribute__((weak)) BPTR DupLock(BPTR lock) { return lock; }
 __attribute__((weak)) BOOL Kaffeine_LockRelease(struct KaffeineContext *c, ULONG token)
