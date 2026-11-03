@@ -87,6 +87,7 @@ KAFFEINE_FILES := \
     kaffeine_shadow \
     kaffeine_m68klib \
     kaffeine_workbench \
+    kaffeine_startup \
     kaffeine_stubs \
     kaffeine_thunks_gen
 

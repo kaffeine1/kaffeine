@@ -79,7 +79,7 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   Memory save mode” requester in this session. Earlier direct Shell tests
   also returned exit code zero. Loading saved 1024×768 IFF and PNG images
   still reports “The image is too large”; full application compatibility
-  and Workbench `WBStartup` message handling remain open.
+  and Personal Paint's non-CLI Workbench launch remain open checks.
 - Separate Personal Paint JIT checks cover a pixel-checked 320×200,
   256-color save/modify/reload cycle and saving a 1024×768 image.
   Reopening the larger image remains limited. These are separate from
@@ -165,13 +165,14 @@ The current test and target baseline includes:
 
 | Environment | Result |
 | --- | --- |
-| macOS arm64 and Linux CI | All 47 host executables pass; the macOS JIT run passes 9,409 checks. The registration audit checks 326 native-vector cases and 564 manual thunks across 20 tables |
+| macOS arm64 host; the same suite runs in Linux CI | All 53 host executables pass locally; the hosted JIT run passes 11,453 checks. The registration audit checks 356 native-vector cases and 660 manual thunks |
 | Focused ASan/UBSan JIT build | 5,612 word-division checks pass; the earlier bitfield, extended-instruction and randomized checks remain separate regression evidence |
 | Library JIT on AROS AArch64/QEMU | Relocated HUNK, 17 hook checks, 12 guest-task checks, 120 window checks, 7 child-window checks and the 12-check native API client pass in Shell and `Run`; the default remains Moira |
 | Standalone AROS AArch64 JIT probe in QEMU | `jit_probe` passes 38 checks and `word_division` passes 22 in Shell and `Run`; a separate instruction corpus passes 490 checks covering 432 programs and eight callback boundary cases in each mode |
 | AROS AArch64 in QEMU | Synthetic CLI/GUI probes, the 6-step `bzip2 1.0.8` self-test and the 7-step IJG JPEG `9f` self-test pass in both Shell and `Run` modes |
 | Personal Paint 7.2.1.0 with Moira on AROS AArch64 in QEMU | Original 68k executable opens from a desktop icon through the `CLI` route, draws, saves a 1024×768 ILBM image and returns to the desktop; [video, screenshots and output](docs/kaffeine/personal-paint-demo.md) are available |
 | Personal Paint 7.2.1.0 with the JIT on AROS AArch64 in QEMU | [JIT validation](docs/kaffeine/jit-backend.md#validation) includes editor startup/exit from Shell and `Run`, IFF/ILBM saving and a pixel-checked 320×200/256-color drawing save/modify/reload cycle; loading saved 1024×768 images remains limited |
+| Typed Workbench startup on AROS AArch64/QEMU | Original 68k payloads receive copied classic arguments, borrowed directory locks and a real guest seglist. Native TOOL icon launch without `CLI` passes 17 checks in both Shell and `Run` with both backends; the combined startup, cleanup, command and CLI controller passes 60 checks per invocation |
 | Native AmigaOS reference | Message, packet, `ExAll`, `icon.library`, `AppIcon`, layer, region, bitmap, screen and `NewWindow` observations match the bridged AROS contract |
 
 The target suite includes deliberate nonzero refusal/exit probes alongside
@@ -192,9 +193,27 @@ to the native desktop have been recorded in QEMU with the original 68k
 binary. The published ILBM has eight bitplanes and a 256-entry palette;
 its decoded pixels match the visible canvas. The drawing uses a small
 subset of that palette. Loading saved 1024×768 images, remaining painting
-operations, full Workbench startup, responsiveness and complete resource
+operations, Personal Paint's non-CLI Workbench startup, responsiveness and complete resource
 cleanup remain open checks. Sampled mathffp SPDiv results include eight
 one-ULP differences from AmigaOS.
+
+The typed Workbench startup bridge is tested separately with original 68k
+payloads: one native reply, classic argument layout and names, lock-backed
+file reads, guest seglist identity, queued/untaken/unreplied message cleanup
+and the unchanged CLI route. The native icon probe invokes
+`OpenWorkbenchObjectA` on a TOOL icon without `CLI`; it is not a recording
+of a mouse double-click or a claim about every application's startup.
+Community preview 001 and the published application videos retain their
+previously qualified launch paths.
+
+Native Workbench startup uses the paired `workbench.library` 45.7 and
+`kaffeine.library` 1.1 changes. Workbench selects an explicit native entry
+for 68k TOOLs. That entry takes the startup message before any DOS call and
+transfers it to `RunWorkbenchHunk` (native vector 7). The generic `RunHunk`
+and `RunCommand` routes receive no implicit startup: a non-CLI caller may
+already have consumed its own message, or may have none. Borrowed startup
+locks retire before the native reply; guest storage stays quarantined for
+the lifetime of the arena.
 
 ## Building and testing
 

@@ -5,6 +5,7 @@
 */
 
 #include <aros/debug.h>
+#include <aros/libcall.h>
 
 #include <exec/ports.h>
 #include <utility/hooks.h>
@@ -264,6 +265,50 @@ static VOID __Deinitialize_WB
     if (hc->hc_StartupReplyPort != NULL) DeleteMsgPort(hc->hc_StartupReplyPort);
 }
 
+#if !defined(__mc68000__)
+/* This native entry is used only by an explicitly launched 68k WB TOOL.
+   Take its message before opening libraries or making a DOS call. The
+   generic HUNK/RunCommand entry must not infer this protocol from pr_CLI. */
+static LONG __Launch68k_WB(void)
+{
+    struct Process *me = (struct Process *)FindTask(NULL);
+    struct WorkbenchBase *WorkbenchBase = me->pr_Task.tc_UserData;
+    struct Message *message;
+    struct WBStartup *startup;
+    struct Library *KaffeineBase;
+    BPTR seglist;
+    LONG result = RETURN_FAIL;
+
+    WaitPort(&me->pr_MsgPort);
+    message = GetMsg(&me->pr_MsgPort);
+    if (!message) return RETURN_FAIL;
+    startup = (struct WBStartup *)message;
+    if (message->mn_Length < sizeof(*startup) ||
+        message->mn_Node.ln_Type != NT_MESSAGE ||
+        startup->sm_Process != &me->pr_MsgPort || !startup->sm_Segment)
+    {
+        ReplyMsg(message);
+        return RETURN_FAIL;
+    }
+    /* The startup's native segment is owned here instead of by DosEntry.
+       Cache it before the bridge's reply lets Workbench free the message. */
+    seglist = startup->sm_Segment;
+    KaffeineBase = OpenLibrary("kaffeine.library", 1);
+    if (KaffeineBase && (KaffeineBase->lib_Version > 1 || KaffeineBase->lib_Revision >= 1))
+        result = AROS_LC3(LONG, RunWorkbenchHunk,
+            AROS_LCA(BPTR, seglist, D1),
+            AROS_LCA(ULONG, me->pr_StackSize, D2),
+            AROS_LCA(APTR, message, A0),
+            struct Library *, KaffeineBase, 7, Kaffeine);
+    else
+        ReplyMsg(message);
+    if (KaffeineBase) CloseLibrary(KaffeineBase);
+    UnLoadSeg(seglist);
+    me->pr_Task.tc_UserData = NULL;
+    return result;
+}
+#endif
+
 static VOID __HandleLaunch_WB
 (
     struct WBCommandMessage *message,
@@ -281,6 +326,8 @@ static VOID __HandleLaunch_WB
     IPTR              stacksize = WorkbenchBase->wb_DefaultStackSize;
     LONG              priority = 0;
     struct Process   *process;
+    IPTR              entry = 0, data = 0;
+    BPTR              processSeglist;
 
     D(bug("[WBLIB] __HandleLaunch_WB('%s')\n", name));
 
@@ -313,9 +360,23 @@ static VOID __HandleLaunch_WB
     home = DupLock(lock);
     if (home == BNULL) goto error;
 
+    processSeglist = startup->sm_Segment;
+#if !defined(__mc68000__)
+    {
+        IPTR hunk = 0;
+        struct TagItem info[] = {{GSLI_68KHUNK, (IPTR)&hunk}, {TAG_DONE, 0}};
+        if (GetSegListInfo(processSeglist, info) && hunk)
+        {
+            entry = (IPTR)__Launch68k_WB;
+            data = (IPTR)WorkbenchBase;
+            processSeglist = BNULL;
+        }
+    }
+#endif
+
     const struct TagItem tags[]=
     {
-        {NP_Seglist,    (IPTR)startup->sm_Segment       },
+        {NP_Seglist,    (IPTR)processSeglist            },
         {NP_Name,       (IPTR)name                      },
         {NP_HomeDir,    (IPTR)home                      },
         {NP_StackSize,  stacksize                       },
@@ -323,6 +384,8 @@ static VOID __HandleLaunch_WB
         {NP_Input,      (IPTR)BNULL                     },
         {NP_Output,     (IPTR)BNULL                     },
         {NP_CurrentDir, (IPTR)BNULL                     },
+        {NP_Entry,      entry                           },
+        {NP_UserData,   data                            },
         {TAG_DONE,      0                               }
     };
 

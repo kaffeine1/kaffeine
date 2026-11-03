@@ -86,6 +86,7 @@ GADGET_OBJS += $(BUILD_DIR)/gadgets_bridge.o $(BUILD_DIR)/classic_bridge.o
 GUEST_BOUNDS_OBJS := $(addprefix $(BUILD_DIR)/guest_bounds_,cpu.o dispatch.o)
 CURRENTTIME_OBJS := $(BUILD_DIR)/currenttime_thunk.o $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o
 CURRENTTIME_OBJS += $(addprefix $(BUILD_DIR)/currenttime_,cpu.o dispatch.o)
+STARTUP_OBJS := $(BUILD_DIR)/workbench_startup.o $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(BUILD_DIR)/currenttime_cpu.o
 READARGS_PARSER_OBJ := $(BUILD_DIR)/dos_readargs_host.o
 READARGS_OBJS := $(addprefix $(BUILD_DIR)/readargs_,cpu.o dispatch.o memory.o readargs.o) $(READARGS_PARSER_OBJ)
 NDK_FD_DIR ?=
@@ -133,6 +134,7 @@ TESTS += test_hosted_jit
 TESTS += test_process_tags
 TESTS += test_guest_tasks
 TESTS += test_currenttime
+TESTS += test_startup
 TEST_BINS := $(addprefix $(BUILD_DIR)/,$(TESTS))
 
 all: $(TEST_BINS)
@@ -421,6 +423,9 @@ $(BUILD_DIR)/workbench_exec_io.o: $(WORKBENCH_SOURCE_DIR)/kaffeine_exec_io.c | $
 $(BUILD_DIR)/test_workbench: $(TEST_DIR)/test_workbench.cpp $(WORKBENCH_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(WORKBENCH_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(WORKBENCH_OBJS) $(LDLIBS)
 
+$(BUILD_DIR)/test_startup: $(TEST_DIR)/test_startup.cpp $(STARTUP_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(WORKBENCH_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(STARTUP_OBJS) $(LDLIBS)
+
 $(BUILD_DIR)/test_screens: $(TEST_DIR)/test_screens.cpp $(SCREEN_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(SCREEN_OBJS) $(LDLIBS)
 
@@ -500,6 +505,7 @@ clean:
 	rm -f $(LIBRARY_PATHS_OBJS) $(LIBRARY_PATHS_OBJS:.o=.d) $(BUILD_DIR)/library_paths_lookup.c
 	rm -f $(MATHFFP_THUNK_OBJS) $(MATHFFP_THUNK_OBJS:.o=.d)
 	rm -f $(WORKBENCH_OBJS) $(WORKBENCH_OBJS:.o=.d)
+	rm -f $(STARTUP_OBJS) $(STARTUP_OBJS:.o=.d)
 	rm -f $(M68KLIB_OBJS) $(M68KLIB_OBJS:.o=.d) $(BUILD_DIR)/m68klib_library_thunks.c
 	rm -f $(SCREEN_OBJS) $(SCREEN_OBJS:.o=.d)
 	rm -f $(LAYER_OBJS) $(LAYER_OBJS:.o=.d)
@@ -523,6 +529,7 @@ clean:
 -include $(SCREEN_OBJS:.o=.d)
 -include $(LAYER_OBJS:.o=.d)
 -include $(WORKBENCH_OBJS:.o=.d)
+-include $(STARTUP_OBJS:.o=.d)
 -include $(M68KLIB_OBJS:.o=.d)
 -include $(CALLBACK_OBJS:.o=.d)
 -include $(BUILD_DIR)/hosted_jit.d

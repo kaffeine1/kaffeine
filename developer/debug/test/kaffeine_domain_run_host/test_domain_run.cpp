@@ -2,6 +2,7 @@
    Author: Michele Dipace (@kaffeine1) */
 #include "fixture_intern.h"
 #include "kaffeine_domain_run.h"
+#include "kaffeine_startup.h"
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <dos/dos.h>
@@ -43,6 +44,8 @@ struct State
     bool run_entered{}, parent_returned{}, release_children{}, disposed{};
     bool late_break{}; /* CHILD: a caller break right after root completion */
     unsigned run_calls{}, dispose_calls{}, drop_calls{}, effective_drops{}, live_children{};
+    unsigned startup_finishes{};
+    bool startup_retired{};
     bool borrowed_live[3]{true,true,true};
     BPTR native_streams[3]{};
     Task *owner{};
@@ -371,12 +374,29 @@ extern "C" Process *CreateNewProc(const TagItem *tags)
     return reinterpret_cast<Process *>(1); /* intentionally never readable */
 }
 
+/* Recording protocol hook: the real message adapter is covered by
+   test_startup and the native target. Here its retirement must precede
+   stream retirement and publication of the original caller's result. */
+extern "C" void Kaffeine_StartupFinish(KaffeineContext *ctx)
+{
+    auto state = static_cast<State *>(ctx->fixture);
+    check(current_child && current_task == state->owner && !semaphore_depth,
+          "startup completion runs on the native driver before the gate lock");
+    std::lock_guard<std::mutex> lock(fixture_lock);
+    ++state->startup_finishes;
+    if (!state->startup_retired)
+        check(!state->parent_returned, "startup retirement precedes original caller return");
+    state->startup_retired = true;
+}
+
 extern "C" void Kaffeine_FileDropBorrowed(KaffeineContext *ctx, ULONG token)
 {
     auto state = static_cast<State *>(ctx->fixture);
     check(current_child && current_task == state->owner && !semaphore_depth,
           "borrowed guest stream association is retired on native driver owner before gate lock");
     std::lock_guard<std::mutex> lock(fixture_lock);
+    check(state->startup_retired && state->startup_finishes,
+          "startup protocol is retired before borrowed root streams");
     ++state->drop_calls;
     for (unsigned i=0;i<3;++i)
         if (ctx->root_streams[i] == token && state->borrowed_live[i])
@@ -498,7 +518,8 @@ static void dispose_domain(KaffeineContext *ctx)
           "completion capability is cleared before context disposal");
     {
         std::lock_guard<std::mutex> lock(fixture_lock);
-        check(!state->disposed && !state->live_children && state->effective_drops == 3,
+        check(!state->disposed && !state->live_children && state->effective_drops == 3 &&
+              state->startup_retired && state->startup_finishes,
               "context disposes exactly once after last child and borrowed retirement");
         ++state->dispose_calls;
         state->disposed = true;
@@ -539,6 +560,8 @@ static void test_early_return(State::Mode mode)
         std::lock_guard<std::mutex> lock(fixture_lock);
         check(!state.disposed && state.run_calls==1 && state.live_children==1,
               "native parent can return while worker alone owns live context and child");
+        check(state.startup_retired && state.startup_finishes,
+              "startup is retired at root completion while independent child still lives");
         check(opens==closes+1 && !allocations.empty(), "worker keeps its private gate and library pin after early return");
     }
     check(parent_process.pr_CurrentDir==cwd, "parent current directory is restored before native child startup");

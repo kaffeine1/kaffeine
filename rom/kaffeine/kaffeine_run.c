@@ -36,12 +36,15 @@
 #include "kaffeine_jit.h"
 #include "kaffeine_domain_run.h"
 #include "kaffeine_offsets.h"
+#include "kaffeine_startup.h"
+#include <workbench/startup.h>
 
 /* The signals, ports and open devices of the guest belong to the native
    task that runs it, as does a lock of the list of public screens, an Exec
    semaphore: release them there, before that task ends. */
 static void cleanup_owned(struct KaffeineContext *ctx)
 {
+    Kaffeine_StartupFinish(ctx);
     /* ASL requests the program left, which no screen or window outlives */
     Kaffeine_AslCleanup(ctx);
     Kaffeine_WindowsCleanup(ctx);
@@ -101,12 +104,18 @@ static LONG start_owned(struct KaffeineContext *ctx)
     ctx->root_streams[1] = m68k_read32(ctx, ctx->guest_exec_task + M68K_PR_COS);
     ctx->root_streams[2] = m68k_read32(ctx, ctx->guest_exec_task + M68K_PR_CES);
     ctx->task_ops = &Kaffeine_GuestTaskOps;
+    if (!Kaffeine_StartupPublish(ctx))
+    {
+        cleanup_owned(ctx);
+        return RETURN_FAIL;
+    }
     Kaffeine_AutoOpenLibs(ctx);
     return execute_owned(ctx);
 }
 
 static void dispose_context(struct KaffeineContext *ctx)
 {
+    Kaffeine_StartupFinish(ctx);
     Kaffeine_ReadArgsCleanup(ctx);
     Kaffeine_LocaleCleanup(ctx);
     Kaffeine_MatchCleanup(ctx);
@@ -208,6 +217,74 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
     return result;
 }
 
+/* The generic command route never waits for or consumes process messages.
+   The explicit Workbench route transfers one native startup to this helper. */
+static LONG run_hunks(struct KaffeineLibBase *KaffeineBase, BPTR segList,
+                       ULONG stackSize, CONST_STRPTR argPtr, ULONG argSize,
+                       struct Message *startup)
+{
+    struct KaffeineContext *ctx;
+    IPTR relocs = 0;
+    struct TagItem segtags[] =
+    {
+        { GSLI_68KRelocs, (IPTR)&relocs },
+        { TAG_DONE,       0             }
+    };
+    ULONG entry;
+    LONG result = -1;
+    BOOL transferred = FALSE;
+    char program[256];
+    struct Process *owner = (struct Process *)FindTask(NULL);
+
+    /* Only the explicit Workbench entry accepts an already-taken message.
+       A non-CLI RunCommand or bare HUNK process may have no startup at all. */
+    if (startup)
+    {
+        struct WBStartup *wb = (struct WBStartup *)startup;
+        if (owner->pr_Task.tc_Node.ln_Type != NT_PROCESS || owner->pr_CLI ||
+            startup->mn_Length < sizeof(*wb) || startup->mn_Node.ln_Type != NT_MESSAGE ||
+            wb->sm_Process != &owner->pr_MsgPort || wb->sm_Segment != segList)
+        {
+            ReplyMsg(startup);
+            return RETURN_FAIL;
+        }
+    }
+
+    /* LoadSeg() relocated the segments for their native addresses. */
+    if (!GetSegListInfo(segList, segtags) || !relocs)
+    {
+        D(bug("[kaffeine] RunHunk: no relocation record for seglist %p\n", segList));
+        if (startup) ReplyMsg(startup);
+        return -1;
+    }
+
+    ctx = Kaffeine_CreateContext(KaffeineBase);
+    if (!ctx)
+    {
+        if (startup) ReplyMsg(startup);
+        return -1;
+    }
+    ctx->startup_native = startup;
+    Kaffeine_GadgetsSetup(ctx);
+    Kaffeine_LayersSetup(ctx);
+
+    entry = startup ? Kaffeine_LoadStartupHunks(ctx, segList, (const struct HunkRelocTable *)relocs) :
+                      Kaffeine_LoadHunks(ctx, segList, (const struct HunkRelocTable *)relocs);
+    if (entry)
+    {
+        /* The Shell names its CLI's command before RunCommand(); that name
+           is what GetProgramName() and a C startup's argv[0] report. */
+        if (!GetProgramName(program, sizeof(program)))
+            program[0] = 0;
+        result = setup_and_execute(ctx, entry, argPtr, argSize,
+                                   stackSize, program[0] ? program : NULL, &transferred);
+    }
+
+    if (!transferred) dispose_context(ctx);
+    return result;
+
+}
+
 /*****************************************************************************
 
     NAME */
@@ -243,46 +320,24 @@ static LONG setup_and_execute(struct KaffeineContext *ctx, ULONG entry,
 *****************************************************************************/
 {
     AROS_LIBFUNC_INIT
+    return run_hunks(KaffeineBase, segList, stackSize, argPtr, argSize, NULL);
+    AROS_LIBFUNC_EXIT
+}
 
-    struct KaffeineContext *ctx;
-    IPTR relocs = 0;
-    struct TagItem segtags[] =
-    {
-        { GSLI_68KRelocs, (IPTR)&relocs },
-        { TAG_DONE,       0             }
-    };
-    ULONG entry;
-    LONG result = -1;
-    BOOL transferred = FALSE;
-    char program[256];
-
-    /* LoadSeg() relocated the segments for their native addresses. */
-    if (!GetSegListInfo(segList, segtags) || !relocs)
-    {
-        D(bug("[kaffeine] RunHunk: no relocation record for seglist %p\n", segList));
-        return -1;
-    }
-
-    ctx = Kaffeine_CreateContext(KaffeineBase);
-    if (!ctx)
-        return -1;
-    Kaffeine_GadgetsSetup(ctx);
-    Kaffeine_LayersSetup(ctx);
-
-    entry = Kaffeine_LoadHunks(ctx, segList, (const struct HunkRelocTable *)relocs);
-    if (entry)
-    {
-        /* The Shell names its CLI's command before RunCommand(); that name
-           is what GetProgramName() and a C startup's argv[0] report. */
-        if (!GetProgramName(program, sizeof(program)))
-            program[0] = 0;
-        result = setup_and_execute(ctx, entry, argPtr, argSize,
-                                   stackSize, program[0] ? program : NULL, &transferred);
-    }
-
-    if (!transferred) dispose_context(ctx);
-    return result;
-
+/* Native Workbench startup ABI, available from version 1.1. The caller
+   already took the message before any DOS operation; the bridge owns its
+   one reply on every path. No implicit receive is imposed on RunHunk. */
+#include <proto/kaffeine.h>
+        AROS_LH3(LONG, RunWorkbenchHunk,
+        AROS_LHA(BPTR, segList, D1),
+        AROS_LHA(ULONG, stackSize, D2),
+        AROS_LHA(APTR, startup, A0),
+        struct KaffeineLibBase *, KaffeineBase, 7, Kaffeine)
+{
+    AROS_LIBFUNC_INIT
+    if (!startup) return RETURN_FAIL;
+    return run_hunks(KaffeineBase, segList, stackSize, NULL, 0,
+                      (struct Message *)startup);
     AROS_LIBFUNC_EXIT
 }
 

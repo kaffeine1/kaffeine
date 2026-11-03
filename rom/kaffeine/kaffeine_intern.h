@@ -227,6 +227,11 @@ struct KaffeineContext
     ULONG   entry_point;
     ULONG   seg_start;
 
+    /* Borrowed native Workbench startup; only its typed bridge may reply.
+       The guest copy stays quarantined until the arena is destroyed. */
+    struct Message *startup_native;
+    ULONG startup_message, startup_size, startup_port, startup_seglist;
+
     ULONG   stack_top;
     ULONG   stack_bottom;
 
@@ -662,6 +667,8 @@ void   Kaffeine_PoolFree(struct KaffeineContext *ctx, ULONG pool, ULONG addr, UL
 struct HunkRelocTable;
 ULONG  Kaffeine_LoadHunks(struct KaffeineContext *ctx, BPTR segList,
                          const struct HunkRelocTable *relocs);
+ULONG  Kaffeine_LoadStartupHunks(struct KaffeineContext *ctx, BPTR segList,
+                               const struct HunkRelocTable *relocs);
 ULONG  Kaffeine_LoadHunksFromMemory(struct KaffeineContext *ctx, UBYTE *data, LONG size);
 /* The hunks of a 68k library loaded by DOS, copied as Kaffeine_LoadHunks()
    does but with the [size][next] headers of a seglist, whose guest BPTR

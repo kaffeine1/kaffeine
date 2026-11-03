@@ -54,6 +54,10 @@ static void message_take(struct KaffeineContext *c, struct IntuiMessage *m) { (v
 static void message_reply(struct KaffeineContext *c, struct IntuiMessage *m) { (void)c;(void)m;abort(); }
 static BOOL Kaffeine_AppPortFill(struct KaffeineContext *c, ULONG p, BOOL w) { (void)c;(void)p;(void)w;return FALSE; }
 static BOOL Kaffeine_AppReplyMsg(struct KaffeineContext *c, ULONG m) { (void)c;(void)m;return FALSE; }
+/* This fixture has no native Workbench startup. test_startup links the
+   real adapter; unexpected use here must fail rather than invent a reply. */
+static BOOL Kaffeine_StartupReply(struct KaffeineContext *c, ULONG m, IPTR *r)
+{ (void)m;(void)r; if(c->startup_native || c->startup_message) abort(); return FALSE; }
 static int shared_ready(struct KaffeineContext *c, ULONG p, BOOL w, struct MsgPort **n, IPTR *r)
 { (void)p;(void)w;(void)n;(void)r;if(c->idcmp_ports)abort();return 0; }
 ULONG Wait(ULONG signals) { (void)signals;abort(); }
