@@ -61,6 +61,7 @@
 #include "kaffeine_regions.h"
 #include "kaffeine_remember.h"
 #include "kaffeine_keymap.h"
+#include "kaffeine_socket.h"
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -105,6 +106,10 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
         return 0;
     }
 
+    /* Socket references belong to the trusted caller, even though the
+       executable vector table is shared by this domain. */
+    if (strcmp(name, "bsdsocket.library") == 0)
+        return Kaffeine_SocketOpen(ctx);
     ULONG base = Kaffeine_FindLibBase(ctx, name);
     if (base) return base;
 
@@ -227,6 +232,10 @@ static IPTR open_library(struct KaffeineContext *ctx, void *cpu, ULONG version)
         for (const char *p = name; *p; p++)
             if (*p == ':' || *p == '/')
                 file = p + 1;
+        /* The typed socket subset publishes v4 only. A later request must
+           not increment an owner's reference count or load a disk ABI. */
+        if (!strcmp(file, "bsdsocket.library") && version > 4)
+            return 0;
         if (!strcmp(file, "Picasso96API.library"))
         {
             base = Kaffeine_P96Open(ctx, version);
@@ -272,6 +281,7 @@ static IPTR thunk_exec_OldOpenLibrary(struct KaffeineContext *ctx, void *cpu)
    nothing for the base of a native library */
 static IPTR thunk_exec_CloseLibrary(struct KaffeineContext *ctx, void *cpu)
 {
+    if (Kaffeine_SocketClose(ctx, THUNK_A(1))) return 0;
     if (THUNK_A(1) && Kaffeine_CloseM68KLibrary(ctx, cpu, THUNK_A(1)) && !ctx->running)
         return (IPTR)ctx->exit_code;
     return 0;

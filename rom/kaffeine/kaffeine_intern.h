@@ -194,6 +194,11 @@ struct KaffeineFile
 
 struct KaffeineContext
 {
+    struct KaffeineSockets *sockets;
+    BOOL (*socket_poll)(struct KaffeineContext *);
+    void (*socket_cleanup)(struct KaffeineContext *);
+    void (*socket_task_removed)(struct KaffeineContext *, ULONG);
+    ULONG socket_signals; /* driver-owned completion port, never a guest bit */
     struct KaffeineVideoExtra *video_extras;
     ULONG video_extra_count; /* includes retired identities until arena destruction */
     BOOL video_closing;

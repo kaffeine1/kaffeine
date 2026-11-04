@@ -1,7 +1,9 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
    Author: Michele Dipace (@kaffeine1)
-   Typed startup for a registered independent 68k program. Code pointers,
-   callbacks, stream transfers and borrowed modules are not forwarded. */
+   Typed startup for a registered independent 68k program, or for NP_Entry
+   code already in this arena. That entry stays a guest address for the
+   scheduler; callbacks, stream transfers and borrowed modules are not
+   forwarded. */
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <exec/tasks.h>
@@ -43,7 +45,7 @@ ULONG Kaffeine_ProcessFromTags(struct KaffeineContext *ctx, ULONG tags)
     struct KaffeineSegmentTransfer module;
     struct KaffeineLockTransfer home;
     struct Task *task;
-    ULONG item, seen = 0, segment = 0, directory = 0;
+    ULONG item, seen = 0, segment = 0, entry = 0, directory = 0;
     ULONG name_ptr = 0, command_ptr = 0, args_ptr = 0, result;
     LONG error = 0, backend_length;
     SIPTR saved_error;
@@ -53,6 +55,7 @@ ULONG Kaffeine_ProcessFromTags(struct KaffeineContext *ctx, ULONG tags)
 
     if (!ctx || !ctx->mem) return fail(ERROR_BAD_NUMBER);
     memset(&spec, 0, sizeof(spec));
+    memset(&module, 0, sizeof(module));
     spec.stack_size = KAFFEINE_STACK_SIZE;
     spec.copy_vars = TRUE;
     task = FindTask(NULL);
@@ -71,6 +74,7 @@ ULONG Kaffeine_ProcessFromTags(struct KaffeineContext *ctx, ULONG tags)
         switch (tag)
         {
         case NP_Seglist: segment = data; break;
+        case NP_Entry: entry = data; break;
         case NP_FreeSeglist:
             if (data != TRUE && !error) error = ERROR_NOT_IMPLEMENTED;
             break;
@@ -101,14 +105,17 @@ ULONG Kaffeine_ProcessFromTags(struct KaffeineContext *ctx, ULONG tags)
             if (data && !error) error = ERROR_NOT_IMPLEMENTED;
             break;
         default:
-            /* Includes NP_Entry and all guest exit callbacks/user data. */
+            /* Includes all guest exit callbacks/user data. */
             if (!error) error = ERROR_NOT_IMPLEMENTED;
             break;
         }
     }
     if (next != KAFFEINE_TAG_END) return fail(ERROR_BAD_NUMBER);
     if (error) return fail(error);
-    if (!segment) return fail(ERROR_NOT_IMPLEMENTED);
+    /* Exactly one of a typed module and code already in this arena */
+    if (!segment == !entry) return fail(ERROR_NOT_IMPLEMENTED);
+    if (entry && ((entry & 1) || entry >= ctx->mem_size)) return fail(ERROR_BAD_NUMBER);
+    if (entry && spec.cli) return fail(ERROR_NOT_IMPLEMENTED);
     if ((name_ptr && !text_copy(ctx, name_ptr, name, sizeof(name))) ||
         (command_ptr && !text_copy(ctx, command_ptr, command, sizeof(command))) ||
         (args_ptr && !text_copy(ctx, args_ptr, arguments, sizeof(arguments))))
@@ -124,20 +131,21 @@ ULONG Kaffeine_ProcessFromTags(struct KaffeineContext *ctx, ULONG tags)
     spec.command = command;
     spec.arguments = arguments;
     spec.backend = backend;
+    spec.entry = entry;
 
-    if (!Kaffeine_SegmentTransferBegin(ctx, segment, &module)) return 0;
+    if (segment && !Kaffeine_SegmentTransferBegin(ctx, segment, &module)) return 0;
     if (!Kaffeine_LockTransferBegin(ctx, directory, &home))
     {
         saved_error = IoErr();
-        Kaffeine_SegmentTransferEnd(ctx, &module, FALSE);
+        if (segment) Kaffeine_SegmentTransferEnd(ctx, &module, FALSE);
         return fail(saved_error);
     }
-    spec.seglist = module.native;
+    spec.seglist = segment ? module.native : (BPTR)0;
     spec.home_dir = home.native;
     result = Kaffeine_DomainStartProcess(ctx, &spec);
     saved_error = IoErr();
     Kaffeine_LockTransferEnd(ctx, &home, result != 0);
-    Kaffeine_SegmentTransferEnd(ctx, &module, result != 0);
+    if (segment) Kaffeine_SegmentTransferEnd(ctx, &module, result != 0);
     SetIoErr(saved_error);
     return result;
 }

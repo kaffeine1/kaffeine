@@ -141,6 +141,14 @@ extern "C" BOOL Kaffeine_DomainUnload(KaffeineContext *, KaffeineDomainModule *m
     lifetime_order.push_back('M');
     return !module->busy;
 }
+/* One registered module whose hunk covers [module_at_lo, module_at_hi) */
+static KaffeineDomainModule *module_at;
+static ULONG module_at_lo, module_at_hi;
+extern "C" KaffeineDomainModule *Kaffeine_DomainModuleAt(KaffeineContext *, ULONG address, ULONG size)
+{
+    return module_at && address >= module_at_lo && address < module_at_hi &&
+           size <= module_at_hi - address ? module_at : nullptr;
+}
 
 static unsigned checks, failures;
 static void check(bool ok, const char *what)
@@ -351,6 +359,7 @@ static IPTR alloc_signal(KaffeineContext *, void *);
 static IPTR free_signal(KaffeineContext *, void *);
 static IPTR port_wait(KaffeineContext *, void *);
 static IPTR private_io_wait(KaffeineContext *, void *);
+static IPTR private_socket_wait(KaffeineContext *, void *);
 /* Native fallback of the production dispatcher when the last child ended. */
 static IPTR exec_wait(KaffeineContext *c, void *p)
 { return c->sched ? Kaffeine_TaskWait(c,p) : (IPTR)Wait(Kaffeine_GetD(p,0)); }
@@ -370,7 +379,7 @@ static const M68KThunkEntry exec_table[] =
     { 300, Kaffeine_TaskSetPri }, { 306, Kaffeine_TaskSetSignal }, { 318, exec_wait },
     { 324, Kaffeine_TaskSignal }, { 330, alloc_signal }, { 336, free_signal },
     { 366, guest_put }, { 372, guest_get }, { 378, guest_reply },
-    { 474, private_io_wait }, { 384, port_wait }, { 390, guest_wait }
+    { 480, private_socket_wait }, { 474, private_io_wait }, { 384, port_wait }, { 390, guest_wait }
 };
 
 /* dos.library: CreateProc() as kaffeine_dos_CreateProc() calls it, and two
@@ -438,7 +447,7 @@ struct World
         heap_next = HEAP_START; heap_force = 0; heap_lists = 0; fail_heap = false;
         dos_calls = dos_exits = 0; dos_ioerr = 0;
         active_broker = nullptr; lifetime_order.clear(); broker_lvos.clear();
-        typed_create_thunk = nullptr;
+        typed_create_thunk = nullptr; module_at = nullptr;
         native_delays = 0; delay_event = nullptr; idle_probe = nullptr;
         drain_action = nullptr;
         ctx.mem = mem.data(); ctx.mem_size = ARENA;
@@ -1573,6 +1582,62 @@ static void test_private_io_waiters()
           "private IO retries publish no guest signal or arrival");
 }
 
+/* Socket replies have private request identities, not guest port messages. */
+static int socket_tokens[3];
+static ULONG socket_owners[3];
+static unsigned socket_done, socket_ready;
+static BOOL private_socket_poll(KaffeineContext *ctx)
+{
+    SetSignal(0, IO_BIT);
+    for (int i = 2; i >= 0; --i)
+        if (socket_ready & (1u << i))
+        {
+            socket_done |= 1u << i;
+            ctx->task_ops->socket_ready(ctx, &socket_tokens[i], socket_owners[i]);
+        }
+    socket_ready = 0;
+    return TRUE;
+}
+static IPTR private_socket_wait(KaffeineContext *ctx, void *cpu)
+{
+    unsigned i = Kaffeine_GetA(cpu, 1);
+    IPTR out = 0;
+    assert(i < 3);
+    socket_owners[i] = ctx->task_ops->caller_task(ctx, cpu);
+    if (socket_done & (1u << i)) return 0x7700 + i;
+    ctx->task_ops->socket_wait(ctx, cpu, &socket_tokens[i], private_socket_wait, &out);
+    return out;
+}
+static void test_private_socket_waiters()
+{
+    World w; w.child(0, 1); w.child(1, 1);
+    socket_done = socket_ready = 0;
+    native_alloc |= IO_BIT;
+    w.ctx.socket_signals = IO_BIT; w.ctx.socket_poll = private_socket_poll;
+    Program(ROOT_CODE).d(0,0).call(132).add_task(TCB(0),CODE).add_task(TCB(1),CODE+0x100)
+        .call(138).a(1,2).call(480).store(SHARED+8,0).d(0,0).rts();
+    Program(CODE).a(6,SYSBASE).a(1,0).call(480).store(SHARED,0).rts();
+    Program(CODE+0x100).a(6,SYSBASE).a(1,1).call(480).store(SHARED+4,0).rts();
+    native_event=[] { socket_ready=7; native_recvd|=IO_BIT; };
+    check(w.run()==0 && w.at(SHARED)==0x7700 && w.at(SHARED+4)==0x7701 && w.at(SHARED+8)==0x7702,
+          "socket completions resume three distinct owner retries when all guest tasks wait");
+    check(native_waits==1 && native_wait_mask==IO_BIT && !native_recvd && !(w.at(ROOT+26)&IO_BIT),
+          "all-socket wait uses only its private native signal without exposing it to the guest");
+}
+
+static void test_socket_reply_preempts_lower_priority()
+{
+    World w; w.child(0, 1); socket_done = socket_ready = 0;
+    native_alloc |= IO_BIT; w.ctx.socket_signals = IO_BIT; w.ctx.socket_poll = private_socket_poll;
+    Program(ROOT_CODE).add_task(TCB(0), CODE).op([](Mock &) {
+        socket_done = 1;
+        world->ctx.task_ops->socket_ready(&world->ctx, &socket_tokens[0], socket_owners[0]);
+    }).see(0, [] { return world->at(SHARED); }).d(0,0).rts();
+    Program(CODE).a(6,SYSBASE).a(1,0).call(480).store(SHARED,0).rts();
+    check(w.run()==0 && w.seen[0]==0x7700,
+          "socket completion preempts a runnable lower-priority guest before its next instruction");
+}
+
 /* ── Guest processes of CreateProc() ─────────────────────────────── */
 
 static void message(World &w, ULONG msg, ULONG reply)
@@ -2374,6 +2439,122 @@ static void test_typed_root_lifetime()
           "a child fault after root completion remains a domain failure, never the saved root result");
 }
 
+/* NP_Entry: code already in the arena, no seglist and no owned module */
+static ULONG entry_start(Mock &m, KaffeineDosBroker &broker, ULONG entry, BYTE pri)
+{
+    KaffeineProcessStart spec = {};
+    spec.entry = entry;
+    spec.stack_size = 1024;
+    spec.name = "entry worker";
+    spec.backend = "moira";
+    spec.priority = pri;
+    return Kaffeine_SchedStartProcess(&world->ctx, &m.handle, &spec, 0, entry,
+                                      &broker, nullptr, nullptr);
+}
+
+static void test_entry_process_startup()
+{
+    constexpr ULONG entry = CODE + 0x3000, user = 0xC0DE0001;
+    World w;
+    w.dos();
+    KaffeineDosBroker broker;
+    Mock first = {};
+    ULONG seen_user = 0;
+    /* As amigentd: the parent stores tc_UserData after CreateNewProc
+       returns, and the lower-priority child reads it once it runs. */
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = entry_start(m, broker, entry, -1); })
+        .store(SHARED, 0).op([](Mock &m) { world->put(m.d[0] + 88, user); })
+        .d(0, 0x55).op([](Mock &m) { world->ctx.task_ops->root_exit(&world->ctx, &m.handle, 0x55); }).rts();
+    Program(entry).op([&](Mock &m) { first = m; seen_user = w.at(w.ctx.guest_exec_task + 88); })
+        .dos(60).store(SHARED + 4, 0).rts();
+    check(w.run() == 0x55, "an NP_Entry Process keeps the domain alive after its parent returns");
+    ULONG proc = w.at(SHARED), segarray = w.at(proc + 128) << 2, lower = w.at(proc + 58);
+    check(proc >= HEAP_START && w.mem[proc + 8] == 13 && w.at(segarray) == 3 &&
+          !w.at(segarray + 12) && !w.at(proc + 172),
+          "NP_Entry returns a guest Process with an empty SegArray and no CLI");
+    check(first.pc == entry && first.d[0] == 0 && first.a[0] == w.at(proc + 204) &&
+          first.a[6] == SYSBASE && first.a[7] == lower + 1024 - 8,
+          "NP_Entry starts its own CPU at the entry, with empty arguments and its own stack");
+    check(seen_user == user, "the child reads the tc_UserData that its parent stored after creation");
+    check(w.at(SHARED + 4) == 0x1001 && broker.inits == 1 && broker.drops == 1 && broker.stops == 1 &&
+          w.destroyed == 1 &&
+          std::find(lifetime_order.begin(), lifetime_order.end(), 'M') == lifetime_order.end(),
+          "NP_Entry DOS goes through its own broker, and its retirement unloads no module");
+}
+
+static void test_entry_borrows_module()
+{
+    constexpr ULONG entry = CODE + 0x800;
+    World w;
+    w.dos();
+    KaffeineDosBroker parent, child;
+    child.id = 2;
+    KaffeineDomainModule module;
+    ULONG nested = 0;
+    /* The typed Process owns the module; its NP_Entry child runs code of
+       that module and is still running when its owner returns. */
+    module_at = &module;
+    module_at_lo = SEG(0);
+    module_at_hi = CODE + 0x1000;
+    typed_create_thunk = [&](KaffeineContext *, void *cpu) -> IPTR {
+        auto &m = *static_cast<Mock *>(static_cast<KaffeineCPU *>(cpu)->backend_state);
+        nested = entry_start(m, child, entry, -2);
+        return nested;
+    };
+    Program(ROOT_CODE).op([&](Mock &m) { m.d[0] = typed_start(m, parent, module, 0, -1, false); })
+        .store(SHARED, 0).d(0, 0x77).op([](Mock &m) { world->ctx.task_ops->root_exit(&world->ctx, &m.handle, 0x77); }).rts();
+    Program(CODE).dos(498).store(SHARED + 4, 0).rts();
+    Program(entry).see(30, [] { return (ULONG)std::count(lifetime_order.begin(), lifetime_order.end(), 'C'); })
+        .dos(60).store(SHARED + 8, 0).rts();
+    check(w.run() == 0x77 && nested && w.at(SHARED + 4) == nested,
+          "a typed Process starts an NP_Entry child inside its own module");
+    check(w.seen[30] == 1 && w.at(SHARED + 8) == 0x1002 && parent.stops == 1 && child.stops == 1 &&
+          w.destroyed == 2,
+          "the NP_Entry child runs module code after its owner retired, through its own broker");
+    auto unload = std::find(lifetime_order.begin(), lifetime_order.end(), 'M');
+    check(module.unloads == 1 && unload != lifetime_order.end() &&
+          std::count(lifetime_order.begin(), unload, 'C') == 2,
+          "the module passes to its borrower and unloads once, after the last CPU that runs it");
+}
+
+static void test_entry_refusals()
+{
+    World w;
+    w.dos();
+    KaffeineDosBroker broker;
+    KaffeineDomainModule owned, orphan;
+    SIPTR error = 0;
+    ULONG got[5] = {};
+    Program(ROOT_CODE).op([&](Mock &m) {
+        KaffeineProcessStart spec = {};
+        spec.stack_size = 1024;
+        spec.name = "entry worker";
+        spec.backend = "moira";
+        got[0] = Kaffeine_SchedStartProcess(&world->ctx, &m.handle, &spec, 0, CODE + 1,
+                                            &broker, nullptr, &error);
+        got[1] = Kaffeine_SchedStartProcess(&world->ctx, &m.handle, &spec, 0, ARENA,
+                                            &broker, nullptr, &error);
+        spec.cli = TRUE;
+        got[2] = Kaffeine_SchedStartProcess(&world->ctx, &m.handle, &spec, 0, CODE,
+                                            &broker, nullptr, &error);
+        spec.cli = FALSE;
+        got[3] = Kaffeine_SchedStartProcess(&world->ctx, &m.handle, &spec, 0, CODE,
+                                            &broker, &owned, &error);
+        module_at = &orphan;
+        module_at_lo = CODE;
+        module_at_hi = CODE + 0x100;
+        got[4] = Kaffeine_SchedStartProcess(&world->ctx, &m.handle, &spec, 0, CODE,
+                                            &broker, nullptr, &error);
+        world->seen[50] = (ULONG)error;
+        module_at = nullptr;
+    }).d(0, 0x33).rts();
+    check(w.run() == 0x33 && !got[0] && !got[1] && !got[2] && !got[3] && !got[4],
+          "NP_Entry refuses odd or outside code, a CLI, an owned module and a module no task holds");
+    check(w.seen[50] == ERROR_OBJECT_IN_USE && !w.created && !broker.calls &&
+          !owned.unloads && !orphan.unloads && !w.ctx.sched,
+          "every NP_Entry refusal comes before a CPU, a broker call or the scheduler");
+}
+
 static void test_typed_dos_refusals()
 {
     for (unsigned mode = 0; mode < 4; ++mode)
@@ -2895,6 +3076,8 @@ int main()
     test_io_reaped_copy_storage();
     test_io_poll_failure();
     test_private_io_waiters();
+    test_private_socket_waiters();
+    test_socket_reply_preempts_lower_priority();
     test_process_handshake();
     test_process_priorities();
     test_process_forbid_wait();
@@ -2910,6 +3093,9 @@ int main()
     test_typed_callback_dos();
     test_typed_root_lifetime();
     test_typed_dos_refusals();
+    test_entry_process_startup();
+    test_entry_borrows_module();
+    test_entry_refusals();
     test_typed_start_failures();
     test_typed_backend_domain(false);
     test_empty_root_process_port();

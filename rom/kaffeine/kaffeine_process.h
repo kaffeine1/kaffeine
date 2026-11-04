@@ -26,10 +26,17 @@ struct KaffeineContext;
  * copies until the stopped driver's recovery drain acknowledges cleanup.
  * The broker owns a separate home lock, streams, CLI and local variables.
  * Guest code may outlive the root Process and its original native caller.
+ *
+ * entry is the one guest address here: NP_Entry, code already in the arena,
+ * given instead of a seglist (exactly one of the two is nonzero). Nothing is
+ * copied for it, it never reaches native DOS, and it starts without a CLI.
+ * The scheduler validates it and keeps the module that holds it loaded until
+ * the new Process retires.
  */
 struct KaffeineProcessStart
 {
     BPTR seglist;
+    ULONG entry;
     ULONG stack_size;
     const char *name, *command, *arguments;
     BPTR home_dir;
@@ -43,7 +50,8 @@ extern "C" {
 #endif
 
 /* Typed launch in the caller's shared 68k domain. Success consumes both
-   native source references after copying the module and publishing its CPU. */
+   native source references after copying the module and publishing its CPU;
+   an entry launch copies no module and consumes only home_dir. */
 ULONG Kaffeine_DomainStartProcess(struct KaffeineContext *,
                                  const struct KaffeineProcessStart *);
 /* Private compiled broker jobs. No guest CPU execution or callback. */

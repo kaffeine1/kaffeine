@@ -144,6 +144,13 @@ struct KaffeineTaskOps
        live root's direct path. No guest/native callback is accepted. */
     BOOL  (*icon_call)(struct KaffeineContext *ctx, void *cpu, ULONG lvo,
                        IPTR *result);
+    /* Socket workers carry only copied native arguments. Private request
+       identities wake the captured owner without borrowing its signal bits.
+       These callbacks are invoked by the socket bridge on the driver only. */
+    BOOL  (*socket_wait)(struct KaffeineContext *, void *, const void *,
+                        KaffeineTaskRetry, IPTR *);
+    void  (*socket_ready)(struct KaffeineContext *, const void *, ULONG);
+    ULONG (*socket_take_signals)(struct KaffeineContext *, void *, ULONG);
 };
 
 #ifdef __cplusplus
@@ -172,7 +179,10 @@ IPTR Kaffeine_ProcCreate(struct KaffeineContext *ctx, void *cpu, LONG *ioerr);
    broker/module; zero leaves both with the caller and changes no task.
    error is an optional native output; this function never sets driver
    IoErr. The native spec is copied before return. Native DOS owns the spec's
-   native lock/stream references through broker, never the guest fields. */
+   native lock/stream references through broker, never the guest fields.
+   NP_Entry passes guest_bptr 0, no module and entry = the guest code
+   address: no CLI, and the module that holds entry stays loaded until the
+   new Process retires (ERROR_OBJECT_IN_USE if no live task holds it). */
 ULONG Kaffeine_SchedStartProcess(struct KaffeineContext *ctx, void *cpu,
                                 const struct KaffeineProcessStart *spec,
                                 ULONG guest_bptr, ULONG entry,

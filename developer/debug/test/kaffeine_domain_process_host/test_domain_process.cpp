@@ -300,16 +300,23 @@ extern "C" ULONG Kaffeine_SchedStartProcess(KaffeineContext *ctx, void *cpu,
 {
     auto &f = *active;
     ++f.sched_calls;
-    check(ctx == &f.ctx && cpu == &f.root_cpu && spec == &f.spec &&
-          seglist == child_seglist && entry == child_entry && module->live,
-          "scheduler receives the imported classic image and live caller CPU");
+#ifndef KAFFEINE_FIXTURE_BASELINE
+    if (spec->entry)
+        check(ctx == &f.ctx && cpu == &f.root_cpu && spec == &f.spec &&
+              !seglist && entry == spec->entry && !module,
+              "an NP_Entry launch reaches the scheduler with its guest entry and no module");
+    else
+#endif
+        check(ctx == &f.ctx && cpu == &f.root_cpu && spec == &f.spec &&
+              seglist == child_seglist && entry == child_entry && module->live,
+              "scheduler receives the imported classic image and live caller CPU");
     broker->module = module;
     if (f.fail_alloc_after_sched) f.fail_alloc = true;
     *error = f.sched_success ? 0 : operation_error;
     if (f.sched_success)
     {
         broker->scheduled = true;
-        module->scheduled = true;
+        if (module) module->scheduled = true;
         return child_tcb;
     }
     broker->staged = f.stage_failure;
@@ -600,6 +607,39 @@ static void init_guest_dos_contract()
           !f.ctx.process_streams && !f.ctx.process_file_close,
           "startup stream capture retires before the native owner's exit");
 }
+
+/* NP_Entry: no loader probe, no import and no seglist to consume. Only the
+   home reference moves to the broker, and failure cleanup unloads nothing. */
+static void entry_launch_contract()
+{
+    for (bool success : {true, false})
+    {
+        Fixture f;
+        f.spec.seglist = BNULL;
+        f.spec.entry = 0x3000;
+        f.spec.cli = FALSE;
+        f.sched_success = success;
+        BPTR home = f.spec.home_dir;
+        ULONG task = Kaffeine_DomainStartProcess(&f.ctx, &f.spec);
+        check(success ? task == child_tcb : !task, "an NP_Entry launch returns the scheduler result");
+        check(!f.query_calls && !f.load_calls && !f.unload_calls && !f.source_unloads &&
+              f.starts == 1 && f.sched_calls == 1,
+              "an NP_Entry launch neither probes, imports, unloads nor consumes a seglist");
+        check(success ? !f.locks.count(home) : f.locks.count(home) == 1,
+              "success consumes the caller's home reference and failure leaves it");
+        check(native_error == (success ? caller_error : operation_error),
+              "an NP_Entry launch keeps the caller's IoErr or reports the scheduler's");
+        f.record_released();
+        f.parent_view();
+    }
+    Fixture f;
+    f.spec.entry = 0x3000;
+    check(!Kaffeine_DomainStartProcess(&f.ctx, &f.spec) && !f.alloc_calls && !f.starts,
+          "a seglist together with an entry is refused before any native work");
+    f.spec.seglist = BNULL;
+    check(!Kaffeine_DomainStartProcess(&f.ctx, &f.spec) && !f.alloc_calls && !f.starts,
+          "an NP_Entry launch with a CLI is refused before any native work");
+}
 #endif
 
 int main()
@@ -616,6 +656,7 @@ int main()
         }
     deferred_cleanup(true, false, true);
     init_guest_dos_contract();
+    entry_launch_contract();
 #endif
     std::printf("domain startup recovery: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

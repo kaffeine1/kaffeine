@@ -105,6 +105,7 @@ struct GuestTask
     KaffeineTaskRetry retry;    /* that call, or NULL for Wait() */
     ULONG wait;                 /* the signals that it waits for */
     ULONG io_request;           /* private WaitIO retry identity; no signal bits */
+    const void *socket_request; /* private native request, never a guest address */
     ULONG recvd;                /* a child's signals; the root's on child bits */
     ULONG alloc;                /* a child's tc_SigAlloc */
     ULONG native;               /* native bits that a child allocated */
@@ -115,6 +116,7 @@ struct GuestTask
     /* Native-only lifetime owners: never copied into the guest arena. */
     struct KaffeineDosBroker *broker;
     struct KaffeineDomainModule *module;
+    struct KaffeineDomainModule *borrowed; /* holds its NP_Entry, owned by another */
     ULONG dos_lvo;
     BOOL dos_pending;
     ULONG packet_port, packet_msg; /* private synchronous broker arguments */
@@ -606,6 +608,7 @@ static BOOL complete(struct KaffeineContext *ctx, struct KaffeineScheduler *s, s
         }
         if (ctx->running && t->state == SLOT_WAIT)
             return FALSE;
+        t->socket_request = NULL;
         Kaffeine_SetD(t->cpu, 0, (ULONG)result);
         mirror(ctx, s, t);
         return TRUE;
@@ -703,6 +706,43 @@ static BOOL entry_unreferenced(struct KaffeineContext *ctx, ULONG entry)
     return TRUE;
 }
 
+/* A Process started at an NP_Entry in another task's module runs that code
+   without owning it. When the owner goes first, ownership passes to one
+   such borrower instead of unloading the module under it; the last one to
+   go unloads it. A borrower never owns a module of its own, and a slot
+   still in startup recovery never ran and takes nothing. */
+static BOOL lend_module(struct KaffeineScheduler *s, struct GuestTask *owner)
+{
+    unsigned i;
+
+    for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
+    {
+        struct GuestTask *t = &s->child[i];
+
+        if (t != owner && t->borrowed == owner->module &&
+            t->state != SLOT_FREE && t->state != SLOT_RECOVERY)
+        {
+            t->module = owner->module;
+            t->borrowed = NULL;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* A task not yet reaped that owns or borrows module, so that a new borrower
+   joins a module that lend_module() will still pass on */
+static BOOL module_live(struct KaffeineScheduler *s, struct KaffeineDomainModule *module)
+{
+    unsigned i;
+
+    for (i = 0; s && i < KAFFEINE_MAX_GUEST_TASKS; i++)
+        if (s->child[i].state != SLOT_FREE && s->child[i].state != SLOT_RECOVERY &&
+            (s->child[i].module == module || s->child[i].borrowed == module))
+            return TRUE;
+    return FALSE;
+}
+
 /* A removed child goes: its CPU, which nothing executes now, its slot, and
    the guest heap MemLists of its tc_MemEntry, which may hold its Task and
    stack and are freed last. Others stay allocated: the guest heap frees
@@ -724,6 +764,7 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
 
     /* Quarantine native requests before the task's signals or stack can
        be reused. Late replies must never write into that old stack. */
+    if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, tcb);
     if (ctx->io_task_removed)
         ctx->io_task_removed(ctx, tcb);
     if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, tcb);
@@ -767,8 +808,9 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
     else
         bug("[kaffeine] guest task %08lx: no backend to destroy its CPU\n", (unsigned long)tcb);
     /* The driver is outside every thunk; no broker call or CPU can still
-       use the module. A busy module remains on the domain's cleanup list. */
-    if (t->module)
+       use the module, unless an NP_Entry borrower takes it over. A busy
+       module remains on the domain's cleanup list. */
+    if (t->module && !lend_module(s, t))
         (void)Kaffeine_DomainUnload(ctx, t->module);
     memset(t, 0, sizeof(*t));
     publish(ctx, s);
@@ -881,12 +923,17 @@ static void schedule(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
             if (!want)
             {
                 BOOL io_waiter = s->root.state == SLOT_WAIT && s->root.io_request;
+                BOOL socket_waiter = s->root.state == SLOT_WAIT && s->root.socket_request;
                 for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
                     if (s->child[i].state == SLOT_WAIT && s->child[i].io_request)
                         io_waiter = TRUE;
+                for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
+                    if (s->child[i].state == SLOT_WAIT && s->child[i].socket_request)
+                        socket_waiter = TRUE;
                 /* A foreign paint producer can wake a virtual break-bit
                    waiter even when no guest wait mask has a native bit. */
-                if ((!io_waiter || !ctx->io_signals) && !Kaffeine_LayerSignalMask(ctx))
+                if ((!io_waiter || !ctx->io_signals) &&
+                    (!socket_waiter || !ctx->socket_signals) && !Kaffeine_LayerSignalMask(ctx))
                 {
                     stop(ctx, "every guest task waits for signals that nothing can send");
                     return;
@@ -979,6 +1026,7 @@ static void sched_end(struct KaffeineContext *ctx)
         if (ctx->layer_ops && ctx->layer_ops->task_removed)
             ctx->layer_ops->task_removed(ctx, t->tcb);
         (void)finish_process_wait(ctx, s, t);
+        if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, t->tcb);
         if (ctx->io_task_removed)
             ctx->io_task_removed(ctx, t->tcb);
         if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, t->tcb);
@@ -1340,7 +1388,9 @@ IPTR Kaffeine_ProcCreate(struct KaffeineContext *ctx, void *cpu, LONG *ioerr)
 
 /* The typed parser and importer completed all native-object validation.
    This last transaction reserves only guest startup state and one CPU;
-   broker/module remain the caller's on every failure. */
+   broker/module remain the caller's on every failure. With guest_bptr 0
+   and no module, initial is an NP_Entry in code already in the arena: the
+   Process starts there without a CLI and borrows the module holding it. */
 ULONG Kaffeine_SchedStartProcess(struct KaffeineContext *ctx, void *cpu,
                                 const struct KaffeineProcessStart *spec,
                                 ULONG guest_bptr, ULONG initial,
@@ -1354,7 +1404,8 @@ ULONG Kaffeine_SchedStartProcess(struct KaffeineContext *ctx, void *cpu,
     const char *args, *command;
     const char *end;
     ULONG sizes[12], members[6], entry, proc, lower, upper, name, arguments, segarray, cli = 0;
-    ULONG stack, sp, list, port, count, i, j, slot, length, arglen, commandlen;
+    ULONG stack, sp, list, port, count, i, j, slot, length, arglen, commandlen, code, code_size;
+    struct KaffeineDomainModule *borrowed = NULL;
     struct DosScope scope;
     SIPTR local_error, native_error = 0;
     IPTR initialized = 0, dropped = 0;
@@ -1362,7 +1413,7 @@ ULONG Kaffeine_SchedStartProcess(struct KaffeineContext *ctx, void *cpu,
 
     if (!error) error = &local_error;
     *error = ERROR_NOT_IMPLEMENTED;
-    if (!ctx || !spec || !broker || !owned_module || !caller || !ctx->cpu_factory ||
+    if (!ctx || !spec || !broker || !owned_module != !guest_bptr || !caller || !ctx->cpu_factory ||
         !arena(ctx, ctx->guest_exec_task, M68K_SIZEOF_PROCESS) ||
         ctx->cpu != caller || ctx->callback_depth ||
         (s && (!s->current || s->current->cpu != caller || s->current->state != SLOT_RUN ||
@@ -1381,11 +1432,31 @@ ULONG Kaffeine_SchedStartProcess(struct KaffeineContext *ctx, void *cpu,
     if (!end) return 0;
     commandlen = (ULONG)(end - command);
     if (spec->stack_size < KAFFEINE_TASK_MIN_STACK ||
-        spec->stack_size > KAFFEINE_PROCESS_MAX_STACK ||
-        !guest_bptr || guest_bptr > 0x3FFFFFFFUL ||
-        initial != (guest_bptr << 2) + 4 || !code_address(ctx, initial) ||
-        !arena(ctx, guest_bptr << 2, 8))
+        spec->stack_size > KAFFEINE_PROCESS_MAX_STACK || !code_address(ctx, initial))
         return 0;
+    if (guest_bptr)
+    {
+        if (guest_bptr > 0x3FFFFFFFUL || initial != (guest_bptr << 2) + 4 ||
+            !arena(ctx, guest_bptr << 2, 8))
+            return 0;
+        code = guest_bptr << 2;
+        code_size = 8;
+    }
+    else
+    {
+        /* NP_Entry: no CLI, and a module holding the entry must still have
+           a task to lend it from, or its code may already be going. */
+        if (spec->cli)
+            return 0;
+        borrowed = Kaffeine_DomainModuleAt(ctx, initial, 2);
+        if (borrowed && !module_live(s, borrowed))
+        {
+            *error = ERROR_OBJECT_IN_USE;
+            return 0;
+        }
+        code = initial;
+        code_size = 2;
+    }
     stack = (spec->stack_size + 3) & ~3UL;
     if (stack < KAFFEINE_TASK_MIN_STACK + 8)
         stack = KAFFEINE_TASK_MIN_STACK + 8;
@@ -1423,14 +1494,14 @@ ULONG Kaffeine_SchedStartProcess(struct KaffeineContext *ctx, void *cpu,
         if ((members[i] & 3) || members[i] < KAFFEINE_HEAP_BASE ||
             !arena(ctx, members[i], bytes) || !Kaffeine_GuestBytes(ctx, members[i], bytes) ||
             claimed(ctx, s, members[i], bytes) ||
-            overlap(members[i], bytes, guest_bptr << 2, 8) ||
+            overlap(members[i], bytes, code, code_size) ||
             overlap(members[i], bytes, entry, MEMLIST_HEADER + 8 * count))
             goto fail;
         for (j = 0; j < i; j++)
             if (overlap(members[i], bytes, members[j], sizes[2 * j + 1]))
                 goto fail;
     }
-    if (overlap(entry, MEMLIST_HEADER + 8 * count, guest_bptr << 2, 8))
+    if (overlap(entry, MEMLIST_HEADER + 8 * count, code, code_size))
         goto fail;
     if (!s && !(s = activate(ctx, caller)))
         goto fail;
@@ -1488,6 +1559,7 @@ ULONG Kaffeine_SchedStartProcess(struct KaffeineContext *ctx, void *cpu,
     }
     t->broker = broker;
     t->module = owned_module;
+    t->borrowed = borrowed;
     t->tcb = proc;
     t->cpu = handle;
     t->cli = cli;
@@ -1588,6 +1660,7 @@ BOOL Kaffeine_SchedRecoverStart(struct KaffeineContext *ctx, struct KaffeineDosB
     cpu = t->cpu;
     /* Broker is consumed now. Restore a live parent view before destroying
        this CPU; the native caller still owns the module and unloads next. */
+    if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, tcb);
     if (ctx->io_task_removed) ctx->io_task_removed(ctx, tcb);
     if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, tcb);
     ctx->cpu_factory->destroy(ctx, cpu);
@@ -1955,6 +2028,7 @@ BOOL Kaffeine_SchedFinishRoot(struct KaffeineContext *ctx, void *cpu, LONG resul
     s->root_result = result;
     s->root.state = SLOT_REMOVED;
     s->reschedule = TRUE;
+    if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, s->root.tcb);
     if (ctx->io_task_removed)
         ctx->io_task_removed(ctx, s->root.tcb);
     if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, s->root.tcb);
@@ -2341,6 +2415,41 @@ static void sched_io_completed(struct KaffeineContext *ctx, ULONG request, ULONG
     }
 }
 
+static BOOL sched_socket_wait(struct KaffeineContext *ctx, void *cpu,
+                              const void *request, KaffeineTaskRetry retry, IPTR *result)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s->current;
+    if (!request || !retry || ctx->callback_depth || !sched_caller_task(ctx, cpu) ||
+        ctx->broker_call || Kaffeine_LayerInfoLocked(ctx))
+    {
+        *result = refuse(ctx, "socket wait has no live driver CPU");
+        return TRUE;
+    }
+    t->socket_request = request;
+    t->io_request = 0;
+    t->wait = 0;
+    t->retry = retry;
+    suspend(ctx, s, t);
+    *result = 0;
+    return TRUE;
+}
+
+static void sched_socket_ready(struct KaffeineContext *ctx, const void *request, ULONG owner)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = owner ? task_of(s, owner) : NULL;
+    if (t && t->state == SLOT_WAIT && t->socket_request == request)
+        wake(ctx, s, t);
+}
+
+static ULONG sched_socket_take_signals(struct KaffeineContext *ctx, void *cpu, ULONG mask)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    if (!sched_caller_task(ctx, cpu)) return 0;
+    return take(ctx, s, s->current, mask & ~Kaffeine_AsyncSignalMask(ctx));
+}
+
 const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
 {
     Kaffeine_TaskAdd, Kaffeine_TaskRemove, sched_find_named, Kaffeine_TaskSetPri,
@@ -2351,5 +2460,6 @@ const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
     Kaffeine_ProcCreate, sched_process_port, sched_process_dos,
     sched_is_root, sched_caller_task, sched_block_io, sched_io_completed,
     sched_dos_call, Kaffeine_SchedFinishRoot, sched_root_result,
-    sched_root_task, sched_can_signal, sched_packet_call, sched_icon_call
+    sched_root_task, sched_can_signal, sched_packet_call, sched_icon_call,
+    sched_socket_wait, sched_socket_ready, sched_socket_take_signals
 };

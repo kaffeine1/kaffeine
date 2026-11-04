@@ -360,6 +360,7 @@ struct KaffeineContext *Kaffeine_CreateContext(struct KaffeineLibBase *base)
 void Kaffeine_DestroyContext(struct KaffeineContext *ctx)
 {
     if (!ctx) return;
+    if (ctx->socket_cleanup) ctx->socket_cleanup(ctx);
     if (ctx->idcmp_cleanup) ctx->idcmp_cleanup(ctx);
     if (ctx->segments_cleanup) ctx->segments_cleanup(ctx);
     if (ctx->domain_cleanup) ctx->domain_cleanup(ctx);

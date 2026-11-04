@@ -13,6 +13,7 @@ see [README.md](README.md).
 - [Shadow Struct Engine](#shadow-struct-engine)
 - [Shadow Struct Layouts](#shadow-struct-layouts)
 - [Device I/O Path](#device-io-path)
+- [Typed socket boundary](#typed-socket-boundary)
 - [Icon metadata and ownership](#icon-metadata-and-ownership)
 - [RastPorts and Fonts](#rastports-and-fonts)
 - [Public Screens](#public-screens)
@@ -925,7 +926,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -468 | Fault | Nullable bounded header, nonoverlapping output, positive capacity and native write footprint (including unconditional header punctuation); returns the native spare-capacity value |
 | -474 | PrintFault | Nullable bounded header; native result and error code in `IoErr()` |
 | -492 | Cli | The context's guest CLI snapshot, also in `pr_CLI` of the guest Process (`kaffeine_cli.c`) |
-| -498 | CreateNewProc | Returns zero with `ERROR_NOT_IMPLEMENTED`; numeric startup diagnosis visits at most 64 tag/control steps and reports at most 16 active tags, without following code, name or seglist pointers. No native process is started |
+| -498 | CreateNewProc | Typed startup (`kaffeine_process_tags.c`, at most 64 tag/control steps): exactly one of NP_Seglist, a registered 68k module that is copied into the arena, or NP_Entry, code already in the arena whose address never reaches native DOS. The new guest Process gets its own CPU, stack and private native DOS broker; the returned guest Process keeps the caller's later `tc_UserData` writes. NP_Entry starts without a CLI (NP_Cli TRUE is refused) and keeps the domain module that holds the entry loaded until that Process retires; a module no live task holds gives `ERROR_OBJECT_IN_USE`. NP_ExitCode, NP_ExitData, stream and other pointer tags return zero with `ERROR_NOT_IMPLEMENTED` before any native process starts |
 | -504 | RunCommand | A non-NULL argument string needs its NUL and all D4 bytes in guest memory; NULL with size 0 passes NULL; the guest seglist of a 68k library from disk gives -1 with `ERROR_OBJECT_WRONG_TYPE` |
 | -510 | GetConsoleTask | The guest port of the native console task, or the port that the program set while it stands for that one; kept in the guest `pr_ConsoleTask` |
 | -516 | SetConsoleTask | 0, a handler port or a FileHandle's `fh_Type` of the program, as the native port it stands for; returns the previous guest port; any other port stops with rc 20 |
@@ -2107,6 +2108,43 @@ The full list of 297 struct layouts is in `kaffeine_shadow_layouts.h` (auto-gene
 
 **RegionRectangle** — its only field is `bounds` (an embedded `struct Rectangle`,
 8 bytes), which has no scalar leaf fields to map.
+
+## Typed socket boundary
+
+`bsdsocket.library` version 4 is a typed bridge, opened before the generic
+library cache. A guest task shares one classic Library base across repeated
+opens; another task has its own base, errno and descriptor table. Calls from
+a different task cannot use that base. The last close retires its sockets.
+
+The driver validates and copies addresses, buffers, options, timeval and
+fd sets. Native workers receive private scalar/copy packets, never a guest
+address, CPU or callback. Each worker owns its actual native SocketBase.
+The native descriptor can be larger than 63: the bridge maps it to one of
+64 classic descriptors and constructs native select masks dynamically.
+An idle guest socket call suspends only its owner; its private completion
+wakes the driver and retries that exact request. Task retirement cancels and
+acknowledges pending native work before releasing guest storage or signals.
+
+The current IPv4 subset provides socket, bind, listen, accept, connect,
+send, recv, shutdown, typed integer options, zero/disabled linger,
+SO_RCVTIMEO/SO_SNDTIMEO, getsockname/getpeername, classic FIONBIO/FIONREAD,
+CloseSocket, WaitSelect, getdtablesize, ReleaseSocket/ObtainSocket, Errno and
+SetErrnoPtr. Send and receive copy at most 1 MiB per call. Blocking calls use
+bounded native readiness slices and preserve guest nonblocking/timeout
+state. WaitSelect converts only the used guest words, preserves unused tails,
+consumes requested guest signals and preserves an unrequested Ctrl-C on EINTR.
+
+Released IDs belong to the guest domain and map to private native unique
+IDs. A released socket can outlive its releasing task; another domain cannot
+obtain it. Domain cleanup obtains and closes unclaimed transfers through the native API;
+reclamation under native allocation failure has not been qualified. Owner/base slots are
+reused only after the old worker has acknowledged retirement.
+
+This subset does not implement DNS, sendto/recvfrom, SocketBaseTags, arbitrary
+ioctl or guest socket callbacks. Positive linger is refused rather than
+blocking driver cleanup. Amigent protocol tests cover loopback networking;
+screen readback, input injection, TLS and physical targets require separate
+support and verification.
 
 ## Device I/O Path
 
