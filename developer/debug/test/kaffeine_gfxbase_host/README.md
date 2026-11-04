@@ -7,6 +7,11 @@ library and unrelated manual thunk tables are inert collaborators. Native Exec
 allocation, graphics-library opens and font opens are recording collaborators.
 There is no application code or application input.
 
+The positive area publishes exactly DefaultFont and ChipRevBits0 bit 0
+(the supported OS calls' large-rectangle capability); every other byte and
+both neighboring fake-library regions stay unchanged. This does not model
+custom-chip hardware.
+
 Run from the repository root, choosing separate output directories:
 
 ```sh

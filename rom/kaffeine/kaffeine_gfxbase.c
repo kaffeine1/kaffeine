@@ -31,6 +31,7 @@ ULONG Kaffeine_SetupGraphicsBase(struct KaffeineContext *ctx,
     /* Only this reserved positive area is cleared. Neighboring fake bases
      * and the negative jump vectors have already been placed by the heap. */
     memset(ctx->mem + base, 0, KAFFEINE_GFXBASE_SIZE);
+    ctx->mem[base + KAFFEINE_GFXBASE_CHIPREV] = KAFFEINE_GFX_CHIPREV;
     Kaffeine_FontHoldEnd(ctx, &hold, TRUE);
     m68k_write32(ctx, base + KAFFEINE_GFXBASE_DEFAULTFONT, hold.guest);
 

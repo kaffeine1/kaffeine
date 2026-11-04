@@ -3136,6 +3136,17 @@ IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu)
     planes = BltBitMap(src.native, xs, ys, dst.native, xd, yd, w, h, minterm, mask, NULL);
     WaitBlit();
     ctx->bitmap_blits--;
+    /* The native HIDD path reports a documented dummy eight even for
+       ordinary depth-one planes. For two fully checked guest planar
+       bitmaps, the selected plane count is known without native state.
+       Keep native failure results and opaque screen/common results. */
+    if (planes == 8 && src.kind == BLIT_PLANAR && dst.kind == BLIT_PLANAR)
+    {
+        ULONG depth = src.desc.depth < dst.desc.depth ? src.desc.depth : dst.desc.depth;
+        planes = 0;
+        for (i = 0; i < (int)depth; i++)
+            if (mask & (1U << i)) planes++;
+    }
     return ctx->running ? (IPTR)(ULONG)planes : (IPTR)ctx->exit_code;
 }
 

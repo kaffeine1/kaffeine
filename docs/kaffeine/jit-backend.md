@@ -122,8 +122,13 @@ checks also passed as a native ARM program in both modes, independently of
 the 68k bridge.
 
 A separate JIT run saved a 1024×768 image with eight palette entries; its
-independent decode matched the entire visible canvas. Reopening that larger
-file still reports “The image is too large”. Broader editor use, full
+independent decode matched the entire visible canvas. Later QEMU JIT checks
+with the guest large-blit capability load a 1024×768, 256-color IFF, save a
+new byte-identical copy and reopen it through an actual `Run` process.
+All 786,432 decoded saved pixels match the input; both sessions exit zero.
+A pixel-identical palette PNG also loads from Shell and `Run`, with normal
+exits and 689,304 unobscured canvas pixels matching in each. These checks
+cover CLI loading, not PNG saving or menu loading. Broader editor use, full
 instruction coverage, native performance and physical Raspberry Pi cache
 behavior remain unverified. The published Personal Paint video continues
 to show Moira.

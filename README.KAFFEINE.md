@@ -77,12 +77,15 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   the standard `CLI` tooltype and Personal Paint's CPU blitting library.
   The unchanged 68k executable runs under Moira, without an “Attention /
   Memory save mode” requester in this session. Earlier direct Shell tests
-  also returned exit code zero. Loading saved 1024×768 IFF and PNG images
-  still reports “The image is too large”; full application compatibility
+  also returned exit code zero. This demonstration did not qualify large
+  image loading; later JIT checks below cover it. Full application compatibility
   and Personal Paint's non-CLI Workbench launch remain open checks.
 - Separate Personal Paint JIT checks cover a pixel-checked 320×200,
-  256-color save/modify/reload cycle and saving a 1024×768 image.
-  Reopening the larger image remains limited. These are separate from
+  256-color save/modify/reload cycle and a 1024×768 IFF load/save/reopen
+  cycle with every decoded saved pixel unchanged. A palette PNG of the
+  same size also loads from Shell and `Run`, with normal exits and matching
+  visible pixels in both modes. Menu loading and hardware application use
+  remain unverified. These are separate from
   the Moira demonstration; see the [JIT evidence](docs/kaffeine/jit-backend.md#validation).
 
 The guest `ExecBase.MemList` contains read-only capacity descriptors for
@@ -237,8 +240,8 @@ uses observable application outcomes:
 
 1. Complete useful 68k application operations on AROS ARM64, prioritizing
    Personal Paint's editor, tools, load/save, cleanup and desktop use.
-   The current application blocker is loading saved 1024×768 images, which
-   reports “The image is too large”.
+   CLI loading of tested 1024×768 IFF and palette PNG files now passes in
+   QEMU; menu workflows and broader editor operations remain to be checked.
 2. Accelerate the same binaries with the Kaffeine JIT or a verified hybrid
    mode, preserving behavior and measuring end-to-end benefits.
 3. Validate interaction, stability, memory and performance on real hardware.

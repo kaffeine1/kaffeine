@@ -127,6 +127,7 @@ LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114,
                             126, 132, 156, 162, 168, 180, 192,
                             210, 216, 222, 228, 234, 240, 246, 258, 264, 270))
 GRAPHICS_GELS_REFUSED = frozenset((96, 102, 108, 114, 126, 132, 138, 144, 150, 156, 162, 168, 174, 600))
+GRAPHICS_QUEUED_BLIT_REFUSED = frozenset((276, 294))
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
 CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
 GRAPHICS_BITMAP_REFUSED = frozenset((606, 636, 678, 918, 924, 942, 1020, 1206))
@@ -530,6 +531,10 @@ CASES = (
 # Explicit table of manual handlers that intentionally ignore one or more
 # fd arguments, with the exact ignored register set and the reason.
 ALLOWED_IGNORED_REGS = {
+    "thunk_gfx_SetChipRev": (
+        frozenset({"D0"}),
+        "the virtual graphics configuration is fixed; requests cannot enable hardware",
+    ),
     "thunk_gfx_ExtendFont": (
         frozenset({"A0", "A1"}),
         "ExtendFont() returns FALSE until guest TextFontExtension ownership is implemented",
@@ -1404,6 +1409,13 @@ def main():
             gels_refused[0]):
         raise ValueError("GELS refusal slots must only stop the guest")
     seen_gels_refusals = set()
+    queued_blit_refused = re.findall(r"IPTR thunk_gfx_QueuedBlitUnsupported\([^\n]*\n\{(.*?)\n\}",
+                                     (core / "kaffeine_thunks_gfx.c").read_text(), re.DOTALL)
+    if len(queued_blit_refused) != 1 or not re.fullmatch(
+            r'\s*\(void\)cpu;\s*return refuse\(ctx,\s*"QBlit\(\)/QBSBlit\(\): guest blitter queues are unsupported"\);\s*',
+            queued_blit_refused[0]):
+        raise ValueError("queued blitter refusal slots must only stop the guest")
+    seen_queued_blit_refusals = set()
     seen_device_refusals = {library: set() for library in DEVICE_REFUSED}
     for library, native_vectors in DEVICE_REFUSED.items():
         conf = parse_conf_file(library_source_dir(root, library) / (library + ".conf"))
@@ -1434,6 +1446,13 @@ def main():
                     print("FAIL", module_name(library), -vector, "unexpected GELS refusal slot")
                 else:
                     seen_gels_refusals.add(vector)
+                continue
+            if handler == "thunk_gfx_QueuedBlitUnsupported":
+                if library != "graphics" or vector not in GRAPHICS_QUEUED_BLIT_REFUSED:
+                    failures += 1
+                    print("FAIL", module_name(library), -vector, "unexpected queued blitter refusal slot")
+                else:
+                    seen_queued_blit_refusals.add(vector)
                 continue
             if handler == "Kaffeine_VideoControlUnsupported":
                 if library != "graphics" or vector not in GRAPHICS_NODE_REFUSED:
@@ -1601,6 +1620,9 @@ def main():
     if seen_layers_refusals != LAYERS_REFUSED:
         failures += 1
         print("FAIL layers.library explicit refusal slots changed")
+    if seen_queued_blit_refusals != GRAPHICS_QUEUED_BLIT_REFUSED:
+        failures += 1
+        print("FAIL queued blitter refusal profile incomplete", sorted(seen_queued_blit_refusals))
     if seen_gels_refusals != GRAPHICS_GELS_REFUSED:
         failures += 1
         print("FAIL graphics.library GELS refusal slots changed")

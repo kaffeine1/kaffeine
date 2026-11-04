@@ -43,6 +43,7 @@
 #include "kaffeine_rastport.h"
 #include "kaffeine_fontattr.h"
 #include "kaffeine_thunks_gfx.h"
+#include "kaffeine_gfxbase.h"
 
 extern void *shadow_lookup(struct KaffeineContext *ctx, ULONG m68k_addr);
 
@@ -1080,13 +1081,50 @@ static ULONG raster_size(struct KaffeineContext *ctx, ULONG width, ULONG height)
     return row > 0xFFFE || size > ctx->mem_size ? 0 : (ULONG)size;
 }
 
-/* graphics -492: AllocRaster(D0=width, D1=height) -> D0. As AROS,
+/* graphics -888: the virtual configuration is fixed. Requests cannot
+   enable native hardware or change the published guest capability. */
+IPTR thunk_gfx_SetChipRev(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG base = Kaffeine_FindLibBase(ctx, "graphics.library");
+    (void)cpu;
+    return base && guest_range(ctx, base, KAFFEINE_GFXBASE_SIZE)
+        ? ctx->mem[base + KAFFEINE_GFXBASE_CHIPREV] : 0;
+}
+
+/* graphics -276/-294: a classic bltnode contains guest links and code.
+   It cannot be linked into a native asynchronous blitter queue. */
+IPTR thunk_gfx_QueuedBlitUnsupported(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return refuse(ctx, "QBlit()/QBSBlit(): guest blitter queues are unsupported");
+}
+
+/* graphics -300: translate only a complete, even caller-owned buffer.
+   Native BltClear is synchronous here; no guest pointer escapes the call.
+   Row mode multiplies the two UWORDs before checking the entire range. */
+IPTR thunk_gfx_BltClear(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG addr = THUNK_A(1), count = THUNK_D(0), flags = THUNK_D(1);
+    ULONG bytes = flags & 2 ? (count >> 16) * (count & 0xffff) : count;
+
+    if (!bytes) return 0;
+    if (((addr | bytes) & 1) ||
+        (ctx->heap_end && addr < ctx->heap_end && bytes > ctx->heap_end - addr) ||
+        !program_memory(ctx, addr, bytes))
+        return refuse(ctx, "BltClear(): invalid or protected guest buffer");
+    BltClear(ctx->mem + addr, count, flags);
+    return 0;
+}
+
+/* graphics -492: AllocRaster(D0=width, D1=height) -> D0. The classic
+   inline ABI takes UWORDs; their upper register halves are unspecified.
+   As AROS,
    AllocMem(RASSIZE()) of chip memory, here an ordinary allocation of the
    guest heap, which FreeRaster() and FreeMem() of that size free. No
    native plane is made. 0 for an empty, overflowing or oversized plane. */
 IPTR thunk_gfx_AllocRaster(struct KaffeineContext *ctx, void *cpu)
 {
-    ULONG size = raster_size(ctx, THUNK_D(0), THUNK_D(1));
+    ULONG size = raster_size(ctx, (UWORD)THUNK_D(0), (UWORD)THUNK_D(1));
 
     return size ? Kaffeine_HeapAlloc(ctx, size, MEMF_CHIP | MEMF_PUBLIC) : 0;
 }

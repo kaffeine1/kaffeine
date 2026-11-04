@@ -42,6 +42,7 @@
 #include "kaffeine_rastport.h"
 #include "kaffeine_layers.h"
 #include "kaffeine_thunks_gfx.h"
+#include "kaffeine_gfxbase.h"
 #include "kaffeine_dispatch.h"
 
 /* ── The native side ─────────────────────────────────────────────── */
@@ -121,6 +122,14 @@ extern "C" void DrawBorder(RastPort *rp, Border *border, WORD x, WORD y)
 }
 
 static KaffeineContext *live;
+static unsigned clear_calls;
+extern "C" void BltClear(void *p, ULONG count, ULONG flags)
+{
+    ++clear_calls;
+    ULONG size = flags & 2 ? (count >> 16) * (count & 0xffff) : count;
+    assert(live && p >= live->mem && static_cast<UBYTE *>(p) + size <= live->mem + live->mem_size);
+    std::memset(p, 0, size);
+}
 
 static void reset_native()
 {
@@ -518,6 +527,7 @@ static const M68KThunkEntry graphics_manual[] =
     { KAFFEINE_GRAPHICS_COMPAT_THUNKS, KAFFEINE_GRAPHICS_RASTPORT_THUNKS };
 static const M68KThunkEntry graphics_generated[] =
 {
+    { 276, poison }, { 294, poison }, { 300, poison }, { 888, poison },
     { 36, poison }, { 54, poison }, { 60, poison }, { 66, poison }, { 72, poison }, { 78, poison },
     { 96, poison },
     { 102, poison },
@@ -703,11 +713,14 @@ static void test_registration()
     assert(intuition_manual[1].lvo == 114 && intuition_manual[1].thunk == thunk_intuition_DrawImage);
     assert(intuition_manual[2].lvo == 816 && intuition_manual[2].thunk == thunk_intuition_SetWindowPointerA);
 
-    assert(std::size(graphics_compat) == 3);
+    assert(std::size(graphics_compat) == 7);
     for (const auto &entry : graphics_compat)
         assert((entry.lvo == 72 && entry.thunk == thunk_gfx_OpenFont) ||
                (entry.lvo == 396 && entry.thunk == thunk_gfx_ScrollRaster) ||
-               (entry.lvo == 894 && entry.thunk == thunk_gfx_SetABPenDrMd));
+               (entry.lvo == 894 && entry.thunk == thunk_gfx_SetABPenDrMd) ||
+               (entry.lvo == 888 && entry.thunk == thunk_gfx_SetChipRev) ||
+               ((entry.lvo == 276 || entry.lvo == 294) && entry.thunk == thunk_gfx_QueuedBlitUnsupported) ||
+               (entry.lvo == 300 && entry.thunk == thunk_gfx_BltClear));
     const struct { ULONG lvo; IPTR (*thunk)(KaffeineContext *, void *); } rastport[] =
     {
         { 36, thunk_gfx_BltTemplate },
@@ -1850,10 +1863,14 @@ static void test_rasters()
     Kaffeine_HeapFree(&f.ctx, absolute, 64);
     assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail);
 
-    /* empty, overflowing, beyond the 16-bit row of RASSIZE(), beyond the
-       arena or the heap: 0 and nothing allocated */
+    /* Classic inline callers may only write the low WORD of D0/D1. */
+    const ULONG low_words = f.call(492, {}, {0xabcd0136U, 0x987600c8U});
+    assert(low_words && !f.stopped());
+    assert(f.call(498, {low_words}, {320, 200}) == 0 && !f.stopped());
+    assert(Kaffeine_HeapAvail(&f.ctx, 0) == avail);
+    /* Empty low-WORD dimensions or a plane beyond the arena/heap: 0. */
     for (auto wh : { std::array<ULONG, 2>{ 0, 200 }, { 320, 0 }, { 0xFFFFFFFF, 0xFFFFFFFF },
-                     { 0xFFFFFFF0, 1 }, { 0x80000, 1 }, { 0x7FFF0, 0xFFFF }, { 64000, 200 },
+                     { 0x80000, 1 }, { 0x7FFF0, 0xFFFF }, { 64000, 200 },
                      { 16, 0x7000 } })
     {
         assert(f.call(492, {}, { wh[0], wh[1] }) == 0 && !f.stopped());
@@ -2595,11 +2612,67 @@ static void test_metric_guards()
     }
 }
 
+static void test_large_blit_contract()
+{
+    Fixture f;
+    f.ctx.num_libmap = 1;
+    std::strcpy(f.ctx.libmap[0].name, "graphics.library");
+    f.ctx.libmap[0].m68k_base = f.base;
+    f.ctx.libs[0].pos_size = KAFFEINE_GFXBASE_SIZE;
+    f.memory[f.base + 236] = 1;
+    const Memory original = f.memory;
+    for (ULONG request : {0U, 1U, 3U, 15U, 0xffffffffU, 0x12345678U})
+    {
+        assert(f.call(888, {}, {request}) == 1 && !f.stopped());
+        assert(f.memory == original && !gfx.any);
+    }
+    const ULONG p = Kaffeine_HeapAlloc(&f.ctx, 64, 0);
+    assert(p);
+    for (ULONG flags : {0U, 1U, 2U, 3U})
+    {
+        std::memset(f.ctx.mem + p, 0xa7, 64);
+        const unsigned calls = clear_calls;
+        assert(f.call(300, {0, p + 2}, {flags & 2 ? (3U << 16) | 10 : 30U, flags}) == 0);
+        assert(!f.stopped() && clear_calls == calls + 1);
+        for (unsigned i = 0; i < 64; ++i)
+            assert(f.ctx.mem[p + i] == (i >= 2 && i < 32 ? 0 : 0xa7));
+    }
+    const struct { ULONG address, count, flags; } bad[] = {
+        {p + 1, 30, 0}, {p, 31, 0}, {p + 60, 8, 0},
+        {0xfffffff0, 32, 0}, {0, 32, 0},
+        {p, 0xffffffff, 2}, {p, (65535U << 16) | 65534U, 2},
+        {p, (3U << 16) | 5, 2}, {f.base + 236, 2, 0}
+    };
+    for (const auto &b : bad)
+    {
+        const Memory before = f.memory;
+        const unsigned calls = clear_calls;
+        const ULONG result = f.call(300, {0, b.address}, {b.count, b.flags});
+        if (result != 20 || !f.stopped())
+            std::fprintf(stderr, "BltClear refusal: addr=%08x count=%08x flags=%08x result=%u\n",
+                         b.address, b.count, b.flags, result);
+        assert(result == 20 && f.stopped());
+        assert(f.memory == before && clear_calls == calls);
+    }
+    const unsigned calls = clear_calls;
+    assert(f.call(300, {0, 0xffffffff}, {0, 0}) == 0 && !f.stopped());
+    assert(f.call(300, {0, 0xffffffff}, {0x0000ffff, 2}) == 0 && !f.stopped());
+    assert(clear_calls == calls);
+    for (ULONG lvo : {276U, 294U})
+    {
+        const Memory before = f.memory;
+        assert(f.call(lvo, {0xffffffff}) == 20 && f.stopped());
+        assert(f.memory == before && !gfx.any && clear_calls == calls);
+    }
+    Kaffeine_HeapFree(&f.ctx, p, 64);
+}
+
 int main()
 {
     struct Test { const char *name; void (*run)(); };
     const Test tests[] =
     {
+        { "Fixed large-blit capability and bounded synchronous clear override generated calls", test_large_blit_contract },
         { "Intuition and graphics tables use their ABI slots", test_registration },
         { "SetWindowPointerA is at -816 and does nothing", test_intuition },
         { "DrawImage converts classic chains and preserves planar byte identity", test_classic_drawimage },

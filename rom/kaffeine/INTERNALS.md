@@ -3079,7 +3079,8 @@ m68k: SetAPen(rp, 2); rp->cp_x = 10; Draw(rp, 50, 10)
   bits into a pen without changing guest memory or calling native graphics.
   Unsupported inputs stop with rc 20. InitBitMap has the separate metadata
   adapter described below. AllocRaster planes use exact ordinary guest heap
-  blocks, and FreeRaster validates their original requested size.
+  blocks; AllocRaster and FreeRaster take only the classic low UWORD width
+  and height registers. FreeRaster validates their original requested size.
 - The layer bridge publishes typed guest Layer identities. Screen RastPorts,
   and window RastPorts whose native bitmap matches a live owned screen,
   expose that screen's typed BitMap handle; native planes remain opaque.
@@ -3318,8 +3319,10 @@ Screen of.
     both rectangles must fit, with native screen dimensions queried directly.
     `WaitBlit()` completes before adapters go, and a context-wide counter
     prevents LayerInfo disposal or screen closure during the blit. The native
-    LONG result is preserved; the AROS planar-driver path currently returns 8
-    even for fewer selected planes. Independent ARM and 68k probes check actual
+    LONG result is preserved except for the AROS HIDD path's dummy 8 between
+    two validated ordinary planar guest bitmaps: the bridge returns their
+    selected plane count. Native zero/negative and screen/common bitmap
+    results remain unchanged. Independent ARM and 68k probes check actual
     pixels and return values in both transfer directions. `GetBitMapAttr()`
     (-960) reads scalar attributes through typed identities, preserving
     ordinary planar flags and querying actual native screen metadata. It also
@@ -3673,9 +3676,38 @@ observations in Shell and Run. Personal Paint 7.2.1.0 now also has a verified
 native Shell session under Moira in QEMU: a 24-bit Workbench, a 1024×768
 256-color application canvas, rectangles/circles/text, an IFF/ILBM save
 whose decoded pixels match the visible canvas, and exit code zero. Loading
-the saved 1024×768 IFF and PNG reports “The image is too large”. Full image
-loading, other painting operations, desktop icon startup, application
-execution on the JIT and hardware operation remain open.
+the saved 1024×768 IFF and PNG reported “The image is too large” before the
+large-rectangle capability described below. The IFF CLI route has since
+loaded, saved and reopened an exact 1024x768 image on the JIT in QEMU,
+with all decoded saved pixels unchanged and normal Shell/Run exits.
+A palette PNG of the same size also loads with matching visible pixels
+and normal exits in both modes. PNG saving, menu loading, other painting
+operations, desktop icon startup, other JIT workflows and hardware operation
+remain open.
+
+## Large OS graphics rectangles
+
+Successful per-call dispatcher messages use AROS's `D()` debug level
+(`DEBUG=1` to enable them). Normal builds keep backend, refusal and
+unimplemented-call diagnostics without flooding the serial log during
+an application's repeated math calls.
+
+The classic guest GfxBase publishes only DefaultFont and ChipRevBits0 bit 0
+(`GFXF_BIG_BLITS`, also named `GFXF_HR_AGNUS`). Supported OS graphics calls
+accept rectangles beyond the OCS blitter's 64-word/1024-line limit, within
+their existing checked bitmap and guest-arena bounds. Personal Paint uses
+this capability to accept a 1024x768 image. SetChipRev returns this published
+byte for any requested configuration, without a native call or a write.
+All other positive fields, including the library version, stay zero.
+
+This is an OS-call compatibility capability, not an ECS hardware model:
+there is no custom-register blitter, BEAMCON0 or 2 MB Chip addressing.
+VPOSR still reports Agnus ID 0; software probing hardware directly cannot
+use this bit as a hardware guarantee. AllocBitMap and the other unsupported
+bitmap operations remain refused. QBlit and QBSBlit stop with rc 20 instead
+of passing guest code and 32-bit links into a native queue. BltClear accepts
+only a complete even caller-owned range (including row-mode multiplication)
+before a synchronous native clear; invalid or protected buffers stop with rc 20.
 
 ## Display query boundary
 
