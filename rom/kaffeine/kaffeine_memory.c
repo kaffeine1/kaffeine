@@ -12,6 +12,7 @@
 #include <dos/doshunks.h>
 #include <string.h>
 #include <stdio.h>
+#include <aros/debug.h>
 
 #include "kaffeine_intern.h"
 #include "kaffeine_offsets.h"
@@ -360,6 +361,14 @@ struct KaffeineContext *Kaffeine_CreateContext(struct KaffeineLibBase *base)
 void Kaffeine_DestroyContext(struct KaffeineContext *ctx)
 {
     if (!ctx) return;
+    /* LayersCleanup deliberately keeps its state when native layers or
+       callbacks still borrow guest storage. Their bitmap planes live in
+       this arena: retaining only the native descriptor would be a UAF. */
+    if (ctx->layers)
+    {
+        bug("[kaffeine] native layers still borrow guest storage, retaining context\n");
+        return;
+    }
     if (ctx->idcmp_cleanup) ctx->idcmp_cleanup(ctx);
     if (ctx->segments_cleanup) ctx->segments_cleanup(ctx);
     if (ctx->domain_cleanup) ctx->domain_cleanup(ctx);

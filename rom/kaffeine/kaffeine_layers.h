@@ -167,10 +167,12 @@ struct KaffeineLayerOps
     /* Optional, NULL in older tables: the native target of a temporary
        native RastPort for a caller-owned classic one with Layer layer and
        BitMap bitmap, for the length of one drawing thunk; sets rp->Layer
-       and rp->BitMap, and nothing is kept. Layer 0: an ordinary planar
-       BitMap of the program, checked as for BltBitMap(), for which adapter
+       and rp->BitMap, and nothing is kept. Layer 0: an ordinary or owned
+       planar BitMap, checked as for BltBitMap(), for which adapter
        becomes the native BitMap of this call over the same guest planes;
-       a screen's or a common BitMap is refused. Else the 68k Layer of a
+       a screen's or a common BitMap is refused. An opaque AllocBitMap
+       target instead keeps its private native identity, also checked by
+       native_bitmap below. Else the 68k Layer of a
        window of the program, of an active requester on one, or a live
        private layer, held by no other guest task, outside any layer change
        or backfill hook, with exactly the BitMap that the bridges publish
@@ -196,6 +198,15 @@ struct KaffeineLayerOps
        before changing any. No detach, allocation or native call here. */
     BOOL  (*memory_releasable)(struct KaffeineContext *ctx, ULONG addr, ULONG size);
     BOOL  (*signal_releasable)(struct KaffeineContext *ctx, ULONG bits);
+    /* Optional: a layerless opaque AllocBitMap target, by private identity
+       and unchanged header. Only for the current drawing call; no generic
+       shadow lookup or writable guest pointer can supply this native one. */
+    struct BitMap *(*native_bitmap)(struct KaffeineContext *ctx, ULONG bitmap,
+                                   ULONG *width, ULONG *height);
+    /* Same admitted bitmap classes as BltBitMap, including a call-local
+       adapter for ordinary planes. Never accepts borrowed screen storage. */
+    struct BitMap *(*bitmap_source)(struct KaffeineContext *ctx, ULONG bitmap,
+                                   struct BitMap *adapter, ULONG *width, ULONG *height);
 };
 
 static inline ULONG Kaffeine_LayerSignalMask(struct KaffeineContext *ctx)
@@ -281,6 +292,8 @@ IPTR Kaffeine_AttemptLockLayerRom(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu);
 /* graphics -960: scalar attributes of the same typed bitmap classes. */
 IPTR Kaffeine_GetBitMapAttr(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_AllocBitMap(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_FreeBitMap(struct KaffeineContext *ctx, void *cpu);
 /* graphics -390: the classic scalars of a 68k BitMap in guest memory, as
    graphics writes them, never its planes; a screen's BitMap and a common
    BitMap that a LayerInfo keeps stop the program (20). */
@@ -319,11 +332,10 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
     { 654, Kaffeine_AttemptLockLayerRom }, \
     {  30, Kaffeine_BltBitMap }, \
     { 390, Kaffeine_InitBitMap }, \
-    { 606, kaffeine_bitmaps_Unsupported },    /* BltBitMapRastPort */ \
     { 636, kaffeine_bitmaps_Unsupported },    /* BltMaskBitMapRastPort */ \
     { 678, kaffeine_bitmaps_Unsupported },    /* BitMapScale */ \
-    { 918, kaffeine_bitmaps_Unsupported },    /* AllocBitMap */ \
-    { 924, kaffeine_bitmaps_Unsupported },    /* FreeBitMap */ \
+    { 918, Kaffeine_AllocBitMap }, \
+    { 924, Kaffeine_FreeBitMap }, \
     { 942, kaffeine_bitmaps_Unsupported },    /* ChangeVPBitMap */ \
     { 960, Kaffeine_GetBitMapAttr }, \
     {1020, kaffeine_bitmaps_Unsupported },    /* AllocSpriteDataA */ \

@@ -130,7 +130,7 @@ GRAPHICS_GELS_REFUSED = frozenset((96, 102, 108, 114, 126, 132, 138, 144, 150, 1
 GRAPHICS_QUEUED_BLIT_REFUSED = frozenset((276, 294))
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
 CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
-GRAPHICS_BITMAP_REFUSED = frozenset((606, 636, 678, 918, 924, 942, 1020, 1206))
+GRAPHICS_BITMAP_REFUSED = frozenset((636, 678, 942, 1020, 1206))
 # GetColorMap, AttachPalExtra, ObtainPen and FindColor: no owned ColorMaps
 # or other pen calls yet. ObtainBestPenA and ReleasePen are
 # manual handlers checked as native vector cases.
@@ -519,7 +519,15 @@ CASES = (
 
     # Reads every fd register, A2 only to refuse a TempA: no ignored ones.
     ("graphics", "bltbitmap.c", "BltBitMap", "Kaffeine_BltBitMap"),
+    ("graphics", "clipblit.c", "ClipBlit", "thunk_gfx_ClipBlit"),
+    ("graphics", "bltbitmaprastport.c", "BltBitMapRastPort", "thunk_gfx_BltBitMapRastPort"),
     ("graphics", "getbitmapattr.c", "GetBitMapAttr", "Kaffeine_GetBitMapAttr"),
+    ("graphics", "allocbitmap.c", "AllocBitMap", "Kaffeine_AllocBitMap"),
+    ("graphics", "freebitmap.c", "FreeBitMap", "Kaffeine_FreeBitMap"),
+    ("graphics", "readpixelline8.c", "ReadPixelLine8", "thunk_gfx_ReadPixelLine8"),
+    ("graphics", "writepixelline8.c", "WritePixelLine8", "thunk_gfx_WritePixelLine8"),
+    ("graphics", "readpixelarray8.c", "ReadPixelArray8", "thunk_gfx_ReadPixelArray8"),
+    ("graphics", "writepixelarray8.c", "WritePixelArray8", "thunk_gfx_WritePixelArray8"),
     # A0, D0, D1 and D2, narrowed as the BYTE/UWORD prototype; Planes untouched.
     ("graphics", "initbitmap.c", "InitBitMap", "Kaffeine_InitBitMap"),
     # Screen-owned pen leases: every fd register read, A1 by the tag walk.
