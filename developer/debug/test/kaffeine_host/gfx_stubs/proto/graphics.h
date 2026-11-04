@@ -65,6 +65,7 @@ struct BitMap;
 /* Never called: AllocRaster() planes are guest heap allocations. */
 PLANEPTR AllocRaster(ULONG width, ULONG height);
 void FreeRaster(PLANEPTR p, ULONG width, ULONG height);
+void BltClear(void *memBlock, ULONG bytecount, ULONG flags);
 void InitBitMap(struct BitMap *bm, BYTE depth, UWORD width, UWORD height);
 /* The native Region calls of the Region bridge (graphics.conf) */
 struct Region;

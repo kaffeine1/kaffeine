@@ -57,6 +57,9 @@ IPTR thunk_gfx_GetDrMd(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_GetOutlinePen(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_AllocRaster(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_FreeRaster(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_SetChipRev(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_BltClear(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_QueuedBlitUnsupported(struct KaffeineContext *ctx, void *cpu);
 
 #ifdef __cplusplus
 }
@@ -70,6 +73,10 @@ IPTR thunk_gfx_FreeRaster(struct KaffeineContext *ctx, void *cpu);
 #define KAFFEINE_GRAPHICS_COMPAT_THUNKS \
     { 72,  thunk_gfx_OpenFont }, \
     { 894, thunk_gfx_SetABPenDrMd }, \
+    { 888, thunk_gfx_SetChipRev }, \
+    { 276, thunk_gfx_QueuedBlitUnsupported }, \
+    { 294, thunk_gfx_QueuedBlitUnsupported }, \
+    { 300, thunk_gfx_BltClear }, \
     { 396, thunk_gfx_ScrollRaster }
 
 /* Calls on the 68k RastPort of a window or a screen, the state of and

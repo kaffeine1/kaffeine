@@ -2021,6 +2021,29 @@ static void test_blit_empty_clip()
     }
 }
 
+static void test_planar_blit_count()
+{
+    Fixture f;
+    const ULONG src = f.bitmap(4, 4, 2), dst = f.bitmap(4, 4, 3);
+    blit_force = true;
+    blit_forced = 8; /* native HIDD's documented fallback return */
+    for (ULONG mask : {1U, 2U, 3U, 0x80U, 0xffU})
+    {
+        ULONG expected = (mask & 1 ? 1 : 0) + (mask & 2 ? 1 : 0);
+        assert(f.call(Fixture::graphics_base, 30, {src, dst, 0},
+                      {0, 0, 0, 0, 16, 4, 0xc0, mask}) == expected);
+        assert(f.ctx.running && !blit_pending);
+    }
+    for (LONG result : {0L, -1L})
+    {
+        blit_forced = result;
+        assert(f.call(Fixture::graphics_base, 30, {src, dst, 0},
+                      {0, 0, 0, 0, 16, 4, 0xc0, 1}) == (ULONG)result);
+        assert(f.ctx.running && !blit_pending);
+    }
+    blit_force = false;
+}
+
 static void test_blit_mapping()
 {
     Fixture f;
@@ -3253,6 +3276,7 @@ int main()
         { "Private locks do not freeze screen snapshots; failed constructors retire their counts", test_private_lock_isolation },
         { "Another guest task's lock of any layer of a LayerInfo stops creation and deletion there", test_sibling_lock_contention },
         { "BltBitMap() empty clipped rectangles leave bytes and resources unchanged", test_blit_empty_clip },
+        { "Planar BltBitMap returns the selected plane count instead of native dummy eight", test_planar_blit_count },
         { "BltBitMap() (-30) between common BitMaps: native identity, WORD/UBYTE/LONG mapping, copy, clear, mask", test_blit_mapping },
         { "BltBitMap() takes ordinary planar BitMaps; refuses malformed, changed common, TempA and negative inputs before native; clips oversized rectangles", test_blit_refusals },
         { "A blit keeps every LayerInfo until WaitBlit(); a disposed common's 68k BitMap gets a new call-local BitMap", test_blit_lifetime },

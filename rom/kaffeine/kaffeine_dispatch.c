@@ -68,7 +68,6 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
     {
         struct M68KFakeLibBase *lib = &ctx->libs[i];
         const struct M68KThunkEntry *entry;
-        const char *kind = "CALL";
         BOOL manual;
         ULONG lvo, sp;
 
@@ -81,7 +80,6 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
         if (!entry)
         {
             entry = find_thunk(lib->gen_thunks, lib->num_gen_thunks, lvo);
-            kind = "GEN";
         }
 
         sp = Kaffeine_GetA(cpu, 7);
@@ -138,8 +136,11 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
         {
             IPTR ret;
 
-            bug("[kaffeine] %s %s LVO -%lu\n", kind, lib->name,
-                (unsigned long)lvo);
+            /* Per-call tracing is opt-in: painting can make millions of
+               math calls. Refusal and unimplemented-call diagnostics below
+               remain unconditional. */
+            D(bug("[kaffeine] %s %s LVO -%lu\n", manual ? "CALL" : "GEN",
+                  lib->name, (unsigned long)lvo));
             if (!(lib->dos && ctx->sched && ctx->task_ops->dos_call &&
                   ctx->task_ops->dos_call(ctx, cpu, entry->thunk, &ret)))
                 ret = entry->thunk(ctx, cpu);

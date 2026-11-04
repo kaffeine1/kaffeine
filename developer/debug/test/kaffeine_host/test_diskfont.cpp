@@ -189,6 +189,7 @@ extern "C" ULONG TextFit(RastPort *, CONST_STRPTR, ULONG, struct TextExtent *, s
 extern "C" void Move(RastPort *, WORD, WORD) { std::abort(); }
 extern "C" void Draw(RastPort *, WORD, WORD) { std::abort(); }
 extern "C" void RectFill(RastPort *, WORD, WORD, WORD, WORD) { std::abort(); }
+extern "C" void BltClear(void *, ULONG, ULONG) { std::abort(); }
 extern "C" LONG ReadPixel(RastPort *, WORD, WORD) { std::abort(); }
 extern "C" LONG WritePixel(RastPort *, WORD, WORD) { std::abort(); }
 extern "C" void SetAPen(RastPort *, ULONG) { std::abort(); }

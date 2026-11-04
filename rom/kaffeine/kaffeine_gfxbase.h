@@ -5,6 +5,10 @@
 #include "kaffeine_thunks.h"
 #define KAFFEINE_GFXBASE_SIZE 552
 #define KAFFEINE_GFXBASE_DEFAULTFONT 154
+#define KAFFEINE_GFXBASE_CHIPREV 236
+/* Classic GFXF_BIG_BLITS: supported OS graphics calls have no OCS
+ * rectangle limit. This is not custom-chip or hardware-blitter emulation. */
+#define KAFFEINE_GFX_CHIPREV 0x01
 #ifdef __cplusplus
 extern "C" {
 #endif

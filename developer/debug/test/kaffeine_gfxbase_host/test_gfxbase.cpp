@@ -205,7 +205,9 @@ static void publication(bool reservation_only)
         if (!reservation_only && base && g.font_slot(f)>=0)
         {
             for (unsigned i=0;i<552;++i)
-                if (i<154 || i>=158) check(g.ctx->mem[base+i]==0,"only DefaultFont is published in cleared classic GfxBase");
+                if (i<154 || i>=158)
+                    check(g.ctx->mem[base+i] == (i == 236 ? 1 : 0),
+                          "only DefaultFont and the large OS blit bit are published");
             check(g.ctx->mem[base+552]==0xa5,"clear stops exactly after the reserved positive area");
             for (unsigned i=0;i<512;++i)
             {
