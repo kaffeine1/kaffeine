@@ -85,6 +85,17 @@ extern "C" ULONG Kaffeine_SetupLibBase(KaffeineContext *ctx, UWORD id,
     return lib.m68k_addr;
 }
 
+/* intuition.library gets the classic positive area of its IntuitionBase;
+   the routing is the same as for any other base. */
+extern "C" ULONG Kaffeine_SetupLibBaseSized(KaffeineContext *ctx, UWORD id,
+    const char *name, UWORD vectors, UWORD positive_size, const M68KThunkEntry *manual,
+    ULONG manual_count, const M68KThunkEntry *generated, ULONG generated_count)
+{
+    CHECK(std::strcmp(name, "intuition.library") == 0 && positive_size == 80);
+    return Kaffeine_SetupLibBase(ctx, id, name, vectors, manual, manual_count,
+                                generated, generated_count);
+}
+
 /* This fixture records lookup routing only. The gfxbase_host suite builds
    the actual graphics setup, positive-area reservation and font ownership. */
 extern "C" ULONG Kaffeine_SetupGraphicsBase(KaffeineContext *ctx,

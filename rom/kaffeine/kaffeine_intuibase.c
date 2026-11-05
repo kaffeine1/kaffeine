@@ -79,7 +79,7 @@ static ULONG snapshot(struct KaffeineContext *ctx, const char *name, void *nativ
         W(44+24,n->ViewPort.DWidth);W(44+26,n->ViewPort.DHeight);
         W(44+28,n->ViewPort.DxOffset);W(44+30,n->ViewPort.DyOffset);W(44+32,n->ViewPort.Modes);
         L(M68K_SCR_RASTPORT+M68K_RP_BITMAP,snapshot(ctx,"BitMap",n->RastPort.BitMap,depth+1));
-        if(n->RastPort.BitMap)bitmap_fields(ctx,g+184,n->RastPort.BitMap);
+        if(n->RastPort.BitMap)bitmap_fields(ctx,g+M68K_SCR_BITMAP,n->RastPort.BitMap);
         L(224,snapshot(ctx,"Layer",n->LayerInfo.top_layer,depth+1));
     }
     else if(!strcmp(name,"Window"))
@@ -180,8 +180,16 @@ static struct IBaseView *active(struct KaffeineContext *ctx, ULONG guest, const 
         if(v->guest==guest && v->epoch==s->epoch && v->layout && !strcmp(v->layout->name,kind))return v; }
     return NULL;
 }
+/* A BitMap view, or the BitMap embedded in a Screen snapshot, which carries
+   the scalars of that screen's RastPort BitMap */
 struct BitMap *Kaffeine_IBaseBitmap(struct KaffeineContext *ctx, ULONG guest)
-{ struct IBaseView *v=active(ctx,guest,"BitMap");return v?v->native:NULL; }
+{
+    struct KaffeineIBase *s=ctx->ibase;struct IBaseView *v=active(ctx,guest,"BitMap");ULONG i;
+    if(v)return v->native;
+    if(!s || !s->depth || s->owner!=caller(ctx))return NULL;
+    for(i=0;i<s->count;++i) { v=&s->views[i];if(v->epoch==s->epoch && v->layout && !strcmp(v->layout->name,"Screen") && guest==v->guest+M68K_SCR_BITMAP)return ((struct Screen*)v->native)->RastPort.BitMap; }
+    return NULL;
+}
 struct RastPort *Kaffeine_IBaseRastPort(struct KaffeineContext *ctx, ULONG guest)
 {
     struct KaffeineIBase *s=ctx->ibase;struct IBaseView *v=active(ctx,guest,"RastPort");ULONG i;

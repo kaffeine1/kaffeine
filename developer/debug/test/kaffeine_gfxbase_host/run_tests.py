@@ -54,7 +54,7 @@ def main():
     wrapper = build_dir / "open_library.c"
     wrapper.write_text('#include <string.h>\n#include <aros/debug.h>\n'
                        '#include "kaffeine_intern.h"\n#include "kaffeine_thunks.h"\n'
-                       '#include "kaffeine_gfxbase.h"\n' +
+                       '#include "kaffeine_gfxbase.h"\n#include "kaffeine_socket.h"\n' +
                        "\n".join(("const ULONG " + n + " = 0;" if n.endswith("_count") else
                                    "const struct M68KThunkEntry " + n + "[] = {{0, NULL}};")
                                   for n in symbols) + "\n" + function)

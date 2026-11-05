@@ -278,6 +278,13 @@ static void execute(struct KSocketNative *worker, struct Library *SocketBase, st
     default: p->error = ENOSYS; return;
     }
     if (p->result < 0 && !p->error) p->error = Errno();
+    /* A blocking send that already moved bytes reports them, as BSD send()
+       does; a lasting error such as EPIPE comes back at the next call */
+    if (p->op == 66 && p->result < 0 && p->progress && !transient(p->error))
+    {
+        p->result = p->progress;
+        p->error = 0;
+    }
     if (p->result >= 0 && slot >= 0)
     {
         if (p->result >= 65536)

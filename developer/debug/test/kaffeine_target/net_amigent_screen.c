@@ -140,12 +140,13 @@ static BOOL direct_readback(struct Screen *screen)
     check(ReadPixelArray(bytes,0,0,15,&screen->RastPort,64,64,5,3,RECTFMT_LUT8)==0,
           "unsupported native read format is explicit and write-free");
     {
-        BOOL geometry=FALSE,attributes=FALSE,mode=FALSE,readback=FALSE,nested=FALSE;
+        BOOL geometry=FALSE,attributes=FALSE,embedded=FALSE,mode=FALSE,readback=FALSE,nested=FALSE;
         key=LockIBase(0);front=IntuitionBase->FirstScreen;
         geometry=front && front->Width==screen->Width && front->Height==screen->Height;
         if(front) {
             ULONG inner;
             attributes=GetCyberMapAttr(front->RastPort.BitMap,CYBRMATTR_ISCYBERGFX)!=0 && GetBitMapAttr(front->RastPort.BitMap,BMA_DEPTH)==8;
+            embedded=GetBitMapAttr(&front->BitMap,BMA_DEPTH)==8;
             mode=GetVPModeID(&front->ViewPort)==0x00100001;
             memset(bytes,0x5a,sizeof(bytes));
             result=ReadPixelArray(bytes,0,0,15,&front->RastPort,64,64,5,3,RECTFMT_RGB);
@@ -157,6 +158,7 @@ static BOOL direct_readback(struct Screen *screen)
             front?(LONG)front->Width:-1L,front?(LONG)front->Height:-1L,(LONG)screen->Width,(LONG)screen->Height);
         check(geometry,"LockIBase supplies current native front screen geometry");
         check(attributes,"snapshot bitmap token permits scalar RTG/depth queries while locked");
+        check(embedded,"snapshot embedded Screen BitMap answers the same depth while locked");
         check(mode,"snapshot embedded ViewPort resolves its native mode");
         check(readback,"read-only snapshot RastPort captures real RGB pixels");
         check(nested,"nested IBase lock retains snapshot identity");

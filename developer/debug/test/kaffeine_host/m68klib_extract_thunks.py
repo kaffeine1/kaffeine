@@ -53,6 +53,7 @@ Path(sys.argv[4]).write_text('''/* Generated from the production Exec and DOS th
 #include "kaffeine_thunks.h"
 #include "kaffeine_filehandle.h"
 #include "kaffeine_segments.h"
+#include "kaffeine_socket.h"
 #include "kaffeine_thunks_memory.h"
 extern IPTR m68klib_test_stop(struct KaffeineContext *, void *);
 ''' + source[start:end] + dos_bodies + '''

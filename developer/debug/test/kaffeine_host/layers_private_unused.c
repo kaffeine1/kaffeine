@@ -8,6 +8,7 @@
 #include <graphics/gfx.h>
 #include <proto/graphics.h>
 #include <proto/layers.h>
+#include "kaffeine_intuibase.h"
 
 /* The native recipe entry is linked with the layer bridge. These older
    fixtures never replay a paint recipe; its focused suite supplies strong
@@ -100,6 +101,14 @@ __attribute__((weak)) LONG BltBitMap(struct BitMap *srcBitMap, WORD xSrc, WORD y
 __attribute__((weak)) void WaitBlit(void)
 {
     abort();
+}
+
+/* No IBase snapshot exists in these fixtures, so no BitMap is one of its
+   views; a NULL answer keeps GetBitMapAttr on its planar and screen paths. */
+__attribute__((weak)) struct BitMap *Kaffeine_IBaseBitmap(struct KaffeineContext *ctx, ULONG guest)
+{
+    (void)ctx; (void)guest;
+    return NULL;
 }
 
 /* The size of the BitMap of a screen that the program opened */

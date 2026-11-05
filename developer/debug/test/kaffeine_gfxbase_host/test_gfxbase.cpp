@@ -53,6 +53,8 @@ extern "C" void FreeVec(APTR p) { if (p) FreeMem(p,allocations.at(p)); }
 extern "C" SIPTR IoErr(void) { return io_error; }
 extern "C" SIPTR SetIoErr(SIPTR n) { SIPTR old = io_error; io_error = n; return old; }
 extern "C" BOOL Kaffeine_LockProtected(KaffeineContext *,ULONG,ULONG) { return FALSE; }
+/* bsdsocket.library has its own opener, which these graphics fixtures never reach. */
+extern "C" ULONG Kaffeine_SocketOpen(KaffeineContext *) { std::abort(); }
 
 struct Font
 {
