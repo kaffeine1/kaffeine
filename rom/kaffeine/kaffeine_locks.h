@@ -15,6 +15,7 @@ extern "C" {
 #define KAFFEINE_LOCK_BORROW_LIMIT 128
 #define KAFFEINE_LOCK_IDENTITY_LIMIT 4096
 #define KAFFEINE_LOCK_OWNER_LIMIT 17
+#define KAFFEINE_DOSLIST_LIMIT 256
 
 struct Task;
 
@@ -82,6 +83,19 @@ BOOL Kaffeine_LockSwapInstalled(struct KaffeineContext *, enum KaffeineLockInsta
    Do not call GuestBytes() from this module: callers may use this predicate
    inside GuestBytes()/ordinary-storage checks. */
 BOOL Kaffeine_LockProtected(struct KaffeineContext *, ULONG address, ULONG size);
+
+/* Read-only per-task DosList snapshots. No native lock survives a call.
+   Returned nodes are APTRs; dol_Next and dol_Name contain classic BPTRs.
+   Final unlock retains bytes across one subsequent fresh generation, then
+   releases the older copy; task retirement releases both generations.
+   Write operations remain unsupported; invalid/unmatched navigation never
+   forwards a guest node or lock to native DOS. */
+ULONG Kaffeine_DosListLock(struct KaffeineContext *, void *cpu, ULONG flags, BOOL attempt);
+void Kaffeine_DosListUnlock(struct KaffeineContext *, void *cpu, ULONG flags);
+ULONG Kaffeine_DosListNext(struct KaffeineContext *, void *cpu, ULONG entry, ULONG flags);
+ULONG Kaffeine_DosListFind(struct KaffeineContext *, void *cpu, ULONG entry, ULONG name, ULONG flags);
+/* Canonical read-only strings are valid DOS input, but never output buffers. */
+const char *Kaffeine_LockReadString(struct KaffeineContext *, ULONG address);
 
 /* End transfer leases first. Installed and scoped owners keep their native
    references; only caller-owned references are unlocked here. */

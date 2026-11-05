@@ -17,6 +17,8 @@ LOCK_UNIT BOOL Kaffeine_LockResolve(struct KaffeineContext *c, ULONG b, BPTR *n)
 { (void)c; *n=(BPTR)(IPTR)b; return TRUE; }
 LOCK_UNIT BOOL Kaffeine_LockProtected(struct KaffeineContext *c, ULONG a, ULONG n)
 { (void)c; (void)a; (void)n; return FALSE; }
+LOCK_UNIT const char *Kaffeine_LockReadString(struct KaffeineContext *c, ULONG a)
+{ (void)c; (void)a; return NULL; }
 LOCK_UNIT BOOL Kaffeine_LockGetInstalled(struct KaffeineContext *c, enum KaffeineLockInstalled s, ULONG *b)
 { (void)c; (void)s; *b=0; return TRUE; }
 LOCK_UNIT BOOL Kaffeine_LockTransferBegin(struct KaffeineContext *c, ULONG b, struct KaffeineLockTransfer *l)

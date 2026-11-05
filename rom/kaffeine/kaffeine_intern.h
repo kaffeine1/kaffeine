@@ -321,6 +321,7 @@ struct KaffeineContext
     struct KaffeineSemaphores *semaphores;
     BOOL (*semaphore_release)(struct KaffeineContext *, ULONG, ULONG, BOOL);
     void (*semaphore_task_removed)(struct KaffeineContext *, ULONG);
+    void (*doslist_task_removed)(struct KaffeineContext *, ULONG);
     void (*semaphore_cleanup)(struct KaffeineContext *);
     /* Optional: the outermost Kaffeine_RunCPU() calls it after every
        KAFFEINE_GUI_POLL_SLICES completed slices, between slices, where no

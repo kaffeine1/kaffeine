@@ -54,6 +54,8 @@ static const char *guest_string(struct KaffeineContext *ctx, ULONG addr)
 {
     const char *s;
 
+    s = Kaffeine_LockReadString(ctx, addr);
+    if (s) return s;
     if (!guest_range(ctx, addr, 1))
         return NULL;
     s = (const char *)ctx->mem + addr;
@@ -124,8 +126,8 @@ IPTR kaffeine_dos_Info(struct KaffeineContext *ctx, void *cpu)
         m68k_write32(ctx, out + 16, (ULONG)info.id_NumBlocksUsed);
         m68k_write32(ctx, out + 20, (ULONG)info.id_BytesPerBlock);
         m68k_write32(ctx, out + 24, (ULONG)info.id_DiskType);
-        /* A native DosList BPTR is neither a lock token nor guest memory.
-           There is no DosList bridge yet, so expose no volume node. */
+        /* Info has no DosList snapshot lease. Do not publish the native
+           BPTR or create an unrelated list as a side effect of Info. */
         m68k_write32(ctx, out + 28, 0);
         m68k_write32(ctx, out + 32, (ULONG)info.id_InUse);
     }

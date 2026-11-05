@@ -768,6 +768,7 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
     /* Quarantine native requests before the task's signals or stack can
        be reused. Late replies must never write into that old stack. */
     if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, tcb);
+    if (ctx->doslist_task_removed) ctx->doslist_task_removed(ctx, tcb);
     if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, tcb);
     if (ctx->io_task_removed)
         ctx->io_task_removed(ctx, tcb);
@@ -1002,6 +1003,7 @@ static void sched_end(struct KaffeineContext *ctx)
 
     if (ctx->ibase_task_removed && s->current) ctx->ibase_task_removed(ctx, s->current->tcb);
     if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, s->root.tcb);
+    if (ctx->doslist_task_removed) ctx->doslist_task_removed(ctx, s->root.tcb);
     if (ctx->layer_ops && ctx->layer_ops->release_locks)
         ctx->layer_ops->release_locks(ctx);
     if (s->current != &s->root)
@@ -1036,6 +1038,7 @@ static void sched_end(struct KaffeineContext *ctx)
         (void)finish_process_wait(ctx, s, t);
         if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, t->tcb);
         if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, t->tcb);
+        if (ctx->doslist_task_removed) ctx->doslist_task_removed(ctx, t->tcb);
         if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, t->tcb);
         if (ctx->io_task_removed)
             ctx->io_task_removed(ctx, t->tcb);
@@ -1672,6 +1675,7 @@ BOOL Kaffeine_SchedRecoverStart(struct KaffeineContext *ctx, struct KaffeineDosB
        this CPU; the native caller still owns the module and unloads next. */
     if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, tcb);
     if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, tcb);
+    if (ctx->doslist_task_removed) ctx->doslist_task_removed(ctx, tcb);
     if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, tcb);
     if (ctx->io_task_removed) ctx->io_task_removed(ctx, tcb);
     if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, tcb);
@@ -2042,6 +2046,7 @@ BOOL Kaffeine_SchedFinishRoot(struct KaffeineContext *ctx, void *cpu, LONG resul
     s->reschedule = TRUE;
     if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, s->root.tcb);
     if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, s->root.tcb);
+    if (ctx->doslist_task_removed) ctx->doslist_task_removed(ctx, s->root.tcb);
     if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, s->root.tcb);
     if (ctx->io_task_removed)
         ctx->io_task_removed(ctx, s->root.tcb);

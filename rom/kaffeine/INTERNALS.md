@@ -870,7 +870,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -90 | UnLock | Retires one caller-owned typed FileLock reference; borrowed, installed-only and stale identities are refused |
 | -102 | Examine | Checks the whole guest FIB, examines into a native FIB and converts its public fields (`kaffeine_thunks_dos.c`) |
 | -108 | ExNext | As Examine, starting from the key and type in the guest FIB |
-| -114 | Info | Checks the 36-byte guest InfoData; native temporary, BE32 fields, id_VolumeNode is zero until a DosList bridge exists |
+| -114 | Info | Checks the 36-byte guest InfoData; native temporary, BE32 fields; id_VolumeNode remains zero without a caller-owned DosList lease |
 | -120 | CreateDir | Bounded guest name; adopts the acquired native reference as a typed classic FileLock |
 | -126 | CurrentDir | Checked installed lock swap; returns the displaced caller-owned reference and synchronizes pr_CurrentDir |
 | -132 | IoErr | Pass-through |
@@ -3966,7 +3966,7 @@ associations and 4096 lifetime publications of each view kind. Retired guest
 addresses stay quarantined. Publication failure balances a newly acquired
 native reference; context cleanup releases only caller-owned references.
 
-Generic DosList operations, ErrorReport's polymorphic arguments, ReadLink,
+Mutating DosList operations, ErrorReport's polymorphic arguments, ReadLink,
 hard MakeLink, native FontContents results and retained child-process
 current/home directory tags are explicitly refused pending typed adapters.
 ReadLink reports -1 and `ERROR_NOT_IMPLEMENTED`; the DOS object refusals
@@ -3978,6 +3978,67 @@ oracles, covering modified/stale views, wrong handlers, access refresh,
 scopes, transfers, installation, cleanup, resource limits and allocation
 rollback. The original `dos_locks` target probe also reads FileLock fields
 and exercises DOS operations; run it on native AROS and both CPU backends.
+
+### Read-only DosList snapshots
+
+LockDosList, AttemptLockDosList, UnLockDosList, NextDosEntry and FindDosEntry
+use bounded per-task snapshots in the lock module. Handles and entries are
+guest APTRs; the pseudo-node's first longword and every dol_Next are classic
+BPTRs. Names are aligned BSTRs with a length byte and a final NUL. No native
+node, FileLock, startup message, segment or assign-list pointer is exposed.
+Types 0 through 4 retain native order; unknown types and names outside 1..255
+bytes are omitted. Native names are never truncated into different roots.
+
+Exactly one of LDF_READ/WRITE and only documented flag bits are accepted.
+Malformed flags preserve IoErr; WRITE returns NULL/ERROR_NOT_IMPLEMENTED.
+Valid READ forms, including READ alone and ENTRY/DELETE groups, return a
+snapshot of all entry types. Nested calls share the same handle and count
+the ALL, ENTRY and DELETE lock groups independently. Unmatched unlocks and
+unlocks after a refused WRITE are harmless, and unlocks may omit mode bits.
+There is no native lock held while the guest runs. Each fresh snapshot first
+attempts an exclusive native ALL|ENTRY lease for copying only: AROS's READ
+mode also permits head insertion and late-assign promotion. A long-lived
+reader may own an insert-volume requester, so the bridge never waits
+indefinitely for an exclusive lease. On uniprocessor builds, a shared READ
+attempt plus Forbid/Permit is the coherent fallback; it coexists with native
+readers. SMP uses only the exclusive attempt, since Forbid cannot exclude
+other CPUs. Guest Attempt never waits and preserves IoErr on contention.
+Guest Lock retries at most 25 times, with 24 Delay(1) intervals and no native
+locks held while delayed, then returns NULL/ERROR_OBJECT_IN_USE. This bounded
+busy refusal is a deliberate limitation versus native blocking LockDosList;
+it leaves old snapshots and counts intact. Native scratch is allocated before
+locking; guest memory, handler mapping and publication follow unlocking.
+
+Navigation uses private entry indices/types and the trusted scheduler caller,
+not guest-edited links or SysBase.ThisTask. Find follows native Strnicmp
+(including locale patches), exact length, one optional trailing colon and
+search-after-argument semantics. Cross-task and unrecognized handles return
+NULL. Guest node edits cannot select a native address. Snapshot strings can
+be used as read-only DOS input only while their bytes equal the private copy;
+the same memory cannot be an output buffer, message or mutable OS object.
+
+Final unlock retains bytes through one subsequent fresh snapshot, permitting
+a READ-alone walker to survive a helper's intervening lock. A further refresh
+releases generation N-2; task retirement and cleanup release both copies.
+Replacement is atomic on allocation/acquisition failure; old snapshots are
+released rather than accumulating lifetime quarantine. Another task's live
+retained data is never evicted to take its slot; 17 owners match the scheduler's
+root plus child-task bound.
+Bounds are 17 owners, 256 entries, 1024 visited native nodes, 1024 nested
+holds per group and late/nonbinding paths of at most 1023 bytes. A complete
+snapshot exceeding entry/walk bounds or handler capacity fails with
+ERROR_NO_FREE_STORE instead of silently hiding a mounted volume. Mounted
+entries use the existing HandlerPort identity, matching fl_Task/DeviceProc.
+Late/nonbinding entries have no mounted port and copy only their path.
+
+Directory dol_Lock, multi-assign lists, device startup/segments and volume
+lock lists are deliberately not capabilities (zero). Port/name identity is
+shared with FileLock views; DosList node addresses are separate. Info's
+id_VolumeNode and DevProc's dvp_DevNode remain zero rather than exporting
+an unrelated or native pointer. Write operations remain unsupported.
+The dos_doslist target fixture covers classic layout, native-volume Info
+cross-checks, filters, nesting/refusals and repeated original c_volumes walks;
+its refused-WRITE cases make it a Kaffeine-only probe, not a native AROS test.
 
 
 ### Cleared StandardPackets sent with PutMsg

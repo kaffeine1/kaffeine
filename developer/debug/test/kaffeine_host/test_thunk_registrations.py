@@ -149,6 +149,11 @@ def module_name(library):
 
 
 CASES = (
+    ("dos", "lockdoslist.c", "LockDosList", "kaffeine_dos_LockDosList"),
+    ("dos", "unlockdoslist.c", "UnLockDosList", "kaffeine_dos_UnLockDosList"),
+    ("dos", "attemptlockdoslist.c", "AttemptLockDosList", "kaffeine_dos_AttemptLockDosList"),
+    ("dos", "finddosentry.c", "FindDosEntry", "kaffeine_dos_FindDosEntry"),
+    ("dos", "nextdosentry.c", "NextDosEntry", "kaffeine_dos_NextDosEntry"),
     ("intuition", "lockibase.c", "LockIBase", "Kaffeine_LockIBase"),
     ("intuition", "unlockibase.c", "UnlockIBase", "Kaffeine_UnlockIBase"),
     ("intuition", "screentofront.c", "ScreenToFront", "Kaffeine_IBaseScreenToFront"),
@@ -1445,7 +1450,7 @@ def main():
                 continue
             if handler in {"kaffeine_dos_UnsupportedLockObject", "kaffeine_dos_ReadLinkUnsupported"}:
                 allowed = ({438} if handler.endswith("ReadLinkUnsupported") else
-                           {480, 654, 660, 666, 672, 678, 684, 690, 696, 702})
+                           {480, 672, 678, 696, 702})
                 if library != "dos" or vector not in allowed:
                     failures += 1
                     print("FAIL unexpected native DOS object refusal", library, vector)
