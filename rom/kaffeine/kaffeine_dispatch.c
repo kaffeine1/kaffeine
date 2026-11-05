@@ -60,11 +60,17 @@ static BOOL layer_info_p96_write(const char *name, ULONG lvo, BOOL manual)
 
 /* IBase pins the guest CPU but has a different native lock order from
    LayerInfo: permit only typed readback/scalars and private memory work.
-   No DOS, input DoIO, GUI mutation, broker or native wait is admitted. */
+   No DOS, input DoIO, GUI mutation, broker or native wait is admitted.
+   graphics -756 is the typed GetDisplayInfoData() of kaffeine_display.c
+   (NULL handle only): native GetDisplayInfoData() takes no lock but the
+   display mode database's semaphore, shared and released inside, which no
+   holder keeps while it waits for IBase, and native Intuition queries it
+   under IBase itself. The generated forwarder stays refused. */
 static BOOL ibase_read(const char *name, ULONG lvo, BOOL manual)
 {
     if (!strcmp(name, "intuition.library")) return manual && (lvo == 414 || lvo == 420);
-    if (!strcmp(name, "graphics.library")) return manual && (lvo == 792 || lvo == 960);
+    if (!strcmp(name, "graphics.library"))
+        return manual && (lvo == 756 || lvo == 792 || lvo == 960);
     if (!strcmp(name, "cybergraphics.library")) return manual && (lvo == 96 || lvo == 120);
     if (!strcmp(name, "timer.device")) return manual && (lvo == 60 || lvo == 66);
     if (!strcmp(name, "utility.library")) return layer_info_utility_arithmetic(lvo, manual);

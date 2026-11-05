@@ -1178,7 +1178,7 @@ takes the exit code.
 | -714 | OpenMonitor | Refuses owned monitor opens by stopping with rc 20 (`kaffeine_display.c`) |
 | -720 | CloseMonitor | Refuses monitor closes by stopping with rc 20 (`kaffeine_display.c`) |
 | -726 | FindDisplayInfo | Refuses display handle lookups by stopping with rc 20 (`kaffeine_display.c`) |
-| -756 | GetDisplayInfoData | Queries native display info for `DTAG_DISP`, `DTAG_DIMS`, `DTAG_NAME` or `DTAG_MNTR` (with NULL handle and mode ID in D2) and writes classic big-endian structures and borrowed `MonitorSpec` snapshots (`kaffeine_display.c`) |
+| -756 | GetDisplayInfoData | Queries native display info for `DTAG_DISP`, `DTAG_DIMS`, `DTAG_NAME` or `DTAG_MNTR` (with NULL handle and mode ID in D2) and writes classic big-endian structures and borrowed `MonitorSpec` snapshots (`kaffeine_display.c`). Also admitted while the guest holds IBase: the native call takes only the display mode database's semaphore, shared and released inside, and no holder of that semaphore waits for IBase |
 | -858 | GetAPen | Native getter after the fields of the 68k RastPort |
 | -864 | GetBPen | Native getter after the fields of the 68k RastPort |
 | -870 | GetDrMd | Native getter after the fields of the 68k RastPort |

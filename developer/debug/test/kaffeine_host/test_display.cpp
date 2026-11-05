@@ -78,10 +78,11 @@ struct DisplayFixture:Fixture
         auto &lib=ctx.libs[1]; lib.thunks=manual; lib.num_thunks=std::size(manual);
         lib.gen_thunks=generated; lib.num_gen_thunks=std::size(generated); std::strcpy(lib.name,"graphics.library");
     }
-    ULONG query(ULONG size,ULONG tag=DTAG_DIMS,ULONG out=0x6801,ULONG handle=0,ULONG lvo=756)
+    ULONG query(ULONG size,ULONG tag=DTAG_DIMS,ULONG out=0x6801,ULONG handle=0,ULONG lvo=756,
+                ULONG id=0x12345678)
     {
         for (unsigned i=0;i<8;i++) { state.d[i]=0xD0000000+i; state.a[i]=0xA0000000+i; }
-        state.d[0]=size; state.d[1]=tag; state.d[2]=0x12345678;
+        state.d[0]=size; state.d[1]=tag; state.d[2]=id;
         state.a[0]=handle; state.a[1]=out; state.a[7]=stack;
         state.sr=0xA715; state.pc=0x12345678; auto saved=state;
         ctx.running=TRUE; ctx.exit_code=0; KaffeineDispatchResult result={};
@@ -100,6 +101,15 @@ struct DisplayFixture:Fixture
         check(bytes()==before && queries==n,"rejected query preserves whole arena and never calls native backend");
     }
 };
+/* graphics -756 while the guest holds IBase: the typed query runs, as the
+   native call takes only the display mode database's shared semaphore.
+   The generated forwarder and the other display vectors are refused before
+   any native call, and the caller's lock is only asked, never changed. */
+static unsigned ibase_asks;
+static BOOL ibase_held(KaffeineContext *) { ++ibase_asks; return TRUE; }
+static const M68KThunkEntry manual_without_query[] = {
+    {714, thunk_gfx_OpenMonitor}, {720, thunk_gfx_CloseMonitor}, {726, thunk_gfx_FindDisplayInfo} };
+
 static std::vector<UBYTE> expected(ULONG tag)
 {
     std::vector<UBYTE> v={0x80,0,0,0,0x13,0x57,0x9B,0xDF,0,0,0,3,0,0,0,4};
@@ -218,6 +228,42 @@ int main()
         monitor_choice=KAFFEINE_MAX_MONITORS;
         check(f.query(88,DTAG_MNTR)==0 && f.ctx.running,"exhausted monitor cache fails without exposing native pointer");
         monitor_choice=0; check(f.query(88,DTAG_MNTR)==88,"full monitor cache still resolves existing identity");
+    }
+    {
+        DisplayFixture f; f.ctx.ibase_locked=ibase_held; ibase_asks=0;
+        auto want=expected(DTAG_DIMS); unsigned calls=queries;
+        check(f.query(88,DTAG_DIMS)==66 && f.ctx.running,"typed display query runs while IBase is held");
+        check(queries==calls+1 && !std::memcmp(f.ctx.mem+0x6801,want.data(),66),
+              "under IBase: one native query and the classic bytes");
+        check(ibase_asks>0 && f.ctx.ibase_locked==ibase_held && !f.ctx.ibase,
+              "the caller's IBase scope is only asked, never released or changed");
+        check(f.query(160,DTAG_MNTR)==88 && f.ctx.monitors[0].native,
+              "a monitor snapshot under IBase comes from the private table");
+        f.reject(88,DTAG_DIMS,0x6801,0x12345678);
+        f.reject(88,DTAG_VEC);
+        for(ULONG lvo:{714U,720U,726U}) { f.ctx.callback_failed=FALSE; f.reject(0,DTAG_DIMS,0,0,lvo); }
+    }
+    {
+        /* A NULL-handle DISP query at a nonaligned buffer near the arena's
+           end, with room for sizeof(struct DisplayInfo) and its reserved
+           tail. Only the classic payload may change. */
+        DisplayFixture f; f.ctx.ibase_locked=ibase_held;
+        const ULONG out=f.ctx.mem_size-308; auto want=expected(DTAG_DISP);
+        std::memset(f.ctx.mem+out,0xA5,56); unsigned calls=queries;
+        check(f.query(56,DTAG_DISP,out,0,756,0x00100000)==48 && f.ctx.running,
+              "the near-end query copies the 48 classic DisplayInfo bytes");
+        check(queries==calls+1 && backend_id==0x00100000 && backend_tag==DTAG_DISP,
+              "one native query with the requested mode ID and tag");
+        check(!std::memcmp(f.ctx.mem+out,want.data(),48),"near-end query: classic big-endian bytes");
+        check(std::all_of(f.ctx.mem+out+48,f.ctx.mem+out+56,[](UBYTE b){return b==0xA5;}),
+              "the reserved tail of the caller's DisplayInfo stays untouched");
+    }
+    {
+        /* With only the generated forwarder for -756, IBase refuses it
+           before the forwarder or the backend is reached. */
+        DisplayFixture f; f.ctx.ibase_locked=ibase_held;
+        f.ctx.libs[1].thunks=manual_without_query; f.ctx.libs[1].num_thunks=std::size(manual_without_query);
+        f.reject(88,DTAG_DIMS);
     }
     check(native_blocks.empty(),"all fixture native allocations released");
     std::printf("display: %u checks, %u failed\n",checks,failures);
