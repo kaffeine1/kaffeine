@@ -48,11 +48,15 @@ def main():
              "-I" + str(shared / "stubs"), "-I" + str(source_dir)]
     if args.sanitize:
         flags += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
-    function = extract_function((source_dir / "kaffeine_thunks.c").read_text(),
-                                "Kaffeine_OpenLibrary")
+    thunks = (source_dir / "kaffeine_thunks.c").read_text()
+    function = extract_function(thunks, "Kaffeine_OpenLibrary")
+    # The header copy of the bases it makes, in the sources that have one.
+    if re.search(r"^ULONG Kaffeine_PublishNativeLibrary\(", thunks, re.MULTILINE):
+        function = extract_function(thunks, "Kaffeine_PublishNativeLibrary") + function
     symbols = sorted(set(re.findall(r"\bkaffeine_thunks_[a-z0-9_]+\b", function)))
     wrapper = build_dir / "open_library.c"
     wrapper.write_text('#include <string.h>\n#include <aros/debug.h>\n'
+                       '#include <proto/exec.h>\n#include <proto/dos.h>\n'
                        '#include "kaffeine_intern.h"\n#include "kaffeine_thunks.h"\n'
                        '#include "kaffeine_gfxbase.h"\n#include "kaffeine_socket.h"\n' +
                        "\n".join(("const ULONG " + n + " = 0;" if n.endswith("_count") else

@@ -160,6 +160,8 @@ struct M68KFakeLibBase
     ULONG   num_gen_thunks;
     char    name[32];           /* library name for OpenLibrary matching */
     BOOL    dos;                /* dos.library: no call of a CreateProc() child reaches it */
+    BOOL    library;            /* a library base, not a device: only these get a
+                                   struct Library header (Kaffeine_PublishLibrary) */
 };
 
 /* Map library names to fake base addresses for OpenLibrary */
@@ -719,6 +721,40 @@ ULONG  Kaffeine_SetupLibBase(struct KaffeineContext *ctx, UWORD lib_id,
                              const char *name, UWORD num_vectors,
                              const struct M68KThunkEntry *thunks, ULONG num_thunks,
                              const struct M68KThunkEntry *gen_thunks, ULONG num_gen_thunks);
+
+/* The record that setup_base() made for the library base at base, or NULL
+   for an address that is no library base of this context, a device base
+   included: its jump table is num_vectors * 6 bytes below base and its
+   positive area pos_size bytes from base. The guest header of every base
+   describes these two extents (Kaffeine_PublishLibrary(), and
+   shadow_init_execbase() for ExecBase). */
+static inline const struct M68KFakeLibBase *
+Kaffeine_LibraryRecord(const struct KaffeineContext *ctx, ULONG base)
+{
+    UWORD i;
+
+    if (!ctx || !base)
+        return NULL;
+    for (i = 0; i < ctx->num_libs; i++)
+        if (ctx->libs[i].m68k_addr == base)
+            return ctx->libs[i].library ? &ctx->libs[i] : NULL;
+    return NULL;
+}
+
+/* The struct Library header of a fake library base: cleared, then ln_Type,
+   lib_NegSize and lib_PosSize from its record and the given version and
+   revision. FALSE, with nothing written, for an address that is no library
+   base of this context, for a device base and for a base whose positive
+   area is smaller than a struct Library (kaffeine_memory.c). */
+BOOL   Kaffeine_PublishLibrary(struct KaffeineContext *ctx, ULONG base,
+                               UWORD version, UWORD revision);
+/* Kaffeine_PublishLibrary() of a base that Kaffeine_OpenLibrary() has just
+   made, with lib_Version and lib_Revision of the native library of that
+   name, read through an OpenLibrary() that is closed again at once; 0 and
+   0 when it cannot be opened. IoErr is kept. Returns base, also 0
+   (kaffeine_thunks.c). */
+ULONG  Kaffeine_PublishNativeLibrary(struct KaffeineContext *ctx, ULONG base,
+                                     const char *name);
 
 /* Lookup fake base by library name (used by OpenLibrary thunk) */
 ULONG  Kaffeine_FindLibBase(struct KaffeineContext *ctx, const char *name);

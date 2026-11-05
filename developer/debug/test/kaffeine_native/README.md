@@ -73,3 +73,14 @@ storing its result, since a `MOVE.L` store changes condition codes.
 The probe passed all 22 checks from both Shell and `Run` on AROS AArch64
 in `raspi3b` QEMU. It tests the linked translator; the separate library
 client above checks the installed `kaffeine.library` APIs.
+
+## Native library versions
+
+`make library-versions` builds the optional native `library_versions`
+executable. It opens each native library for which Kaffeine gives 68k
+programs a native-backed base, prints `info <name> <version>.<revision>`
+(or `info <name> absent`) and closes it again, then prints exec.library
+and dos.library. Run it on the same system as the 68k fixture
+`exec_library_metadata` of `kaffeine_target`: for every library present in
+both outputs, the two `info <name> <version>.<revision>` lines must be the
+same, as every base carries the version of its native library.

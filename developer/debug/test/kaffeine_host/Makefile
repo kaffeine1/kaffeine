@@ -111,6 +111,7 @@ TESTS += test_mathffp_thunks
 TESTS += test_p96
 TESTS += test_asl
 TESTS += test_library_paths
+TESTS += test_library_metadata
 TESTS += test_readargs
 TESTS += test_cli test_exec_slots test_exec_semaphores test_exec_public test_exec_tasks test_gfx_thunks
 TESTS += test_exec_io
@@ -355,6 +356,10 @@ $(BUILD_DIR)/memory_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 
 $(BUILD_DIR)/test_exec_memory: $(TEST_DIR)/test_exec_memory.cpp $(MEMORY_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(MEMORY_OBJS) $(LDLIBS)
+
+# The struct Library header of fake bases, with the production base layout.
+$(BUILD_DIR)/test_library_metadata: $(TEST_DIR)/test_library_metadata.cpp $(MEMORY_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(MEMORY_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(MEMORY_OBJS) $(LDLIBS)
 
 # Instrument only the heap's basic blocks, including native record walks.
 # trace-pc is supported by GCC and clang and needs no production test hooks.

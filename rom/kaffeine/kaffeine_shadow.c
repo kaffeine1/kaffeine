@@ -427,7 +427,16 @@ static void memory_capacity(struct KaffeineContext *ctx, ULONG list)
 ULONG shadow_init_execbase(struct KaffeineContext *ctx, ULONG m68k_base, void *native_sysbase)
 {
     const struct M68KStructLayout *layout = shadow_find_layout("ExecBase");
-    if (!layout || !task_range(ctx, m68k_base, layout->m68k_size)) return 0;
+    const struct M68KFakeLibBase *record = Kaffeine_LibraryRecord(ctx, m68k_base);
+    ULONG negative = record ? (ULONG)record->num_vectors * M68K_JT_SLOT_SIZE : 0;
+
+    /* The guest ExecBase is the library base that setup_base() made for
+       exec.library. Its record must hold the whole classic ExecBase written
+       below, or the snapshot would run into the jump table of the base
+       after it; without such a record nothing is written. */
+    if (!layout || !record || record->pos_size < layout->m68k_size ||
+        negative > 0xFFFF || !task_range(ctx, m68k_base, layout->m68k_size))
+        return 0;
 
     if (!shadow_register(ctx, m68k_base, native_sysbase, layout->shadow_type)) return 0;
     sync_fields(ctx, layout->fields, m68k_base, native_sysbase);
@@ -468,10 +477,19 @@ ULONG shadow_init_execbase(struct KaffeineContext *ctx, ULONG m68k_base, void *n
         }
     }
 
-    /* Library node fields */
+    /* Library node fields: version and revision of native Exec, but
+       lib_NegSize and lib_PosSize of this guest base, its jump table and
+       its positive area, so that the extent [base - lib_NegSize, base +
+       lib_PosSize) holds no other base, as for every other guest library.
+       Native SysBase's sizes describe native memory and would claim the
+       bases after this one. Type, flags, sum and open count stay as the
+       sync above copied them. Each initialization writes these after the
+       sync, so native bytes never stay in the two fields. */
     struct Library *lib = (struct Library *)native_sysbase;
     m68k_write16(ctx, m68k_base + M68K_EXECBASE_LIBVERSION, lib->lib_Version);
     m68k_write16(ctx, m68k_base + M68K_EXECBASE_LIBREVISION, lib->lib_Revision);
+    m68k_write16(ctx, m68k_base + M68K_LIB_NEGSIZE, (UWORD)negative);
+    m68k_write16(ctx, m68k_base + M68K_LIB_POSSIZE, record->pos_size);
 
     /* The native nodes have no guest representation. Direct guest walks
        must see an empty Exec list, whose head points at its tail sentinel,

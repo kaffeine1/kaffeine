@@ -1406,6 +1406,7 @@ static ULONG setup_base(struct KaffeineContext *ctx, UWORD lib_id,
     }
     /* Once here, so that the dispatcher compares no name for each call */
     ctx->libs[ctx->num_libs].dos = library && name && !strcmp(name, "dos.library");
+    ctx->libs[ctx->num_libs].library = library;
     ctx->num_libs++;
 
     /* Register in libmap for OpenLibrary lookups */
@@ -1419,26 +1420,63 @@ static ULONG setup_base(struct KaffeineContext *ctx, UWORD lib_id,
     return base_addr;
 }
 
-/* The compiled owner chooses its public positive-area size explicitly.
+/* The compiled owner chooses its public positive-area size explicitly, at
+ * least a struct Library: the next base's jump table starts right after
+ * it, so nothing may ever write a library header past a smaller area.
  * No native pointer or library-specific field is interpreted by the heap. */
 ULONG Kaffeine_SetupLibBaseSized(struct KaffeineContext *ctx, UWORD lib_id,
                                  const char *name, UWORD num_vectors, UWORD pos_size,
                                  const struct M68KThunkEntry *thunks, ULONG num_thunks,
                                  const struct M68KThunkEntry *gen_thunks, ULONG num_gen_thunks)
 {
-    if (pos_size < 4) return 0;
+    if (pos_size < M68K_SIZEOF_LIBRARY) return 0;
     return setup_base(ctx, lib_id, name, num_vectors, pos_size,
                       thunks, num_thunks, gen_thunks, num_gen_thunks, TRUE);
 }
 
+/* ExecBase for lib_id 0, else a struct Library: programs read lib_Version
+   of every base they open, and Kaffeine_PublishLibrary() fills it. */
 ULONG Kaffeine_SetupLibBase(struct KaffeineContext *ctx, UWORD lib_id,
                             const char *name, UWORD num_vectors,
                             const struct M68KThunkEntry *thunks, ULONG num_thunks,
                             const struct M68KThunkEntry *gen_thunks, ULONG num_gen_thunks)
 {
     return setup_base(ctx, lib_id, name, num_vectors,
-                      (lib_id == 0) ? M68K_SIZEOF_EXECBASE : 4,
+                      (lib_id == 0) ? M68K_SIZEOF_EXECBASE : M68K_SIZEOF_LIBRARY,
                       thunks, num_thunks, gen_thunks, num_gen_thunks, TRUE);
+}
+
+#ifndef NT_LIBRARY
+#define NT_LIBRARY 9
+#endif
+
+/* The classic struct Library header of the fake base at base: cleared,
+   then ln_Type, lib_NegSize and lib_PosSize from its record, and the given
+   lib_Version and lib_Revision, big-endian. Only a base that setup_base()
+   recorded as a library, whose positive area holds a struct Library, gets
+   one. A device base keeps the struct Device its owner fills, and for any
+   other address nothing is written either: the answer is FALSE. Fields
+   past the struct Library, such as those of IntuitionBase or GfxBase, stay
+   as their owner set them. */
+BOOL Kaffeine_PublishLibrary(struct KaffeineContext *ctx, ULONG base,
+                             UWORD version, UWORD revision)
+{
+    const struct M68KFakeLibBase *lib = Kaffeine_LibraryRecord(ctx, base);
+    ULONG negative;
+
+    if (!lib || !ctx->mem)
+        return FALSE;
+    negative = (ULONG)lib->num_vectors * M68K_JT_SLOT_SIZE;
+    if (lib->pos_size < M68K_SIZEOF_LIBRARY || negative > 0xFFFF ||
+        base >= ctx->mem_size || ctx->mem_size - base < lib->pos_size)
+        return FALSE;
+    memset(ctx->mem + base, 0, M68K_SIZEOF_LIBRARY);
+    ctx->mem[base + M68K_LIB_LNTYPE] = NT_LIBRARY;
+    m68k_write16(ctx, base + M68K_LIB_NEGSIZE, (UWORD)negative);
+    m68k_write16(ctx, base + M68K_LIB_POSSIZE, lib->pos_size);
+    m68k_write16(ctx, base + M68K_LIB_VERSION, version);
+    m68k_write16(ctx, base + M68K_LIB_REVISION, revision);
+    return TRUE;
 }
 
 /* A device base for OpenDevice(): OpenLibrary() does not find it, as Exec

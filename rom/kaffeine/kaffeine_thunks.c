@@ -82,6 +82,39 @@ const ULONG kaffeine_thunks_mathffp_count =
 
 /* ── exec.library thunks ─────────────────────────────────────────── */
 
+/* Every base below that Kaffeine_OpenLibrary() makes gets the struct Library
+   header of its native library at once, before the program can read it:
+   classic programs choose their code paths by lib_Version, and a base
+   without one is taken for Kickstart 1.x. The native library is opened only
+   for the copy and closed again, so no native pointer or open count stays
+   with the base; reopens find the same base and keep the copy. A library
+   that cannot be opened natively gets version and revision 0, as before;
+   no version is made up. IoErr belongs to the program, which reads it
+   through the native task, and is kept. */
+ULONG Kaffeine_PublishNativeLibrary(struct KaffeineContext *ctx, ULONG base, const char *name)
+{
+    struct Library *native;
+    UWORD version = 0, revision = 0;
+    SIPTR error;
+
+    if (!base || !name)
+        return base;
+    error = IoErr();
+    native = OpenLibrary((CONST_STRPTR)name, 0);
+    if (native)
+    {
+        version = native->lib_Version;
+        revision = native->lib_Revision;
+        CloseLibrary(native);
+    }
+    else
+        bug("[kaffeine] %s: no native library, base keeps version 0\n", name);
+    SetIoErr(error);
+    if (!Kaffeine_PublishLibrary(ctx, base, version, revision))
+        bug("[kaffeine] %s: base without a struct Library, no header\n", name);
+    return base;
+}
+
 /* Open a library by name and return its fake base (no cpu needed) */
 ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
 {
@@ -118,9 +151,10 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
        generated wrappers would hand out native pointers and read scalar
        tags as pointers, so none is ever attached. */
     if (strcmp(name, "asl.library") == 0)
-        return Kaffeine_SetupLibBase(ctx, ctx->num_libs, "asl.library", KAFFEINE_MAX_LVO,
-                                    kaffeine_thunks_asl, kaffeine_thunks_asl_count,
-                                    NULL, 0);
+        return Kaffeine_PublishNativeLibrary(ctx,
+            Kaffeine_SetupLibBase(ctx, ctx->num_libs, "asl.library", KAFFEINE_MAX_LVO,
+                                  kaffeine_thunks_asl, kaffeine_thunks_asl_count,
+                                  NULL, 0), name);
 
     for (ULONG i = 0; i < kaffeine_all_gen_libs_count; i++)
     {
@@ -160,49 +194,58 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
                 manual_count = kaffeine_thunks_keymap_manual_count;
             }
             if (strcmp(name, "intuition.library") == 0)
-                return Kaffeine_SetupLibBaseSized(ctx,ctx->num_libs,name,KAFFEINE_MAX_LVO,80,
-                        manual,manual_count,kaffeine_all_gen_libs[i].thunks,kaffeine_all_gen_libs[i].count);
+                return Kaffeine_PublishNativeLibrary(ctx,
+                    Kaffeine_SetupLibBaseSized(ctx,ctx->num_libs,name,KAFFEINE_MAX_LVO,80,
+                        manual,manual_count,kaffeine_all_gen_libs[i].thunks,kaffeine_all_gen_libs[i].count),
+                    name);
             if (strcmp(name, "graphics.library") == 0)
-                return Kaffeine_SetupGraphicsBase(ctx, manual, manual_count,
-                                                  kaffeine_all_gen_libs[i].thunks,
-                                                  kaffeine_all_gen_libs[i].count);
-            return Kaffeine_SetupLibBase(ctx, ctx->num_libs, kaffeine_all_gen_libs[i].name,
-                                        KAFFEINE_MAX_LVO,
-                                        manual, manual_count,
-                                        kaffeine_all_gen_libs[i].thunks,
-                                        kaffeine_all_gen_libs[i].count);
+                return Kaffeine_PublishNativeLibrary(ctx,
+                    Kaffeine_SetupGraphicsBase(ctx, manual, manual_count,
+                                               kaffeine_all_gen_libs[i].thunks,
+                                               kaffeine_all_gen_libs[i].count), name);
+            return Kaffeine_PublishNativeLibrary(ctx,
+                Kaffeine_SetupLibBase(ctx, ctx->num_libs, kaffeine_all_gen_libs[i].name,
+                                      KAFFEINE_MAX_LVO,
+                                      manual, manual_count,
+                                      kaffeine_all_gen_libs[i].thunks,
+                                      kaffeine_all_gen_libs[i].count), name);
         }
     }
     if (strcmp(name, "mathffp.library") == 0)
-        return Kaffeine_SetupLibBase(ctx, ctx->num_libs, "mathffp.library",
-                                    KAFFEINE_MAX_LVO,
-                                    kaffeine_thunks_mathffp,
-                                    kaffeine_thunks_mathffp_count,
-                                    NULL, 0);
+        return Kaffeine_PublishNativeLibrary(ctx,
+            Kaffeine_SetupLibBase(ctx, ctx->num_libs, "mathffp.library",
+                                  KAFFEINE_MAX_LVO,
+                                  kaffeine_thunks_mathffp,
+                                  kaffeine_thunks_mathffp_count,
+                                  NULL, 0), name);
     if (strcmp(name, "workbench.library") == 0)
-        return Kaffeine_SetupLibBase(ctx, ctx->num_libs, "workbench.library",
-                                    KAFFEINE_MAX_LVO,
-                                    kaffeine_thunks_workbench,
-                                    kaffeine_thunks_workbench_count,
-                                    NULL, 0);
+        return Kaffeine_PublishNativeLibrary(ctx,
+            Kaffeine_SetupLibBase(ctx, ctx->num_libs, "workbench.library",
+                                  KAFFEINE_MAX_LVO,
+                                  kaffeine_thunks_workbench,
+                                  kaffeine_thunks_workbench_count,
+                                  NULL, 0), name);
     if (strcmp(name, "mathieeedoubbas.library") == 0)
-        return Kaffeine_SetupLibBase(ctx, ctx->num_libs, "mathieeedoubbas.library",
-                                    KAFFEINE_MAX_LVO,
-                                    kaffeine_thunks_mathieeedoubbas,
-                                    kaffeine_thunks_mathieeedoubbas_count,
-                                    NULL, 0);
+        return Kaffeine_PublishNativeLibrary(ctx,
+            Kaffeine_SetupLibBase(ctx, ctx->num_libs, "mathieeedoubbas.library",
+                                  KAFFEINE_MAX_LVO,
+                                  kaffeine_thunks_mathieeedoubbas,
+                                  kaffeine_thunks_mathieeedoubbas_count,
+                                  NULL, 0), name);
     if (strcmp(name, "mathieeedoubtrans.library") == 0)
-        return Kaffeine_SetupLibBase(ctx, ctx->num_libs, "mathieeedoubtrans.library",
-                                    KAFFEINE_MAX_LVO,
-                                    kaffeine_thunks_mathieeedoubtrans,
-                                    kaffeine_thunks_mathieeedoubtrans_count,
-                                    NULL, 0);
+        return Kaffeine_PublishNativeLibrary(ctx,
+            Kaffeine_SetupLibBase(ctx, ctx->num_libs, "mathieeedoubtrans.library",
+                                  KAFFEINE_MAX_LVO,
+                                  kaffeine_thunks_mathieeedoubtrans,
+                                  kaffeine_thunks_mathieeedoubtrans_count,
+                                  NULL, 0), name);
     if (strcmp(name, "mathieeesingbas.library") == 0)
-        return Kaffeine_SetupLibBase(ctx, ctx->num_libs, "mathieeesingbas.library",
-                                    KAFFEINE_MAX_LVO,
-                                    kaffeine_thunks_mathieeesingbas,
-                                    kaffeine_thunks_mathieeesingbas_count,
-                                    NULL, 0);
+        return Kaffeine_PublishNativeLibrary(ctx,
+            Kaffeine_SetupLibBase(ctx, ctx->num_libs, "mathieeesingbas.library",
+                                  KAFFEINE_MAX_LVO,
+                                  kaffeine_thunks_mathieeesingbas,
+                                  kaffeine_thunks_mathieeesingbas_count,
+                                  NULL, 0), name);
     return 0;
 }
 
