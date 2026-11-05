@@ -46,8 +46,6 @@ C_PROGRAMS += exec_input_event
 PROGRAMS += exec_input_event
 C_PROGRAMS += keymap_mapansi
 PROGRAMS += keymap_mapansi
-C_PROGRAMS += dos_doslist
-PROGRAMS += dos_doslist
 PROGRAMS += exec_messages exec_message_lifetime exec_packets gfx_planar_read icon_objects gfx_display_info
 EXEC_LIBRARIES_DIR := $(BUILD_DIR)/exec_libraries-files
 EXEC_LIBRARIES_LIBS := $(EXEC_LIBRARIES_DIR)/emu68test.library \
@@ -438,6 +436,11 @@ all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
 
 # This probe asserts Kaffeine's explicit unsupported-extension contract;
 # build it on request, not as a stock-Amiga compatibility battery member.
+# These negative-contract and daemon regressions are explicit targets.
+# dos_doslist expects Kaffeine to refuse native WRITE/mutation operations.
+$(BUILD_DIR)/dos_doslist $(BUILD_DIR)/net_amigent_viewer $(BUILD_DIR)/net_amigent_volumes: $(BUILD_DIR)/%: $(TEST_DIR)/%.c $(TEST_DIR)/m68ktest.h $(TEST_DIR)/socket_fixture_abi.h | $(BUILD_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $<
+
 $(BUILD_DIR)/gfx_font_extension: $(TEST_DIR)/gfx_font_extension.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $<
 
