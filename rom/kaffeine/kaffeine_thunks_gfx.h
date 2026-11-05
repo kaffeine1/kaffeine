@@ -47,7 +47,13 @@ IPTR thunk_gfx_Draw(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_RectFill(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_ReadPixel(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_WritePixel(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_ReadPixelLine8(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_WritePixelLine8(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_ReadPixelArray8(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_WritePixelArray8(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_BltTemplate(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_ClipBlit(struct KaffeineContext *ctx, void *cpu);
+IPTR thunk_gfx_BltBitMapRastPort(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetAPen(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetBPen(struct KaffeineContext *ctx, void *cpu);
 IPTR thunk_gfx_SetDrMd(struct KaffeineContext *ctx, void *cpu);
@@ -118,8 +124,14 @@ IPTR thunk_gfx_QueuedBlitUnsupported(struct KaffeineContext *ctx, void *cpu);
     { 474, thunk_gfx_AskFont }, \
     { 492, thunk_gfx_AllocRaster }, \
     { 498, thunk_gfx_FreeRaster }, \
+    { 552, thunk_gfx_ClipBlit }, \
+    { 606, thunk_gfx_BltBitMapRastPort }, \
     { 690, thunk_gfx_TextExtent }, \
     { 696, thunk_gfx_TextFit }, \
+    { 768, thunk_gfx_ReadPixelLine8 }, \
+    { 774, thunk_gfx_WritePixelLine8 }, \
+    { 780, thunk_gfx_ReadPixelArray8 }, \
+    { 786, thunk_gfx_WritePixelArray8 }, \
     { 858, thunk_gfx_GetAPen }, \
     { 864, thunk_gfx_GetBPen }, \
     { 870, thunk_gfx_GetDrMd }, \

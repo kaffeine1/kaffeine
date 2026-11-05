@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 #include <intuition/intuition.h>
+#include <exec/memory.h>
 
 #include <graphics/rastport.h>
 #include <graphics/text.h>
@@ -50,6 +51,17 @@
 static TextFont topaz, other;
 static char topaz_name[] = "topaz.font", other_name[] = "other.font";
 static RastPort native_rp;
+extern "C" IPTR GetBitMapAttr(struct BitMap *b, ULONG attr)
+{
+    assert(b && b != native_rp.BitMap);
+    switch(attr) {
+    case BMA_WIDTH:return (ULONG)b->BytesPerRow*8;
+    case BMA_HEIGHT:return b->Rows;
+    case BMA_DEPTH:return b->Depth;
+    case BMA_FLAGS:return b->Flags;
+    }
+    return 0;
+}
 
 struct GfxCalls
 {
@@ -404,6 +416,31 @@ extern "C" LONG WritePixel(struct RastPort *rp, WORD x, WORD y)
     return x == 3000 ? -1 : 0;
 }
 
+static LONG pen_array(RastPort *rp, WORD x, WORD y, WORD xe, WORD ye, UBYTE *a, RastPort *tmp, bool read)
+{
+    draw_call(rp);
+    assert(tmp && !tmp->Layer && tmp->BitMap && tmp->BitMap->Rows == 1);
+    const BitMap *b = rp->BitMap;
+    const int stride = (xe-x+16) & ~15;
+    for (int j=y;j<=ye;j++) for (int i=x;i<=xe;i++)
+    {
+        UBYTE &pen = a[(j-y)*stride+i-x];
+        if (read) pen=0;
+        for (int p=0;p<b->Depth;p++)
+        {
+            UBYTE &v = b->Planes[p][j*b->BytesPerRow+i/8];
+            const UBYTE mask = 0x80>>(i&7);
+            if (read) pen |= (v & mask) ? 1u<<p : 0;
+            else v = (pen & (1u<<p)) ? v|mask : v&~mask;
+        }
+    }
+    return (xe-x+1)*(ye-y+1);
+}
+extern "C" LONG ReadPixelArray8(RastPort *r, WORD x, WORD y, WORD xe, WORD ye, UBYTE *a, RastPort *t)
+{ return pen_array(r,x,y,xe,ye,a,t,true); }
+extern "C" LONG WritePixelArray8(RastPort *r, WORD x, WORD y, WORD xe, WORD ye, UBYTE *a, RastPort *t)
+{ return pen_array(r,x,y,xe,ye,a,t,false); }
+
 extern "C" void BltTemplate(PLANEPTR source, WORD xSrc, WORD srcMod, struct RastPort *rp,
                             WORD xDest, WORD yDest, WORD xSize, WORD ySize)
 {
@@ -510,13 +547,38 @@ static IPTR poison(KaffeineContext *, void *) { ++generated_calls; return 0xBAD0
 /* These dispatch entries use production generated C bodies, extracted
    verbatim. Native collaborators count calls and one changes the pen. */
 static unsigned generated_native;
+static bool clip_expect_same;
 extern "C" {
 IPTR gfx_generated_PolyDraw(KaffeineContext *, void *);
 IPTR gfx_generated_SetRast(KaffeineContext *, void *);
 IPTR gfx_generated_ClipBlit(KaffeineContext *, void *);
 void PolyDraw(RastPort *rp, WORD, WORD *) { ++generated_native; rp->cp_x=77; rp->cp_y=88; }
 void SetRast(RastPort *, UBYTE) { ++generated_native; }
-void ClipBlit(RastPort *, WORD, WORD, RastPort *, WORD, WORD, WORD, WORD, UBYTE) { ++generated_native; }
+void ClipBlit(RastPort *s, WORD xs, WORD ys, RastPort *d, WORD xd, WORD yd, WORD w, WORD h, UBYTE mt)
+{
+    ++generated_native;
+    assert(live->bitmap_blits == 1);
+    assert(!clip_expect_same || s==d);
+    if (s == &native_rp && d == &native_rp) return;
+    assert(mt==0xc0 && !s->Layer && !d->Layer);
+    std::vector<bool> pixels((size_t)w*h);
+    for (unsigned p=0;p<std::min(s->BitMap->Depth,d->BitMap->Depth);p++)
+    {
+        for (int y=0;y<h;y++) for (int x=0;x<w;x++)
+            pixels[y*w+x]=(s->BitMap->Planes[p][(ys+y)*s->BitMap->BytesPerRow+(xs+x)/8]>>(7-((xs+x)&7)))&1;
+        for (int y=0;y<h;y++) for (int x=0;x<w;x++)
+        {
+            UBYTE &b=d->BitMap->Planes[p][(yd+y)*d->BitMap->BytesPerRow+(xd+x)/8];
+            const UBYTE mask=0x80>>((xd+x)&7);
+            b=pixels[y*w+x] ? b|mask : b&~mask;
+        }
+    }
+}
+void BltBitMapRastPort(BitMap *s,WORD xs,WORD ys,RastPort *d,WORD xd,WORD yd,WORD w,WORD h,UBYTE mt)
+{
+    RastPort source{};source.BitMap=s;
+    ClipBlit(&source,xs,ys,d,xd,yd,w,h,mt);
+}
 }
 
 static const M68KThunkEntry intuition_manual[] = { KAFFEINE_INTUITION_COMPAT_THUNKS };
@@ -746,7 +808,12 @@ static void test_registration()
         { 306, thunk_gfx_RectFill }, { 318, thunk_gfx_ReadPixel }, { 324, thunk_gfx_WritePixel },
         { 342, thunk_gfx_SetAPen }, { 348, thunk_gfx_SetBPen }, { 354, thunk_gfx_SetDrMd },
         { 468, thunk_gfx_InitTmpRas }, { 474, thunk_gfx_AskFont }, { 492, thunk_gfx_AllocRaster }, { 498, thunk_gfx_FreeRaster },
-        { 690, thunk_gfx_TextExtent }, { 696, thunk_gfx_TextFit }, { 858, thunk_gfx_GetAPen },
+        { 552, thunk_gfx_ClipBlit },
+        { 606, thunk_gfx_BltBitMapRastPort },
+        { 690, thunk_gfx_TextExtent }, { 696, thunk_gfx_TextFit },
+        { 768, thunk_gfx_ReadPixelLine8 }, { 774, thunk_gfx_WritePixelLine8 },
+        { 780, thunk_gfx_ReadPixelArray8 }, { 786, thunk_gfx_WritePixelArray8 },
+        { 858, thunk_gfx_GetAPen },
         { 864, thunk_gfx_GetBPen }, { 870, thunk_gfx_GetDrMd }, { 876, thunk_gfx_GetOutlinePen }
     };
     assert(std::size(graphics_rastport) == std::size(rastport));
@@ -1575,15 +1642,15 @@ static void test_generated_guard()
     f.put(Fixture::text, "\xFF\x81\x81\xFF");
     generated_native = 0;
     assert(f.call(234, { 0, rp }, { 1 }) == 0 && !f.stopped() && generated_native == 1);
-    assert(f.call(552, { rp, rp }) == 0 && !f.stopped() && generated_native == 2);
+    assert(f.call(552, { rp, rp }, {0,0,0,0,1,1,0xc0}) == 0 && !f.stopped() && generated_native == 2);
     for (ULONG bad : { Fixture::raw + 0x40, raw, 0U, rp + 2, static_cast<ULONG>(f.memory.size()) })
     {
         const Memory before = f.memory;
         assert(f.call(234, { 0, bad }, { 1 }) == 20 && f.stopped());
         assert(f.call(36, { Fixture::text, bad }, { 0, 2, 0, 0, 8, 2 }) == 20 && f.stopped());
-        assert(f.call(552, { bad, rp }) == 20 && f.stopped());
+        assert(f.call(552, { bad, rp }, {0,0,0,0,1,1,0xc0}) == 20 && f.stopped());
         assert(f.memory == before);
-        assert(f.call(552, { rp, bad }) == 20 && f.stopped());
+        assert(f.call(552, { rp, bad }, {0,0,0,0,1,1,0xc0}) == 20 && f.stopped());
         expect_changes_within(before, f, 0, rp);
         assert(generated_native == 2 && !gfx.any);
     }
@@ -1993,6 +2060,13 @@ static BOOL fake_draw_target(KaffeineContext *ctx, ULONG layer, ULONG bitmap, Ra
 }
 /* every other operation NULL, as an older table has them */
 static KaffeineLayerOps bridge_ops;
+static BitMap *fake_bitmap_source(KaffeineContext *ctx,ULONG bitmap,BitMap *adapter,ULONG *w,ULONG *h)
+{
+    RastPort rp{};
+    if (!fake_draw_target(ctx,0,bitmap,&rp,adapter))return nullptr;
+    *w=(ULONG)adapter->BytesPerRow*8;*h=adapter->Rows;
+    return rp.BitMap;
+}
 
 /* Caller 1: InitRastPort() into an AllocMem() block, a 32 x 16 BitMap of
    depth 2 whose planes come from AllocRaster(), its RastPort.BitMap set */
@@ -2018,10 +2092,87 @@ static Planar planar(Fixture &f)
     }
     m68k_write32(&f.ctx, p.rp + RP_BITMAP, p.bm);
     bridge_ops.draw_target = fake_draw_target;
+    bridge_ops.bitmap_source = fake_bitmap_source;
     f.ctx.layer_ops = &bridge_ops;
     bridge = {};
     gfx.draws = gfx.waits = 0;
     return p;
+}
+
+static void test_pen_arrays()
+{
+    Fixture f;
+    const auto a=planar(f), t=planar(f);
+    m68k_write16(&f.ctx,t.bm+2,1);
+    const ULONG input=Kaffeine_HeapAlloc(&f.ctx,96,0), output=Kaffeine_HeapAlloc(&f.ctx,96,0);
+    for (int i=0;i<96;i++) f.memory[input+i]=i&3;
+    std::memset(f.memory.data()+output,0xa5,96);
+    assert(f.call(786,{a.rp,t.rp,input},{3,2,19,4})==51 && !f.stopped());
+    assert(f.call(780,{a.rp,t.rp,output},{3,2,19,4})==51 && !f.stopped());
+    for (int y=0;y<3;y++) for (int x=0;x<32;x++)
+        assert(f.memory[output+y*32+x]==(x<17 ? f.memory[input+y*32+x] : 0xa5));
+    assert(f.call(774,{a.rp,t.rp,input},{0xabcd0001,0xeeee0006,0xffff0011})==17 && !f.stopped());
+    assert(f.call(768,{a.rp,t.rp,output},{1,6,17})==17 && !f.stopped());
+    assert(!std::memcmp(f.memory.data()+input,f.memory.data()+output,17));
+    for (auto bad : std::vector<std::array<ULONG,3>>{{0,t.rp,input},{a.rp,0,input},
+            {a.rp,t.rp,0xfffffffe},{a.rp,t.rp,a.rp},{a.rp,t.rp,t.planes[0]}})
+    {
+        const auto before=f.memory; const auto calls=gfx.draws;
+        assert(f.call(774,{bad[0],bad[1],bad[2]},{1,1,17})==20 && f.stopped());
+        assert(f.memory==before && gfx.draws==calls);
+    }
+    const auto before=f.memory; const auto calls=gfx.draws;
+    assert(f.call(774,{a.rp,t.rp,input},{0,0,0})==0 && !f.stopped());
+    assert(f.memory==before && gfx.draws==calls);
+}
+
+static void test_clipblit_planar()
+{
+    Fixture f;
+    const auto a=planar(f),b=planar(f);
+    for (unsigned p=0;p<2;p++) for (unsigned i=0;i<64;i++) f.memory[a.planes[p]+i]=(UBYTE)(i*31+p*17);
+    const auto before=f.memory;
+    assert(f.call(552,{a.rp,b.rp},{0,0,0,0,32,16,0xc0})==0 && !f.stopped());
+    for (unsigned p=0;p<2;p++) assert(!std::memcmp(f.memory.data()+a.planes[p],f.memory.data()+b.planes[p],64));
+    assert(gfx.waits==1 && !f.ctx.bitmap_blits);
+    for (int p=0;p<2;p++)std::memset(f.memory.data()+b.planes[p],0,64);
+    assert(f.call(606,{a.bm,b.rp},{0,0,0,0,32,16,0xc0})==0 && !f.stopped());
+    for (int p=0;p<2;p++)assert(!std::memcmp(f.memory.data()+a.planes[p],f.memory.data()+b.planes[p],64));
+    // Negative source and oversized rectangles clip in lockstep.
+    assert(f.call(552,{a.rp,b.rp},{(ULONG)-4,0,0,0,32,30,0xc0})==0 && !f.stopped());
+    for (int y=0;y<16;y++) for (int x=4;x<32;x++) for (int p=0;p<2;p++)
+        assert(((f.memory[b.planes[p]+y*4+x/8]>>(7-(x&7)))&1)==
+               ((before[a.planes[p]+y*4+(x-4)/8]>>(7-((x-4)&7)))&1));
+    const auto calls=generated_native;
+    assert(f.call(552,{a.rp,b.rp},{50,0,0,0,32,16,0xc0})==0 && !f.stopped());
+    assert(generated_native==calls);
+    clip_expect_same=true;
+    assert(f.call(552,{a.rp,a.rp},{0,0,3,0,29,16,0xc0})==0 && !f.stopped());
+    clip_expect_same=false;
+    for (int y=0;y<16;y++) for (int x=3;x<32;x++) for (int p=0;p<2;p++)
+        assert(((f.memory[a.planes[p]+y*4+x/8]>>(7-(x&7)))&1)==
+               ((before[a.planes[p]+y*4+(x-3)/8]>>(7-((x-3)&7)))&1));
+}
+
+static void test_pen_array_word_bound()
+{
+    Fixture f;
+    const auto a=planar(f), t=planar(f);
+    for (ULONG bm : {a.bm,t.bm})
+    {
+        const ULONG plane=Kaffeine_HeapAlloc(&f.ctx,4096,MEMF_CLEAR);
+        assert(plane);
+        m68k_write16(&f.ctx,bm,4096);
+        m68k_write16(&f.ctx,bm+2,1);
+        f.memory[bm+5]=1;
+        m68k_write32(&f.ctx,bm+8,plane);
+    }
+    const ULONG input=Kaffeine_HeapAlloc(&f.ctx,32768,MEMF_CLEAR);
+    assert(input);
+    const auto before=f.memory;const auto calls=gfx.draws;
+    // Both endpoints fit signed WORD, but the native render width does not.
+    assert(f.call(774,{a.rp,t.rp,input},{0,0,32768})==20 && f.stopped());
+    assert(f.memory==before && gfx.draws==calls);
 }
 
 static bool outside(const Fixture &f, const void *p)
@@ -2672,6 +2823,9 @@ int main()
     struct Test { const char *name; void (*run)(); };
     const Test tests[] =
     {
+        { "Padded pen arrays and lines transfer exact pixels and refuse malformed scratch/buffers before native calls", test_pen_arrays },
+        { "Pen-array render extents cannot overflow a native signed WORD", test_pen_array_word_bound },
+        { "ClipBlit converts copied RastPorts and clips source/destination in lockstep", test_clipblit_planar },
         { "Fixed large-blit capability and bounded synchronous clear override generated calls", test_large_blit_contract },
         { "Intuition and graphics tables use their ABI slots", test_registration },
         { "SetWindowPointerA is at -816 and does nothing", test_intuition },

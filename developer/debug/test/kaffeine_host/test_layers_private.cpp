@@ -213,12 +213,14 @@ extern "C" void DisposeLayerInfo(struct Layer_Info *li)
 
 /* The BitMaps that InitBitMap() set up since the current thunk began */
 static std::vector<const BitMap *> call_inits;
+static std::vector<const BitMap *> planar_inits;
 
 /* As graphics: the scalars of a planar BitMap; the planes are the caller's. */
 extern "C" void InitBitMap(struct BitMap *bm, BYTE depth, UWORD width, UWORD height)
 {
     ++init_bitmaps;
     call_inits.push_back(bm);
+    planar_inits.push_back(bm);
     bm->Depth = (UBYTE)depth;
     bm->Rows = height;
     bm->Flags = BMF_STANDARD;
@@ -430,6 +432,44 @@ struct NativeScreenBitMap
 };
 static std::vector<NativeScreenBitMap *> screen_bitmaps;
 static unsigned bitmap_attrs;
+static unsigned bitmap_allocs, bitmap_frees;
+static bool bitmap_fail;
+static BitMap *last_friend;
+static std::vector<NativeScreenBitMap *> allocated_bitmaps;
+
+extern "C" struct BitMap *AllocBitMap(ULONG w, ULONG h, ULONG d, ULONG flags, struct BitMap *f)
+{
+    assert(live->bitmap_blits == 1);
+    ++bitmap_allocs;
+    last_friend = f;
+    if (bitmap_fail) return nullptr;
+    auto *s = new NativeScreenBitMap{};
+    s->width = ((w + 15) / 16) * 16;
+    s->bm.BytesPerRow = s->width / 8;
+    s->bm.Rows = h;
+    s->bm.Depth = d == 24 ? 32 : d; // backend may upgrade depth
+    s->bm.Flags = flags & BMF_DISPLAYABLE;
+    s->planes.resize((size_t)s->bm.BytesPerRow * h * std::min(d, 8u), 0);
+    for (ULONG p = 0; p < std::min(d, 8u); p++)
+        s->bm.Planes[p] = s->planes.data() + (size_t)p * s->bm.BytesPerRow * h;
+    s->screen.RastPort.BitMap = &s->bm;
+    s->open = true;
+    screen_bitmaps.push_back(s);
+    allocated_bitmaps.push_back(s);
+    return &s->bm;
+}
+
+extern "C" void FreeBitMap(struct BitMap *bm)
+{
+    auto i = std::find_if(allocated_bitmaps.begin(), allocated_bitmaps.end(),
+                          [bm](NativeScreenBitMap *s) { return &s->bm == bm; });
+    assert(i != allocated_bitmaps.end());
+    auto *s = *i;
+    screen_bitmaps.erase(std::find(screen_bitmaps.begin(), screen_bitmaps.end(), s));
+    allocated_bitmaps.erase(i);
+    delete s;
+    ++bitmap_frees;
+}
 
 static NativeScreenBitMap *screen_of(const BitMap *bm)
 {
@@ -507,7 +547,7 @@ static Origin origin(const BitMap *bm)
     }
     /* a native BitMap of this call alone: InitBitMap()'s, never one of a
        LayerInfo, over whole word aligned planes of the guest heap */
-    assert(std::find(call_inits.begin(), call_inits.end(), bm) != call_inits.end());
+    assert(std::find(planar_inits.begin(), planar_inits.end(), bm) != planar_inits.end());
     for (const CreateCall &c : creates)
         assert(c.bm != bm);
     assert(bm->Flags == BMF_STANDARD && !bm->pad && bm->Depth >= 1 && bm->Depth <= 8);
@@ -798,6 +838,11 @@ struct Fixture
         call_inits.clear();
         screen_bitmaps.clear();
         bitmap_attrs = 0;
+        planar_inits.clear();
+        assert(allocated_bitmaps.empty());
+        bitmap_allocs = bitmap_frees = 0;
+        bitmap_fail = false;
+        last_friend = nullptr;
         create_mode = CREATE_OK;
         delete_fails = swap_bitmap = false;
         hook_task = nullptr;
@@ -2719,7 +2764,7 @@ static void test_bitmap_vector_guards()
     const auto heap = f.heap();
     const auto before = events;
     const unsigned made = init_bitmaps, attrs = bitmap_attrs;
-    for (ULONG lvo : { 606u, 636u, 678u, 918u, 924u, 942u, 1020u, 1206u })
+    for (ULONG lvo : { 636u, 678u, 942u, 1020u, 1206u })
     {
         assert(f.call(Fixture::graphics_base, lvo, { bm, bm, bm, bm }, { 1, 2, 3, 4, 5, 6, 7, 8 }) == 20);
         assert(f.stopped() && f.heap_is(heap) && events == before);
@@ -3255,6 +3300,142 @@ static void test_draw_targets()
     f.close_screen(screen, sg);
 }
 
+/* AllocBitMap through literal vectors: pixel data crosses the real bridge
+   in both directions, and the real allocator enforces ownership. */
+static void test_owned_bitmaps()
+{
+    Fixture f;
+    f.ctx.cpu = &f.cpu;
+    f.ctx.guest_exec_task = Fixture::task;
+    const auto initial = f.avail();
+    auto alloc = [&](ULONG w, ULONG h, ULONG d, ULONG flags = BMF_CLEAR, ULONG fr = 0) {
+        return f.call(Fixture::graphics_base, 918, {fr}, {w, h, d, flags});
+    };
+    auto attr = [&](ULONG b, ULONG a) { return f.call(Fixture::graphics_base, 960, {b}, {0, a}); };
+    auto release = [&](ULONG b) { return f.call(Fixture::graphics_base, 924, {b}); };
+    for (ULONG hint : {0u, (ULONG)BMF_INTERLEAVED, (ULONG)BMF_MINPLANES})
+    {
+        const ULONG a = alloc(37, 9, 3, BMF_CLEAR | hint);
+        const ULONG b = alloc(48, 9, 3, BMF_CLEAR, a);
+        assert(a && b && !bitmap_allocs && attr(a, BMA_WIDTH) == 48 && attr(a, BMA_DEPTH) == 3);
+        assert(attr(a, BMA_HEIGHT) == 9 && attr(a, BMA_FLAGS) == BMF_STANDARD && attr(a, 99) == 0);
+        RastPort rp{};
+        BitMap adapter{};
+        assert(f.ctx.layer_ops->draw_target(&f.ctx, 0, a, &rp, &adapter));
+        assert(!rp.Layer && rp.BitMap == &adapter && adapter.Depth == 3);
+        assert(adapter.Planes[0] == f.memory.data() + f.L(a + M68K_BM_PLANES));
+        ULONG sw=0,sh=0;BitMap source_adapter{};
+        assert(f.ctx.layer_ops->bitmap_source(&f.ctx,a,&source_adapter,&sw,&sh));
+        assert(sw==48 && sh==9);
+        for (int p = 0; p < 3; p++)
+        {
+            const ULONG plane = f.L(a + M68K_BM_PLANES + p * 4);
+            for (ULONG j = 0; j < 54; j++) assert(!f.memory[plane + j]);
+            for (int y = 0; y < 9; y++)
+                for (int x = 0; x < 48; x++) guest_set(f, plane, 6, x, y, (x + y + p) % 3 == 0);
+        }
+        assert(f.call(Fixture::graphics_base, 30, {a, b, 0}, {0,0,0,0,48,9,0xC0,7}) == 3);
+        for (int p = 0; p < 3; p++)
+            assert(!std::memcmp(f.memory.data() + f.L(a + M68K_BM_PLANES + p * 4),
+                                f.memory.data() + f.L(b + M68K_BM_PLANES + p * 4), 54));
+        // General FreeMem cannot release the owned header or its planes.
+        const auto held = f.heap();
+        Kaffeine_HeapFree(&f.ctx, a, 40 + 3 * 54);
+        assert(f.heap_is(held));
+        assert(f.call(Fixture::graphics_base, 390, {a}, {1,16,1}) == 20 && f.stopped());
+        assert(release(a) == 0 && release(b) == 0 && f.avail() == initial);
+        assert(release(a) == 20 && f.stopped());
+    }
+    assert(release(0) == 0);
+    for (auto args : std::vector<std::vector<ULONG>>{{0,1,1,0},{1,0,1,0},{1,1,0,0},
+             {65536,1,1,0},{1,65536,1,0},{1,1,33,0},{1,1,1,0x80000000},
+             {65535,65535,8,0},{65535,65535,32,0}})
+        assert(!alloc(args[0],args[1],args[2],args[3]) && f.ctx.running && f.avail() == initial);
+    const ULONG wide = alloc(65535, 1, 1);
+    assert(wide && attr(wide, BMA_WIDTH) == 65536 && release(wide) == 0);
+    const ULONG mutated = alloc(16, 1, 1);
+    const UBYTE original = f.memory[mutated + M68K_BM_DEPTH];
+    f.memory[mutated + M68K_BM_DEPTH] = 8;
+    assert(attr(mutated, BMA_WIDTH) == 20 && f.stopped());
+    assert(release(mutated) == 20 && f.stopped());
+    f.memory[mutated + M68K_BM_DEPTH] = original;
+    assert(release(mutated) == 0 && f.avail() == initial);
+}
+
+static void test_owned_bitmap_lifetime()
+{
+    Fixture f;
+    f.ctx.cpu = &f.cpu;
+    f.ctx.guest_exec_task = Fixture::task;
+    const ULONG li = f.new_info();
+    const ULONG bm = f.call(Fixture::graphics_base, 918, {0}, {32,8,2,BMF_CLEAR});
+    assert(bm);
+    // A separate classic header aliases these planes; header identity
+    // alone cannot detect the native root's lease of the allocation.
+    const ULONG alias = Kaffeine_HeapAlloc(&f.ctx, 40, MEMF_CLEAR);
+    std::memcpy(f.memory.data()+alias, f.memory.data()+bm, 40);
+    const ULONG layer = f.create(li, alias, 0,0,31,7, LAYERSIMPLE);
+    assert(layer);
+    assert(f.call(Fixture::graphics_base, 924, {bm}) == 20 && f.stopped());
+    assert(f.destroy(layer));
+    assert(f.call(Fixture::graphics_base, 924, {bm}) == 20 && f.stopped());
+    assert(f.call(Fixture::layers_base, 150, {li}) == 0);
+    assert(f.call(Fixture::graphics_base, 924, {bm}) == 0);
+    const ULONG a = f.call(Fixture::graphics_base, 918, {0}, {32,8,2,BMF_CLEAR});
+    const ULONG b = f.call(Fixture::graphics_base, 918, {0}, {32,8,2,BMF_CLEAR});
+    blit_reenter = [&] { const auto saved = f.state;
+        assert(f.call(Fixture::graphics_base, 924, {a}) == 20 && f.stopped()); f.state = saved; };
+    f.call(Fixture::graphics_base, 30, {a,b,0}, {0,0,0,0,32,8,0xC0,3});
+    blit_reenter = {};
+    assert(f.call(Fixture::graphics_base, 924, {a}) == 0);
+    assert(f.call(Fixture::graphics_base, 924, {b}) == 0);
+}
+
+static void test_native_owned_bitmaps()
+{
+    Fixture f;
+    f.ctx.cpu = &f.cpu;
+    f.ctx.guest_exec_task = Fixture::task;
+    const auto initial = f.avail();
+    const ULONG bm = f.call(Fixture::graphics_base, 918, {0}, {37,9,24,BMF_CLEAR});
+    assert(bm && bitmap_allocs == 1 && !last_friend);
+    RastPort rp{};
+    BitMap adapter{};
+    ULONG width = 0, height = 0;
+    assert(f.ctx.layer_ops->draw_target(&f.ctx, 0, bm, &rp, &adapter));
+    assert(!rp.Layer && rp.BitMap == &allocated_bitmaps[0]->bm);
+    assert(f.ctx.layer_ops->native_bitmap(&f.ctx, bm, &width, &height) == rp.BitMap);
+    assert(width == 48 && height == 9);
+    assert(f.call(Fixture::graphics_base, 960, {bm}, {0,BMA_DEPTH}) == 32);
+    assert(!(f.memory[bm + M68K_BM_FLAGS] & BMF_STANDARD));
+    for (int i=0;i<8;i++) assert(!f.L(bm + M68K_BM_PLANES + 4*i));
+    const ULONG friend_bm = f.call(Fixture::graphics_base, 918, {bm}, {37,9,2,BMF_CLEAR});
+    assert(friend_bm && bitmap_allocs == 2 && last_friend == &allocated_bitmaps[0]->bm);
+    assert(f.call(Fixture::graphics_base, 924, {bm}) == 0 && bitmap_frees == 1);
+    // Friendship is only an allocation hint, not a lifetime dependency.
+    assert(f.call(Fixture::graphics_base, 960, {friend_bm}, {0,BMA_WIDTH}) == 48);
+    assert(f.call(Fixture::graphics_base, 924, {friend_bm}) == 0 && bitmap_frees == 2);
+    assert(f.avail() == initial);
+    bitmap_fail = true;
+    assert(!f.call(Fixture::graphics_base, 918, {0}, {20,9,24,0}) && f.avail() == initial);
+    bitmap_fail = false;
+    NativeScreenBitMap pub{};
+    const ULONG sg = f.open_screen(pub, 4, 8, 8, 32, false);
+    pub.bm.Flags = BMF_DISPLAYABLE;
+    const ULONG handle = sg + M68K_SCR_BITMAP;
+    const ULONG borrowed = f.call(Fixture::graphics_base, 918, {handle}, {20,8,2,BMF_CLEAR});
+    assert(borrowed && last_friend == &pub.bm);
+    f.close_screen(pub, sg);
+    assert(f.call(Fixture::graphics_base, 924, {borrowed}) == 0);
+    const ULONG left = f.call(Fixture::graphics_base, 918, {0}, {20,8,24,0});
+    assert(left);
+    Kaffeine_DestroyContext(&f.ctx);
+    assert(f.ctx.layers && f.ctx.mem == f.memory.data());
+    const unsigned freed = bitmap_frees;
+    Kaffeine_LayersCleanup(&f.ctx);
+    assert(!f.ctx.layers && bitmap_frees == freed+1 && allocated_bitmaps.empty());
+}
+
 extern "C" BOOL Request(struct Requester *,struct Window *) { assert(false); return FALSE; }
 extern "C" void EndRequest(struct Requester *,struct Window *) { assert(false); }
 extern "C" BOOL SetDMRequest(struct Window *,struct Requester *) { assert(false); return FALSE; }
@@ -3264,6 +3445,9 @@ int main()
     struct Test { const char *name; void (*run)(); };
     const Test tests[] =
     {
+        { "AllocBitMap classic planes, real pixel blits, ULONG sizes, flags and allocator ownership", test_owned_bitmaps },
+        { "FreeBitMap refuses aliases retained by a layer root and reentrant native blits", test_owned_bitmap_lifetime },
+        { "Native/deep bitmap handles, borrowed friends, OOM rollback and cleanup exactly once", test_native_owned_bitmaps },
         { "LayerInfo backfill sentinel identity, hidden root update and ownership/lifetime guards", test_layerinfo_backfill_mode },
         { "LVO 186 and 90 are bridged; the other constructors stay refused", test_registration },
         { "Native planar BitMap over the guest planes; stable identities in native order; deletion", test_conversion_and_identity },

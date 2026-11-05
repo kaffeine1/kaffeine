@@ -3787,11 +3787,86 @@ All other positive fields, including the library version, stay zero.
 This is an OS-call compatibility capability, not an ECS hardware model:
 there is no custom-register blitter, BEAMCON0 or 2 MB Chip addressing.
 VPOSR still reports Agnus ID 0; software probing hardware directly cannot
-use this bit as a hardware guarantee. AllocBitMap and the other unsupported
-bitmap operations remain refused. QBlit and QBSBlit stop with rc 20 instead
+use this bit as a hardware guarantee. AllocBitMap uses the separate owned
+bitmap adapter below; other unconverted bitmap operations remain refused.
+QBlit and QBSBlit stop with rc 20 instead
 of passing guest code and 32-bit links into a native queue. BltClear accepts
 only a complete even caller-owned range (including row-mode multiplication)
 before a synchronous native clear; invalid or protected buffers stop with rc 20.
+
+## Owned OS bitmaps
+
+The manual graphics vectors AllocBitMap (-918) and FreeBitMap (-924)
+implement the V39 ULONG allocation ABI. A context-private registry owns
+each allocation; writable guest descriptors never identify native memory.
+Zero or unrepresentable dimensions, unsupported allocation flags and
+insufficient memory return NULL. Width and height are limited by the
+classic UWORD descriptor, depth by 32 and storage by the guest arena.
+No bitmap of another context, borrowed screen or stale allocation can be
+freed through this registry. FreeBitMap(NULL) is a no-op.
+
+Without DISPLAYABLE or an opaque native friend, depth 1–8 allocations
+contain a classic big-endian 40-byte descriptor and separate guest planes.
+BytesPerRow is word aligned, BMF_STANDARD is set, and BMF_CLEAR clears
+the planes. INTERLEAVED and MINPLANES are optimization hints: the adapter
+may fall back to separate planes and the complete classic header.
+The native planar descriptor points at those same guest bytes, so direct
+plane writes, BltBitMap, scalar GetBitMapAttr and drawing through copied
+layerless RastPorts share storage. Descriptor scalars and plane addresses
+must remain unchanged while the allocation is owned; plane contents may
+be edited normally. InitBitMap cannot reinitialize an owned allocation.
+
+Deep, DISPLAYABLE and opaque-friend allocations use native AllocBitMap
+and FreeBitMap. Native depth may exceed the requested depth. Their guest
+header has no plane pointers and never advertises BMF_STANDARD; scalar
+attributes, drawing and blits resolve the private native bitmap instead.
+Friend pointers are translated only from checked classic descriptors,
+owned allocations or typed live screen handles, including public screens
+still kept by the program. Friendship is an allocation hint, not a new
+screen lease. RTG tag-list/SPECIALFMT extensions, direct chunky pointers,
+CyberGraphX bitmap locking and unconverted bitmap-consuming vectors are
+not implemented by this adapter.
+
+Native bitmap storage has an aggregate arena-sized budget, independently
+of the small guest handle; the registry is also bounded. Generic heap
+release cannot free any owned header or planes. FreeBitMap refuses a
+bitmap used by a private LayerInfo (including aliased planes kept by its
+hidden root), active blit or paint hook. Cleanup disposes layers before
+owned bitmap storage; when native layers still retain guest storage, the
+ownership state and entire guest arena are retained rather than freed
+under native pointers. This is a containment fallback, not successful
+application cleanup. Remaining open application workflows and hardware
+compatibility must be qualified separately.
+
+ReadPixelLine8/WritePixelLine8 (-768/-774) and
+ReadPixelArray8/WritePixelArray8 (-780/-786) translate caller-owned
+RastPorts through the same drawing boundary. The array stride is rounded
+to 16 pixels independently for every row. Complete padded buffers and
+disjoint scratch RastPort/bitmap/planes are checked before native access;
+the scratch bitmap has one row, enough padded width and at least the
+target depth. Native window layers retain native clipping; layerless
+targets currently require the full rectangle inside the bitmap. The
+classic low-UWORD arguments must fit native positive WORD coordinates.
+Native LONG pixel counts are preserved, including the WritePixelLine8
+count which the old generated fallback discarded. Truecolor pen-array
+readback remains unsupported. There is no application-name selection.
+
+Dispatch reports the library and vector of an rc20 stop without enabling
+successful per-call tracing. This identifies the next missing OS contract
+without flooding a painting session's log.
+
+ClipBlit (-552) accepts the same typed native and copied RastPort targets
+on both sides. Layerless bounds clip source and destination in lockstep,
+including negative origins; native layers retain ClipRect clipping.
+Temporary conversion preserves identical RastPort and bitmap identities
+for overlap ordering. WaitBlit completes before either adapter retires,
+with the usual bitmap lifetime guard held throughout the native call.
+
+BltBitMapRastPort (-606) reuses the layer bridge's checked bitmap-source
+conversion and the same RastPort drawing boundary. Both layerless sides
+clip in lockstep; native destination layers keep their own clipping.
+Borrowed screen bitmap sources remain refused, as for BltBitMap. No
+generated thunk treats a classic bitmap or copied RastPort as native.
 
 ## Display query boundary
 

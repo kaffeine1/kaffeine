@@ -192,6 +192,11 @@ extern "C" void RectFill(RastPort *, WORD, WORD, WORD, WORD) { std::abort(); }
 extern "C" void BltClear(void *, ULONG, ULONG) { std::abort(); }
 extern "C" LONG ReadPixel(RastPort *, WORD, WORD) { std::abort(); }
 extern "C" LONG WritePixel(RastPort *, WORD, WORD) { std::abort(); }
+extern "C" void ClipBlit(RastPort *,WORD,WORD,RastPort *,WORD,WORD,WORD,WORD,UBYTE) { std::abort(); }
+extern "C" void BltBitMapRastPort(BitMap *,WORD,WORD,RastPort *,WORD,WORD,WORD,WORD,UBYTE) { std::abort(); }
+extern "C" IPTR GetBitMapAttr(struct BitMap *,ULONG) { std::abort(); }
+extern "C" LONG ReadPixelArray8(RastPort *, WORD, WORD, WORD, WORD, UBYTE *, RastPort *) { std::abort(); }
+extern "C" LONG WritePixelArray8(RastPort *, WORD, WORD, WORD, WORD, UBYTE *, RastPort *) { std::abort(); }
 extern "C" void SetAPen(RastPort *, ULONG) { std::abort(); }
 extern "C" void SetBPen(RastPort *, ULONG) { std::abort(); }
 extern "C" void SetDrMd(RastPort *, ULONG) { std::abort(); }
