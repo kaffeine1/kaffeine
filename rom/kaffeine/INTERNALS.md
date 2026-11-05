@@ -3374,6 +3374,12 @@ Screen of.
    layer lock. Native failure rolls back allocations and keeps any objects
    still referenced by a surviving native root. Cleanup deletes layers before
    LayerInfos, then releases their persistent bitmap adapters.
+   The classic `CreateUpfrontLayer()` (-36) shares this constructor with
+   the native default backfill (`LAYERS_BACKFILL`). It has no hook argument:
+   A3 is neither read as a hook nor changed. Ownership, bounds, memory and
+   lock validation are identical to -186. Zero-depth and super BitMaps
+   remain outside this subset; the constructor does not treat depth zero
+   as a request to disable backfill.
    `InstallLayerInfoHook()` (-204) accepts the standard backfill sentinels
    0 and 1 for an owned `NewLayerInfo()` or opened screen's LayerInfo. It delegates the change
    to native layers, including its hidden root, returns the previous mode

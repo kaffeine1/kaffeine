@@ -283,6 +283,7 @@ IPTR Kaffeine_InstallLayerInfoHook(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_DisposeLayerInfo(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_InstallClipRegion(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_CreateUpfrontHookLayer(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_CreateUpfrontLayer(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_InstallLayerHook(struct KaffeineContext *ctx, void *cpu);
 /* graphics -432, -438, -654 */
 IPTR Kaffeine_LockLayerRom(struct KaffeineContext *ctx, void *cpu);
@@ -355,7 +356,7 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
    BitMap or Hook from a native one, and several would run guest Hooks. */
 #define KAFFEINE_LAYERS_THUNKS \
     {  30, kaffeine_layers_Unsupported },     /* InitLayers */ \
-    {  36, kaffeine_layers_Unsupported },     /* CreateUpfrontLayer */ \
+    {  36, Kaffeine_CreateUpfrontLayer }, \
     {  42, kaffeine_layers_Unsupported },     /* CreateBehindLayer */ \
     {  48, kaffeine_layers_Unsupported },     /* UpfrontLayer */ \
     {  54, kaffeine_layers_Unsupported },     /* BehindLayer */ \

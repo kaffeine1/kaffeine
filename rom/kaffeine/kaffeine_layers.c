@@ -2604,10 +2604,10 @@ static void layers_gate_close(struct KaffeineLayers *st)
    layer that layers may have made in the LayerInfo anyway stays with the
    common BitMap until its disposal. A first creation that leaves neither
    root nor list fixes no common BitMap. */
-IPTR Kaffeine_CreateUpfrontHookLayer(struct KaffeineContext *ctx, void *cpu)
+static IPTR layers_create_upfront(struct KaffeineContext *ctx, void *cpu, ULONG hook)
 {
     struct KaffeineLayers *st = ctx->layers;
-    ULONG bm = THUNK_A(1), hook = THUNK_A(3), flags = THUNK_D(4);
+    ULONG bm = THUNK_A(1), flags = THUNK_D(4);
     ULONG kind = flags & ~(ULONG)LAYERBACKDROP;
     LONG x0 = (LONG)THUNK_D(0), y0 = (LONG)THUNK_D(1), x1 = (LONG)THUNK_D(2), y1 = (LONG)THUNK_D(3);
     int info = layers_info_owned(st, THUNK_A(0)), ri = -1;
@@ -2724,6 +2724,20 @@ IPTR Kaffeine_CreateUpfrontHookLayer(struct KaffeineContext *ctx, void *cpu)
         FreeVec(common);
     }
     return ctx->running ? 0 : (IPTR)ctx->exit_code;
+}
+
+IPTR Kaffeine_CreateUpfrontHookLayer(struct KaffeineContext *ctx, void *cpu)
+{
+    return layers_create_upfront(ctx, cpu, THUNK_A(3));
+}
+
+/* layers -36 has no A3 argument. The classic constructor is the hook
+   constructor with the default backfill, exactly as native layers does.
+   Share every ownership, bitmap, lock and lifetime check without changing
+   the guest's otherwise unrelated A3 register. */
+IPTR Kaffeine_CreateUpfrontLayer(struct KaffeineContext *ctx, void *cpu)
+{
+    return layers_create_upfront(ctx, cpu, 0);
 }
 
 /* layers -90: DeleteLayer(A0=dummy, A1=layer) -> D0=success. Only a
