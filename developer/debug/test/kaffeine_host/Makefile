@@ -601,3 +601,11 @@ $(BUILD_DIR)/locks_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 $(BUILD_DIR)/test_locks: $(TEST_DIR)/test_locks.cpp $(LOCK_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(LOCK_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(LOCK_OBJS) $(LDLIBS)
 -include $(LOCK_OBJS:.o=.d)
+
+# Every object and test above writes its .d file next to it (-MMD -MP).
+# Read all of them as well, so that a change to a shared header, such as a
+# new field in kaffeine_intern.h, also rebuilds the objects of a group that
+# no list above names (P96_OBJS and ASL_OBJS had none) and of any group
+# added later. Rereading a .d file named above only repeats the same
+# prerequisites, and only files that exist are read.
+-include $(wildcard $(BUILD_DIR)/*.d)
