@@ -1,0 +1,34 @@
+Copyright (C) 2026, The AROS Development Team. All rights reserved.
+Author: Michele Dipace (@kaffeine1)
+
+fat_parent is a native DOS regression for FAT directory renames.
+
+Build explicitly with:
+  make test-fat-parent-rename
+
+On an expendable mounted FAT volume TEST:, run:
+  fat_parent ROOT TEST:FatParent
+
+The program creates the first unused TEST:FatParent-1 through -8 fixture,
+plus its -Moved and -Root siblings. It does not overwrite existing objects
+or remove the resulting fixtures. ROOT must resolve directly under the
+volume root. The volume node must identify FAT12, FAT16 or FAT32; DOS's
+generic Info.id_DiskType alone cannot distinguish FAT from other handlers.
+
+It checks full NameFromLock paths and ParentDir identity after moving a
+directory from staging to the volume root, then to another parent and back.
+It also checks rejection of a cycle, replacement of a different existing
+directory with the same leaf name, and use of a file as a parent. A case-only
+rename of the same entry remains allowed. A preceding parent or refusal
+failure stops the program before further potentially invalid renames.
+
+BASELINE is only for observing the older handler on an expendable volume:
+  fat_parent ROOT TEST:FatParent BASELINE
+It expects ParentDir error 205 and an incomplete NameFromLock path after the
+first cross-parent rename, then stops before the refusal probes.
+
+Each invocation returns 0 only when its checks pass and prints a final
+"fat_parent: N checks, M failed" summary. Run Shell and Run invocations
+separately and retain both return codes and their completion markers.
+For FAT32, the moved directory's final parent link is encoded as zero when
+it is directly in the volume root; it can be inspected in a stopped image.
