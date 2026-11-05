@@ -589,15 +589,20 @@ static void init_commands(unsigned kind, unsigned size)
     g.unchanged();
 }
 
-static void paths(unsigned which)
+static void paths(unsigned which, bool libs_assign = false)
 {
     Guest g;
-    const std::array<const char *, 5> names = {"tiny.library", "tiny.library", "tiny.library",
-        "PROGDIR:libs/tiny.library", "libs/tiny.library"};
-    const std::array<const char *, 5> paths = {"LIBS68K:tiny.library", "LIBS:m68k/tiny.library",
-        "LIBS:tiny.library", "PROGDIR:libs/tiny.library", "libs/tiny.library"};
+    const std::array<const char *, 10> names = {"tiny.library", "tiny.library", "tiny.library",
+        "PROGDIR:libs/tiny.library", "libs/tiny.library", "LIBS:vendor/tiny.library",
+        "libs:/tiny.library", "RAM:tiny.library", "LIBS:x:tiny.library", "LIBSX:tiny.library"};
+    const std::array<const char *, 10> paths = {"LIBS68K:tiny.library", "LIBS:m68k/tiny.library",
+        "LIBS:tiny.library", "PROGDIR:libs/tiny.library", "libs/tiny.library",
+        "LIBS:vendor/tiny.library", "libs:/tiny.library", "RAM:tiny.library",
+        "LIBS:x:tiny.library", "LIBSX:tiny.library"};
+    const std::array<const char *, 3> assign_names = {
+        "LIBS:tiny.library", "libs:tiny.library", "LiBs:tiny.library"};
     accepted_path = paths[which];
-    CHECK(g.open(names[which]));
+    CHECK(g.open(libs_assign ? assign_names[which] : names[which]));
     if (which < 3) {
         CHECK(attempts.size() == which + 1);
         for (unsigned i = 0; i <= which; ++i) CHECK(attempts[i] == paths[i]);
@@ -1411,9 +1416,14 @@ int main(int argc, char **argv)
         for (unsigned size = 0; size < 3; ++size)
             run("init-kind-" + std::to_string(kind) + "-size-" + std::to_string(size),
                 [=] { init_commands(kind, size); }, filter);
-    for (unsigned i = 0; i < 5; ++i)
+    for (unsigned i = 0; i < 10; ++i)
         run("search-path-" + std::to_string(i), [=] { paths(i); }, filter);
+    for (unsigned i = 0; i < 3; ++i)
+        run("libs-assign-path-" + std::to_string(i), [=] { paths(i, true); }, filter);
     run("missing-file", [] { Guest g; accepted_path = "missing"; g.refused(); CHECK(attempts.size() == 3); }, filter);
+    run("libs-assign-missing", [] { Guest g; accepted_path = "missing";
+        CHECK(g.open("LIBS:tiny.library") == 0); CHECK(attempts.size() == 3);
+        CHECK(g.avail() == g.initial_avail); g.unchanged(); }, filter);
     run("explicit-path-missing", [] { Guest g; accepted_path = "missing";
         CHECK(g.open("RAM:tiny.library") == 0); CHECK(attempts.size() == 1 && g.avail() == g.initial_avail); g.unchanged(); }, filter);
     run("decoy-with-resident", [] { decoy(true); }, filter);

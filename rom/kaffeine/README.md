@@ -429,8 +429,9 @@ gadget lists have tables of their own.
 
 Libraries without native AROS equivalents (e.g., `reqtools.library`) are
 loaded as m68k hunk files, as Exec loads a disk library. A name with a path,
-such as `PROGDIR:libs/x.library`, is that file alone, as ramlib takes it;
-otherwise the loader searches in this order:
+such as `PROGDIR:libs/x.library`, is that file alone, as ramlib takes it.
+A leaf name directly in `LIBS:`, such as `LIBS:x.library` in any case,
+is searched like a bare name. These names use this order:
 
 1. `LIBS68K:<name>`, a dedicated assign for m68k libraries
 2. `LIBS:m68k/<name>`, a subdirectory that needs no assign

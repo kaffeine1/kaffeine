@@ -46,6 +46,8 @@ C_PROGRAMS += intuition_currenttime
 PROGRAMS += intuition_currenttime
 C_PROGRAMS += exec_input_event
 PROGRAMS += exec_input_event
+C_PROGRAMS += exec_libs_assign
+PROGRAMS += exec_libs_assign
 C_PROGRAMS += keymap_mapansi
 PROGRAMS += keymap_mapansi
 PROGRAMS += exec_messages exec_message_lifetime exec_packets gfx_planar_read icon_objects gfx_display_info
@@ -926,6 +928,7 @@ $(BUILD_DIR)/c_compute_fpu: $(TEST_DIR)/c_compute.c $(TEST_DIR)/m68ktest.h | $(B
 # 68k test libraries for exec_libraries, installed next to it with
 # --files exec_libraries $(BUILD_DIR)/exec_libraries-files
 $(BUILD_DIR)/exec_libraries: $(EXEC_LIBRARIES_LIBS)
+$(BUILD_DIR)/exec_libs_assign: $(EXEC_LIBRARIES_DIR)/emu68test.library
 
 $(EXEC_LIBRARIES_DIR)/emu68test.library: $(TEST_DIR)/emu68test_lib.c | $(EXEC_LIBRARIES_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) -fno-toplevel-reorder -nostartfiles -nostdlib $(M68K_LDFLAGS) -o $@ $<

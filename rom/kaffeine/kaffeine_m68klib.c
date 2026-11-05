@@ -309,6 +309,16 @@ static ULONG load_library(struct KaffeineContext *ctx, void *cpu, const char *na
     BPTR seg = BNULL;
     ULONG rt, base, i;
 
+    /* Classic callers also spell the library search directory explicitly.
+       Keep these leaf names in the 68k namespace, just like bare names.
+       Deeper and device-qualified paths still identify one exact file. */
+    if ((name[0] == 'L' || name[0] == 'l') &&
+        (name[1] == 'I' || name[1] == 'i') &&
+        (name[2] == 'B' || name[2] == 'b') &&
+        (name[3] == 'S' || name[3] == 's') && name[4] == ':' && name[5] &&
+        !strchr(name + 5, ':') && !strchr(name + 5, '/'))
+        name += 5;
+
     /* a name with a path is that file alone, as ramlib takes it */
     if (strchr(name, ':') || strchr(name, '/'))
         seg = load(name);
