@@ -1,7 +1,12 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
    Author: Michele Dipace (@kaffeine1)
    Original keyboard matrix probe; the same valid operations run natively
-   on ARM as a reference. Input comes from the runner's USB keyboard. */
+   on ARM as a reference. Input comes from the runner's USB keyboard.
+   The 13-byte matrix is also read inside LockIBase(), where classic
+   programs check the keyboard: the request is set up before the lock, only
+   DoIO() and scalar captures run between LockIBase(0) and UnlockIBase(),
+   and the checks come after the unlock. No key is asked for before then,
+   so the matrix must equal the one read just before outside the lock. */
 #include <exec/types.h>
 #include <exec/io.h>
 #include <devices/keyboard.h>
@@ -24,6 +29,26 @@ static LONG matrix(struct IOStdReq *r,ULONG length)
 {
     r->io_Command=KBD_READMATRIX;r->io_Length=length;r->io_Data=guarded+8;
     return DoIO((struct IORequest*)r);
+}
+static UBYTE outside[sizeof(guarded)];
+static void held_matrix(struct IOStdReq *r)
+{
+    ULONG lock,actual_out,actual_in;
+    LONG error_out,error_in;
+    memset(guarded,0xA5,sizeof(guarded));
+    error_out=matrix(r,13);actual_out=r->io_Actual;
+    memcpy(outside,guarded,sizeof(guarded));
+    memset(guarded,0xA5,sizeof(guarded));
+    r->io_Command=KBD_READMATRIX;r->io_Length=13;r->io_Data=guarded+8;
+    lock=LockIBase(0);
+    error_in=DoIO((struct IORequest*)r);
+    actual_in=r->io_Actual;
+    UnlockIBase(lock);
+    check(error_out==0&&actual_out==13&&error_in==0&&actual_in==13,
+          "inside LockIBase(): a 13-byte matrix read returns as outside");
+    check(guards(13)&&r->io_Data==guarded+8&&r->io_Length==13,
+          "inside LockIBase(): guards and request inputs preserved");
+    check(!memcmp(outside,guarded,sizeof(guarded)),"inside LockIBase(): the same matrix as outside");
 }
 static BOOL marker(void)
 {
@@ -60,6 +85,7 @@ int main(int argc,char **argv)
     memset(guarded,0xA5,sizeof(guarded));
     check(matrix(r,64)==0&&r->io_Actual==32&&guards(32),"long read is capped at the native 32-byte matrix");
     IntuitionBase=(struct IntuitionBase*)OpenLibrary((CONST_STRPTR)"intuition.library",33);
+    if(IntuitionBase)held_matrix(r);
     if(IntuitionBase)w=OpenWindowTags(NULL,WA_Width,240,WA_Height,100,WA_Activate,TRUE,WA_IDCMP,IDCMP_RAWKEY,TAG_DONE);
     if(!check(w!=NULL,"active window receives test keyboard input"))goto done;
     Delay(5);

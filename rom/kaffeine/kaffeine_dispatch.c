@@ -61,6 +61,8 @@ static BOOL layer_info_p96_write(const char *name, ULONG lvo, BOOL manual)
 /* IBase pins the guest CPU but has a different native lock order from
    LayerInfo: permit only typed readback/scalars and private memory work.
    No DOS, input DoIO, GUI mutation, broker or native wait is admitted.
+   exec -456 is admitted for one request only, by kaffeine_exec_io.c's
+   Kaffeine_DoIOHeldRead() below (keyboard.device KBD_READMATRIX).
    graphics -756 is the typed GetDisplayInfoData() of kaffeine_display.c
    (NULL handle only): native GetDisplayInfoData() takes no lock but the
    display mode database's semaphore, shared and released inside, which no
@@ -120,7 +122,9 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
         /* No broker, native wait or synchronous Intuition operation may
            run while this driver owns an explicit LayerInfo semaphore. */
         if (ctx->ibase_locked && ctx->ibase_locked(ctx) &&
-            !ibase_read(lib->name, lvo, manual))
+            !ibase_read(lib->name, lvo, manual) &&
+            !(manual && lvo == 456 && !strcmp(lib->name, "exec.library") &&
+              ctx->io_held_read && ctx->io_held_read(ctx, cpu)))
         {
             bug("[kaffeine] %s LVO -%lu while IBase is held, stopping (20)\n",
                 lib->name, (unsigned long)lvo);

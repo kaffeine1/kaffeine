@@ -198,6 +198,9 @@ struct KaffeineContext
 {
     struct KaffeineIBase *ibase;
     BOOL (*ibase_locked)(struct KaffeineContext *);
+    /* exec -456 that may run while IBase is held, set by kaffeine_exec_io.c
+       once a keyboard.device request is open (Kaffeine_DoIOHeldRead()) */
+    BOOL (*io_held_read)(struct KaffeineContext *, void *cpu);
     void (*ibase_cleanup)(struct KaffeineContext *);
     void (*ibase_task_removed)(struct KaffeineContext *, ULONG);
     struct KaffeineSockets *sockets;
