@@ -41,6 +41,9 @@
 
 /* These fixtures borrow metadata-only fonts and acquire no native opens. */
 extern "C" void CloseFont(struct TextFont *) { std::abort(); }
+/* Nor do they write input events. */
+extern "C" BOOL Kaffeine_IBaseScreenHold(KaffeineContext *, ULONG, struct Screen **) { std::abort(); }
+extern "C" void Kaffeine_IBaseScreenDrop(struct Screen *) { std::abort(); }
 #include "kaffeine_window.h"
 #include "kaffeine_workbench.h"
 #include "kaffeine_layers.h"

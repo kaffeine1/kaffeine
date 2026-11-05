@@ -35,6 +35,7 @@ struct M68KHeapAllocation
     /* Free-list links, owned-member links, or next = first member for an owner. */
     struct M68KHeapAllocation *prev, *next;
     ULONG block, size, requested, pool, largest_free;
+    UWORD consuming;
     UBYTE height, kind;
 };
 
@@ -360,6 +361,8 @@ struct KaffeineContext *Kaffeine_CreateContext(struct KaffeineLibBase *base)
 void Kaffeine_DestroyContext(struct KaffeineContext *ctx)
 {
     if (!ctx) return;
+    if (ctx->ibase_cleanup) ctx->ibase_cleanup(ctx);
+    if (ctx->socket_cleanup) ctx->socket_cleanup(ctx);
     if (ctx->idcmp_cleanup) ctx->idcmp_cleanup(ctx);
     if (ctx->segments_cleanup) ctx->segments_cleanup(ctx);
     if (ctx->domain_cleanup) ctx->domain_cleanup(ctx);
@@ -557,6 +560,7 @@ static BOOL heap_io_keeps(struct KaffeineContext *ctx,
 {
     ULONG block, size;
 
+    if (allocation->consuming) return TRUE;
     heap_payload(allocation, &block, &size);
     if (!Kaffeine_LayerMemoryReleasable(ctx, block, size)) return TRUE;
     if (ctx->idcmp_release && !ctx->idcmp_release(ctx, block, size, FALSE)) return TRUE;
@@ -691,6 +695,25 @@ BOOL Kaffeine_HeapFreeExact(struct KaffeineContext *ctx, ULONG addr, ULONG size)
         heap_io_keeps(ctx, allocation, FALSE))
         return FALSE;
     return heap_release(ctx, allocation, NULL);
+}
+
+BOOL Kaffeine_HeapReserveExact(struct KaffeineContext *ctx, ULONG addr, ULONG size)
+{
+    struct M68KHeapAllocation *a;
+    if(!addr || addr==ctx->memory_info || addr<KAFFEINE_HEAP_HDR || !heap_ready(ctx))return FALSE;
+    a=heap_find_block(ctx,addr-KAFFEINE_HEAP_HDR);
+    if(!a || a->kind!=HEAP_ALLOCATION || a->pool || a->requested!=size ||
+       a->consuming || !heap_release_valid(ctx,a) || heap_io_keeps(ctx,a,FALSE))return FALSE;
+    a->consuming=1;return TRUE;
+}
+BOOL Kaffeine_HeapFinishExact(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL consume)
+{
+    struct M68KHeapAllocation *a;
+    if(!addr || addr<KAFFEINE_HEAP_HDR || !heap_ready(ctx))return FALSE;
+    a=heap_find_block(ctx,addr-KAFFEINE_HEAP_HDR);
+    if(!a || a->kind!=HEAP_ALLOCATION || a->pool || a->requested!=size || a->consuming!=1)return FALSE;
+    a->consuming=0;
+    return !consume || Kaffeine_HeapFreeExact(ctx,addr,size);
 }
 
 BOOL Kaffeine_HeapGuestRange(struct KaffeineContext *ctx, ULONG addr, ULONG size)

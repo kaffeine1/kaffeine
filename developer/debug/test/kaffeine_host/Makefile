@@ -133,6 +133,7 @@ TESTS += test_m68klib
 TESTS += test_hosted_jit
 TESTS += test_process_tags
 TESTS += test_guest_tasks
+TESTS += test_socket_codec
 TESTS += test_currenttime
 TESTS += test_startup
 TEST_BINS := $(addprefix $(BUILD_DIR)/,$(TESTS))
@@ -235,6 +236,9 @@ $(BUILD_DIR)/library_paths_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 
 $(BUILD_DIR)/test_library_paths: $(TEST_DIR)/test_library_paths.cpp $(LIBRARY_PATHS_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(TEST_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(LIBRARY_PATHS_OBJS) $(LDLIBS)
+
+$(BUILD_DIR)/test_socket_codec: $(TEST_DIR)/test_socket_codec.c $(KAFFEINE_DIR)/kaffeine_socket_codec.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror $(LDFLAGS) -o $@ $<
 
 # Locale thunks with the production heap and controlled native locale stubs.
 $(BUILD_DIR)/locale_thunk_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)

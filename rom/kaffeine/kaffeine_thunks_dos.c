@@ -22,6 +22,7 @@
 
 #include "kaffeine_intern.h"
 #include "kaffeine_locks.h"
+#include "kaffeine_system_path.h"
 #include "kaffeine_callback.h"
 #include "kaffeine_exec_compat.h"
 #include "kaffeine_messages.h"
@@ -2592,12 +2593,20 @@ static BOOL walk_system_tags(struct KaffeineContext *ctx, ULONG addr,
             case SYS_Input:
             case SYS_Output:
             case SYS_Error:
+            case NP_Error:
             {
                 BPTR fh;
                 if (!Kaffeine_FileResolve(ctx, data, &fh)) { *err = ERROR_BAD_NUMBER; return FALSE; }
                 native_data = (IPTR)fh;
                 break;
             }
+            case NP_CloseError:
+                if (data) { *err = ERROR_NOT_IMPLEMENTED; return FALSE; }
+                native_data = FALSE;
+                break;
+            case NP_Path:
+                native_data = (IPTR)data; /* private helper validates/consumes classic BPTR nodes */
+                break;
             case NP_CurrentDir:
             case NP_HomeDir:
                 *err = ERROR_NOT_IMPLEMENTED;
@@ -2683,13 +2692,35 @@ IPTR kaffeine_dos_SystemTagList(struct KaffeineContext *ctx, void *cpu)
         tags[count].ti_Data = 0;
     }
 
-    if (!Kaffeine_FileAllPrepare(ctx))
     {
-        if (tags) FreeVec(tags);
-        return ctx->exit_code == 20 ? 20 : -1;
+        ULONG i; BOOL has_path = FALSE, new_stream_tags = FALSE, asynchronous = FALSE;
+        for (i = 0; i < count; ++i)
+        {
+            if (tags[i].ti_Tag == NP_Path) has_path = TRUE;
+            if (tags[i].ti_Tag == SYS_Asynch && tags[i].ti_Data) asynchronous = TRUE;
+            if (tags[i].ti_Tag == NP_Error)
+            { new_stream_tags = TRUE; tags[i].ti_Tag = SYS_Error; }
+            if (tags[i].ti_Tag == NP_CloseError)
+            { new_stream_tags = TRUE; tags[i].ti_Tag = TAG_IGNORE; }
+        }
+        /* AROS asynchronous SystemTagList consumes its streams regardless
+           of NP_CloseError. Do not create an untracked close of our handle. */
+        if (asynchronous && new_stream_tags)
+        {
+            if (tags) FreeVec(tags);
+            SetIoErr(ERROR_NOT_IMPLEMENTED); return (IPTR)-1;
+        }
+        if (has_path) rc = Kaffeine_SystemPathRun(ctx, cmd, tags, &err);
+        else
+        {
+            if (!Kaffeine_FileAllPrepare(ctx))
+            {
+                if (tags) FreeVec(tags);
+                return ctx->exit_code == 20 ? 20 : -1;
+            }
+            rc = SystemTagList(cmd, tags); err = IoErr();
+        }
     }
-    rc = SystemTagList(cmd, tags);
-    err = IoErr();
     if (tags)
         FreeVec(tags);
     SetIoErr(err);

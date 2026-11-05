@@ -1180,9 +1180,12 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w)
     }
     m68k_write32(ctx, mw + M68K_WIN_RPORT, rp);
     m68k_write32(ctx, mw + M68K_WIN_USERPORT, port);
-    /* a screen that the program opened or locked; 0 for a screen that it
-       has no 68k Screen of */
+    /* The native window itself keeps its screen alive, including the
+       default public screen that the program never explicitly locked. */
     screen_guest = Kaffeine_ScreenGuest(ctx, w->WScreen);
+    if (!screen_guest && w->WScreen && ctx->screen_window &&
+        !(screen_guest = ctx->screen_window(ctx, w->WScreen)))
+        goto fail;
     m68k_write32(ctx, mw + M68K_WIN_WSCREEN, screen_guest);
     /* Share the existing typed screen BitMap handle, only when the live
        owned screen table and the actual native RastPort agree. This
@@ -1197,15 +1200,17 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w)
     /* WLayer and the Layer of the RastPort: the 68k Layer of the window's
        layer, without which the window does not come either */
     if (ctx->layer_ops && !ctx->layer_ops->window_opened(ctx, mw, w))
-    {
-        Kaffeine_UserPortDelete(ctx, port);
-        Kaffeine_RastPortDelete(ctx, rp);
-        Kaffeine_ShadowForget(ctx, mw, KAFFEINE_SHADOW_WINDOW);
-        Kaffeine_HeapFree(ctx, mw, M68K_SIZEOF_WINDOW);
-        return 0;
-    }
+        goto fail;
     if (peer) peer->users++;
     return mw;
+fail:
+    Kaffeine_UserPortDelete(ctx, port);
+    Kaffeine_RastPortDelete(ctx, rp);
+    Kaffeine_ShadowForget(ctx, mw, KAFFEINE_SHADOW_WINDOW);
+    Kaffeine_HeapFree(ctx, mw, M68K_SIZEOF_WINDOW);
+    if (ctx->screen_release)
+        ctx->screen_release(ctx, w->WScreen);
+    return 0;
 }
 
 static void window_delete(struct KaffeineContext *ctx, ULONG mw, BOOL layers_done)

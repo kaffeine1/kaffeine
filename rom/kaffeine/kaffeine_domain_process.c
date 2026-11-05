@@ -252,7 +252,8 @@ ULONG Kaffeine_DomainStartProcess(struct KaffeineContext *ctx,
     ULONG task = 0;
 
     if (!ctx || !ctx->cpu || !ctx->cpu_factory || !ctx->exec_task || !spec ||
-        !spec->seglist || ctx->callback_depth) goto failed;
+        !spec->seglist == !spec->entry || (spec->entry && spec->cli) ||
+        ctx->callback_depth) goto failed;
     if (ctx->domain_start_recovery)
     {
         error = ERROR_BREAK;
@@ -260,18 +261,28 @@ ULONG Kaffeine_DomainStartProcess(struct KaffeineContext *ctx,
     }
     record = AllocVec(sizeof(*record), MEMF_PUBLIC | MEMF_CLEAR);
     if (!record) { error = ERROR_NO_FREE_STORE; goto failed; }
-    if (!GetSegListInfo(spec->seglist, query) || !relocs)
+    if (spec->entry)
     {
-        error = ERROR_INVALID_RESIDENT_LIBRARY;
-        goto failed;
+        /* NP_Entry: the code is already in this arena, so nothing is copied
+           and the record owns no module. The scheduler validates the entry
+           and keeps the module that holds it loaded for the new Process. */
+        image.entry = spec->entry;
     }
-    if (!Kaffeine_DomainLoad(ctx, spec->seglist,
-                            (const struct HunkRelocTable *)relocs, &image))
+    else
     {
-        error = IoErr();
-        goto failed;
+        if (!GetSegListInfo(spec->seglist, query) || !relocs)
+        {
+            error = ERROR_INVALID_RESIDENT_LIBRARY;
+            goto failed;
+        }
+        if (!Kaffeine_DomainLoad(ctx, spec->seglist,
+                                (const struct HunkRelocTable *)relocs, &image))
+        {
+            error = IoErr();
+            goto failed;
+        }
+        record->module = image.module;
     }
-    record->module = image.module;
     if (spec->home_dir)
     {
         duplicate = DupLock(spec->home_dir);
@@ -296,7 +307,7 @@ ULONG Kaffeine_DomainStartProcess(struct KaffeineContext *ctx,
      * this thunk returns; native sources are now independent of both copies. */
     FreeVec(record);
     if (spec->home_dir) UnLock(spec->home_dir);
-    UnLoadSeg(spec->seglist);
+    if (spec->seglist) UnLoadSeg(spec->seglist);
     SetIoErr(saved_error);
     return task;
 

@@ -63,7 +63,7 @@ extern "C" void Kaffeine_LockTransferEnd(KaffeineContext *,KaffeineLockTransfer 
 }
 extern "C" ULONG Kaffeine_DomainStartProcess(KaffeineContext *ctx,const KaffeineProcessStart *spec)
 {
-    ++starts;check(ma&&ha,"reserve both resources before native startup");captured=*spec;
+    ++starts;check((spec->entry?!ma:ma)&&ha,"reserve the home, and a seglist's module, before native startup");captured=*spec;
     name=spec->name;command=spec->command;args=spec->arguments;engine=spec->backend;
     auto guest=[ctx](const void *p){auto a=reinterpret_cast<uintptr_t>(p),base=reinterpret_cast<uintptr_t>(ctx->mem);return a>=base&&a-base<ctx->mem_size;};
     check(!guest(spec->name)&&!guest(spec->command)&&!guest(spec->arguments)&&!guest(spec->backend),
@@ -122,5 +122,20 @@ int main()
      check(!f.run()&&IoErr()==ERROR_OBJECT_WRONG_TYPE&&me==1&&!mc&&!starts,"home failure restores module");}
     {Fixture f;f.tags({{NP_Seglist,module_token},{NP_HomeDir,home_token}});result=0;
      check(!f.run()&&starts==1&&!mc&&!hc&&me==1&&he==1&&IoErr()==startup_error,"native failure restores both references and full IoErr");}
+    {Fixture f;f.text(0x800,"amigentd channel");
+     f.tags({{NP_Entry,0x2000},{NP_Name,0x800},{NP_Priority,0},{NP_StackSize,16384}});
+     check(f.run()==result&&starts==1&&captured.entry==0x2000&&!captured.seglist,"accept the amigentd NP_Entry shape");
+     check(!mb&&!me&&hb==1&&he==1&&hc&&!captured.home_dir&&!captured.cli,"NP_Entry takes no module lease and commits the inherited home");
+     check(name=="amigentd channel"&&command==name&&captured.stack_size==16384&&captured.priority==0,"copy NP_Entry name and scalars");}
+    {Fixture f;f.tags({{NP_Entry,0x2000},{NP_HomeDir,home_token}});
+     check(f.run()==result&&reinterpret_cast<IPTR>(captured.home_dir)==native_home&&hc&&!mb,"NP_Entry passes a typed home lease");}
+    for(ULONG at:{0x2001U,0x4000U,0xFFFFFFFEU}){Fixture f;f.tags({{NP_Entry,at}});f.refused(ERROR_BAD_NUMBER);}
+    {Fixture f;f.tags({{NP_Entry,0}});f.refused(ERROR_NOT_IMPLEMENTED);}
+    {Fixture f;f.tags({{NP_Entry,0x2000},{NP_Cli,1}});f.refused(ERROR_NOT_IMPLEMENTED);}
+    {Fixture f;f.tags({{NP_Entry,0x2000},{NP_Entry,0x2000}});f.refused(ERROR_BAD_NUMBER);}
+    {Fixture f;f.tags({{NP_Entry,0x2000}});home_ok=false;
+     check(!f.run()&&IoErr()==ERROR_OBJECT_WRONG_TYPE&&!mb&&!me&&hb==1&&!starts,"NP_Entry home failure before startup");}
+    {Fixture f;f.tags({{NP_Entry,0x2000}});result=0;
+     check(!f.run()&&starts==1&&!hc&&he==1&&!me&&IoErr()==startup_error,"NP_Entry native failure restores the home reference");}
     std::printf("process tags: %u checks, %u failed\n",checks,failures);return failures?1:0;
 }

@@ -214,6 +214,7 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_hook.h"
 #include "kaffeine_layers.h"
+#include "kaffeine_intuibase.h"
 #include "kaffeine_paint_hook.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
@@ -2991,6 +2992,9 @@ IPTR Kaffeine_GetBitMapAttr(struct KaffeineContext *ctx, void *cpu)
     struct BitMap *borrowed;
     ULONG bm = THUNK_A(0), attribute = THUNK_D(1);
 
+    borrowed=Kaffeine_IBaseBitmap(ctx,bm);
+    if (borrowed)
+        return (attribute==BMA_WIDTH || attribute==BMA_HEIGHT || attribute==BMA_DEPTH || attribute==BMA_FLAGS) ? GetBitMapAttr(borrowed,attribute) : 0;
     switch (Kaffeine_ScreenBitMapQuery(ctx, bm, &borrowed))
     {
     case KAFFEINE_SCREEN_QUERY_REFUSED:

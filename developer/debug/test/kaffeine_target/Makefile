@@ -16,6 +16,9 @@ PYTHON ?= python3
 
 C_PROGRAMS := gfx_large_blit cpu_full_index exec_io_signal_budget dos_packet_zero dos_locks exec_timer_children exec_timer_stack gfx_gels_init gfx_screen_pens gfx_rastport_state gfx_classic_rastport gfx_copied_rastport intui_classic_draw exec_keyboard exec_timer_async exec_createproc gfx_askfont exec_process_stack gfx_window_clip gfx_classic_request gfx_requester_init gfx_intuitext_width gfx_blit_clip file_packet_reply dos_fileio dos_strings dos_readargs dos_lvo dos_exall dos_packets dos_handlers exec_memory exec_public exec_lists exec_syslists exec_memheader exec_timer exec_console exec_diskfont exec_libraries exec_library_paths gfx_window gfx_idcmp gfx_request gfx_menus gfx_bevel gfx_gadgets gfx_gadget_attrs gfx_gadget_setattrs gfx_gadget_listview gfx_gadget_window gfx_gadget_links gfx_gadget_keys gfx_classic_menus gfx_pubscreen gfx_classic_bool gfx_classic_string gfx_classic_prop gfx_mouse gfx_workbench utility_tags utility_dates locale math_ieee math_ffp c_stdio c_compute c_time cpu_faults hooks
 PROGRAMS := hello_short hello_long $(C_PROGRAMS) c_stdio_vec c_compute_fpu
+C_PROGRAMS += net_socket net_amigent net_amigent_screen net_amigent_control net_amigent_remote net_amigent_native dos_system_path exec_npentry
+PROGRAMS += net_socket net_amigent net_amigent_screen net_amigent_control net_amigent_remote net_amigent_native dos_system_path exec_npentry
+$(BUILD_DIR)/net_socket $(BUILD_DIR)/net_amigent: | $(TEST_DIR)/socket_fixture_abi.h
 C_PROGRAMS += cpu_dbcc
 PROGRAMS += cpu_dbcc
 C_PROGRAMS += exec_messages exec_message_lifetime exec_packets gfx_planar_read icon_objects gfx_display_info
@@ -39,6 +42,10 @@ C_PROGRAMS += asl_file_probe
 PROGRAMS += asl_file_probe
 C_PROGRAMS += intuition_currenttime
 PROGRAMS += intuition_currenttime
+C_PROGRAMS += exec_input_event
+PROGRAMS += exec_input_event
+C_PROGRAMS += keymap_mapansi
+PROGRAMS += keymap_mapansi
 PROGRAMS += exec_messages exec_message_lifetime exec_packets gfx_planar_read icon_objects gfx_display_info
 EXEC_LIBRARIES_DIR := $(BUILD_DIR)/exec_libraries-files
 EXEC_LIBRARIES_LIBS := $(EXEC_LIBRARIES_DIR)/emu68test.library \
@@ -965,3 +972,9 @@ $(ASL_FILE_PROBE_DIR)/WaitAslWindow: $(TEST_DIR)/WaitAslWindow.c $(TEST_DIR)/asl
 
 # The bytecode probe intentionally uses 68020 addressing and MOVE from CCR.
 $(BUILD_DIR)/cpu_full_index: M68K_CFLAGS += -m68020
+
+# Optional native helper for net_amigent_native: never part of the 68k set.
+# Supply the matching target compiler and sysroot through AROS_CC/AROS_CFLAGS.
+AROS_CC ?= aarch64-aros-gcc
+$(BUILD_DIR)/AmigentInputWitness: $(TEST_DIR)/amigent_input_witness_native.c | $(BUILD_DIR)
+	$(AROS_CC) $(AROS_CFLAGS) -O2 -std=gnu99 -Wall -Wextra -Werror $(AROS_LDFLAGS) -o $@ $<

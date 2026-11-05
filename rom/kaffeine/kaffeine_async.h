@@ -15,7 +15,7 @@
    this union in io_signals or guest_signals. */
 static inline ULONG Kaffeine_AsyncSignalMask(struct KaffeineContext *ctx)
 {
-    return ctx->io_signals | Kaffeine_LayerSignalMask(ctx);
+    return ctx->io_signals | ctx->socket_signals | Kaffeine_LayerSignalMask(ctx);
 }
 
 /* Call only on the stable native driver, at safe slice/thunk/wait points.
@@ -25,7 +25,8 @@ static inline ULONG Kaffeine_AsyncSignalMask(struct KaffeineContext *ctx)
 static inline BOOL Kaffeine_AsyncPoll(struct KaffeineContext *ctx)
 {
     if (ctx->broker_call) return TRUE;
-    if ((ctx->io_poll && !ctx->io_poll(ctx)) || !Kaffeine_LayerPoll(ctx))
+    if ((ctx->io_poll && !ctx->io_poll(ctx)) ||
+        (ctx->socket_poll && !ctx->socket_poll(ctx)) || !Kaffeine_LayerPoll(ctx))
     {
         if (ctx->cpu) Kaffeine_StopGuest(ctx, ctx->cpu, 20);
         else

@@ -50,6 +50,14 @@ BOOL Kaffeine_DomainLoad(struct KaffeineContext *ctx, BPTR native,
 BOOL Kaffeine_DomainUnload(struct KaffeineContext *ctx,
                           struct KaffeineDomainModule *module);
 
+/* The registered module one of whose copied hunks holds all size bytes at
+ * guest address, or NULL. Reads only native bookkeeping, never guest memory.
+ * The result is opaque: compare or keep it, and stop using it once Unload of
+ * that module succeeds.
+ */
+struct KaffeineDomainModule *Kaffeine_DomainModuleAt(struct KaffeineContext *ctx,
+                                                     ULONG address, ULONG size);
+
 /* Final owner-task cleanup, after scheduler/I/O teardown and before arena
  * destruction. Rejects new loads and retries context-owned deferred modules.
  * A blocked module remains recorded; do not destroy a context with live I/O.

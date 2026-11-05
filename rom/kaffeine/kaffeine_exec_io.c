@@ -4,8 +4,8 @@
 
     Exec ports, I/O requests and signals of 68k code, timer.device
     through DoIO(), console.device's no-window library unit,
-    keyboard.device's KBD_READMATRIX and the open of input.device, both on
-    unit 0. Ports and requests stay 68k structures in the guest
+    keyboard.device's KBD_READMATRIX and input.device's IND_WRITEEVENT, both
+    on unit 0. Ports and requests stay 68k structures in the guest
     arena. Behind each open request stand a native request of the native
     size. All native requests share one private reply port and signal on
     the native emulator task; only this file passes them to native Exec.
@@ -31,6 +31,7 @@
 #include "kaffeine_sched.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_layers.h"
+#include "kaffeine_intuibase.h"
 
 #include <aros/debug.h>
 #include <exec/errors.h>
@@ -41,6 +42,7 @@
 #include <devices/timer.h>
 #include <devices/keyboard.h>
 #include <devices/input.h>
+#include <devices/inputevent.h>
 #include <proto/exec.h>
 #include <string.h>
 
@@ -58,6 +60,17 @@ enum
     G_MP_FLAGS = 14, G_MP_SIGBIT = 15, G_MP_SIGTASK = 16, G_MP_MSGLIST = 20, G_PA_SIGNAL = 0,
     G_LH_TAIL = 4, G_LH_TAILPRED = 8,
     G_LIB_NEGSIZE = 16, G_LIB_POSSIZE = 18, G_LIB_VERSION = 20, G_LIB_REVISION = 22
+};
+
+/* The 68k InputEvent and IEPointerPixel of devices/inputevent.h. ie_X,
+   ie_Y, ie_EventAddress and the four dead-key bytes share offset 10. */
+enum
+{
+    G_IE_NEXTEVENT = 0, G_IE_CLASS = 4, G_IE_SUBCLASS = 5, G_IE_CODE = 6,
+    G_IE_QUALIFIER = 8, G_IE_X = 10, G_IE_Y = 12, G_IE_ADDRESS = 10,
+    G_IE_PREV1_CODE = 10, G_IE_PREV1_QUAL = 11, G_IE_PREV2_CODE = 12, G_IE_PREV2_QUAL = 13,
+    G_IE_SECONDS = 14, G_IE_MICRO = 18, G_IE_SIZE = 22,
+    G_IEPP_SCREEN = 0, G_IEPP_X = 4, G_IEPP_Y = 6, G_IEPP_SIZE = 8
 };
 
 /* AROS keyboard.device copies min(KB_MATRIXSIZE, io_Length) bytes of its
@@ -1144,12 +1157,9 @@ static BOOL in_flight(struct KaffeineContext *ctx, ULONG req)
            ctx->mem[req + G_LN_TYPE] == NT_MESSAGE;
 }
 
-/* KBD_READMATRIX into a native buffer, of at most the native matrix: the
-   device copies min(matrix, io_Length) bytes. io_Data must hold that many
-   bytes in guest memory, apart from the request, or the native device is
-   not called and io_Error reports the failure. Back come io_Actual, at most the
-   length passed, and those bytes; io_Length, io_Data and io_Offset stay. */
-static BOOL matrix_storage(struct KaffeineContext *ctx, ULONG data, ULONG length)
+/* Guest memory that a device command may write: no bridge snapshot, queue,
+   owned port or font block. */
+static BOOL device_buffer(struct KaffeineContext *ctx, ULONG data, ULONG length)
 {
     unsigned i;
     if (!Kaffeine_MessageMemory(ctx, data, length)) return FALSE;
@@ -1163,6 +1173,11 @@ static BOOL matrix_storage(struct KaffeineContext *ctx, ULONG data, ULONG length
     return TRUE;
 }
 
+/* KBD_READMATRIX into a native buffer, of at most the native matrix: the
+   device copies min(matrix, io_Length) bytes. io_Data must hold that many
+   bytes in guest memory, apart from the request, or the native device is
+   not called and io_Error reports the failure. Back come io_Actual, at most the
+   length passed, and those bytes; io_Length, io_Data and io_Offset stay. */
 static BYTE read_matrix(struct KaffeineContext *ctx, ULONG req, struct KaffeineIORequest *entry)
 {
     struct IOStdReq *native = (struct IOStdReq *)entry->native;
@@ -1173,7 +1188,7 @@ static BYTE read_matrix(struct KaffeineContext *ctx, ULONG req, struct KaffeineI
 
     if (length > sizeof(matrix))
         length = sizeof(matrix);
-    if (length && (!matrix_storage(ctx, data, length) ||
+    if (length && (!device_buffer(ctx, data, length) ||
                    Kaffeine_Overlap(data, length, req, G_IOSTDREQ_SIZE)))
     {
         bug("[kaffeine] KBD_READMATRIX: %lu bytes at %08lx are not free guest memory\n",
@@ -1199,15 +1214,143 @@ static BYTE read_matrix(struct KaffeineContext *ctx, ULONG req, struct KaffeineI
     return error;
 }
 
+/* What ie_position of a written event holds, by class and subclass */
+enum EventPayload { PAYLOAD_REFUSED, PAYLOAD_XY, PAYLOAD_DEAD, PAYLOAD_PIXEL };
+
+/* The classes whose ie_position is no address: the dead-key bytes of
+   RAWKEY, and coordinates or nothing for the others. A pixel position
+   points to an IEPointerPixel, which names a screen. Every other class,
+   and the tablet subclasses, carry an address of a gadget, window,
+   requester, menu or tablet structure with a hook. */
+static enum EventPayload event_payload(UBYTE class, UBYTE subclass)
+{
+    switch (class)
+    {
+    case IECLASS_RAWKEY:
+        return PAYLOAD_DEAD;
+    case IECLASS_NULL: case IECLASS_RAWMOUSE: case IECLASS_POINTERPOS: case IECLASS_TIMER:
+    case IECLASS_NEWPREFS: case IECLASS_DISKREMOVED: case IECLASS_DISKINSERTED:
+    case IECLASS_NEWMOUSE:
+        return PAYLOAD_XY;
+    case IECLASS_NEWPOINTERPOS:
+        return subclass == IESUBCLASS_COMPATIBLE ? PAYLOAD_XY :
+               subclass == IESUBCLASS_PIXEL ? PAYLOAD_PIXEL : PAYLOAD_REFUSED;
+    default:
+        return PAYLOAD_REFUSED;
+    }
+}
+
+/* IND_WRITEEVENT of the one 68k InputEvent at io_Data. The AmigaOS
+   autodoc and AROS processevents.c both take a single event: ie_NextEvent
+   is never followed and io_Length is not read. The native device gets a
+   native copy, made before any side effect, of the class, subclass, code,
+   qualifier, timestamp and the scalar ie_position of the class. A pixel
+   position gets a native IEPointerPixel whose screen
+   Kaffeine_IBaseScreenHold() holds for this call alone. The input task
+   runs every handler before it replies, so neither copy outlives the
+   native DoIO(). As both systems do in place, the guest event then gets a
+   NULL ie_NextEvent and the timestamp of the device; nothing else that the
+   handlers changed comes back, since it may hold native addresses.
+   io_Data must be an even address with 22 bytes of free guest memory
+   apart from the request, and the IEPointerPixel 8 bytes of guest memory
+   at an even address, or io_Error is IOERR_BADADDRESS; so is a screen
+   that cannot be held. A class whose ie_position is another address ends
+   with IOERR_NOCMD. Neither failure reaches the native device, and the
+   guest event stays as it was. */
+static BYTE write_event(struct KaffeineContext *ctx, ULONG req, struct KaffeineIORequest *entry)
+{
+    struct IOStdReq *native = (struct IOStdReq *)entry->native;
+    ULONG data = m68k_read32(ctx, req + G_IO_DATA), pixel, held;
+    struct InputEvent event;
+    struct IEPointerPixel position;
+    struct Screen *screen = NULL;
+    enum EventPayload payload;
+    BYTE error;
+
+    if ((data & 1) || !device_buffer(ctx, data, G_IE_SIZE) ||
+        Kaffeine_Overlap(data, G_IE_SIZE, req, G_IOSTDREQ_SIZE))
+    {
+        bug("[kaffeine] IND_WRITEEVENT: the event at %08lx is not free guest memory\n",
+            (unsigned long)data);
+        return G_IOERR_BADADDRESS;
+    }
+    payload = event_payload(ctx->mem[data + G_IE_CLASS], ctx->mem[data + G_IE_SUBCLASS]);
+    if (payload == PAYLOAD_REFUSED)
+    {
+        bug("[kaffeine] IND_WRITEEVENT: class %u subclass %u carries an address\n",
+            (unsigned)ctx->mem[data + G_IE_CLASS], (unsigned)ctx->mem[data + G_IE_SUBCLASS]);
+        return IOERR_NOCMD;
+    }
+    memset(&event, 0, sizeof(event));
+    event.ie_Class = ctx->mem[data + G_IE_CLASS];
+    event.ie_SubClass = ctx->mem[data + G_IE_SUBCLASS];
+    event.ie_Code = m68k_read16(ctx, data + G_IE_CODE);
+    event.ie_Qualifier = m68k_read16(ctx, data + G_IE_QUALIFIER);
+    event.ie_TimeStamp.tv_secs = m68k_read32(ctx, data + G_IE_SECONDS);
+    event.ie_TimeStamp.tv_micro = m68k_read32(ctx, data + G_IE_MICRO);
+    if (payload == PAYLOAD_DEAD)
+    {
+        event.ie_Prev1DownCode = ctx->mem[data + G_IE_PREV1_CODE];
+        event.ie_Prev1DownQual = ctx->mem[data + G_IE_PREV1_QUAL];
+        event.ie_Prev2DownCode = ctx->mem[data + G_IE_PREV2_CODE];
+        event.ie_Prev2DownQual = ctx->mem[data + G_IE_PREV2_QUAL];
+    }
+    else if (payload == PAYLOAD_XY)
+    {
+        event.ie_X = (WORD)m68k_read16(ctx, data + G_IE_X);
+        event.ie_Y = (WORD)m68k_read16(ctx, data + G_IE_Y);
+    }
+    else
+    {
+        pixel = m68k_read32(ctx, data + G_IE_ADDRESS);
+        if ((pixel & 1) || !guest_range(ctx, pixel, G_IEPP_SIZE))
+        {
+            bug("[kaffeine] IND_WRITEEVENT: the IEPointerPixel at %08lx is not guest memory\n",
+                (unsigned long)pixel);
+            return G_IOERR_BADADDRESS;
+        }
+        held = m68k_read32(ctx, pixel + G_IEPP_SCREEN);
+        position.iepp_Position.X = (WORD)m68k_read16(ctx, pixel + G_IEPP_X);
+        position.iepp_Position.Y = (WORD)m68k_read16(ctx, pixel + G_IEPP_Y);
+        /* The last check: Intuition's handler reads the screen it gets */
+        if (!held || !Kaffeine_IBaseScreenHold(ctx, held, &screen))
+        {
+            bug("[kaffeine] IND_WRITEEVENT: screen %08lx cannot be held\n", (unsigned long)held);
+            return G_IOERR_BADADDRESS;
+        }
+        position.iepp_Screen = screen;
+        event.ie_EventAddress = &position;
+    }
+    native->io_Command = IND_WRITEEVENT;
+    native->io_Flags = 0;
+    native->io_Length = sizeof(event);
+    native->io_Data = &event;
+    error = DoIO((struct IORequest *)native);
+    native->io_Data = NULL;
+    native->io_Length = 0;
+    if (screen)
+        Kaffeine_IBaseScreenDrop(screen);
+    if (!error)
+    {
+        m68k_write32(ctx, data + G_IE_NEXTEVENT, 0);
+        m68k_write32(ctx, data + G_IE_SECONDS, (ULONG)event.ie_TimeStamp.tv_secs);
+        m68k_write32(ctx, data + G_IE_MICRO, (ULONG)event.ie_TimeStamp.tv_micro);
+    }
+    ctx->mem[req + G_IO_FLAGS] = native->io_Flags & IOF_QUICK;
+    ctx->mem[req + G_LN_TYPE] = native->io_Message.mn_Node.ln_Type;
+    return error;
+}
+
 /* DoIO() of an IOStdReq open on keyboard.device or input.device. The
    record decides: the guest request must still name its guest base and
-   unit. KBD_READMATRIX is the one command that
-   reaches the native device; every other one, input's handler and event
-   commands among them, ends with IOERR_NOCMD before any native call and
-   without reading io_Data. */
+   unit. KBD_READMATRIX and IND_WRITEEVENT are the commands that reach
+   the native device; every other one, input's handler commands among
+   them, ends with IOERR_NOCMD before any native call and without reading
+   io_Data. */
 static IPTR std_doio(struct KaffeineContext *ctx, ULONG req, struct KaffeineIORequest *entry)
 {
     ULONG base = entry->kind == KAFFEINE_IO_KEYBOARD ? ctx->keyboard_base : ctx->input_base;
+    UWORD command;
     BYTE error;
 
     if (!request_range(ctx, req, G_IOSTDREQ_SIZE))
@@ -1221,9 +1364,11 @@ static IPTR std_doio(struct KaffeineContext *ctx, ULONG req, struct KaffeineIORe
                                      "than the one it was opened on");
     ctx->mem[req + G_IO_FLAGS] = IOF_QUICK;
     ctx->mem[req + G_LN_TYPE] = 0;
-    if (entry->kind == KAFFEINE_IO_KEYBOARD &&
-        m68k_read16(ctx, req + G_IO_COMMAND) == KBD_READMATRIX)
+    command = m68k_read16(ctx, req + G_IO_COMMAND);
+    if (entry->kind == KAFFEINE_IO_KEYBOARD && command == KBD_READMATRIX)
         error = read_matrix(ctx, req, entry);
+    else if (entry->kind == KAFFEINE_IO_INPUT && command == IND_WRITEEVENT)
+        error = write_event(ctx, req, entry);
     else
         error = IOERR_NOCMD;
     ctx->mem[req + G_IO_ERROR] = (UBYTE)error;

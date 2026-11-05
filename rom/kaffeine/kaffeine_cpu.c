@@ -61,6 +61,15 @@ void Kaffeine_SetPC(void *cpu, ULONG value)
     handle->ops->set_pc(handle->backend_state, value);
 }
 
+/* Also release an IBase-only scope when no layers adapter was installed.
+   This runs on the native driver after a guest slice, before broker drain. */
+static void release_scopes(struct KaffeineContext *ctx)
+{
+    if (ctx->layer_ops && ctx->layer_ops->release_locks)
+        ctx->layer_ops->release_locks(ctx);
+    if (ctx->ibase_cleanup) ctx->ibase_cleanup(ctx);
+}
+
 LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
 {
     struct KaffeineCPU *outer = ctx->cpu, *current;
@@ -83,8 +92,8 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
         if (!outer && ctx->running) (void)Kaffeine_AsyncPoll(ctx);
         /* A failed start can retain native work and a staged CPU. Drain on
            the live owner before a scheduler boundary can retire anything. */
-        if (!ctx->running && Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
-            ctx->layer_ops->release_locks(ctx);
+        if (!ctx->running && Kaffeine_LayerInfoLocked(ctx))
+            release_scopes(ctx);
         if (!ctx->running && ctx->domain_drain)
             while (!ctx->domain_drain(ctx)) { }
         /* A completed slice of the outermost loop: no thunk or callback is
@@ -100,8 +109,8 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
     }
 
     /* Never enter owner/broker cleanup while a native Info scope remains. */
-    if (Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
-        ctx->layer_ops->release_locks(ctx);
+    if (Kaffeine_LayerInfoLocked(ctx))
+        release_scopes(ctx);
     if (ctx->domain_drain)
         while (!ctx->domain_drain(ctx)) { }
     /* A stop in a child ends the whole program with that child's D0. */
@@ -114,8 +123,8 @@ LONG Kaffeine_RunCPU(struct KaffeineContext *ctx, struct KaffeineCPU *cpu)
         ctx->task_ops->root_result(ctx, &ctx->exit_code);
     if (current != cpu)
         Kaffeine_SetD(cpu, 0, (ULONG)ctx->exit_code);
-    if (!outer && Kaffeine_LayerInfoLocked(ctx) && ctx->layer_ops->release_locks)
-        ctx->layer_ops->release_locks(ctx);
+    if (!outer && Kaffeine_LayerInfoLocked(ctx))
+        release_scopes(ctx);
     if (ctx->sched && !outer)
         ctx->task_ops->end(ctx);
     else if (!outer && ctx->guest_exec_task && ctx->layer_ops && ctx->layer_ops->task_removed)

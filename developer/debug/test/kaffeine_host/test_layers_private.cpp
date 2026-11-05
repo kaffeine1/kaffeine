@@ -2725,12 +2725,18 @@ static void test_bitmap_vector_guards()
         assert(f.stopped() && f.heap_is(heap) && events == before);
         assert(init_bitmaps == made && bitmap_attrs == attrs && blits.empty() && !wait_blits);
     }
-    for (ULONG lvo : { 96u, 168u, 174u, 180u, 186u })
+    for (ULONG lvo : { 168u, 174u, 180u, 186u })
     {
         assert(f.call(Fixture::cybergraphics_base, lvo, { bm, bm, bm, bm }, { 1, 2, 3, 4, 5, 6, 7, 8 }) == 20);
         assert(f.stopped() && f.heap_is(heap) && events == before);
         assert(init_bitmaps == made && bitmap_attrs == attrs && blits.empty() && !wait_blits);
     }
+    /* GetCyberMapAttr() answers typed screen and IBase BitMaps only; an
+       ordinary planar BitMap gets 0, as from native cybergraphics, with
+       nothing native asked */
+    assert(f.call(Fixture::cybergraphics_base, 96, { bm, bm, bm, bm }, { 1, 2, 3, 4, 5, 6, 7, 8 }) == 0);
+    assert(!f.stopped() && f.heap_is(heap) && events == before);
+    assert(init_bitmaps == made && bitmap_attrs == attrs && blits.empty() && !wait_blits);
     /* InitBitMap() is converted, not refused: the same ordinary BitMap
        gets graphics' scalars of depth 1, width 2 and height 3 */
     assert(init_writes(f, bm, 1, 2, 3, 2, 3, 1));

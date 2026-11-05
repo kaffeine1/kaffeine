@@ -162,6 +162,10 @@ extern "C" {
 #endif
 
 IPTR Kaffeine_LockPubScreen(struct KaffeineContext *ctx, void *cpu);
+/* The window bridge has already registered a native window on this
+   screen. Its lifetime keeps this typed borrow until the last window and
+   any other screen holder go. No guest-supplied native pointer is used. */
+ULONG Kaffeine_ScreenFromWindow(struct KaffeineContext *ctx, struct Screen *screen);
 IPTR Kaffeine_UnlockPubScreen(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_LockPubScreenList(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_UnlockPubScreenList(struct KaffeineContext *ctx, void *cpu);

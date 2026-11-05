@@ -223,8 +223,8 @@ static inline BOOL Kaffeine_LayerSignalReleasable(struct KaffeineContext *ctx, U
 
 static inline BOOL Kaffeine_LayerInfoLocked(struct KaffeineContext *ctx)
 {
-    return ctx->layer_ops && ctx->layer_ops->info_locked &&
-           ctx->layer_ops->info_locked(ctx);
+    return (ctx->ibase_locked && ctx->ibase_locked(ctx)) ||
+           (ctx->layer_ops && ctx->layer_ops->info_locked && ctx->layer_ops->info_locked(ctx));
 }
 
 #ifdef __cplusplus
@@ -331,7 +331,6 @@ extern const ULONG kaffeine_thunks_layers_manual_count;
 
 /* cybergraphics also consumes bitmap objects or native lock handles. */
 #define KAFFEINE_CYBERGRAPHICS_BITMAP_THUNKS \
-    {  96, kaffeine_bitmaps_Unsupported },    /* GetCyberMapAttr */ \
     { 168, kaffeine_bitmaps_Unsupported },    /* LockBitMapTagList */ \
     { 174, kaffeine_bitmaps_Unsupported },    /* UnLockBitMap */ \
     { 180, kaffeine_bitmaps_Unsupported },    /* UnLockBitMapTagList */ \

@@ -346,6 +346,8 @@ extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *ctx, const char *name)
 /* No 68k library here is called Picasso96API.library; test_library_paths
    checks that open_library() hands that name to Kaffeine_P96Open(). */
 extern "C" ULONG Kaffeine_P96Open(KaffeineContext *, ULONG) { std::abort(); }
+/* No base here is a typed socket base; net_socket tests that route. */
+extern "C" BOOL Kaffeine_SocketClose(KaffeineContext *, ULONG) { return FALSE; }
 extern "C" IPTR m68klib_test_stop(KaffeineContext *ctx, void *cpu)
 {
     LONG status = LONG(Kaffeine_GetD(cpu, 0));

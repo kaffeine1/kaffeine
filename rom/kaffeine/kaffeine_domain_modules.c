@@ -149,6 +149,23 @@ BOOL Kaffeine_DomainUnload(struct KaffeineContext *ctx, struct KaffeineDomainMod
     return TRUE;
 }
 
+struct KaffeineDomainModule *Kaffeine_DomainModuleAt(struct KaffeineContext *ctx,
+                                                     ULONG address, ULONG size)
+{
+    struct KaffeineDomainModule *module;
+    ULONG i;
+    if (!ctx || !size) return NULL;
+    for (module = ctx->domain_modules; module; module = module->next)
+        for (i = 0; i < module->count; ++i)
+        {
+            const struct KaffeineDomainBlock *block = &module->blocks[i];
+            if (address >= block->base && size <= block->size &&
+                address - block->base <= block->size - size)
+                return module;
+        }
+    return NULL;
+}
+
 void Kaffeine_DomainCleanup(struct KaffeineContext *ctx)
 {
     struct KaffeineDomainModule *module, *next;

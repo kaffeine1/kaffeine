@@ -31,6 +31,8 @@ extern "C" void Delay(LONG) { std::abort(); }
 extern "C" void Kaffeine_AppSignalGone(KaffeineContext *, BYTE) {}
 extern "C" BOOL Kaffeine_DomainUnload(KaffeineContext *, KaffeineDomainModule *m)
 { check(!m->unloads,"packet Process module releases once after broker ACK");++m->unloads;return TRUE; }
+/* Packet Processes start from seglists; no NP_Entry borrows a module. */
+extern "C" KaffeineDomainModule *Kaffeine_DomainModuleAt(KaffeineContext *, ULONG, ULONG) { return nullptr; }
 extern "C" void Kaffeine_LockOwnerDrop(KaffeineContext *, Task *) {}
 extern "C" BOOL Kaffeine_DosBrokerIsIdle(KaffeineDosBroker *) { return TRUE; }
 extern "C" BOOL Kaffeine_DosBrokerCall(KaffeineDosBroker *b,KaffeineContext *ctx,

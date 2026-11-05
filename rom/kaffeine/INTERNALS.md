@@ -13,6 +13,7 @@ see [README.md](README.md).
 - [Shadow Struct Engine](#shadow-struct-engine)
 - [Shadow Struct Layouts](#shadow-struct-layouts)
 - [Device I/O Path](#device-io-path)
+- [Typed socket boundary](#typed-socket-boundary)
 - [Icon metadata and ownership](#icon-metadata-and-ownership)
 - [RastPorts and Fonts](#rastports-and-fonts)
 - [Public Screens](#public-screens)
@@ -801,7 +802,7 @@ before `lib->gen_thunks[]` (generated).
 | -414 | CloseLibrary | Calls the `Close()` of a 68k library from disk, also for a base that its `Open()` made for the opener (one whose `Close()` lies in the hunks of the library); the library goes when `Close()` gives its seglist back after an expunge; nothing for the base of a native library (`kaffeine_m68klib.c`) |
 | -444 | OpenDevice | timer.device on a native timerequest, and console.device unit -1 on a native IOStdReq, sharing one private native reply port and signal; keyboard.device and input.device unit zero use native IOStdReq adapters. Console accepts the 32-byte guest IORequest prefix, including zero mn_Length; its guest unit is -1. Adapter selection uses trusted native records |
 | -450 | CloseDevice | Closes and deletes native request and port. Console clears guest io_Device and io_Unit to zero; timer keeps its -1 closed-device marker |
-| -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter |
+| -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. keyboard.device KBD_READMATRIX and input.device IND_WRITEEVENT through temporary native copies. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter |
 | -462 | SendIO | Current-task native async timer submit with checked reply queues; copied MICROHZ/VBLANK timerequests share one private FIFO completion port |
 | -468 | CheckIO | Pumps completions and returns NULL only while the trusted native record is pending; unknown requests retain Exec marker checks |
 | -474 | WaitIO | Captured-owner wait for pending native timer I/O, yielding through the guest scheduler when active; completes in place or removes only its own queued reply |
@@ -925,7 +926,7 @@ classic-system observations recorded by `exec_library_paths`.
 | -468 | Fault | Nullable bounded header, nonoverlapping output, positive capacity and native write footprint (including unconditional header punctuation); returns the native spare-capacity value |
 | -474 | PrintFault | Nullable bounded header; native result and error code in `IoErr()` |
 | -492 | Cli | The context's guest CLI snapshot, also in `pr_CLI` of the guest Process (`kaffeine_cli.c`) |
-| -498 | CreateNewProc | Returns zero with `ERROR_NOT_IMPLEMENTED`; numeric startup diagnosis visits at most 64 tag/control steps and reports at most 16 active tags, without following code, name or seglist pointers. No native process is started |
+| -498 | CreateNewProc | Typed startup (`kaffeine_process_tags.c`, at most 64 tag/control steps): exactly one of NP_Seglist, a registered 68k module that is copied into the arena, or NP_Entry, code already in the arena whose address never reaches native DOS. The new guest Process gets its own CPU, stack and private native DOS broker; the returned guest Process keeps the caller's later `tc_UserData` writes. NP_Entry starts without a CLI (NP_Cli TRUE is refused) and keeps the domain module that holds the entry loaded until that Process retires; a module no live task holds gives `ERROR_OBJECT_IN_USE`. NP_ExitCode, NP_ExitData, stream and other pointer tags return zero with `ERROR_NOT_IMPLEMENTED` before any native process starts |
 | -504 | RunCommand | A non-NULL argument string needs its NUL and all D4 bytes in guest memory; NULL with size 0 passes NULL; the guest seglist of a 68k library from disk gives -1 with `ERROR_OBJECT_WRONG_TYPE` |
 | -510 | GetConsoleTask | The guest port of the native console task, or the port that the program set while it stands for that one; kept in the guest `pr_ConsoleTask` |
 | -516 | SetConsoleTask | 0, a handler port or a FileHandle's `fh_Type` of the program, as the native port it stands for; returns the previous guest port; any other port stops with rc 20 |
@@ -2108,6 +2109,43 @@ The full list of 297 struct layouts is in `kaffeine_shadow_layouts.h` (auto-gene
 **RegionRectangle** — its only field is `bounds` (an embedded `struct Rectangle`,
 8 bytes), which has no scalar leaf fields to map.
 
+## Typed socket boundary
+
+`bsdsocket.library` version 4 is a typed bridge, opened before the generic
+library cache. A guest task shares one classic Library base across repeated
+opens; another task has its own base, errno and descriptor table. Calls from
+a different task cannot use that base. The last close retires its sockets.
+
+The driver validates and copies addresses, buffers, options, timeval and
+fd sets. Native workers receive private scalar/copy packets, never a guest
+address, CPU or callback. Each worker owns its actual native SocketBase.
+The native descriptor can be larger than 63: the bridge maps it to one of
+64 classic descriptors and constructs native select masks dynamically.
+An idle guest socket call suspends only its owner; its private completion
+wakes the driver and retries that exact request. Task retirement cancels and
+acknowledges pending native work before releasing guest storage or signals.
+
+The current IPv4 subset provides socket, bind, listen, accept, connect,
+send, recv, shutdown, typed integer options, zero/disabled linger,
+SO_RCVTIMEO/SO_SNDTIMEO, getsockname/getpeername, classic FIONBIO/FIONREAD,
+CloseSocket, WaitSelect, getdtablesize, ReleaseSocket/ObtainSocket, Errno and
+SetErrnoPtr. Send and receive copy at most 1 MiB per call. Blocking calls use
+bounded native readiness slices and preserve guest nonblocking/timeout
+state. WaitSelect converts only the used guest words, preserves unused tails,
+consumes requested guest signals and preserves an unrequested Ctrl-C on EINTR.
+
+Released IDs belong to the guest domain and map to private native unique
+IDs. A released socket can outlive its releasing task; another domain cannot
+obtain it. Domain cleanup obtains and closes unclaimed transfers through the native API;
+reclamation under native allocation failure has not been qualified. Owner/base slots are
+reused only after the old worker has acknowledged retirement.
+
+This subset does not implement DNS, sendto/recvfrom, SocketBaseTags, arbitrary
+ioctl or guest socket callbacks. Positive linger is refused rather than
+blocking driver cleanup. Amigent protocol tests cover loopback networking;
+screen readback, input injection (see the Device I/O Path), TLS and physical
+targets require separate support and verification.
+
 ## Device I/O Path
 
 Unit-zero `keyboard.device` and `input.device` opens use independent native
@@ -2115,7 +2153,28 @@ IOStdReq records and guest Device bases. Keyboard `KBD_READMATRIX` copies only
 the bounded native result (at most 32 bytes), using temporary native storage;
 the caller's data/length/offset fields stay intact. Output cannot overlap its
 request, other protected request/port/font snapshots or active guest queues.
-Input commands return `IOERR_NOCMD` without inspecting guest handler pointers.
+
+Input `IND_WRITEEVENT` writes the one 68k InputEvent at `io_Data`. The AmigaOS
+autodoc and AROS `processevents.c` both ignore `ie_NextEvent`, and AROS does
+not read `io_Length`, so the bridge follows neither. Before any side effect it
+checks that the event is at an even address with 22 bytes of writable guest
+memory apart from the request, and builds a native InputEvent from the class,
+subclass, code, qualifier, timestamp and the scalar `ie_position` of the class:
+the dead-key bytes of RAWKEY, or coordinates for NULL, RAWMOUSE, POINTERPOS,
+TIMER, NEWPREFS, DISKREMOVED, DISKINSERTED, NEWMOUSE and compatible
+NEWPOINTERPOS. A NEWPOINTERPOS/PIXEL event gets a native IEPointerPixel whose
+screen `Kaffeine_IBaseScreenHold()` (`kaffeine_intuibase.h`) holds as a public
+visitor for this call alone; Intuition's handler reads that screen. The input
+task runs every handler before it replies, so neither native copy outlives the
+synchronous native DoIO. Afterwards the guest event gets a NULL link and the
+device's timestamp, as both systems write in place; no other handler change
+comes back, since it may hold native addresses. A bad event, IEPointerPixel or
+screen gives `IOERR_BADADDRESS`. Classes whose position is an address (gadget,
+window, requester, menu) and the tablet subclasses give `IOERR_NOCMD`. The
+dispatcher already refuses DoIO while IBase or LayerInfo is held, so the
+native call never waits on a lock the guest owns.
+
+Other input commands return `IOERR_NOCMD` without inspecting guest handler pointers.
 All direct keyboard/input vectors are refused. A classic CreateExtIO
 `NT_MESSAGE` marker is accepted by DoIO; no asynchronous submit exists for
 these adapters, so it does not represent a native request in flight.

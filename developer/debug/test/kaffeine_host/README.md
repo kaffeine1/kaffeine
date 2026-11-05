@@ -56,8 +56,9 @@ These are host checks. Native AROS and application acceptance still require
 their separate target tests.
 
 The typed `keymap.library` profile supports `MapRawKey` with the native
-default keymap (`A2 == NULL`). Custom guest KeyMap tables, `SetKeyMapDefault`,
-`AskKeyMapDefault` and `MapANSI` refuse before any native call. The console
+default keymap (`A2 == NULL`) and `MapANSI` through private native copies of
+the string and of its bounded pair buffer. Custom guest KeyMap tables,
+`SetKeyMapDefault` and `AskKeyMapDefault` refuse before any native call. The console
 fixture checks the generated fallback table against these manual overrides.
 See the [typed keymap boundary](../../../../docs/kaffeine/keymap.md) for the
 classic/native event conversion, protected-buffer contract and focused
@@ -116,9 +117,14 @@ Shell stack setting does not resize it.
 `test_exec_io` checks real unit-zero opens, private native request storage,
 KBD_READMATRIX data/length/actual conversion, 32-byte clamping, malformed and
 protected output spans, native errors, rollback and cleanup. Classic
-CreateExtIO NT_MESSAGE markers work before the first DoIO. Input handler
-registration/event commands return IOERR_NOCMD without reaching a native
-handler; direct device vectors stop with rc 20.
+CreateExtIO NT_MESSAGE markers work before the first DoIO. IND_WRITEEVENT
+writes amigentd's RAWKEY, RAWMOUSE and NEWPOINTERPOS/PIXEL shapes as native
+copies, never follows ie_NextEvent, holds a pixel position's screen only
+during the native call, and returns the link and device timestamp but no
+handler rewrite. Address payloads, tablet subclasses, bad event, pixel and
+screen addresses and protected storage are refused before the device.
+Input handler registration and the other input commands return IOERR_NOCMD
+without reaching a native handler; direct device vectors stop with rc 20.
 
 ### Intuition CurrentTime
 

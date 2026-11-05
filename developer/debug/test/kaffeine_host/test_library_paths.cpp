@@ -21,6 +21,12 @@ static unsigned checks, failures, setup_calls, graphics_setup_calls, disk_calls,
 static bool fail_setup, stop_disk;
 static ULONG disk_result, disk_version, p96_result, p96_version;
 static std::string disk_name;
+static unsigned socket_calls;
+
+/* The worker/ABI contract runs in net_socket. This collaborator tests only
+   the special opener route: it must never reuse the generic library cache. */
+extern "C" ULONG Kaffeine_SocketOpen(KaffeineContext *)
+{ ++socket_calls; return 0; }
 
 #define CHECK(condition) do { ++checks; if (!(condition)) { \
     if (failures < 30) std::printf("FAIL line %d: %s\n", __LINE__, #condition); \
@@ -77,6 +83,17 @@ extern "C" ULONG Kaffeine_SetupLibBase(KaffeineContext *ctx, UWORD id,
         entry.m68k_base = lib.m68k_addr;
     }
     return lib.m68k_addr;
+}
+
+/* intuition.library gets the classic positive area of its IntuitionBase;
+   the routing is the same as for any other base. */
+extern "C" ULONG Kaffeine_SetupLibBaseSized(KaffeineContext *ctx, UWORD id,
+    const char *name, UWORD vectors, UWORD positive_size, const M68KThunkEntry *manual,
+    ULONG manual_count, const M68KThunkEntry *generated, ULONG generated_count)
+{
+    CHECK(std::strcmp(name, "intuition.library") == 0 && positive_size == 80);
+    return Kaffeine_SetupLibBase(ctx, id, name, vectors, manual, manual_count,
+                                generated, generated_count);
 }
 
 /* This fixture records lookup routing only. The gfxbase_host suite builds
@@ -141,6 +158,7 @@ struct Fixture
             KAFFEINE_MAX_LVO, kaffeine_thunks_exec, kaffeine_thunks_exec_count, nullptr, 0);
         Kaffeine_SetupLibBase(&ctx, 1, "dos.library", KAFFEINE_MAX_LVO, nullptr, 0, nullptr, 0);
         setup_calls = graphics_setup_calls = disk_calls = 0;
+        socket_calls = 0;
         for (unsigned i = 0; i < 8; ++i) {
             state.d[i] = 0xd0d00100 + i; state.a[i] = 0xa0a00100 + i;
         }
@@ -400,6 +418,17 @@ static void p96_routing()
 
 int main()
 {
+    for (const char *name : {"bsdsocket.library", "LIBS:bsdsocket.library"}) {
+        Fixture f;
+        Kaffeine_SetupLibBase(&f.ctx, f.ctx.num_libs, "bsdsocket.library",
+                             KAFFEINE_MAX_LVO, nullptr, 0, nullptr, 0);
+        CHECK(f.native(name) == 0 && f.native(name) == 0 && socket_calls == 2);
+    }
+    {
+        Fixture f;
+        CHECK(f.call("LIBS:bsdsocket.library", 552, 5) == 0);
+        CHECK(socket_calls == 0 && disk_calls == 0);
+    }
     registrations_and_reuse();
     p96_routing();
     deferred_commodities();

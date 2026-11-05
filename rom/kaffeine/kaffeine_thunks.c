@@ -61,6 +61,8 @@
 #include "kaffeine_regions.h"
 #include "kaffeine_remember.h"
 #include "kaffeine_keymap.h"
+#include "kaffeine_socket.h"
+#include "kaffeine_intuibase.h"
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -105,6 +107,10 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
         return 0;
     }
 
+    /* Socket references belong to the trusted caller, even though the
+       executable vector table is shared by this domain. */
+    if (strcmp(name, "bsdsocket.library") == 0)
+        return Kaffeine_SocketOpen(ctx);
     ULONG base = Kaffeine_FindLibBase(ctx, name);
     if (base) return base;
 
@@ -153,6 +159,9 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
                 manual = kaffeine_thunks_keymap_manual;
                 manual_count = kaffeine_thunks_keymap_manual_count;
             }
+            if (strcmp(name, "intuition.library") == 0)
+                return Kaffeine_SetupLibBaseSized(ctx,ctx->num_libs,name,KAFFEINE_MAX_LVO,80,
+                        manual,manual_count,kaffeine_all_gen_libs[i].thunks,kaffeine_all_gen_libs[i].count);
             if (strcmp(name, "graphics.library") == 0)
                 return Kaffeine_SetupGraphicsBase(ctx, manual, manual_count,
                                                   kaffeine_all_gen_libs[i].thunks,
@@ -227,6 +236,10 @@ static IPTR open_library(struct KaffeineContext *ctx, void *cpu, ULONG version)
         for (const char *p = name; *p; p++)
             if (*p == ':' || *p == '/')
                 file = p + 1;
+        /* The typed socket subset publishes v4 only. A later request must
+           not increment an owner's reference count or load a disk ABI. */
+        if (!strcmp(file, "bsdsocket.library") && version > 4)
+            return 0;
         if (!strcmp(file, "Picasso96API.library"))
         {
             base = Kaffeine_P96Open(ctx, version);
@@ -272,6 +285,7 @@ static IPTR thunk_exec_OldOpenLibrary(struct KaffeineContext *ctx, void *cpu)
    nothing for the base of a native library */
 static IPTR thunk_exec_CloseLibrary(struct KaffeineContext *ctx, void *cpu)
 {
+    if (Kaffeine_SocketClose(ctx, THUNK_A(1))) return 0;
     if (THUNK_A(1) && Kaffeine_CloseM68KLibrary(ctx, cpu, THUNK_A(1)) && !ctx->running)
         return (IPTR)ctx->exit_code;
     return 0;
@@ -685,6 +699,8 @@ const struct M68KThunkEntry kaffeine_thunks_intuition_manual[] = {
     { 84, thunk_intuition_CurrentTime },
     { 330, thunk_intuition_IntuiTextLength },
     { 348, thunk_intuition_AutoRequest },
+    { 252, Kaffeine_IBaseScreenToFront },
+    { 414, Kaffeine_LockIBase }, { 420, Kaffeine_UnlockIBase },
     KAFFEINE_INTUITION_REMEMBER_THUNKS,
     KAFFEINE_INTUITION_COMPAT_THUNKS,
     KAFFEINE_INTUITION_WINDOW_THUNKS,
@@ -721,6 +737,7 @@ const ULONG kaffeine_thunks_keymap_manual_count =
 
 /* ── Graphics manual thunks (shadow RastPort) ── */
 const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
+    { 792, Kaffeine_IBaseVPMode },
     KAFFEINE_GRAPHICS_COMPAT_THUNKS,
     KAFFEINE_GRAPHICS_RASTPORT_THUNKS,
     KAFFEINE_GRAPHICS_DISPLAY_THUNKS,
@@ -735,6 +752,7 @@ const ULONG kaffeine_thunks_graphics_manual_count =
 
 /* Bitmap and native-lock-handle calls without a classic converter. */
 const struct M68KThunkEntry kaffeine_thunks_cybergraphics_manual[] = {
+    { 96, Kaffeine_GetCyberMapAttr }, { 120, Kaffeine_ReadPixelArray },
     KAFFEINE_CYBERGRAPHICS_BITMAP_THUNKS,
     { 0, NULL }
 };

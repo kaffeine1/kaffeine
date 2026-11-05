@@ -45,6 +45,8 @@
 static void cleanup_owned(struct KaffeineContext *ctx)
 {
     Kaffeine_StartupFinish(ctx);
+    if (ctx->ibase_cleanup) ctx->ibase_cleanup(ctx);
+    if (ctx->socket_cleanup) ctx->socket_cleanup(ctx);
     /* ASL requests the program left, which no screen or window outlives */
     Kaffeine_AslCleanup(ctx);
     Kaffeine_WindowsCleanup(ctx);
@@ -265,6 +267,7 @@ static LONG run_hunks(struct KaffeineLibBase *KaffeineBase, BPTR segList,
         return -1;
     }
     ctx->startup_native = startup;
+    ctx->screen_window = Kaffeine_ScreenFromWindow;
     Kaffeine_GadgetsSetup(ctx);
     Kaffeine_LayersSetup(ctx);
 
@@ -379,6 +382,7 @@ static LONG run_hunks(struct KaffeineLibBase *KaffeineBase, BPTR segList,
 
     ctx = Kaffeine_CreateContext(KaffeineBase);
     if (!ctx) { FreeMem(fileData, fileSize); return -1; }
+    ctx->screen_window = Kaffeine_ScreenFromWindow;
     Kaffeine_GadgetsSetup(ctx);
     Kaffeine_LayersSetup(ctx);
 
