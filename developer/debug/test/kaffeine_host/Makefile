@@ -602,7 +602,7 @@ $(BUILD_DIR)/test_locks: $(TEST_DIR)/test_locks.cpp $(LOCK_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(LOCK_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(LOCK_OBJS) $(LDLIBS)
 -include $(LOCK_OBJS:.o=.d)
 
-# Every object and test above writes its .d file next to it (-MMD -MP).
+# Compiler dependency files sit next to their objects and tests (-MMD -MP).
 # Read all of them as well, so that a change to a shared header, such as a
 # new field in kaffeine_intern.h, also rebuilds the objects of a group that
 # no list above names (P96_OBJS and ASL_OBJS had none) and of any group
