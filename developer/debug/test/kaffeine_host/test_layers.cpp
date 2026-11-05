@@ -725,7 +725,8 @@ static void test_registration()
     {
         const M68KThunkEntry &e = kaffeine_thunks_layers_manual[i];
         assert(e.lvo == lvos[i] && e.thunk);
-        if (e.lvo == 90) assert(e.thunk == Kaffeine_DeleteLayer);
+        if (e.lvo == 36) assert(e.thunk == Kaffeine_CreateUpfrontLayer);
+        else if (e.lvo == 90) assert(e.thunk == Kaffeine_DeleteLayer);
         else if (e.lvo == 186) assert(e.thunk == Kaffeine_CreateUpfrontHookLayer);
         else if (e.lvo == 96) assert(e.thunk == Kaffeine_LockLayer);
         else if (e.lvo == 102) assert(e.thunk == Kaffeine_UnlockLayer);

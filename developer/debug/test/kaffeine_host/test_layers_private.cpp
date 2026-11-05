@@ -1157,10 +1157,12 @@ static void test_registration()
             assert(e.thunk == Kaffeine_DeleteLayer);
         else if (e.lvo == 186)
             assert(e.thunk == Kaffeine_CreateUpfrontHookLayer);
+        else if (e.lvo == 36)
+            assert(e.thunk == Kaffeine_CreateUpfrontLayer);
     }
     /* the other constructors stay refused before anything native, with
        valid arguments in every register */
-    for (ULONG lvo : { 36u, 42u, 192u, 234u, 240u })
+    for (ULONG lvo : { 42u, 192u, 234u, 240u })
     {
         const M68KThunkEntry *e = nullptr;
         for (ULONG i = 0; i < kaffeine_thunks_layers_manual_count; ++i)
@@ -1171,6 +1173,44 @@ static void test_registration()
                f.stopped());
     }
     assert(creates.empty() && init_bitmaps == 0 && deletes == 0);
+}
+
+static void test_classic_upfront()
+{
+    Fixture f;
+    const ULONG li = f.new_info(), bm = f.bitmap(4, 16, 3);
+    const ULONG poison = 0xFEDCBA98;
+    const unsigned fills = default_fills;
+    const ULONG layer = f.call(Fixture::layers_base, 36, {li, bm, 0, poison},
+                               {2, 3, 20, 10, LAYERSMART});
+    assert(layer && f.ctx.running && creates.size() == 1);
+    const CreateCall c = creates[0];
+    assert(c.li == native_infos[0] && c.bm2 == nullptr && c.hook == LAYERS_BACKFILL);
+    assert(c.x0 == 2 && c.y0 == 3 && c.x1 == 20 && c.y1 == 10 && c.flags == LAYERSMART);
+    assert(default_fills > fills && f.state.a[3] == poison);
+    assert(f.L(li + M68K_LI_TOP_LAYER) == layer);
+    assert(f.L(layer + M68K_LAYER_LAYERINFO) == li);
+    assert(f.L(layer + M68K_LAYER_BACKFILL) == 0);
+    assert(f.call(Fixture::layers_base, 90, {0, layer}, {}) != 0 && f.ctx.running);
+    f.call(Fixture::layers_base, 150, {li}, {});
+    assert(f.ctx.running && native_infos.empty());
+}
+
+static void test_classic_upfront_refusals()
+{
+    for (unsigned bad = 0; bad < 4; ++bad)
+    {
+        Fixture f;
+        ULONG li = f.new_info(), bm = f.bitmap(4, 16, 3), super = 0, x1 = 20;
+        if (bad == 0) li = 0;
+        if (bad == 1) bm = 0;
+        if (bad == 2) super = bm;
+        if (bad == 3) x1 = 32;
+        assert(f.call(Fixture::layers_base, 36, {li, bm, super, 0xFEDCBA98},
+                      {2, 3, x1, 10, LAYERSMART}) == 20 && f.stopped());
+        assert(creates.empty() && init_bitmaps == 0 && deletes == 0);
+        assert(f.state.a[3] == 0xFEDCBA98);
+    }
 }
 
 static void test_conversion_and_identity()
@@ -3484,7 +3524,9 @@ int main()
         { "FreeBitMap refuses aliases retained by a layer root and reentrant native blits", test_owned_bitmap_lifetime },
         { "Native/deep bitmap handles, borrowed friends, OOM rollback and cleanup exactly once", test_native_owned_bitmaps },
         { "LayerInfo backfill sentinel identity, hidden root update and ownership/lifetime guards", test_layerinfo_backfill_mode },
-        { "LVO 186 and 90 are bridged; the other constructors stay refused", test_registration },
+        { "LVO 36, 186 and 90 are bridged; the other constructors stay refused", test_registration },
+        { "Classic upfront constructor uses default backfill, preserves A3 and keeps typed identities", test_classic_upfront },
+        { "Classic upfront refuses foreign infos, malformed bitmaps, super bitmaps and invalid bounds before native calls", test_classic_upfront_refusals },
         { "Native planar BitMap over the guest planes; stable identities in native order; deletion", test_conversion_and_identity },
         { "A 68k backfill hook during the constructor sees bound guest objects; round trips; locks", test_hook_during_constructor },
         { "A ClipRect BitMap of layers is never shown as the 68k BitMap", test_cliprect_bitmap },
