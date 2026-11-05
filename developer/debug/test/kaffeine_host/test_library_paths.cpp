@@ -22,6 +22,9 @@ static bool fail_setup, stop_disk;
 static ULONG disk_result, disk_version, p96_result, p96_version;
 static std::string disk_name;
 static unsigned socket_calls;
+static unsigned publish_calls, publish_failed_setups;
+static ULONG publish_base;
+static std::string publish_name;
 
 /* The worker/ABI contract runs in net_socket. This collaborator tests only
    the special opener route: it must never reuse the generic library cache. */
@@ -83,6 +86,21 @@ extern "C" ULONG Kaffeine_SetupLibBase(KaffeineContext *ctx, UWORD id,
         entry.m68k_base = lib.m68k_addr;
     }
     return lib.m68k_addr;
+}
+
+/* The header copy itself is checked by test_library_metadata and on the
+   target (exec_library_metadata). This collaborator records which bases get
+   one: every base the lookup makes, once, under its file part, and none it
+   finds again. It writes nothing, so the guards on guest memory below keep
+   proving that the lookup and wrappers write none either. */
+extern "C" ULONG Kaffeine_PublishNativeLibrary(KaffeineContext *, ULONG base,
+                                               const char *name)
+{
+    if (!base) { ++publish_failed_setups; return 0; }
+    ++publish_calls;
+    publish_base = base;
+    publish_name = name ? name : "";
+    return base;
 }
 
 /* intuition.library gets the classic positive area of its IntuitionBase;
@@ -159,6 +177,7 @@ struct Fixture
         Kaffeine_SetupLibBase(&ctx, 1, "dos.library", KAFFEINE_MAX_LVO, nullptr, 0, nullptr, 0);
         setup_calls = graphics_setup_calls = disk_calls = 0;
         socket_calls = 0;
+        publish_calls = publish_failed_setups = 0; publish_base = 0; publish_name.clear();
         for (unsigned i = 0; i < 8; ++i) {
             state.d[i] = 0xd0d00100 + i; state.a[i] = 0xa0a00100 + i;
         }
@@ -245,6 +264,10 @@ static void reuse(const char *name, const Manual *manual, const M68KLibThunkSet 
         CHECK(f.native("LIBS:" + other_case) == 0);
         CHECK(setup_calls == 1 && disk_calls == 0 && f.ctx.num_libs == 3 && f.ctx.num_libmap == 3);
         CHECK(graphics_setup_calls == (!std::strcmp(name, "graphics.library") ? 1u : 0u));
+        /* the header is published when the base is made, before the guest
+           gets it, and the cached opens find it as it is */
+        CHECK(publish_calls == 1 && publish_base == base && publish_name == name);
+        CHECK(publish_failed_setups == 0);
     }
 }
 
@@ -276,6 +299,7 @@ static void registrations_and_reuse()
                      slot ? 408 : 552, 0xffff0000) == f.ctx.libs[slot].m68k_addr);
     }
     CHECK(setup_calls == 0 && disk_calls == 0 && f.ctx.num_libs == 2 && f.ctx.num_libmap == 2);
+    CHECK(publish_calls == 0 && publish_failed_setups == 0);
 }
 
 static void deferred_commodities()
@@ -301,6 +325,7 @@ static void deferred_commodities()
     setup_calls=0;
     CHECK(cached.native("LIBS:commodities.library")==0&&setup_calls==0&&disk_calls==0);
     CHECK(cached.call("commodities.library")==0&&disk_calls==1&&setup_calls==0);
+    CHECK(publish_calls==0&&publish_failed_setups==0);
 }
 
 static void rejection_and_fallback()
@@ -315,6 +340,7 @@ static void rejection_and_fallback()
          "LIBS:diskfont.library ", "LIBS:\xff" "diskfont.library"})
         CHECK(f.native(name) == 0);
     CHECK(setup_calls == 0 && disk_calls == 0 && f.ctx.num_libs == 2 && f.ctx.num_libmap == 2);
+    CHECK(publish_calls == 0 && publish_failed_setups == 0);
 
     for (ULONG lvo : {552u, 408u}) {
         for (const char *name : {"MiXeD:dir//Other:unknown.library", "libs:Diskfont.library",
@@ -331,6 +357,7 @@ static void rejection_and_fallback()
     stop_disk = true; disk_result = 0x12345678;
     CHECK(f.call("LIBS:unknown.library") == 20 && !f.ctx.running);
     CHECK(setup_calls == 0 && f.ctx.num_libs == 2 && f.ctx.num_libmap == 2);
+    CHECK(publish_calls == 0 && publish_failed_setups == 0);
 
     for (const char *name : {"diskfont.library", "mathffp.library", "workbench.library", "graphics.library"}) {
         Fixture retry;
@@ -339,10 +366,13 @@ static void rejection_and_fallback()
         CHECK(setup_calls == 1 && disk_calls == 1 && disk_name == std::string("LIBS:") + name);
         CHECK(graphics_setup_calls == (!std::strcmp(name, "graphics.library") ? 1u : 0u));
         CHECK(disk_version == 34 && retry.ctx.num_libs == 2 && retry.ctx.num_libmap == 2);
+        /* a failed setup is passed on as 0, with no header and no base */
+        CHECK(publish_failed_setups == 1 && publish_calls == 0);
         ULONG base = retry.call(std::string("SYS:Libs/") + name);
         CHECK(base != 0 && retry.call(name) == base);
         CHECK(setup_calls == 2 && disk_calls == 1 && retry.ctx.num_libs == 3 && retry.ctx.num_libmap == 3);
         CHECK(graphics_setup_calls == (!std::strcmp(name, "graphics.library") ? 2u : 0u));
+        CHECK(publish_calls == 1 && publish_base == base && publish_name == name);
     }
 }
 
@@ -379,6 +409,7 @@ static void name_boundaries()
     CHECK(!std::strcmp(f.ctx.libs[2].name, "mathffp.library"));
     CHECK(!std::strcmp(f.ctx.libmap[2].name, "mathffp.library"));
     CHECK(setup_calls == 1 && disk_calls == 0 && f.ctx.num_libs == 3 && f.ctx.num_libmap == 3);
+    CHECK(publish_calls == 1 && publish_base == base && publish_name == "mathffp.library");
 }
 
 static void p96_routing()
@@ -390,6 +421,7 @@ static void p96_routing()
         CHECK(f.call(name, 552, 0xdead0002) == 0x7c00);
         CHECK(p96_calls == 1 && p96_version == 2);
         CHECK(disk_calls == 0 && setup_calls == 0 && graphics_setup_calls == 0);
+        CHECK(publish_calls == 0 && publish_failed_setups == 0);
     }
     {   /* OldOpenLibrary() asks for version 0 */
         Fixture f;
@@ -423,6 +455,7 @@ int main()
         Kaffeine_SetupLibBase(&f.ctx, f.ctx.num_libs, "bsdsocket.library",
                              KAFFEINE_MAX_LVO, nullptr, 0, nullptr, 0);
         CHECK(f.native(name) == 0 && f.native(name) == 0 && socket_calls == 2);
+        CHECK(publish_calls == 0 && publish_failed_setups == 0);
     }
     {
         Fixture f;

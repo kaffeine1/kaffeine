@@ -82,13 +82,28 @@ struct Native
 {
     Font font, alternate;
     GfxBase gfx{};
+    Library neighbor{};
     bool library_fail{}, open_fail{}, wrong_font{};
     unsigned library_opens{}, library_closes{}, library_refs{}, font_calls{};
-    Native() { gfx.DefaultFont = &font.native; std::strcpy(alternate.name,"alternate.font"); }
+    unsigned neighbor_opens{}, neighbor_closes{};
+    Native()
+    {
+        gfx.DefaultFont = &font.native; std::strcpy(alternate.name,"alternate.font");
+        gfx.LibNode.lib_Version = 40; gfx.LibNode.lib_Revision = 5;
+        neighbor.lib_Version = 44; neighbor.lib_Revision = 2;
+    }
 };
 static Native *native;
 extern "C" Library *OpenLibrary(CONST_STRPTR name,ULONG version)
 {
+    /* The header of the generic neighbour base is copied from the native
+       library of that name, which is closed again at once. */
+    if (native && !std::strcmp(name,"public-neighbor.library"))
+    {
+        check(version == 0,"the header copy opens the native neighbour with version 0");
+        ++native->neighbor_opens; io_error = 0x203;
+        return &native->neighbor;
+    }
     check(native && !std::strcmp(name,"graphics.library") && version == 0,
           "only the real native graphics.library is opened");
     ++native->library_opens; io_error = 0x201;
@@ -98,6 +113,13 @@ extern "C" Library *OpenLibrary(CONST_STRPTR name,ULONG version)
 }
 extern "C" void CloseLibrary(Library *base)
 {
+    if (native && base == &native->neighbor)
+    {
+        check(native->neighbor_closes < native->neighbor_opens,
+              "the native neighbour is closed once for each open");
+        ++native->neighbor_closes; io_error = 0x204;
+        return;
+    }
     check(native && base == &native->gfx.LibNode && native->library_refs,
           "native graphics library hold is balanced");
     ++native->library_closes; --native->library_refs; io_error = 0x202;
@@ -184,6 +206,7 @@ static void ownership_clean(const Native &n)
           "all native graphics-library references are released");
     check(n.font.opens == n.font.closes && n.alternate.opens == n.alternate.closes,
           "context cleanup releases exactly its own default-font references");
+    check(n.neighbor_opens == n.neighbor_closes,"a header copy keeps no native library open");
     check(allocations.empty(),"context and native heap metadata have no remaining allocations");
 }
 static void publication(bool reservation_only)
@@ -194,11 +217,11 @@ static void publication(bool reservation_only)
         ULONG exec = Kaffeine_SetupLibBase(g.ctx,0,"exec.library",4,nullptr,0,nullptr,0);
         ULONG before = Kaffeine_SetupLibBase(g.ctx,1,"before.library",7,nullptr,0,nullptr,0);
         std::vector<UBYTE> preceding(g.ctx->mem + KAFFEINE_LIBBASE_REGION,
-                                     g.ctx->mem + before + 4);
+                                     g.ctx->mem + before + 34);
         ULONG base=g.open("LIBS:graphics.library");
         check(base && g.ctx->libs[2].pos_size == 552,"classic graphics positive area reserves all 552 bytes");
-        check(g.ctx->libs[0].pos_size == 632 && g.ctx->libs[1].pos_size == 4 && exec,
-              "other fake library positive-area sizes retain their previous semantics");
+        check(g.ctx->libs[0].pos_size == 632 && g.ctx->libs[1].pos_size == 34 && exec,
+              "ExecBase keeps 632 bytes and a generic base reserves a struct Library");
         check(!std::memcmp(preceding.data(),g.ctx->mem+KAFFEINE_LIBBASE_REGION,preceding.size()),
               "graphics initialization preserves preceding base and jump tables");
         ULONG f=g.font(base);
@@ -206,10 +229,15 @@ static void publication(bool reservation_only)
               "DefaultFont+154 is a typed view of the exact native default");
         if (!reservation_only && base && g.font_slot(f)>=0)
         {
+            /* The struct Library header of the native graphics.library,
+               40.5 here: ln_Type NT_LIBRARY, lib_NegSize 512 * 6,
+               lib_PosSize 552, lib_Version and lib_Revision, big-endian. */
+            static const UBYTE header[34] = {0,0,0,0, 0,0,0,0, 9,0, 0,0,0,0, 0,0,
+                                             0x0c,0x00, 0x02,0x28, 0,40, 0,5};
             for (unsigned i=0;i<552;++i)
                 if (i<154 || i>=158)
-                    check(g.ctx->mem[base+i] == (i == 236 ? 1 : 0),
-                          "only DefaultFont and the large OS blit bit are published");
+                    check(g.ctx->mem[base+i] == (i < 34 ? header[i] : i == 236 ? 1 : 0),
+                          "only the Library header, DefaultFont and the large OS blit bit are published");
             check(g.ctx->mem[base+552]==0xa5,"clear stops exactly after the reserved positive area");
             for (unsigned i=0;i<512;++i)
             {
@@ -246,6 +274,12 @@ static void publication(bool reservation_only)
             check(!std::memcmp(image.data(),g.ctx->mem+base-512*6,image.size()),
                   "following jump table does not overwrite graphics base or font identity");
             check(m68k_read16(g.ctx,after-6)==0xa000,"following jump table keeps its own trap vector");
+            check(g.ctx->mem[after+8]==9 && m68k_read16(g.ctx,after+16)==512*6 &&
+                  m68k_read16(g.ctx,after+18)==34 && m68k_read16(g.ctx,after+20)==44 &&
+                  m68k_read16(g.ctx,after+22)==2,
+                  "following generic base carries the header of its native library");
+            check(n.neighbor_opens==1 && n.neighbor_closes==1 && n.library_opens==libs,
+                  "the header copy opens and closes only the native library of its own name");
             Kaffeine_FontClosed(g.ctx,f);
             check(Kaffeine_FontNative(g.ctx,f)==&n.font.native && n.font.native.tf_Accessors==2,
                   "borrowed DefaultFont close cannot release the context hold");

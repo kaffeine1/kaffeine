@@ -2,15 +2,18 @@
 
 This fixture builds the complete production graphics-base setup, font bridge,
 heap, bounded guest-buffer checks and CPU interface. It extracts the complete
-`Kaffeine_OpenLibrary()` function from `kaffeine_thunks.c` unchanged; generated
+`Kaffeine_OpenLibrary()` function from `kaffeine_thunks.c` unchanged, with
+`Kaffeine_PublishNativeLibrary()`, which copies the header of the native
+library into each base it makes, in the sources that have it; generated
 library and unrelated manual thunk tables are inert collaborators. Native Exec
-allocation, graphics-library opens and font opens are recording collaborators.
+allocation, library opens and font opens are recording collaborators.
 There is no application code or application input.
 
-The positive area publishes exactly DefaultFont and ChipRevBits0 bit 0
-(the supported OS calls' large-rectangle capability); every other byte and
-both neighboring fake-library regions stay unchanged. This does not model
-custom-chip hardware.
+The positive area publishes exactly the `struct Library` header of the native
+graphics.library (`ln_Type`, `lib_NegSize`, `lib_PosSize`, `lib_Version` and
+`lib_Revision`), DefaultFont and ChipRevBits0 bit 0 (the supported OS calls'
+large-rectangle capability); every other byte and both neighboring
+fake-library regions stay unchanged. This does not model custom-chip hardware.
 
 Run from the repository root, choosing separate output directories:
 
@@ -36,9 +39,13 @@ DefaultFont offset 154, as recorded by the classic layout probe in
 constants exported by the new implementation. They check:
 
 - Dirty base storage is cleared only inside the reserved 552-byte positive
-  area. All other positive fields remain zero. Preceding bases and negative
+  area. All other positive fields remain zero, but for the Library header of
+  the native library (40.5 in the fixture). Preceding bases and negative
   vectors remain intact, and the following jump table starts after the full
-  reservation. Other fake library sizes retain their existing behavior.
+  reservation. A generic fake library reserves a 34-byte `struct Library`;
+  the following generic base carries the header of its own native library
+  (44.2), which is opened with version 0 and closed again, so no copy keeps
+  a native library open, and IoErr stays as the guest left it.
 - DefaultFont is the typed view of the exact real native default. Names,
   monochrome bitmap and signed character tables are copied with classic byte
   order; native node, reply-port and extension pointers remain zero. Font data

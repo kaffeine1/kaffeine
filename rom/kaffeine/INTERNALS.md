@@ -488,6 +488,7 @@ The following checks were inspected and retained:
 | `Kaffeine_HeapFree()` | Coalescing compares sums for equality against address-ordered neighbors. A wrapped sum is below its starting address and cannot equal the later neighbor. This is not validation of arbitrary heap metadata. |
 | `Kaffeine_LoadHunks()` | DOS-owned native seglist/record; checks `size >= 4` and `offset <= size - 4`. Relocation values intentionally wrap modulo 2^32. |
 | `Kaffeine_SetupLibBase()` | Uses host-owned library metadata and a UWORD vector count in the fixed 64 KiB library region. |
+| `Kaffeine_PublishLibrary()` | Writes only the 34 header bytes of a base that setup recorded as a library with a positive area of at least 34 bytes; `base < mem_size` and `mem_size - base >= pos_size` compare without addition. |
 | `Kaffeine_AutoOpenLibs()` | Offsets and name scans remain within the context's fixed 32 MiB arena; the count is at most 16. |
 | `Kaffeine_LoadHunksFromMemory()`, hunk-size table | Masks the count with 0x3FFFFFFF before multiplying by four; the hunk count is at most 100. Heap allocation rejects sizes outside the arena. |
 | `AROSMoira::read8()`, `write8()` and sentinel check | Byte accesses compare the address directly; the sentinel's upper bound is a constant. |
@@ -814,7 +815,7 @@ before `lib->gen_thunks[]` (generated).
 | -534 | TypeOfMem | Returns MEMF_PUBLIC always |
 | -540 | Procure | Stops the guest with rc 20; asynchronous guest semaphore messages are unsupported |
 | -546 | Vacate | Stops the guest with rc 20, paired with refused Procure |
-| -552 | OpenLibrary | A name of at most 255 bytes in guest memory, copied before any 68k code runs, and the low word of D0 as the version, as AmigaOS 3.2.3 takes it. A native library: a fake base and its thunks, whose version is not checked. Else a 68k library from disk, made as Exec makes it (`kaffeine_m68klib.c`): `LoadSeg()` of the file, its hunks copied into guest memory as a seglist, the resident tag in them, for `RTF_AUTOINIT` the library of `MakeLibrary()` (a jump table from LONG pointers or WORD offsets, the `InitStruct()` table, then the node type, name, version and IdString of the resident tag as `InitResident()` sets them, and the init function with D0 base, A0 seglist and A6 SysBase), then `lib_Version` checked and the `Open()` of the library called with the version; a version newer than that of an open library calls its `Expunge()`, as AmigaOS 3.2.3 does, which sets `LIBF_DELEXP` for the last close, and leaves a closed one as it is. Each library keeps its slot of the 32 while its init, `Open()` and `Close()` open and close others, and its own init does not find it yet. The trace names every library with that version and the answer (`native`, `68k at` its base, or `not found`), so that the trace of an application lists the libraries that it needs |
+| -552 | OpenLibrary | A name of at most 255 bytes in guest memory, copied before any 68k code runs, and the low word of D0 as the version, as AmigaOS 3.2.3 takes it. A native library: a fake base and its thunks, with the `struct Library` header of the native library from when the base is made, whose version is not checked. Else a 68k library from disk, made as Exec makes it (`kaffeine_m68klib.c`): `LoadSeg()` of the file, its hunks copied into guest memory as a seglist, the resident tag in them, for `RTF_AUTOINIT` the library of `MakeLibrary()` (a jump table from LONG pointers or WORD offsets, the `InitStruct()` table, then the node type, name, version and IdString of the resident tag as `InitResident()` sets them, and the init function with D0 base, A0 seglist and A6 SysBase), then `lib_Version` checked and the `Open()` of the library called with the version; a version newer than that of an open library calls its `Expunge()`, as AmigaOS 3.2.3 does, which sets `LIBF_DELEXP` for the last close, and leaves a closed one as it is. Each library keeps its slot of the 32 while its init, `Open()` and `Close()` open and close others, and its own init does not find it yet. The trace names every library with that version and the answer (`native`, `68k at` its base, or `not found`), so that the trace of an application lists the libraries that it needs |
 | -558 | InitSemaphore | Initializes the 46-byte guest SignalSemaphore, preserving node name/priority and reserved fields |
 | -564 | ObtainSemaphore | Guest exclusive acquisition/nesting; a call that would wait stops with rc 20 |
 | -570 | ReleaseSemaphore | Decrements guest nesting/queue counts and clears owner on release to zero |
@@ -3964,6 +3965,55 @@ shared font converter. NextText stays NULL in the native copy, matching
 Intuition's single-text contract. Native Intuition chooses the system font
 and handles unavailable-font fallback; no guest byte is written.
 
+
+### Native-backed library headers
+
+Every base that `Kaffeine_OpenLibrary()` makes for a native library carries
+the classic `struct Library` header from the moment it exists, before the
+guest gets the pointer. Classic programs choose their code paths by the
+`lib_Version` of the bases they open: Personal Paint reads that of
+IntuitionBase right after `OpenLibrary()` and takes its Kickstart 1.3 paths
+for version 0.
+
+- Size. `Kaffeine_SetupLibBase()` gives every base but ExecBase a positive
+  area of `sizeof(struct Library)`, 34 bytes, and
+  `Kaffeine_SetupLibBaseSized()` refuses a smaller one. The next base's
+  jump table starts at the 4-aligned end of this area, so a smaller area
+  would put the header of one base into the vectors of the next.
+- Kind. Each record says whether `setup_base()` made a library or a device.
+  `Kaffeine_PublishLibrary()` writes into a library only: it clears the 34
+  bytes and sets `ln_Type` `NT_LIBRARY`, `lib_NegSize` from the vector
+  count, `lib_PosSize` from the record and the version and revision it is
+  given, big-endian. A device, an address that is no base and a record with
+  a smaller area get nothing, and the answer is FALSE. Fields past the
+  header, such as those of IntuitionBase and GfxBase, keep what their
+  owners wrote.
+- Values. `Kaffeine_PublishNativeLibrary()` opens the native library of
+  the same name with version 0, copies `lib_Version` and `lib_Revision` and
+  closes it again; IoErr, which the guest reads through the native task, is
+  restored. No native pointer, open count or cached version stays with the
+  base: a second open finds the same base, header and all, through the
+  library cache, and `CloseLibrary()` of a native-backed base still does
+  nothing. A native library that cannot be opened leaves version and
+  revision 0 and is logged; no version is made up.
+- Not changed. ExecBase (`kaffeine_shadow.c`), DOSBase (`kaffeine_run.c`),
+  Picasso96API.library, bsdsocket.library, devices and 68k libraries from
+  disk keep the headers their own owners write. `ln_Name` and
+  `lib_IdString` stay NULL. A native-backed base is still returned for any
+  version asked for; refusing a version newer than the native library is a
+  separate change.
+- Capacity. The 64 KiB region holds about twenty bases of 512 vectors and
+  the library cache 16 (`KAFFEINE_MAX_LIBMAP`), ExecBase and DOSBase
+  included; a base made beyond the cache is not found again by a later
+  open. These limits predate the header.
+
+`test_library_metadata` checks the sizes, the header bytes, the refusals and
+the extents with the production `kaffeine_memory.c`; `test_library_paths`
+checks one publication for each base made and none for cached opens, failed
+setups, commodities.library, bsdsocket.library or Picasso96API.library. On
+the target, `exec_library_metadata` reads each header right after the first
+open, and `library_versions` of `kaffeine_native` prints the native versions
+it must equal.
 
 ### Deferred Commodities publication
 
