@@ -2032,7 +2032,7 @@ Exec lists keep their empty guest headers.
 | `shadow_destroy(ctx, layout, m68k_addr)` | Remove from registry, free m68k heap. |
 | `shadow_find_layout(name)` | Linear scan of 297-entry table (with static cache for last hit). |
 | `shadow_create_by_name(ctx, name, native)` | Convenience: find_layout + create. |
-| `shadow_init_execbase(ctx, m68k_base, native)` | Syncs fields and AttnFlags, uses `shadow_task()` for ThisTask, initializes guest public semaphore and port lists, registers the other 7 embedded lists and publishes guest heap capacity descriptors on MemList. |
+| `shadow_init_execbase(ctx, m68k_base, native)` | Only for a base whose library record (`Kaffeine_LibraryRecord()`) holds the whole 632-byte classic ExecBase, else 0 with nothing written. Syncs fields and AttnFlags, writes native Exec's version and revision but `lib_NegSize` and `lib_PosSize` of its record (512 vectors, 632 bytes), uses `shadow_task()` for ThisTask, initializes guest public semaphore and port lists, registers the other 7 embedded lists and publishes guest heap capacity descriptors on MemList. |
 | `shadow_task(ctx, native, current)` | Reuses a Task shadow or allocates one cleared 228-byte Process-sized snapshot; only the current process gets this context's CLI, arguments and streams: `Input()`, `Output()` and the native `pr_CES`, the error stream that the Shell sets for `*>` and libnix uses as stderr. |
 | `shadow_register(ctx, m68k_addr, native, type)` | Append to shadow_map[] (max 1024). Defined with lookup/removal in `kaffeine_shadow.c`. |
 | `shadow_lookup(ctx, m68k_addr)` | Linear scan by m68k_addr, returns native pointer or NULL. |
@@ -3996,9 +3996,12 @@ for version 0.
   library cache, and `CloseLibrary()` of a native-backed base still does
   nothing. A native library that cannot be opened leaves version and
   revision 0 and is logged; no version is made up.
-- Not changed. ExecBase (`kaffeine_shadow.c`), DOSBase (`kaffeine_run.c`),
+- Other owners. ExecBase (`kaffeine_shadow.c`), DOSBase (`kaffeine_run.c`),
   Picasso96API.library, bsdsocket.library, devices and 68k libraries from
-  disk keep the headers their own owners write. `ln_Name` and
+  disk keep the headers their own owners write. ExecBase copies native
+  Exec's header except `lib_NegSize` and `lib_PosSize`, which come from its
+  record as for every other base: native SysBase's sizes describe native
+  memory and would claim the guest bases after it. `ln_Name` and
   `lib_IdString` stay NULL. A native-backed base is still returned for any
   version asked for; refusing a version newer than the native library is a
   separate change.

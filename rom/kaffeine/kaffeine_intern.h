@@ -722,6 +722,25 @@ ULONG  Kaffeine_SetupLibBase(struct KaffeineContext *ctx, UWORD lib_id,
                              const struct M68KThunkEntry *thunks, ULONG num_thunks,
                              const struct M68KThunkEntry *gen_thunks, ULONG num_gen_thunks);
 
+/* The record that setup_base() made for the library base at base, or NULL
+   for an address that is no library base of this context, a device base
+   included: its jump table is num_vectors * 6 bytes below base and its
+   positive area pos_size bytes from base. The guest header of every base
+   describes these two extents (Kaffeine_PublishLibrary(), and
+   shadow_init_execbase() for ExecBase). */
+static inline const struct M68KFakeLibBase *
+Kaffeine_LibraryRecord(const struct KaffeineContext *ctx, ULONG base)
+{
+    UWORD i;
+
+    if (!ctx || !base)
+        return NULL;
+    for (i = 0; i < ctx->num_libs; i++)
+        if (ctx->libs[i].m68k_addr == base)
+            return ctx->libs[i].library ? &ctx->libs[i] : NULL;
+    return NULL;
+}
+
 /* The struct Library header of a fake library base: cleared, then ln_Type,
    lib_NegSize and lib_PosSize from its record and the given version and
    revision. FALSE, with nothing written, for an address that is no library

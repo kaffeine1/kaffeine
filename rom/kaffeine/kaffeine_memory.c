@@ -1461,30 +1461,22 @@ ULONG Kaffeine_SetupLibBase(struct KaffeineContext *ctx, UWORD lib_id,
 BOOL Kaffeine_PublishLibrary(struct KaffeineContext *ctx, ULONG base,
                              UWORD version, UWORD revision)
 {
-    UWORD i;
+    const struct M68KFakeLibBase *lib = Kaffeine_LibraryRecord(ctx, base);
+    ULONG negative;
 
-    if (!ctx || !ctx->mem || !base)
+    if (!lib || !ctx->mem)
         return FALSE;
-    for (i = 0; i < ctx->num_libs; i++)
-    {
-        const struct M68KFakeLibBase *lib = &ctx->libs[i];
-        ULONG negative = (ULONG)lib->num_vectors * M68K_JT_SLOT_SIZE;
-
-        if (lib->m68k_addr != base)
-            continue;
-        if (!lib->library || lib->pos_size < M68K_SIZEOF_LIBRARY ||
-            negative > 0xFFFF || base >= ctx->mem_size ||
-            ctx->mem_size - base < lib->pos_size)
-            return FALSE;
-        memset(ctx->mem + base, 0, M68K_SIZEOF_LIBRARY);
-        ctx->mem[base + M68K_LIB_LNTYPE] = NT_LIBRARY;
-        m68k_write16(ctx, base + M68K_LIB_NEGSIZE, (UWORD)negative);
-        m68k_write16(ctx, base + M68K_LIB_POSSIZE, lib->pos_size);
-        m68k_write16(ctx, base + M68K_LIB_VERSION, version);
-        m68k_write16(ctx, base + M68K_LIB_REVISION, revision);
-        return TRUE;
-    }
-    return FALSE;
+    negative = (ULONG)lib->num_vectors * M68K_JT_SLOT_SIZE;
+    if (lib->pos_size < M68K_SIZEOF_LIBRARY || negative > 0xFFFF ||
+        base >= ctx->mem_size || ctx->mem_size - base < lib->pos_size)
+        return FALSE;
+    memset(ctx->mem + base, 0, M68K_SIZEOF_LIBRARY);
+    ctx->mem[base + M68K_LIB_LNTYPE] = NT_LIBRARY;
+    m68k_write16(ctx, base + M68K_LIB_NEGSIZE, (UWORD)negative);
+    m68k_write16(ctx, base + M68K_LIB_POSSIZE, lib->pos_size);
+    m68k_write16(ctx, base + M68K_LIB_VERSION, version);
+    m68k_write16(ctx, base + M68K_LIB_REVISION, revision);
+    return TRUE;
 }
 
 /* A device base for OpenDevice(): OpenLibrary() does not find it, as Exec

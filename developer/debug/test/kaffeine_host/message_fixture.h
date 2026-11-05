@@ -479,6 +479,7 @@ struct Fixture
         m68k_write32(&ctx,exec_base+276,task);
         ctx.num_libs=2;
         auto &e=ctx.libs[0];e.m68k_addr=exec_base;e.jt_start=exec_base-3072;
+        e.num_vectors=512;e.pos_size=632;e.library=TRUE; /* as setup_base() records exec.library */
         e.thunks=exec_manual;e.num_thunks=std::size(exec_manual);e.gen_thunks=exec_poison;e.num_gen_thunks=std::size(exec_poison);
         auto &d=ctx.libs[1];d.m68k_addr=dos_base;d.jt_start=dos_base-3072;
         d.thunks=dos_manual;d.num_thunks=std::size(dos_manual);d.gen_thunks=dos_poison;d.num_gen_thunks=std::size(dos_poison);

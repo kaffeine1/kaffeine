@@ -155,10 +155,15 @@ struct Fixture
             header[24] = list.type;
             header[25] = 0;
         }
+        /* The record of exec.library as setup_base() makes it: 512 vectors
+           below the base and the 632-byte classic ExecBase above it. */
         ctx.num_libs = 1;
         auto &lib = ctx.libs[0];
         lib.m68k_addr = base;
         lib.jt_start = base - 6 * 512;
+        lib.num_vectors = 512;
+        lib.pos_size = 632;
+        lib.library = TRUE;
         std::strcpy(lib.name, "exec.library");
         lib.thunks = manual;
         lib.num_thunks = sizeof(manual) / sizeof(manual[0]);
@@ -510,6 +515,77 @@ static void test_bad_names_and_bases()
           "an absent native current task does not dereference NULL during setup");
 }
 
+static UWORD be16(const Fixture &f, ULONG at)
+{
+    return static_cast<UWORD>(f.memory[at] << 8 | f.memory[at + 1]);
+}
+
+/* The guest ExecBase header describes the guest base of its record, never
+   native SysBase's memory: lib_NegSize its 512 vectors and lib_PosSize its
+   632 bytes, as [base - lib_NegSize, base + lib_PosSize) of every other
+   guest library. Version and revision come from native Exec; type, flags,
+   sum and open count stay as the sync copies them. No byte of the jump
+   table below or of the bases above changes. */
+static void test_execbase_extents()
+{
+    Fixture f(false);
+    f.native.LibNode.lib_NegSize = 1408;
+    f.native.LibNode.lib_PosSize = 3920;
+    f.native.LibNode.lib_Node.ln_Type = 9;          /* NT_LIBRARY */
+    f.native.LibNode.lib_Flags = 0x06;              /* LIBF_CHANGED | LIBF_SUMUSED */
+    f.native.LibNode.lib_Sum = 0x12345678;
+    f.native.LibNode.lib_OpenCnt = 77;
+    const auto before = f.memory;
+    check(f.init() == f.base, "ExecBase with its record initializes");
+    check(be16(f, f.base + 16) == 3072 && be16(f, f.base + 18) == 632,
+          "lib_NegSize and lib_PosSize are those of the guest record, not of native SysBase");
+    check(be16(f, f.base + 20) == 47 && be16(f, f.base + 22) == 12,
+          "lib_Version and lib_Revision stay those of native Exec");
+    check(f.memory[f.base + 8] == 9 && f.memory[f.base + 14] == 0x06 &&
+          m68k_read32(&f.ctx, f.base + 28) == 0x12345678 && be16(f, f.base + 32) == 77,
+          "ln_Type, lib_Flags, lib_Sum and lib_OpenCnt stay as the sync copies them");
+    check(f.native.LibNode.lib_NegSize == 1408 && f.native.LibNode.lib_PosSize == 3920,
+          "the native header keeps its own sizes");
+    bool jump_table = true, above = true;
+    for (ULONG at = f.base - 3072; at < f.base; ++at)
+        jump_table = jump_table && f.memory[at] == before[at];
+    for (ULONG at = f.base + 632; at < 0x2000; ++at)
+        above = above && f.memory[at] == before[at];
+    check(jump_table, "no byte of the jump table below the ExecBase changes");
+    check(above, "no byte between the ExecBase and the first guest allocation changes");
+
+    /* Each initialization syncs the native header again and then writes
+       the record's sizes again: the native ones never stay. */
+    f.native.LibNode.lib_NegSize = 0xFFFF;
+    f.native.LibNode.lib_PosSize = 0xFFFF;
+    check(f.init() == f.base && be16(f, f.base + 16) == 3072 && be16(f, f.base + 18) == 632,
+          "a repeated initialization keeps the record's sizes");
+}
+
+/* Without a library record that holds the whole classic ExecBase, nothing
+   is written: no record, a record of another address, a device record, a
+   positive area of 631 or 34 bytes, which the snapshot would overrun into
+   the next base's jump table, and a jump table larger than lib_NegSize. */
+static void test_execbase_record_refusals()
+{
+    for (unsigned kind = 0; kind < 6; ++kind)
+    {
+        Fixture f(false);
+        auto &lib = f.ctx.libs[0];
+        if (kind == 0) f.ctx.num_libs = 0;
+        if (kind == 1) lib.m68k_addr = f.base + 4;
+        if (kind == 2) lib.library = FALSE;
+        if (kind == 3) lib.pos_size = 631;
+        if (kind == 4) lib.pos_size = 34;
+        if (kind == 5) lib.num_vectors = 20000;
+        const auto before = f.memory;
+        const unsigned allocated = allocations;
+        check(f.init() == 0 && f.memory == before && !f.ctx.num_shadows &&
+              allocations == allocated && !f.ctx.guest_exec_task,
+              "ExecBase without a fitting library record is refused before any write");
+    }
+}
+
 static void test_fallback_control()
 {
     Fixture f;
@@ -534,6 +610,8 @@ int main(int argc, char **argv)
     {
         test_full_table_and_allocation_failure();
         test_bad_names_and_bases();
+        test_execbase_extents();
+        test_execbase_record_refusals();
         test_fallback_control();
     }
     std::printf("Guest task regressions: %u/%u checks passed\n", checks-failures, checks);
