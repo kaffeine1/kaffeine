@@ -755,6 +755,7 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
     unsigned count, i;
     BOOL listed;
     BOOL clean;
+    if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, tcb);
     if (ctx->layer_ops && ctx->layer_ops->task_removed)
         ctx->layer_ops->task_removed(ctx, tcb);
     clean = finish_process_wait(ctx, s, t);
@@ -874,8 +875,10 @@ static void schedule(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
 
     /* Self-removal can end an Info scope. Release the current owner before
        an earlier removed slot can send a broker cleanup RPC. */
+    if (s->current && s->current->state == SLOT_REMOVED && ctx->ibase_task_removed)
+        ctx->ibase_task_removed(ctx, s->current->tcb);
     if (s->current && s->current->state == SLOT_REMOVED && Kaffeine_LayerInfoLocked(ctx) &&
-        ctx->layer_ops->task_removed)
+        ctx->layer_ops && ctx->layer_ops->task_removed)
         ctx->layer_ops->task_removed(ctx, s->current->tcb);
     for (i = 0; i < KAFFEINE_MAX_GUEST_TASKS; i++)
         if (s->child[i].state == SLOT_REMOVED)
@@ -994,6 +997,7 @@ static void sched_end(struct KaffeineContext *ctx)
     struct KaffeineScheduler *s = ctx->sched;
     unsigned i;
 
+    if (ctx->ibase_task_removed && s->current) ctx->ibase_task_removed(ctx, s->current->tcb);
     if (ctx->layer_ops && ctx->layer_ops->release_locks)
         ctx->layer_ops->release_locks(ctx);
     if (s->current != &s->root)
@@ -1026,6 +1030,7 @@ static void sched_end(struct KaffeineContext *ctx)
         if (ctx->layer_ops && ctx->layer_ops->task_removed)
             ctx->layer_ops->task_removed(ctx, t->tcb);
         (void)finish_process_wait(ctx, s, t);
+        if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, t->tcb);
         if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, t->tcb);
         if (ctx->io_task_removed)
             ctx->io_task_removed(ctx, t->tcb);
@@ -1660,6 +1665,7 @@ BOOL Kaffeine_SchedRecoverStart(struct KaffeineContext *ctx, struct KaffeineDosB
     cpu = t->cpu;
     /* Broker is consumed now. Restore a live parent view before destroying
        this CPU; the native caller still owns the module and unloads next. */
+    if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, tcb);
     if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, tcb);
     if (ctx->io_task_removed) ctx->io_task_removed(ctx, tcb);
     if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, tcb);
@@ -2028,6 +2034,7 @@ BOOL Kaffeine_SchedFinishRoot(struct KaffeineContext *ctx, void *cpu, LONG resul
     s->root_result = result;
     s->root.state = SLOT_REMOVED;
     s->reschedule = TRUE;
+    if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, s->root.tcb);
     if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, s->root.tcb);
     if (ctx->io_task_removed)
         ctx->io_task_removed(ctx, s->root.tcb);

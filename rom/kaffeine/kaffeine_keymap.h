@@ -2,7 +2,7 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
     Author: Michele Dipace (@kaffeine1)
 
-    Typed classic keymap.library events.
+    Typed classic keymap.library events and ANSI strings.
 */
 #ifndef KAFFEINE_KEYMAP_H
 #define KAFFEINE_KEYMAP_H
@@ -14,6 +14,7 @@ extern "C" {
 #endif
 
 IPTR Kaffeine_MapRawKey(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_MapANSI(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_KeymapUnsupported(struct KaffeineContext *ctx, void *cpu);
 extern const struct M68KThunkEntry kaffeine_thunks_keymap_manual[];
 extern const ULONG kaffeine_thunks_keymap_manual_count;
@@ -22,7 +23,7 @@ extern const ULONG kaffeine_thunks_keymap_manual_count;
     { 30, Kaffeine_KeymapUnsupported }, \
     { 36, Kaffeine_KeymapUnsupported }, \
     { 42, Kaffeine_MapRawKey }, \
-    { 48, Kaffeine_KeymapUnsupported }
+    { 48, Kaffeine_MapANSI }
 
 #ifdef __cplusplus
 }

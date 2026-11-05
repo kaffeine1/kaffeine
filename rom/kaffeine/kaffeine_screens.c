@@ -573,6 +573,25 @@ static int screen_entry(struct KaffeineContext *ctx, struct Screen *scr)
     return i;
 }
 
+ULONG Kaffeine_ScreenFromWindow(struct KaffeineContext *ctx, struct Screen *scr)
+{
+    int i;
+
+    /* A native window keeps its screen open even without LockPubScreen.
+       Check the private Window registry before dereferencing the screen. */
+    if (!scr || !Kaffeine_ScreenWindows(ctx, scr))
+        return 0;
+    i = screen_entry(ctx, scr);
+    if (i < 0)
+        return 0;
+    if (screen_mirrored(ctx, i))
+        screen_fill(ctx, ctx->pubscreens[i].guest, ctx->pubscreens[i].font,
+                    ctx->pubscreens[i].colormap, scr);
+    if (ctx->layer_ops)
+        ctx->layer_ops->screen_mirrored(ctx, scr);
+    return ctx->pubscreens[i].guest;
+}
+
 /* The public screen of that name, found as Intuition finds it, or NULL */
 static struct Screen *named_screen(const char *name)
 {

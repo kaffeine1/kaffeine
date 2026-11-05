@@ -760,6 +760,14 @@ extern "C" void FreeVec(APTR memory)
         SetIoErr(calls.free_vec_ioerr);
 }
 
+/* The synchronous path adapter has independent real-target ownership and
+   lookup coverage in dos_system_path. This dispatcher fixture never asks
+   for NP_Path; an accidental delegation must not silently pass. */
+extern "C" LONG Kaffeine_SystemPathRun(KaffeineContext *, const char *, TagItem *, SIPTR *)
+{
+    std::abort();
+}
+
 extern "C" LONG SystemTagList(CONST_STRPTR command, const struct TagItem *tags)
 {
     ++calls.system_taglist_calls;

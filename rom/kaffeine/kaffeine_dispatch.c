@@ -58,6 +58,22 @@ static BOOL layer_info_p96_write(const char *name, ULONG lvo, BOOL manual)
     return manual && lvo == 102 && !strcmp(name, "Picasso96API.library");
 }
 
+/* IBase pins the guest CPU but has a different native lock order from
+   LayerInfo: permit only typed readback/scalars and private memory work.
+   No DOS, input DoIO, GUI mutation, broker or native wait is admitted. */
+static BOOL ibase_read(const char *name, ULONG lvo, BOOL manual)
+{
+    if (!strcmp(name, "intuition.library")) return manual && (lvo == 414 || lvo == 420);
+    if (!strcmp(name, "graphics.library")) return manual && (lvo == 792 || lvo == 960);
+    if (!strcmp(name, "cybergraphics.library")) return manual && (lvo == 96 || lvo == 120);
+    if (!strcmp(name, "timer.device")) return manual && (lvo == 60 || lvo == 66);
+    if (!strcmp(name, "utility.library")) return layer_info_utility_arithmetic(lvo, manual);
+    if (!strcmp(name, "exec.library"))
+        return manual && (lvo == 198 || lvo == 210 || lvo == 534 ||
+                          lvo == 624 || lvo == 630 || lvo == 684 || lvo == 690);
+    return FALSE;
+}
+
 BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
                                struct KaffeineCPU *cpu, ULONG pc,
                                struct KaffeineDispatchResult *result)
@@ -97,7 +113,16 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
 
         /* No broker, native wait or synchronous Intuition operation may
            run while this driver owns an explicit LayerInfo semaphore. */
+        if (ctx->ibase_locked && ctx->ibase_locked(ctx) &&
+            !ibase_read(lib->name, lvo, manual))
+        {
+            bug("[kaffeine] %s LVO -%lu while IBase is held, stopping (20)\n",
+                lib->name, (unsigned long)lvo);
+            Kaffeine_StopGuest(ctx, cpu, 20);
+            return TRUE;
+        }
         if (Kaffeine_LayerInfoLocked(ctx) &&
+            !(ctx->ibase_locked && ctx->ibase_locked(ctx)) &&
             (lib->dos ||
              /* Other library classes can load files, open GUI objects or
                 wait internally. This new scope has no safe adapter for them. */

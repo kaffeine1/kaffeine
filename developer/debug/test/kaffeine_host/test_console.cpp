@@ -65,6 +65,13 @@ extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *, const char *)
     require(false, "native library fallback is poisoned");
     return 0;
 }
+/* No input event is written here. */
+extern "C" BOOL Kaffeine_IBaseScreenHold(KaffeineContext *, ULONG, struct Screen **)
+{
+    require(false, "no screen is held for input events");
+    return FALSE;
+}
+extern "C" void Kaffeine_IBaseScreenDrop(struct Screen *) { require(false, "no screen is dropped"); }
 
 extern "C" APTR AllocMem(ULONG size, ULONG flags)
 {
@@ -221,11 +228,28 @@ extern "C" KeyMap *AskKeyMapDefault()
     ++ask_keymap_calls;
     return native_default_keymap;
 }
-extern "C" LONG MapANSI(STRPTR, LONG, STRPTR buffer, LONG length, KeyMap *)
+/* Native MapANSI: what it read and was given, and the bytes it writes from
+   the start of its buffer before returning ansi_result */
+struct AnsiCall
+{
+    std::vector<UBYTE> string, buffer;
+    IPTR string_address, buffer_address;
+    LONG count, length;
+    KeyMap *keymap;
+};
+static AnsiCall ansi_call;
+static std::vector<UBYTE> ansi_bytes;
+static LONG ansi_result;
+extern "C" LONG MapANSI(STRPTR string, LONG count, STRPTR buffer, LONG length, KeyMap *keymap)
 {
     ++mapansi_calls;
-    if (buffer && length > 0) buffer[0] = '#';
-    return 1;
+    require(count > 0 && string && buffer, "native MapANSI gets a positive count and native spans");
+    const ULONG room = length > 0 ? 2 * static_cast<ULONG>(length) : 0;
+    ansi_call = {std::vector<UBYTE>(string, string + count), std::vector<UBYTE>(buffer, buffer + room),
+                 reinterpret_cast<IPTR>(string), reinterpret_cast<IPTR>(buffer), count, length, keymap};
+    require(ansi_bytes.size() <= room, "native MapANSI writes within its pairs");
+    if (!ansi_bytes.empty()) std::memcpy(buffer, ansi_bytes.data(), ansi_bytes.size());
+    return ansi_result;
 }
 extern "C" WORD MapRawKey(InputEvent *event, STRPTR buffer, LONG length, KeyMap *keymap)
 {
@@ -333,14 +357,23 @@ struct Fixture
         lib.gen_thunks = device_poison; lib.num_gen_thunks = std::size(device_poison);
         return call_at(ctx.console_base, lvo, a0, a1, 0xD0123456, length, keymap);
     }
-    ULONG keymap(ULONG a0 = event, ULONG a1 = output, ULONG length = 8, ULONG map = 0)
+    ULONG keymap_library()
     {
         if (!keymap_base)
             keymap_base = Kaffeine_SetupLibBase(&ctx, ctx.num_libs, "keymap.library", 48,
                 keymap_manual, std::size(keymap_manual),
                 kaffeine_thunks_keymap_gen, kaffeine_thunks_keymap_gen_count);
         require(keymap_base != 0, "keymap base has manual overrides before the actual generated fallbacks");
-        return call_at(keymap_base, 42, a0, a1, 0xD0123456, length, map);
+        return keymap_base;
+    }
+    ULONG keymap(ULONG a0 = event, ULONG a1 = output, ULONG length = 8, ULONG map = 0)
+    {
+        return call_at(keymap_library(), 42, a0, a1, 0xD0123456, length, map);
+    }
+    /* MapANSI(A0=string, D0=count, A1=buffer, D1=length, A2=keyMap) */
+    ULONG mapansi(ULONG string, ULONG count, ULONG buffer, ULONG length, ULONG map = 0)
+    {
+        return call_at(keymap_library(), 48, string, buffer, count, length, map);
     }
     bool stopped() const { return !ctx.running && ctx.exit_code == 20; }
 };
@@ -913,7 +946,7 @@ static void test_unsupported_keymap_tables()
     require(!set_keymap_calls && !ask_keymap_calls && !mapansi_calls &&
             native_default_keymap == &default_keymap,
             "no previous conversion has changed or exposed the native system keymap");
-    for (ULONG vector : {30u, 36u, 48u})
+    for (ULONG vector : {30u, 36u})
     {
         std::vector<UBYTE> before(f.memory, f.memory + Fixture::arena_size + KAFFEINE_MEM_GUARD);
         unsigned calls = key_calls, allocs = allocation_calls;
@@ -921,11 +954,153 @@ static void test_unsupported_keymap_tables()
                                  4, 8, Fixture::name);
         require(!set_keymap_calls && !ask_keymap_calls && !mapansi_calls && key_calls == calls &&
                 native_default_keymap == &default_keymap && allocation_calls == allocs,
-                "no native SetKeyMapDefault, AskKeyMapDefault, MapANSI or conversion is called");
+                "no native SetKeyMapDefault, AskKeyMapDefault or conversion is called");
         require(result == 20 && f.stopped(),
                 "unsupported keymap table vectors stop before the generated fallback");
         require(!std::memcmp(before.data(), f.memory, before.size()),
                 "unsupported table operations leave input, output and every guest guard untouched");
+    }
+}
+
+/* MapANSI on private native copies: amigentd's type_char() first, then the
+   pair bound, partial writes, counts, lengths, storage and refusals */
+static void test_keymap_mapansi()
+{
+    Fixture f;
+    constexpr ULONG string = 0x3700, buffer = 0x3800;
+    const IPTR lo = reinterpret_cast<IPTR>(f.memory), hi = lo + Fixture::arena_size + KAFFEINE_MEM_GUARD;
+    auto native = [&](IPTR p) { return p < lo || p >= hi; };
+    auto filled = [&](ULONG at, ULONG n, UBYTE v) {
+        for (ULONG i = 0; i < n; ++i) if (f.memory[at + i] != v) return false;
+        return true;
+    };
+    auto pairs_are = [&](ULONG at, const std::vector<UBYTE> &bytes) {
+        return !std::memcmp(f.memory + at, bytes.data(), bytes.size());
+    };
+
+    /* type_char(0xE9): UWORD in = ch << 8 and UWORD buf[8], so a count of
+       one and eight pairs; the default map types it as Alt-F, then E */
+    std::memset(f.memory + buffer - 8, 0xA5, 64);
+    f.memory[string] = 0xE9;
+    f.memory[string + 1] = 0;
+    ansi_bytes = {0x23, 0x10, 0x12, 0x00};
+    ansi_result = 2;
+    unsigned allocs = allocation_calls;
+    const size_t live = blocks.size();
+    require(f.mapansi(string, 1, buffer, 8) == 2 && f.ctx.running && mapansi_calls == 1 &&
+            ansi_call.count == 1 && ansi_call.string == std::vector<UBYTE>{0xE9} && ansi_call.length == 3 &&
+            !ansi_call.keymap && native(ansi_call.string_address) && native(ansi_call.buffer_address),
+            "type_char() reaches native MapANSI on private copies, with three pairs for one character");
+    require(ansi_call.buffer == std::vector<UBYTE>(6, 0xA5),
+            "the native buffer starts with the guest's own bytes");
+    require(pairs_are(buffer, ansi_bytes) && filled(buffer + 4, 12, 0xA5) && filled(buffer - 8, 8, 0xA5) &&
+            f.memory[string] == 0xE9 && f.memory[string + 1] == 0,
+            "the two pairs come back and every other byte keeps its value");
+    require(allocation_calls == allocs + 1 && blocks.size() == live,
+            "one native allocation holds both copies and is freed");
+
+    /* Native MapANSI may write pairs before it fails */
+    f.memory[string] = 'a';
+    f.memory[string + 1] = 'b';
+    std::memset(f.memory + buffer, 0xA5, 16);
+    ansi_bytes = {0x20, 0x00};
+    ansi_result = -1;
+    require(f.mapansi(string, 2, buffer, 1) == 0xFFFFFFFF && ansi_call.length == 1 &&
+            ansi_call.string == std::vector<UBYTE>{'a', 'b'} && pairs_are(buffer, ansi_bytes) &&
+            filled(buffer + 2, 14, 0xA5), "a full buffer returns -1 with the pair written before it");
+    std::memset(f.memory + buffer, 0xA5, 16);
+    ansi_result = 0;
+    require(f.mapansi(string, 2, buffer, 8) == 0 && ansi_call.length == 6 && pairs_are(buffer, ansi_bytes) &&
+            filled(buffer + 2, 14, 0xA5), "a missing character returns 0 with the pairs written before it");
+
+    /* A large capacity is bounded by three pairs a character; a long string
+       is copied whole */
+    constexpr ULONG last = Fixture::arena_size - 6;
+    ansi_bytes = {1, 2, 3, 4, 5, 6};
+    ansi_result = 3;
+    require(f.mapansi(string, 1, last, 0x7FFFFFFF) == 3 && ansi_call.length == 3 &&
+            pairs_are(last, ansi_bytes) && f.memory[Fixture::arena_size] == 0xA5,
+            "the full positive LONG capacity is bounded by the string, up to the last arena byte");
+    constexpr ULONG text = 0x4000, out = 0x5000;
+    std::vector<UBYTE> letters(200);
+    for (size_t i = 0; i < letters.size(); ++i) letters[i] = static_cast<UBYTE>('a' + i % 26);
+    std::memcpy(f.memory + text, letters.data(), letters.size());
+    std::memset(f.memory + out, 0xA5, 2000);
+    ansi_bytes.assign(400, 0x33);
+    ansi_result = 200;
+    require(f.mapansi(text, 200, out, 1000) == 200 && ansi_call.string == letters && ansi_call.length == 600 &&
+            ansi_call.buffer.size() == 1200 && filled(out, 400, 0x33) && filled(out + 400, 1600, 0xA5),
+            "a 200-character string is copied whole, with 600 pairs of room");
+    std::memset(f.memory + buffer, 0xA5, 16);
+    ansi_bytes = {0x44, 0x00};
+    ansi_result = 1;
+    require(f.mapansi(string, 1, buffer + 1, 8) == 1 && f.memory[buffer] == 0xA5 &&
+            pairs_are(buffer + 1, ansi_bytes) && filled(buffer + 3, 13, 0xA5), "an odd buffer is valid");
+
+    /* Nothing to read or write */
+    unsigned calls = mapansi_calls;
+    allocs = allocation_calls;
+    require(f.mapansi(0, 0, 0, 8) == 0 && f.ctx.running && mapansi_calls == calls && allocation_calls == allocs,
+            "a zero count returns 0 without reading, allocating or calling");
+    ansi_bytes.clear();
+    ansi_result = -1;
+    for (ULONG length : {0u, 0xFFFFFFFFu, 0x80000000u})
+        require(f.mapansi(string, 1, 0, length) == 0xFFFFFFFF && f.ctx.running &&
+                ansi_call.length == static_cast<LONG>(length) && ansi_call.buffer.empty(),
+                "with no pairs the buffer, even NULL, is not checked, and native MapANSI reports it");
+
+    /* Adjacent spans are fine */
+    ansi_bytes = {0x20, 0x00};
+    ansi_result = 1;
+    require(f.mapansi(string, 1, string + 1, 8) == 1 && f.mapansi(string, 1, string - 6, 8) == 1 &&
+            f.memory[string] == 'a', "a buffer right after or before the string is valid");
+
+    /* Refusals: rc 20 before any allocation or native call, every byte kept */
+    auto refused = [&](ULONG s, ULONG count, ULONG b, ULONG length, ULONG map = 0) {
+        std::vector<UBYTE> before(f.memory, f.memory + Fixture::arena_size + KAFFEINE_MEM_GUARD);
+        const unsigned n = mapansi_calls, a = allocation_calls;
+        require(f.mapansi(s, count, b, length, map) == 20 && f.stopped() && mapansi_calls == n &&
+                allocation_calls == a, "invalid MapANSI input stops before allocation or native conversion");
+        require(!std::memcmp(before.data(), f.memory, before.size()),
+                "a MapANSI refusal leaves every guest byte and arena guard unchanged");
+    };
+    for (ULONG map : {Fixture::output, 0xFFFFFFFFu, Fixture::arena_size})
+        refused(string, 1, buffer, 8, map);
+    for (ULONG count : {0xFFFFFFFFu, 0x80000000u})
+        refused(string, count, buffer, 8);
+    for (auto [s, count] : {std::pair{0u, 1u}, {Fixture::arena_size - 1, 2u}, {Fixture::arena_size, 1u},
+                           {0xFFFFFFFFu, 1u}, {string, Fixture::arena_size}})
+        refused(s, count, buffer, 8);
+    for (ULONG b : {0u, Fixture::arena_size - 5, Fixture::arena_size, 0xFFFFFFFEu})
+        refused(string, 1, b, 8);
+    refused(string, 2, string + 1, 8);
+    refused(string, 1, string - 5, 8);
+    refused(string + 1, 1, string, 1);
+    for (const auto &lib : {f.ctx.libs[0], f.ctx.libs[1]})
+    {
+        refused(string, 1, lib.m68k_addr, 1);
+        refused(lib.jt_start, 1, buffer, 8);
+    }
+    f.ctx.fonts[0].guest = 0x3900; f.ctx.fonts[0].allocation_size = 52;
+    refused(string, 1, 0x3901, 1);
+    refused(0x3901, 1, buffer, 8);
+    f.ctx.fonts[0].guest = f.ctx.fonts[0].allocation_size = 0;
+    ULONG mirror = Kaffeine_MirrorAlloc(&f.ctx, 32);
+    require(mirror != 0, "a bridge mirror block exists");
+    refused(string, 1, mirror, 1);
+    refused(mirror, 1, buffer, 8);
+    require(Kaffeine_MirrorAbort(&f.ctx, mirror), "the unpublished mirror is released by its typed owner");
+
+    /* A failed native allocation stops before the native call */
+    {
+        std::vector<UBYTE> before(f.memory, f.memory + Fixture::arena_size + KAFFEINE_MEM_GUARD);
+        calls = mapansi_calls;
+        allocs = allocation_calls;
+        fail_allocation = 1;
+        require(f.mapansi(string, 1, buffer, 8) == 20 && f.stopped() && mapansi_calls == calls &&
+                allocation_calls == allocs + 1 && blocks.size() == live &&
+                !std::memcmp(before.data(), f.memory, before.size()),
+                "a failed native allocation stops with 20 and changes nothing");
     }
 }
 
@@ -945,6 +1120,7 @@ int main()
     test_keymap_storage();
     test_keymap_long_length();
     test_unsupported_keymap_tables();
+    test_keymap_mapansi();
     require(blocks.empty() && requests.empty() && ports.empty() && !signals, "all fixtures leave no native allocations, opens, ports or signals");
     std::printf("console.device/keymap.library: %u checks passed\n", checks);
     return 0;

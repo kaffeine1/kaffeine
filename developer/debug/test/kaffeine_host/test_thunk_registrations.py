@@ -104,9 +104,10 @@ DEVICES = ("timer", "console", "keyboard", "input")
 
 # These device slots deliberately stop the guest; they claim no native API.
 CONSOLE_REFUSED = frozenset((6, 12, 18, 24, 30, 36, 42, 54, 60, 66, 72))
-# The supported keymap profile uses only MapRawKey with the native default.
-# No guest pointer may replace or expose the system's native KeyMap tables.
-KEYMAP_REFUSED = frozenset((30, 36, 48))
+# The supported keymap profile uses MapRawKey and MapANSI with the native
+# default. No guest pointer may replace or expose the system's native KeyMap
+# tables.
+KEYMAP_REFUSED = frozenset((30, 36))
 # Every vector of keyboard.device and input.device: Open, Close, Expunge and
 # the reserved one, then BeginIO, AbortIO and the .conf function list
 # (input's PeekQualifier), which main() checks against the native .conf.
@@ -129,7 +130,7 @@ LAYERS_REFUSED = frozenset((30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 108, 114,
 GRAPHICS_GELS_REFUSED = frozenset((96, 102, 108, 114, 126, 132, 138, 144, 150, 156, 162, 168, 174, 600))
 GRAPHICS_QUEUED_BLIT_REFUSED = frozenset((276, 294))
 GRAPHICS_LAYER_REFUSED = frozenset((444, 450))
-CYBERGRAPHICS_BITMAP_REFUSED = frozenset((96, 168, 174, 180, 186))
+CYBERGRAPHICS_BITMAP_REFUSED = frozenset((168, 174, 180, 186))
 GRAPHICS_BITMAP_REFUSED = frozenset((606, 636, 678, 918, 924, 942, 1020, 1206))
 # GetColorMap, AttachPalExtra, ObtainPen and FindColor: no owned ColorMaps
 # or other pen calls yet. ObtainBestPenA and ReleasePen are
@@ -148,6 +149,12 @@ def module_name(library):
 
 
 CASES = (
+    ("intuition", "lockibase.c", "LockIBase", "Kaffeine_LockIBase"),
+    ("intuition", "unlockibase.c", "UnlockIBase", "Kaffeine_UnlockIBase"),
+    ("intuition", "screentofront.c", "ScreenToFront", "Kaffeine_IBaseScreenToFront"),
+    ("graphics", "getvpmodeid.c", "GetVPModeID", "Kaffeine_IBaseVPMode"),
+    ("cybergraphics", "getcybermapattr.c", "GetCyberMapAttr", "Kaffeine_GetCyberMapAttr"),
+    ("cybergraphics", "readpixelarray.c", "ReadPixelArray", "Kaffeine_ReadPixelArray"),
     ("intuition", "allocremember.c", "AllocRemember", "thunk_intuition_AllocRemember"),
     ("intuition", "freeremember.c", "FreeRemember", "thunk_intuition_FreeRemember"),
     ("graphics", "openmonitor.c", "OpenMonitor", "thunk_gfx_OpenMonitor"),
@@ -166,6 +173,7 @@ CASES = (
     ("diskfont", "opendiskfont.c", "OpenDiskFont", "thunk_diskfont_OpenDiskFont"),
     ("console", "rawkeyconvert.c", "RawKeyConvert", "kaffeine_console_RawKeyConvert"),
     ("keymap", "maprawkey.c", "MapRawKey", "Kaffeine_MapRawKey"),
+    ("keymap", "mapansi.c", "MapANSI", "Kaffeine_MapANSI"),
     ("mathffp", "spfix.c", "SPFix", "kaffeine_mathffp_SPFix"),
     ("mathffp", "spflt.c", "SPFlt", "kaffeine_mathffp_SPFlt"),
     ("mathffp", "spcmp.c", "SPCmp", "kaffeine_mathffp_SPCmp"),
@@ -1191,6 +1199,8 @@ def check_p96_audit(source, entries, sdk):
 
 # Handlers whose name cannot be the one of the function they implement
 HANDLER_FUNCTIONS = {
+    "Kaffeine_IBaseScreenToFront": "ScreenToFront",
+    "Kaffeine_IBaseVPMode": "GetVPModeID",
     # Kaffeine_CreateContext() makes the context of the emulator itself
     "Kaffeine_CreateGadgetContext": "CreateContext",
 }
@@ -1299,7 +1309,7 @@ def main():
             r"\s*\*,\s*\w+\s*,\s*(\d+)\s*,\s*"
             r"(?:Dos|Exec|Intuition|Graphics|Utility|Locale|GadTools|"
             r"MathIeeeDoubBas|MathIeeeDoubTrans|Mathieeesingbas|Mathffp|Timer|Console|Keymap|Diskfont|Workbench|Icon|"
-            r"Layers)\s*\)"
+            r"Layers|Cybergraphics)\s*\)"
         )
         location = re.search(pattern, native, re.DOTALL)
         if not location:
@@ -1394,7 +1404,7 @@ def main():
             r'\s*\(void\)cpu;\s*return Kaffeine_IORefuse\(ctx,\s*"[^"\n]*"\);\s*',
             keymap_refused[0]):
         raise ValueError("keymap unsupported slots must only call Kaffeine_IORefuse")
-    if set(parse_conf_file(library_source_dir(root, "keymap") / "keymap.conf")) != KEYMAP_REFUSED | {42}:
+    if set(parse_conf_file(library_source_dir(root, "keymap") / "keymap.conf")) != KEYMAP_REFUSED | {42, 48}:
         raise ValueError("keymap manual profile does not cover its exact native vectors")
     device_refused_body = re.findall(r"static IPTR device_unsupported\([^\n]*\n\{(.*?)\n\}",
                                      sources["kaffeine_exec_io.c"], re.DOTALL)

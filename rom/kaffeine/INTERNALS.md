@@ -802,7 +802,7 @@ before `lib->gen_thunks[]` (generated).
 | -414 | CloseLibrary | Calls the `Close()` of a 68k library from disk, also for a base that its `Open()` made for the opener (one whose `Close()` lies in the hunks of the library); the library goes when `Close()` gives its seglist back after an expunge; nothing for the base of a native library (`kaffeine_m68klib.c`) |
 | -444 | OpenDevice | timer.device on a native timerequest, and console.device unit -1 on a native IOStdReq, sharing one private native reply port and signal; keyboard.device and input.device unit zero use native IOStdReq adapters. Console accepts the 32-byte guest IORequest prefix, including zero mn_Length; its guest unit is -1. Adapter selection uses trusted native records |
 | -450 | CloseDevice | Closes and deletes native request and port. Console clears guest io_Device and io_Unit to zero; timer keeps its -1 closed-device marker |
-| -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter |
+| -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. keyboard.device KBD_READMATRIX and input.device IND_WRITEEVENT through temporary native copies. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter |
 | -462 | SendIO | Current-task native async timer submit with checked reply queues; copied MICROHZ/VBLANK timerequests share one private FIFO completion port |
 | -468 | CheckIO | Pumps completions and returns NULL only while the trusted native record is pending; unknown requests retain Exec marker checks |
 | -474 | WaitIO | Captured-owner wait for pending native timer I/O, yielding through the guest scheduler when active; completes in place or removes only its own queued reply |
@@ -2143,8 +2143,8 @@ reused only after the old worker has acknowledged retirement.
 This subset does not implement DNS, sendto/recvfrom, SocketBaseTags, arbitrary
 ioctl or guest socket callbacks. Positive linger is refused rather than
 blocking driver cleanup. Amigent protocol tests cover loopback networking;
-screen readback, input injection, TLS and physical targets require separate
-support and verification.
+screen readback, input injection (see the Device I/O Path), TLS and physical
+targets require separate support and verification.
 
 ## Device I/O Path
 
@@ -2153,7 +2153,28 @@ IOStdReq records and guest Device bases. Keyboard `KBD_READMATRIX` copies only
 the bounded native result (at most 32 bytes), using temporary native storage;
 the caller's data/length/offset fields stay intact. Output cannot overlap its
 request, other protected request/port/font snapshots or active guest queues.
-Input commands return `IOERR_NOCMD` without inspecting guest handler pointers.
+
+Input `IND_WRITEEVENT` writes the one 68k InputEvent at `io_Data`. The AmigaOS
+autodoc and AROS `processevents.c` both ignore `ie_NextEvent`, and AROS does
+not read `io_Length`, so the bridge follows neither. Before any side effect it
+checks that the event is at an even address with 22 bytes of writable guest
+memory apart from the request, and builds a native InputEvent from the class,
+subclass, code, qualifier, timestamp and the scalar `ie_position` of the class:
+the dead-key bytes of RAWKEY, or coordinates for NULL, RAWMOUSE, POINTERPOS,
+TIMER, NEWPREFS, DISKREMOVED, DISKINSERTED, NEWMOUSE and compatible
+NEWPOINTERPOS. A NEWPOINTERPOS/PIXEL event gets a native IEPointerPixel whose
+screen `Kaffeine_IBaseScreenHold()` (`kaffeine_intuibase.h`) holds as a public
+visitor for this call alone; Intuition's handler reads that screen. The input
+task runs every handler before it replies, so neither native copy outlives the
+synchronous native DoIO. Afterwards the guest event gets a NULL link and the
+device's timestamp, as both systems write in place; no other handler change
+comes back, since it may hold native addresses. A bad event, IEPointerPixel or
+screen gives `IOERR_BADADDRESS`. Classes whose position is an address (gadget,
+window, requester, menu) and the tablet subclasses give `IOERR_NOCMD`. The
+dispatcher already refuses DoIO while IBase or LayerInfo is held, so the
+native call never waits on a lock the guest owns.
+
+Other input commands return `IOERR_NOCMD` without inspecting guest handler pointers.
 All direct keyboard/input vectors are refused. A classic CreateExtIO
 `NT_MESSAGE` marker is accepted by DoIO; no asynchronous submit exists for
 these adapters, so it does not represent a native request in flight.

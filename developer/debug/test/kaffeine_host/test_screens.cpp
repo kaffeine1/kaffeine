@@ -1356,6 +1356,38 @@ static void test_window_retention()
     }
 }
 
+/* OpenWindow's native lifetime supplies the hold, even when no explicit
+   public-screen lock has ever been made by the guest. */
+static void test_window_screen_borrow()
+{
+    Fixture f;
+    auto &s = f.add();
+    Window first{}, second{}; first.WScreen = second.WScreen = &s.screen;
+    assert(!Kaffeine_ScreenFromWindow(&f.ctx, nullptr));
+    assert(!Kaffeine_ScreenFromWindow(&f.ctx, &s.screen));
+    assert(f.entries() == 0 && f.avail() == f.initial_heap);
+    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &first, KAFFEINE_SHADOW_WINDOW));
+    const ULONG g = Kaffeine_ScreenFromWindow(&f.ctx, &s.screen);
+    assert(g && f.entries() == 1 && Kaffeine_ScreenNative(&f.ctx, g) == &s.screen);
+    assert(f.word(g + 12) == s.screen.Width && f.word(g + 14) == s.screen.Height);
+    assert(s.node.psn_VisitorCount == 0); // the live window is the hold
+    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3600, &second, KAFFEINE_SHADOW_WINDOW));
+    assert(Kaffeine_ScreenFromWindow(&f.ctx, &s.screen) == g);
+    Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
+    f.ctx.screen_release(&f.ctx, &s.screen);
+    assert(Kaffeine_ScreenNative(&f.ctx, g) == &s.screen);
+    Kaffeine_ShadowForget(&f.ctx, 0x3600, KAFFEINE_SHADOW_WINDOW);
+    f.ctx.screen_release(&f.ctx, &s.screen);
+    f.absent(g, &s.screen);
+    assert(!f.entries() && !f.ctx.num_shadows && f.avail() == f.initial_heap);
+    // A new window can reacquire it; retiring the old borrow did not close it.
+    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &first, KAFFEINE_SHADOW_WINDOW));
+    assert(Kaffeine_ScreenFromWindow(&f.ctx, &s.screen));
+    Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
+    f.ctx.screen_release(&f.ctx, &s.screen);
+    assert(f.avail() == f.initial_heap && native->count(LOCK) == 0);
+}
+
 static void test_owned_screen()
 {
     Fixture f;
@@ -3720,6 +3752,7 @@ int main()
         { "Unlock ownership, ASCII case, first matching name and ignored A1", test_unlock_ownership_and_names },
         { "Names must terminate in guest memory before Intuition", test_bad_names },
         { "Only windows on this screen retain it until their shadows are gone", test_window_retention },
+        { "Window lifetime supplies a typed default-screen borrow without an explicit lock", test_window_screen_borrow },
         { "An opened type-5 Screen is reused unchanged and never freed by unlock", test_owned_screen },
         { "The BitMap query answers locked screens of either shadow type, leaves opened ones to the blit rules, refuses broken entries", test_bitmap_query },
         { "No memory, fewer than three shadows, private/missing native screens leave no lock, allocation or font", test_lock_failures },

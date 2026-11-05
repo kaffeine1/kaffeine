@@ -62,6 +62,7 @@
 #include "kaffeine_remember.h"
 #include "kaffeine_keymap.h"
 #include "kaffeine_socket.h"
+#include "kaffeine_intuibase.h"
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -158,6 +159,9 @@ ULONG Kaffeine_OpenLibrary(struct KaffeineContext *ctx, const char *name)
                 manual = kaffeine_thunks_keymap_manual;
                 manual_count = kaffeine_thunks_keymap_manual_count;
             }
+            if (strcmp(name, "intuition.library") == 0)
+                return Kaffeine_SetupLibBaseSized(ctx,ctx->num_libs,name,KAFFEINE_MAX_LVO,80,
+                        manual,manual_count,kaffeine_all_gen_libs[i].thunks,kaffeine_all_gen_libs[i].count);
             if (strcmp(name, "graphics.library") == 0)
                 return Kaffeine_SetupGraphicsBase(ctx, manual, manual_count,
                                                   kaffeine_all_gen_libs[i].thunks,
@@ -695,6 +699,8 @@ const struct M68KThunkEntry kaffeine_thunks_intuition_manual[] = {
     { 84, thunk_intuition_CurrentTime },
     { 330, thunk_intuition_IntuiTextLength },
     { 348, thunk_intuition_AutoRequest },
+    { 252, Kaffeine_IBaseScreenToFront },
+    { 414, Kaffeine_LockIBase }, { 420, Kaffeine_UnlockIBase },
     KAFFEINE_INTUITION_REMEMBER_THUNKS,
     KAFFEINE_INTUITION_COMPAT_THUNKS,
     KAFFEINE_INTUITION_WINDOW_THUNKS,
@@ -731,6 +737,7 @@ const ULONG kaffeine_thunks_keymap_manual_count =
 
 /* ── Graphics manual thunks (shadow RastPort) ── */
 const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
+    { 792, Kaffeine_IBaseVPMode },
     KAFFEINE_GRAPHICS_COMPAT_THUNKS,
     KAFFEINE_GRAPHICS_RASTPORT_THUNKS,
     KAFFEINE_GRAPHICS_DISPLAY_THUNKS,
@@ -745,6 +752,7 @@ const ULONG kaffeine_thunks_graphics_manual_count =
 
 /* Bitmap and native-lock-handle calls without a classic converter. */
 const struct M68KThunkEntry kaffeine_thunks_cybergraphics_manual[] = {
+    { 96, Kaffeine_GetCyberMapAttr }, { 120, Kaffeine_ReadPixelArray },
     KAFFEINE_CYBERGRAPHICS_BITMAP_THUNKS,
     { 0, NULL }
 };

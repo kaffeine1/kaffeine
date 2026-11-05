@@ -65,6 +65,17 @@ static ULONG kbd_length;
 static const void *kbd_data;
 static long kbd_actual = -1;
 static const UBYTE *arena_lo, *arena_hi;    /* guest memory, never a native address */
+/* input.device: the native event and pixel position that IND_WRITEEVENT
+   saw, its io_Length, and the screen holds open during the call */
+static InputEvent written;
+static IEPointerPixel written_pixel;
+static ULONG written_length;
+static int holds_in_doio = -1;
+/* A typed screen lease: one guest screen can be held */
+struct Screen { UBYTE storage[16]; };
+static Screen native_screen;
+static ULONG holdable_screen, held_screen;
+static unsigned hold_calls, screen_holds, screen_drops;
 /* Asynchronous timer.device: a request that SendIO() gave stays at the
    device until the test completes it, which replies it to its native port
    and signals the native task; nothing completes by itself. */
@@ -94,6 +105,21 @@ extern "C" WORD MapRawKey(InputEvent *, STRPTR, LONG, KeyMap *)
 {
     assert(false && "timer fixture must not reach native keymap conversion");
     return -1;
+}
+extern "C" BOOL Kaffeine_IBaseScreenHold(KaffeineContext *, ULONG guest, Screen **out)
+{
+    ++hold_calls;
+    held_screen = guest;
+    *out = nullptr;
+    if (!guest || guest != holdable_screen) return FALSE;
+    ++screen_holds;
+    *out = &native_screen;
+    return TRUE;
+}
+extern "C" void Kaffeine_IBaseScreenDrop(Screen *screen)
+{
+    assert(screen == &native_screen && screen_drops < screen_holds);
+    ++screen_drops;
 }
 
 extern "C" APTR AllocMem(ULONG size, ULONG)
@@ -374,15 +400,42 @@ static LONG keyboard_doio(IOStdReq *req)
     return doio_error;
 }
 
+/* AROS input.device's IND_WRITEEVENT (processevents.c): one event, whose
+   link and timestamp the device writes, through a handler that rewrites a
+   pixel position in place as Intuition's does. The input task replies,
+   so the request is no longer QUICK. */
+static LONG input_doio(IOStdReq *req)
+{
+    ++input_doio_calls;
+    assert(req->io_Command == IND_WRITEEVENT && !in_arena(req) && !in_arena(req->io_Data));
+    auto *ie = static_cast<InputEvent *>(req->io_Data);
+    written_length = req->io_Length;
+    written = *ie;
+    if (ie->ie_Class == IECLASS_NEWPOINTERPOS && ie->ie_SubClass == IESUBCLASS_PIXEL)
+    {
+        assert(ie->ie_EventAddress && !in_arena(ie->ie_EventAddress));
+        written_pixel = *static_cast<IEPointerPixel *>(ie->ie_EventAddress);
+        holds_in_doio = (int)(screen_holds - screen_drops);
+        ie->ie_Class = IECLASS_RAWMOUSE;
+        ie->ie_X = written_pixel.iepp_Position.X + 1;
+        ie->ie_Y = written_pixel.iepp_Position.Y + 1;
+    }
+    ie->ie_NextEvent = nullptr;
+    ie->ie_Code = 0x1234;
+    ie->ie_TimeStamp.tv_secs = 777;
+    ie->ie_TimeStamp.tv_micro = 888;
+    req->io_Flags = 0;
+    req->io_Message.mn_Node.ln_Type = NT_REPLYMSG;
+    req->io_Error = doio_error;
+    return doio_error;
+}
+
 extern "C" LONG DoIO(IORequest *req)
 {
     auto *tr = reinterpret_cast<timerequest *>(req);
     ++doio_calls;
     if (req->io_Device == &native_input)
-    {
-        ++input_doio_calls;
-        return IOERR_NOCMD;
-    }
+        return input_doio(reinterpret_cast<IOStdReq *>(req));
     if (req->io_Device == &native_keyboard)
         return keyboard_doio(reinterpret_cast<IOStdReq *>(req));
     assert(req->io_Device == &native_timer);
@@ -528,6 +581,8 @@ struct Fixture
         native_input.dd_Library.lib_Revision = 4;
         kbd_doio_calls = input_doio_calls = 0;
         kbd_length = 0; kbd_data = nullptr; kbd_actual = -1;
+        written = {}; written_pixel = {}; written_length = 0; holds_in_doio = -1;
+        holdable_screen = held_screen = 0; hold_calls = screen_holds = screen_drops = 0;
         at_device.clear(); native_queues.clear(); native_signals = 0; native_log.clear();
         sendio_calls = abortio_calls = waitio_calls = wait_calls = create_request_calls = 0;
         wait_mask = sent_secs = sent_micro = 0; sent_command = 0; sent_flags = 0xFF;
@@ -567,6 +622,7 @@ struct Fixture
         ctx.callback_depth = 0;
         Kaffeine_IOCleanup(&ctx);
         assert(!live_ports && !live_requests && !live_opens);
+        assert(screen_drops == screen_holds);
         assert(task_signals == 0xFFFF);
         assert(at_device.empty() && native_queues.empty());
         assert(!ctx.io_poll && !ctx.io_wait && !ctx.io_release && !ctx.io_signals && !ctx.io_reply_port);
@@ -2627,8 +2683,8 @@ static void test_input_commands()
     const ULONG p = f.port();
     const ULONG r = f.request(p, IOSTDREQ);
     f.open(r, 0, Fixture::input_name);
-    const ULONG hook = 0x2900;          /* a guest Interrupt and InputEvent */
-    for (UWORD command : { (UWORD)IND_ADDHANDLER, (UWORD)IND_REMHANDLER, (UWORD)IND_WRITEEVENT,
+    const ULONG hook = 0x2900;          /* a guest Interrupt */
+    for (UWORD command : { (UWORD)IND_ADDHANDLER, (UWORD)IND_REMHANDLER,
                            (UWORD)IND_SETTHRESH, (UWORD)IND_SETPERIOD, (UWORD)IND_SETMPORT,
                            (UWORD)IND_SETMTYPE, (UWORD)IND_SETMTRIG, (UWORD)IND_ADDEVENT,
                            (UWORD)CMD_READ, (UWORD)CMD_WRITE, (UWORD)CMD_RESET, (UWORD)0x4000 })
@@ -2653,9 +2709,216 @@ static void test_input_commands()
     m68k_write32(&f.ctx, r + IO_UNIT, 0);
     f.memory[r + IO_FLAGS] = 0;
     f.memory[r + LN_TYPE] = NT_MESSAGE;
-    check(f.std_io(r, IND_WRITEEVENT, 22, hook) == 0xFFFFFFFD && !f.stopped() && !input_doio_calls,
+    check(f.std_io(r, IND_ADDHANDLER, 22, hook) == 0xFFFFFFFD && !f.stopped() && !input_doio_calls,
           "an initial CreateExtIO marker is not native pending I/O; unsupported input stays NOCMD");
     f.memory[r + IO_FLAGS] = IOF_QUICK;
+    f.call(660, r);
+    f.call(672, p);
+}
+
+/* A 68k InputEvent, as amigentd builds them on its stack */
+static void guest_event(Fixture &f, ULONG ev, UBYTE cls, UBYTE sub, UWORD code, UWORD qual,
+                        ULONG position, ULONG next = 0)
+{
+    m68k_write32(&f.ctx, ev, next);
+    f.memory[ev + 4] = cls;
+    f.memory[ev + 5] = sub;
+    m68k_write16(&f.ctx, ev + 6, code);
+    m68k_write16(&f.ctx, ev + 8, qual);
+    m68k_write32(&f.ctx, ev + 10, position);
+    m68k_write32(&f.ctx, ev + 14, 0x01020304);
+    m68k_write32(&f.ctx, ev + 18, 0x05060708);
+}
+
+/* IND_WRITEEVENT: one 68k event, never followed through ie_NextEvent,
+   reaches the native device as a native copy made before any side effect */
+static void test_input_write_event()
+{
+    Fixture f;
+    const ULONG p = f.port();
+    const ULONG r = f.request(p, IOSTDREQ);
+    f.open(r, 0, Fixture::input_name);
+    const ULONG ev = 0x2810, pp = 0x2880, screen = 0x3000;
+    std::array<UBYTE, 22> saved;
+    auto save = [&](ULONG at) { std::memcpy(saved.data(), f.memory.data() + at, 22); };
+    auto same = [&](ULONG at) { return !std::memcmp(saved.data(), f.memory.data() + at, 22); };
+
+    /* amigentd's key(): RAWKEY with the dead-key history; a stale link and
+       the CreateExtIO marker change nothing */
+    m68k_write32(&f.ctx, r + IO_ACTUAL, 0x44444444);
+    m68k_write32(&f.ctx, r + IO_OFFSET, 0x55555555);
+    f.memory[r + LN_TYPE] = NT_MESSAGE;
+    f.memory[r + IO_FLAGS] = 0;
+    guest_event(f, ev, IECLASS_RAWKEY, 0, 0x20, 0x0001, 0x11223344, 0xFFFFFFF0);
+    check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0 && f.error(r) == 0 && input_doio_calls == 1 &&
+          written_length == sizeof(InputEvent) && !written.ie_NextEvent &&
+          written.ie_Class == IECLASS_RAWKEY && !written.ie_SubClass && written.ie_Code == 0x20 &&
+          written.ie_Qualifier == 1 && written.ie_Prev1DownCode == 0x11 &&
+          written.ie_Prev1DownQual == 0x22 && written.ie_Prev2DownCode == 0x33 &&
+          written.ie_Prev2DownQual == 0x44 && written.ie_TimeStamp.tv_secs == 0x01020304 &&
+          written.ie_TimeStamp.tv_micro == 0x05060708 && !hold_calls,
+          "a RAWKEY event reaches the native device as a native copy, dead-key bytes in order");
+    check(!m68k_read32(&f.ctx, ev) && m68k_read32(&f.ctx, ev + 14) == 777 &&
+          m68k_read32(&f.ctx, ev + 18) == 888 && m68k_read16(&f.ctx, ev + 6) == 0x20 &&
+          m68k_read32(&f.ctx, ev + 10) == 0x11223344 && f.fill_is(ev + 22, 32, 0xA5) &&
+          f.fill_is(ev - 16, 16, 0xA5),
+          "the guest event gets a NULL link and the device's timestamp, nothing the handlers changed");
+    check(m68k_read32(&f.ctx, r + IO_ACTUAL) == 0x44444444 && m68k_read32(&f.ctx, r + IO_LENGTH) == 22 &&
+          m68k_read32(&f.ctx, r + IO_DATA) == ev && m68k_read32(&f.ctx, r + IO_OFFSET) == 0x55555555 &&
+          m68k_read16(&f.ctx, r + IO_COMMAND) == IND_WRITEEVENT && f.memory[r + IO_FLAGS] == 0 &&
+          f.memory[r + LN_TYPE] == NT_REPLYMSG && !f.stopped(),
+          "io_Actual, io_Length, io_Data and io_Offset stay; the replied markers come back");
+    const auto *native = reinterpret_cast<const IOStdReq *>(f.native_of(r));
+    check(native && !native->io_Data && !native->io_Length,
+          "the native request keeps no pointer to the temporary event");
+
+    /* move_by() and set_buttons(): signed coordinates, button codes */
+    guest_event(f, ev, IECLASS_RAWMOUSE, 0, IECODE_NOBUTTON, IEQUALIFIER_RELATIVEMOUSE, 0xFFFB0007);
+    check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0 && written.ie_Class == IECLASS_RAWMOUSE &&
+          written.ie_X == -5 && written.ie_Y == 7 && written.ie_Code == IECODE_NOBUTTON &&
+          written.ie_Qualifier == IEQUALIFIER_RELATIVEMOUSE,
+          "a relative RAWMOUSE move keeps its signed coordinates");
+    guest_event(f, ev, IECLASS_RAWMOUSE, 0, IECODE_LBUTTON | IECODE_UP_PREFIX, IEQUALIFIER_RELATIVEMOUSE, 0);
+    check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0 &&
+          written.ie_Code == (IECODE_LBUTTON | IECODE_UP_PREFIX) && !written.ie_X && !written.ie_Y,
+          "a button release keeps its code");
+
+    /* move_to(): the IEPointerPixel names the screen amigentd read from
+       IntuitionBase under LockIBase() */
+    holdable_screen = screen;
+    m68k_write32(&f.ctx, pp, screen);
+    m68k_write16(&f.ctx, pp + 4, 100);
+    m68k_write16(&f.ctx, pp + 6, (UWORD)-3);
+    guest_event(f, ev, IECLASS_NEWPOINTERPOS, IESUBCLASS_PIXEL, 0, IEQUALIFIER_LEFTBUTTON, pp);
+    check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0 && hold_calls == 1 && held_screen == screen &&
+          holds_in_doio == 1 && screen_holds == 1 && screen_drops == 1 &&
+          written_pixel.iepp_Screen == &native_screen && written_pixel.iepp_Position.X == 100 &&
+          written_pixel.iepp_Position.Y == -3 && written.ie_Class == IECLASS_NEWPOINTERPOS &&
+          written.ie_SubClass == IESUBCLASS_PIXEL && written.ie_Qualifier == IEQUALIFIER_LEFTBUTTON,
+          "a pixel position reaches the device with its screen held for the call alone");
+    check(m68k_read32(&f.ctx, ev + 10) == pp && f.memory[ev + 4] == IECLASS_NEWPOINTERPOS &&
+          m68k_read32(&f.ctx, pp) == screen && m68k_read16(&f.ctx, pp + 4) == 100 &&
+          m68k_read16(&f.ctx, pp + 6) == (UWORD)-3,
+          "neither the handler's RAWMOUSE rewrite nor a native address reaches guest memory");
+
+    /* Pixel positions that cannot reach the device: IOERR_BADADDRESS,
+       the event untouched, every successful hold dropped */
+    struct { ULONG pixel, named; const char *what; } pixels[] = {
+        { 0, screen, "a NULL IEPointerPixel" },
+        { pp + 1, screen, "an odd IEPointerPixel" },
+        { 0xFFFC, screen, "an IEPointerPixel past the end of guest memory" },
+        { pp, 0, "a NULL screen, never offered to the screen contract" },
+        { pp, 0x3100, "a screen the contract cannot hold" },
+    };
+    for (const auto &c : pixels)
+    {
+        if (c.pixel == pp) m68k_write32(&f.ctx, pp, c.named);
+        guest_event(f, ev, IECLASS_NEWPOINTERPOS, IESUBCLASS_PIXEL, 0, 0, c.pixel);
+        save(ev);
+        const unsigned calls = input_doio_calls, holds = hold_calls;
+        check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0xFFFFFFFB && f.error(r) == -5 &&
+              input_doio_calls == calls && same(ev) && screen_holds == screen_drops &&
+              hold_calls == holds + (c.pixel == pp && c.named ? 1u : 0u), c.what);
+    }
+    m68k_write32(&f.ctx, pp, screen);
+
+    /* A native error: io_Error comes back, the guest event is not written,
+       and the screen is still dropped */
+    doio_error = IOERR_ABORTED;
+    guest_event(f, ev, IECLASS_NEWPOINTERPOS, IESUBCLASS_PIXEL, 0, 0, pp);
+    save(ev);
+    check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0xFFFFFFFE && f.error(r) == IOERR_ABORTED &&
+          same(ev) && screen_holds == screen_drops && holds_in_doio == 1,
+          "a native error returns io_Error, writes nothing back and drops the screen");
+    doio_error = 0;
+
+    /* Classes whose ie_position is an address that no bridge record
+       describes, and the tablet subclasses: IOERR_NOCMD before the device */
+    for (unsigned cls : { 3u, 5u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 17u, 18u, 20u, 21u, 23u, 0x7Fu, 0xFFu })
+    {
+        guest_event(f, ev, (UBYTE)cls, 0, 0, 0, pp);
+        save(ev);
+        const unsigned calls = input_doio_calls, holds = hold_calls;
+        check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0xFFFFFFFD && f.error(r) == IOERR_NOCMD &&
+              input_doio_calls == calls && hold_calls == holds && same(ev) && !f.stopped(),
+              "a class whose position is an address ends with IOERR_NOCMD before the device");
+    }
+    for (unsigned sub : { (unsigned)IESUBCLASS_TABLET, (unsigned)IESUBCLASS_NEWTABLET, 4u, 0xFFu })
+    {
+        guest_event(f, ev, IECLASS_NEWPOINTERPOS, (UBYTE)sub, 0, 0, pp);
+        save(ev);
+        const unsigned calls = input_doio_calls, holds = hold_calls;
+        check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0xFFFFFFFD && f.error(r) == IOERR_NOCMD &&
+              input_doio_calls == calls && hold_calls == holds && same(ev),
+              "a tablet or unknown pointer subclass ends with IOERR_NOCMD before the device");
+    }
+
+    /* Classes with coordinates or nothing at offset 10 */
+    for (unsigned cls : { (unsigned)IECLASS_NULL, (unsigned)IECLASS_POINTERPOS, (unsigned)IECLASS_TIMER,
+                          (unsigned)IECLASS_NEWPREFS, (unsigned)IECLASS_DISKREMOVED,
+                          (unsigned)IECLASS_DISKINSERTED, (unsigned)IECLASS_NEWMOUSE })
+    {
+        guest_event(f, ev, (UBYTE)cls, 0, 7, 0, 0x00090002);
+        const unsigned calls = input_doio_calls;
+        check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0 && input_doio_calls == calls + 1 &&
+              written.ie_Class == (UBYTE)cls && written.ie_Code == 7 && written.ie_X == 9 && written.ie_Y == 2,
+              "a class without an address reaches the device with its coordinates");
+    }
+    guest_event(f, ev, IECLASS_NEWPOINTERPOS, IESUBCLASS_COMPATIBLE, 0, 0, 0x00100020);
+    {
+        const unsigned holds = hold_calls;
+        check(f.std_io(r, IND_WRITEEVENT, 22, ev) == 0 && written.ie_SubClass == IESUBCLASS_COMPATIBLE &&
+              written.ie_X == 16 && written.ie_Y == 32 && hold_calls == holds,
+              "a compatible pointer position is coordinates and holds no screen");
+    }
+
+    /* io_Length is not read, as AROS processevents.c */
+    for (ULONG length : { 0u, 1u, 21u, 0xFFFFFFFFu })
+    {
+        guest_event(f, ev, IECLASS_RAWKEY, 0, 0x45, 0, 0);
+        check(f.std_io(r, IND_WRITEEVENT, length, ev) == 0 && written.ie_Code == 0x45 &&
+              written_length == sizeof(InputEvent) && m68k_read32(&f.ctx, r + IO_LENGTH) == length,
+              "any io_Length writes the one event");
+    }
+
+    /* Event storage: IOERR_BADADDRESS before the device */
+    const ULONG storage = Fixture::storage, font = 0x2E00;
+    std::memset(f.memory.data() + storage, 0, IOSTDREQ);
+    f.open(storage, 0, Fixture::input_name);
+    f.ctx.fonts[0].guest = font;
+    f.ctx.fonts[0].allocation_size = 64;
+    struct { ULONG req, data; const char *what; } bad[] = {
+        { r, 0, "io_Data NULL" },
+        { r, ev + 1, "an odd event address" },
+        { r, 0xFFF0, "an event past the end of guest memory" },
+        { r, 0xFFFFFFF0, "an io_Data that wraps around" },
+        { r, p, "an event inside an owned port" },
+        { r, font + 40, "an event over a guest font block" },
+        { storage, storage + 40, "an event over the end of its request" },
+        { storage, storage - 20, "an event over the start of its request" },
+    };
+    for (const auto &b : bad)
+    {
+        std::memset(f.memory.data() + 0xFFC0, 0xA5, 0x40);
+        const unsigned calls = input_doio_calls;
+        const UBYTE port_byte = f.memory[p + 4], font_byte = f.memory[font + 44];
+        m68k_write32(&f.ctx, b.req + IO_ACTUAL, 0x22222222);
+        check(f.std_io(b.req, IND_WRITEEVENT, 22, b.data) == 0xFFFFFFFB && f.error(b.req) == -5 &&
+              input_doio_calls == calls && m68k_read32(&f.ctx, b.req + IO_ACTUAL) == 0x22222222 &&
+              m68k_read32(&f.ctx, b.req + IO_DATA) == b.data && f.fill_is(0xFFC0, 0x40, 0xA5) &&
+              f.memory[p + 4] == port_byte && f.memory[font + 44] == font_byte, b.what);
+    }
+    f.ctx.fonts[0] = {};
+    for (ULONG at : { storage + IOSTDREQ, storage - 22, 0x10000u - 22 })
+    {
+        guest_event(f, at, IECLASS_RAWKEY, 0, 0x46, 0, 0, 0x12345678);
+        check(f.std_io(storage, IND_WRITEEVENT, 22, at) == 0 && written.ie_Code == 0x46 &&
+              !m68k_read32(&f.ctx, at) && m68k_read32(&f.ctx, at + 18) == 888 &&
+              m68k_read16(&f.ctx, storage + IO_COMMAND) == IND_WRITEEVENT,
+              "an event right after or before its request, or at the end of memory, is fine");
+    }
+    check(screen_holds == screen_drops && !f.stopped(), "every screen held for an event was dropped");
+    f.call(450, 0xA0A0A0A0, storage);
     f.call(660, r);
     f.call(672, p);
 }
@@ -3064,6 +3327,7 @@ int main()
     test_keyboard_matrix();
     test_keyboard_identity();
     test_input_commands();
+    test_input_write_event();
     test_input_vectors();
     test_cleanup();
     std::printf("Exec I/O, timer.device, keyboard.device and input.device: %u/%u checks passed\n",

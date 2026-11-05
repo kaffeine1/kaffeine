@@ -1043,6 +1043,40 @@ static void test_context_guard()
     native_frees.clear();
 }
 
+static void test_consuming_reservation()
+{
+    Fixture f;
+    const ULONG available=f.avail(),a=f.alloc(8,0,true),b=f.alloc(8,0,true);
+    assert(a && b);f.fill(a,8,0x6b);
+    assert(Kaffeine_HeapReserveExact(f.ctx,a,8));
+    assert(!Kaffeine_HeapReserveExact(f.ctx,a,8));
+    assert(!Kaffeine_HeapReserveExact(f.ctx,a+4,8));
+    assert(!Kaffeine_HeapReserveExact(f.ctx,b,7));
+    const ULONG held=f.avail();
+    f.release(a,0,true); // FreeVec cannot retire a native-consuming node
+    assert(f.avail()==held);f.expect_bytes(a,8,0x6b);
+    assert(!Kaffeine_HeapFreeExact(f.ctx,a,8));
+    assert(!Kaffeine_HeapFinishExact(f.ctx,a+4,8,true));
+    assert(!Kaffeine_HeapFinishExact(f.ctx,a,7,true));
+    assert(Kaffeine_HeapFinishExact(f.ctx,a,8,false));
+    assert(!Kaffeine_HeapFinishExact(f.ctx,a,8,false));
+    f.release(a,0,true);
+    assert(Kaffeine_HeapReserveExact(f.ctx,b,8));
+    assert(Kaffeine_HeapFinishExact(f.ctx,b,8,true));
+    assert(!Kaffeine_HeapFreeExact(f.ctx,b,8));
+    assert(f.avail()==available);
+    for(unsigned i=0;i<128;++i) {
+        const ULONG n=f.alloc(8,0,true);assert(n);
+        assert(Kaffeine_HeapReserveExact(f.ctx,n,8));
+        assert(Kaffeine_HeapFinishExact(f.ctx,n,8,true));
+        assert(f.avail()==available);
+    }
+    const ULONG mirror=Kaffeine_MirrorAlloc(f.ctx,8);
+    assert(mirror && !Kaffeine_HeapReserveExact(f.ctx,mirror,8));
+    Kaffeine_MirrorRelease(f.ctx,mirror);
+    assert(f.avail()==available);
+}
+
 int main(int argc, char **argv)
 {
     const struct { const char *name; void (*run)(); } tests[] =
@@ -1060,6 +1094,7 @@ int main(int argc, char **argv)
         { "native-entry-spec", test_native_entry_spec },
         { "capacity-storage", test_capacity_storage },
         { "free-exact", test_free_exact },
+        { "consuming-reservation", test_consuming_reservation },
         { "fallbacks", test_fallbacks }
     };
     unsigned groups = 0;

@@ -1160,6 +1160,39 @@ static void test_window_bitmap_handle()
     }
 }
 
+static ULONG borrowed_screen_result;
+static ULONG record_screen_window(KaffeineContext *ctx, Screen *screen)
+{
+    assert(ctx == live && releasing_window && screen == releasing_window->WScreen);
+    // Register the window first: it keeps the native screen alive.
+    assert(Kaffeine_ShadowGuest(ctx, releasing_window, KAFFEINE_SHADOW_WINDOW));
+    ctx->screen_release = record_screen_release;
+    return borrowed_screen_result;
+}
+static void test_default_screen_borrow()
+{
+    for (bool success : {false, true})
+    {
+        Fixture f;
+        Screen screen{}; Window w{}; w.WScreen = &screen;
+        releasing_window = &w; released_screens.clear();
+        f.ctx.screen_window = record_screen_window;
+        borrowed_screen_result = success ? 0x3100 : 0;
+        const ULONG g = Kaffeine_WindowCreate(&f.ctx, &w);
+        assert(bool(g) == success);
+        if (success)
+        {
+            assert(f.lng(g + M68K_WIN_WSCREEN) == borrowed_screen_result);
+            assert(released_screens.empty());
+            Kaffeine_WindowDelete(&f.ctx, g);
+        }
+        assert(released_screens.size() == 1 && released_screens[0] == &screen);
+        assert(!Kaffeine_ShadowGuest(&f.ctx, &w, KAFFEINE_SHADOW_WINDOW));
+        assert(Kaffeine_HeapAvail(&f.ctx, 0) == f.heap_avail);
+        f.ctx.screen_release = nullptr;
+    }
+}
+
 static void test_screen_release_order()
 {
     for (bool hook : { false, true })
@@ -3496,6 +3529,7 @@ int main()
         { "Classic requester storage with stale status can be reused after window close", test_classic_reuse_after_window_close },
         { "A 68k Window comes whole or not at all", test_window_create },
         { "Window RastPorts share only live owned screen BitMaps and preserve their handles", test_window_bitmap_handle },
+        { "Default screen borrow registered after Window and rolled back on failure", test_default_screen_borrow },
         { "WindowDelete() and CloseWindow() release WScreen once after the Window shadow", test_screen_release_order },
         { "An IDCMP port is a signalling 68k MsgPort", test_user_port },
         { "GetMsg() gives a 68k IntuiMessage and an up-to-date window", test_getmsg_fields },

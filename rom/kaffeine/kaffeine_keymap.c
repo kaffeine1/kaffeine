@@ -2,8 +2,9 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
     Author: Michele Dipace (@kaffeine1)
 
-    keymap.library's classic InputEvent boundary. No guest KeyMap table or
-    InputEvent pointer is passed to the native library.
+    keymap.library's classic InputEvent and ANSI string boundaries. No
+    guest KeyMap table, InputEvent, string or buffer pointer is passed to
+    the native library.
 */
 #include "kaffeine_keymap.h"
 #include "kaffeine_intern.h"
@@ -11,6 +12,8 @@
 #include "kaffeine_messages.h"
 
 #include <devices/inputevent.h>
+#include <exec/memory.h>
+#include <proto/exec.h>
 #include <proto/keymap.h>
 #include <string.h>
 
@@ -23,9 +26,9 @@ enum
 };
 
 /* SetKeyMapDefault would retain a guest pointer as the system's native
-   default. AskKeyMapDefault exposes that native table, and MapANSI also
-   needs typed table/buffer conversion. None belongs to the NULL-map-only
-   MapRawKey profile. Refuse before invoking any native keymap function. */
+   default, and AskKeyMapDefault exposes that native table. Neither belongs
+   to the NULL-map-only MapRawKey and MapANSI profile. Refuse before
+   invoking any native keymap function. */
 IPTR Kaffeine_KeymapUnsupported(struct KaffeineContext *ctx, void *cpu)
 {
     (void)cpu;
@@ -89,4 +92,52 @@ IPTR Kaffeine_MapRawKey(struct KaffeineContext *ctx, void *cpu)
     native.ie_TimeStamp.tv_secs = m68k_read32(ctx, event + G_IE_SECONDS);
     native.ie_TimeStamp.tv_micro = m68k_read32(ctx, event + G_IE_MICRO);
     return (IPTR)(LONG)MapRawKey(&native, (STRPTR)(ctx->mem + output), length, NULL);
+}
+
+/* -48: A0=string, D0=signed LONG count, A1=buffer, D1=signed LONG length
+   in code/qualifier pairs, A2=KeyMap -> D0. AROS MapANSI reads count bytes
+   and writes at most three pairs for each character it consumes: a second
+   dead key, a dead key and the key itself. It may already have written
+   pairs when it returns 0 for a character the keymap lacks or -1 for a
+   full buffer. The native call therefore works on private copies of the
+   string and of the first min(length, 3 * count) pairs of the buffer, and
+   all those pairs come back: a byte it did not write keeps its guest
+   value. That bound never changes a result, which counts the pairs used.
+   With no pairs to write, the buffer is never read or written. A count of
+   zero converts nothing; a negative one would read without end. Custom
+   guest KeyMaps remain unsupported, as in MapRawKey. */
+IPTR Kaffeine_MapANSI(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG string = THUNK_A(0), buffer = THUNK_A(1);
+    LONG count = (LONG)THUNK_D(0), length = (LONG)THUNK_D(1);
+    ULONG pairs, bytes, size;
+    UBYTE *native;
+    LONG result;
+
+    if (THUNK_A(2))
+        return Kaffeine_IORefuse(ctx, "MapANSI(): custom guest keymaps are not supported yet");
+    if (count < 0)
+        return Kaffeine_IORefuse(ctx, "MapANSI(): a negative count has no end");
+    if (!count)
+        return 0;
+    pairs = length <= 0 ? 0 :
+            (ULONG)length / 3 >= (ULONG)count ? 3 * (ULONG)count : (ULONG)length;
+    bytes = 2 * pairs;
+    if (!ordinary(ctx, string, (ULONG)count) || (bytes && !ordinary(ctx, buffer, bytes)))
+        return Kaffeine_IORefuse(ctx, "MapANSI(): invalid string or buffer storage");
+    if (Kaffeine_Overlap(string, (ULONG)count, buffer, bytes))
+        return Kaffeine_IORefuse(ctx, "MapANSI(): the string and buffer overlap");
+    size = (ULONG)count + bytes;
+    native = AllocMem(size, MEMF_ANY);
+    if (!native)
+        return Kaffeine_IORefuse(ctx, "MapANSI(): no native memory for the conversion");
+    memcpy(native, ctx->mem + string, (ULONG)count);
+    if (bytes)
+        memcpy(native + count, ctx->mem + buffer, bytes);
+    result = MapANSI((STRPTR)native, count, (STRPTR)(native + count),
+                     length <= 0 ? length : (LONG)pairs, NULL);
+    if (bytes)
+        memcpy(ctx->mem + buffer, native + count, bytes);
+    FreeMem(native, size);
+    return (IPTR)result;
 }

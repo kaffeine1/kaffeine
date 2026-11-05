@@ -194,6 +194,10 @@ struct KaffeineFile
 
 struct KaffeineContext
 {
+    struct KaffeineIBase *ibase;
+    BOOL (*ibase_locked)(struct KaffeineContext *);
+    void (*ibase_cleanup)(struct KaffeineContext *);
+    void (*ibase_task_removed)(struct KaffeineContext *, ULONG);
     struct KaffeineSockets *sockets;
     BOOL (*socket_poll)(struct KaffeineContext *);
     void (*socket_cleanup)(struct KaffeineContext *);
@@ -442,6 +446,8 @@ struct KaffeineContext
         UWORD pen_refs[KAFFEINE_MAX_SCREEN_PENS]; UWORD pens; BOOL pen_lock;
     } pubscreens[KAFFEINE_MAX_PUBSCREENS];
     UWORD pen_leases;
+    /* Resolve WScreen while a typed live Window shadow keeps it open. */
+    ULONG (*screen_window)(struct KaffeineContext *ctx, struct Screen *screen);
     void (*screen_release)(struct KaffeineContext *ctx, struct Screen *screen);
     /* VisualInfo keeps DrawInfo/Screen alive. Borrowed screens also hold
        a native visitor lock until their VisualInfo references are freed. */
@@ -641,6 +647,11 @@ void   Kaffeine_HeapFree(struct KaffeineContext *ctx, ULONG addr, ULONG size);
 /* Free exactly the ordinary, unpooled allocation at addr of the requested
    size; FALSE with no effect for anything else, also while I/O keeps it. */
 BOOL   Kaffeine_HeapFreeExact(struct KaffeineContext *ctx, ULONG addr, ULONG size);
+/* Exclusive consuming-call reservation of an ordinary exact allocation.
+   Guest frees refuse while held. Finish(FALSE) restores ownership;
+   Finish(TRUE) consumes only the same still-reserved native interval. */
+BOOL   Kaffeine_HeapReserveExact(struct KaffeineContext *, ULONG, ULONG);
+BOOL   Kaffeine_HeapFinishExact(struct KaffeineContext *, ULONG, ULONG, BOOL);
 /* Whether the part of a guest range inside the heap lies only in payloads
    of the program's allocations (AllocMem, AllocAbs, AllocEntry, pooled),
    never in free, reserved, pool, mirror or other bridge-owned intervals or

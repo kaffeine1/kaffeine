@@ -40,7 +40,7 @@ KAFFEINE_FILES := \
     kaffeine_domain_modules \
     kaffeine_dos_broker \
     kaffeine_socket \
-    kaffeine_socket_native \
+    kaffeine_system_path kaffeine_intuibase kaffeine_cgx_read kaffeine_socket_native \
     kaffeine_thunks \
     kaffeine_thunks_memory \
     kaffeine_lists \

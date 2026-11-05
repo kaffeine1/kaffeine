@@ -100,6 +100,8 @@ at the end.
 | `exec_diskfont.c` | OpenDiskFont and original monochrome font fixtures. |
 | `exec_messages.c` | FIFO messages, signals, replies and nonempty WaitPort. |
 | `exec_keyboard.c` | Real keyboard/input device opens, bounded matrix reads of 0/13/64 bytes and RAWKEY delivery from `--keys exec_keyboard "a"`. The same source runs as a native ARM reference. Matrix key tracking is reported separately; pass argument `matrix` to require it. The current ARM USB image delivers the raw A events but leaves its native matrix zero. |
+| `exec_input_event.c` | `IND_WRITEEVENT` in the shapes amigentd 1.1.1 writes, all inside its own active window: a qualifier key first, then F1 with dead-key history, pixel positions on the window's screen and on `IntuitionBase->FirstScreen` read under `LockIBase`, a left click and a relative move, each checked through IDCMP. A chained event and a zero `io_Length` show the single-event semantics. Odd addresses, address payloads, tablet positions and pixel positions without a held screen must be refused with nothing reaching the window. It expects its window on the front screen. Run on the 68k backend. |
+| `keymap_mapansi.c` | `MapANSI` with the system default keymap, called as amigentd 1.1.1 types text: letters, digits, space and punctuation must give one pair that MapRawKey types back; Latin-1 characters the keymap has, dead-key sequences included, must type back too, and each is reported as absent, one key or a dead-key sequence. Several characters, a full buffer that keeps its first pair, zero count and length and an odd buffer follow. Argument `dead` also requires a dead-key prefix for e acute, as the AROS default keymap gives. Run on the 68k backend. |
 | `exec_timer_async.c` | Original copied-timer protocol: nonblocking SendIO, CheckIO, in-place WaitIO, cancellation, three concurrent copies, exact reply identity and temporary heap storage. The same caller builds natively for ARM. Argument `tasks` on 68k adds a live guest worker and checks original/copied WaitIO while the scheduler runs. |
 | `exec_createproc.c` | A caller-owned classic JMP seglist creates a service Process with its own stack and virtual DOS port; two message/reply cycles, Forbid before final reply, normal return and child Exit in successive fresh processes, parent identity and guest-memory reclamation. Run on the 68k backend, not directly as native ARM code. |
 | `exec_npentry.c` | Guest-only NP_Entry, late tc_UserData, a child DOS call, per-process IoErr, return while Forbid, negative entry/CLI/callback tags, and an atomic child witness after root completion. The controller must preserve a separate Shell witness before Run. |
@@ -1735,3 +1737,21 @@ for `db`. Full `gc.lua` timed out during Shell within its 600-second budget
 and never reached `Run`; it remains incomplete and is excluded from the
 passing steps. This timeout does not demonstrate a JIT correctness defect.
 Non-soft tests, Moira and physical hardware remain separate work.
+
+### Amigent OS bridge fixtures
+
+`net_amigent_screen` checks typed native screen snapshots and exact raw/packed
+RGB, including stride and refusal boundaries. `net_amigent_control` covers native
+classic GUI labels, RGB332 tiles and owned RAM file operations. The final
+`net_amigent_remote` fixture checks observed input, Latin-1 dead keys, real screen
+depth changes and native Shell command output using the unmodified daemon.
+
+`net_amigent_native` instead controls an independent native window on the current
+24-bit Workbench. Build the optional `AmigentInputWitness` helper with the target
+`AROS_CC`/`AROS_CFLAGS` (including its sysroot) and stage it in `SYS:EMU68` beside
+`amigentd` and the fixture key. The helper requires a 32-character lowercase hex
+nonce, opens only its own window, draws a known 32x32 RGB marker, and expires after
+60 seconds. Closed RAM proof files bind focus, geometry and actual native input
+effects to that nonce; no input should be sent without the matching fresh proof.
+The fixture signals only its own named witness on cleanup. These tests use a
+nonempty public loopback fixture key and do not configure a real machine.

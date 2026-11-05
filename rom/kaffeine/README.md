@@ -253,8 +253,13 @@ of `keyboard.device` and `input.device` can be opened:
 native buffer, preserving the request inputs and copying at most 32 bytes of
 actual output. Bad output spans, active queues, owned ports and snapshots
 are rejected before the device call. `input.device` supports real opens and
-closes; all its commands, including handler registration and event injection,
-return `IOERR_NOCMD`. Guest handlers are never installed natively. Direct
+closes and synchronous `IND_WRITEEVENT` of one event, as the autodoc
+describes: `ie_NextEvent` is not followed. A native copy carries the class,
+code, qualifier, timestamp and scalar position; a pixel position holds its
+screen as a public visitor for the call. Classes whose position is an
+address return `IOERR_NOCMD`, bad event, pixel or screen addresses
+`IOERR_BADADDRESS`. Its other commands, handler registration included,
+return `IOERR_NOCMD`; guest handlers are never installed natively. Direct
 keyboard/input device vectors stop with rc 20.
 
 `SendIO` supports open timer requests (`TR_ADDREQUEST` on non-EClock units
@@ -540,7 +545,7 @@ The bridge provides generated or manual thunks for the following libraries and d
 | timer.device | 0 | 7 | 7 | Synchronous timer requests, bounded root-task SendIO/WaitIO/AbortIO including MICROHZ/VBLANK copies, and TimerBase time helpers |
 | console.device | 0 | 12 | 12 | `CONU_LIBRARY` (-1) and single-event default-keymap `RawKeyConvert`; remaining slots stop with 20 |
 | keyboard.device | 0 | 6 | 6 | Unit-zero open/close and bounded `KBD_READMATRIX` through Exec DoIO; direct device slots stop with 20 |
-| input.device | 0 | 7 | 7 | Unit-zero open/close; DoIO commands return `IOERR_NOCMD`, direct device slots stop with 20 |
+| input.device | 0 | 7 | 7 | Unit-zero open/close and single-event `IND_WRITEEVENT` through Exec DoIO; other commands return `IOERR_NOCMD`, direct device slots stop with 20 |
 
 Native lookup uses the filename after the final `:` or `/`, keeping its
 exact case. Paths such as `LIBS:diskfont.library` share the canonical base
@@ -605,8 +610,8 @@ message handling remains separate.
 ### Device I/O and DOS Packets
 
 - `timer.device` through `DoIO()` and the no-window `console.device` library unit (`CONU_LIBRARY`, `RawKeyConvert`);
-  keyboard.device unit-zero matrix queries and input.device unit-zero opens/closes;
-  bounded asynchronous timer requests are supported for the root task; input handlers/event injection, other asynchronous devices and direct BeginIO remain unsupported
+  keyboard.device unit-zero matrix queries and input.device unit-zero opens/closes and single-event writes;
+  bounded asynchronous timer requests are supported for the root task; input handlers, other asynchronous devices and direct BeginIO remain unsupported
 - Ordinary guest FIFO messages (`PutMsg`/`GetMsg`/`ReplyMsg`/`WaitPort`) work across registered guest tasks in the same context; cross-context messaging is unsupported
 - DOS packets (`DoPkt`/`SendPkt`/`WaitPkt`/`ReplyPkt`) are supported on FileHandle packet ports and on registered guest ports for native DOS handlers (`DeviceProc`, `GetDeviceProc`, `GetConsoleTask`, `GetFileSysTask`) for the documented action set; `AbortPkt` is a no-op
 - Personal Paint has verified editor use, rectangles/circles/text, pixel-checked IFF/ILBM saving and return to the native Shell with exit code zero under Moira in QEMU. Reopening saved 1024×768 IFF/PNG reports “The image is too large”; the opt-in JIT additionally passes a 320×200/256-color save/modify/reload cycle. Other tools, larger-image loading and full Workbench startup remain open
