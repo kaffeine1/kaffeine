@@ -51,9 +51,12 @@
 static TextFont topaz, other;
 static char topaz_name[] = "topaz.font", other_name[] = "other.font";
 static RastPort native_rp;
+static BitMap *compatibility_bitmap;
+static ULONG compatibility_real_depth;
 extern "C" IPTR GetBitMapAttr(struct BitMap *b, ULONG attr)
 {
     assert(b && b != native_rp.BitMap);
+    if (b == compatibility_bitmap && attr == BMA_DEPTH) return compatibility_real_depth;
     switch(attr) {
     case BMA_WIDTH:return (ULONG)b->BytesPerRow*8;
     case BMA_HEIGHT:return b->Rows;
@@ -2126,6 +2129,40 @@ static void test_pen_arrays()
     assert(f.memory==before && gfx.draws==calls);
 }
 
+static void test_truecolor_pen_readback()
+{
+    Fixture f;
+    const auto a = planar(f), t = planar(f);
+    m68k_write16(&f.ctx, t.bm + 2, 1);
+    f.memory[t.bm + 5] = 8;
+    for (int p = 2; p < 8; ++p)
+    {
+        const ULONG plane = Kaffeine_HeapAlloc(&f.ctx, 64, MEMF_CLEAR);
+        assert(plane);
+        m68k_write32(&f.ctx, t.bm + 8 + 4*p, plane);
+    }
+    bridge.layer = 0x1000;
+    bridge.bitmap = a.bm;
+    m68k_write32(&f.ctx, a.rp + RP_LAYER, bridge.layer);
+    window_bm = {};
+    window_bm.BytesPerRow = 4;
+    window_bm.Rows = 16;
+    window_bm.Depth = 8; // AROS BMDEPTH_COMPATIBILITY public descriptor
+    for (int p = 0; p < 8; ++p)
+        window_bm.Planes[p] = f.memory.data() + f.lng(t.bm + 8 + 4*p);
+    compatibility_bitmap = &window_bm;
+    compatibility_real_depth = 24;
+    const ULONG output = Kaffeine_HeapAlloc(&f.ctx, 96, MEMF_CLEAR);
+    const auto before = f.memory;
+    const auto calls = gfx.draws;
+    assert(f.call(768, {a.rp,t.rp,output}, {0,0,17}) == 20 && f.stopped());
+    assert(f.memory == before && gfx.draws == calls);
+    assert(f.call(780, {a.rp,t.rp,output}, {0,0,16,0}) == 20 && f.stopped());
+    assert(f.memory == before && gfx.draws == calls);
+    compatibility_bitmap = nullptr;
+    compatibility_real_depth = 0;
+}
+
 static void test_clipblit_planar()
 {
     Fixture f;
@@ -2824,6 +2861,7 @@ int main()
     const Test tests[] =
     {
         { "Padded pen arrays and lines transfer exact pixels and refuse malformed scratch/buffers before native calls", test_pen_arrays },
+        { "Truecolor pen reads use real BMA_DEPTH despite an eight-bit compatibility descriptor", test_truecolor_pen_readback },
         { "Pen-array render extents cannot overflow a native signed WORD", test_pen_array_word_bound },
         { "ClipBlit converts copied RastPorts and clips source/destination in lockstep", test_clipblit_planar },
         { "Fixed large-blit capability and bounded synchronous clear override generated calls", test_large_blit_contract },

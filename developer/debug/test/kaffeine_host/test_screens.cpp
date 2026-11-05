@@ -2591,6 +2591,26 @@ static void op_window_synced(KaffeineContext *, ULONG, Window *) { assert(false)
 static const KaffeineLayerOps recording_layer_ops =
     { op_window_opened, op_window_closing, op_window_flags, op_window_synced, op_mirrored, op_closing };
 
+static Screen *bitmap_friend_screen;
+static BOOL bitmap_friend_held(KaffeineContext *, Screen *s) { return s == bitmap_friend_screen; }
+static void test_bitmap_friend_screen_lifetime()
+{
+    Fixture f;
+    KaffeineLayerOps ops = recording_layer_ops;
+    ops.bitmap_screen_held = bitmap_friend_held;
+    f.ctx.layer_ops = &ops;
+    const ULONG guest = f.open(0, 0); assert(guest);
+    bitmap_friend_screen = native->opened.back().result;
+    const auto calls = native->calls.size();
+    assert(!f.close(guest) && native->calls.size() == calls);
+    Kaffeine_ScreensCleanup(&f.ctx);
+    assert(Kaffeine_ScreenNative(&f.ctx, guest) == bitmap_friend_screen);
+    bitmap_friend_screen = nullptr;
+    Kaffeine_ScreensCleanup(&f.ctx);
+    assert(!Kaffeine_ScreenNative(&f.ctx, guest));
+    f.ctx.layer_ops = nullptr;
+}
+
 static void test_layer_notifications()
 {
     Fixture f;
@@ -3739,6 +3759,7 @@ int main()
     {
         { "Screen-owned ColorMap identity, BE palette streams and RGB output, atomic bounds and lifetime guards", test_screen_palette },
         { "Layer snapshots follow 68k Screens and end before CloseScreen, forget and cleanup unlocks", test_layer_notifications },
+        { "Native bitmap friends keep owned screens alive until the dependent palette lease is released", test_bitmap_friend_screen_lifetime },
         { "Thirteen ABI registrations override poisoned generated fallbacks", test_registrations },
         { "Screen.RastPort.BitMap is a typed handle of the drawn BitMap, resolved only for opened screens", test_screen_bitmap_handle },
         { "NULL and named locks expose the NDK fields, font and three shadows; relocks refill in place", test_screen_fields_and_relock },

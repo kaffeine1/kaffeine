@@ -1257,7 +1257,9 @@ IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
     /* a VisualInfo, a DrawInfo copy or a pen lease of the program still
        uses it */
     if (Kaffeine_ScreenVisuals(ctx, ctx->pubscreens[i].native) ||
-        Kaffeine_ScreenDrawInfos(ctx, ctx->pubscreens[i].native) || ctx->pubscreens[i].pens)
+        Kaffeine_ScreenDrawInfos(ctx, ctx->pubscreens[i].native) || ctx->pubscreens[i].pens ||
+        (ctx->layer_ops && ctx->layer_ops->bitmap_screen_held &&
+         ctx->layer_ops->bitmap_screen_held(ctx, ctx->pubscreens[i].native)))
         return FALSE;
     /* no 68k Layer may stand for a layer of a screen that closes; when
        Intuition refuses, the next snapshot is taken afresh */
@@ -1562,7 +1564,9 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
     for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
         if (ctx->pubscreens[i].owned)
         {
-            if (Kaffeine_ScreenWindows(ctx, ctx->pubscreens[i].native))
+            if (Kaffeine_ScreenWindows(ctx, ctx->pubscreens[i].native) ||
+                (ctx->layer_ops && ctx->layer_ops->bitmap_screen_held &&
+                 ctx->layer_ops->bitmap_screen_held(ctx, ctx->pubscreens[i].native)))
                 bug("[kaffeine] screen %p that the program left has its windows, left open\n",
                     ctx->pubscreens[i].native);
             else if (CloseScreen(ctx->pubscreens[i].native))

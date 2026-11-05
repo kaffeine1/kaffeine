@@ -61,6 +61,9 @@ static void cleanup_owned(struct KaffeineContext *ctx)
     Kaffeine_ScreensCleanup(ctx);
     /* after the windows and screens, which retire their 68k Layers first */
     Kaffeine_LayersCleanup(ctx);
+    /* Native friend bitmaps may have kept an owned screen alive above.
+       Retry screen retirement after their palette leases have gone. */
+    Kaffeine_ScreensCleanup(ctx);
     /* after the layers, whose clip Regions they may be */
     Kaffeine_RegionsCleanup(ctx);
     Kaffeine_SegmentsCleanup(ctx);

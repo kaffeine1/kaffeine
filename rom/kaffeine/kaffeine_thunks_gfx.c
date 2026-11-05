@@ -996,7 +996,7 @@ static IPTR pixel_array8(struct KaffeineContext *ctx, BOOL read, ULONG guest, UL
         !draw_source(&temp, scratch, array, bytes) ||
         overlaps(scratch, M68K_SIZEOF_RASTPORT, guest, M68K_SIZEOF_RASTPORT))
         return refuse(ctx, "PixelArray8(): invalid or aliased scratch storage");
-    if (read && rp->BitMap->Depth > 8)
+    if (read && GetBitMapAttr(rp->BitMap, BMA_DEPTH) > 8)
         return refuse(ctx, "ReadPixelArray8(): truecolor pen readback is unsupported");
     draw_begin(ctx);
     result = read ? ReadPixelArray8(rp, x, y, xe, ye, ctx->mem + array, &temp.rp)

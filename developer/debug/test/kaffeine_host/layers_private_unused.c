@@ -8,7 +8,13 @@
 #include <graphics/gfx.h>
 #include <proto/graphics.h>
 #include <proto/layers.h>
+#include <proto/intuition.h>
 #include "kaffeine_intuibase.h"
+
+__attribute__((weak)) BOOL Kaffeine_ScreenPublicHold(struct Screen *screen)
+{ (void)screen; return FALSE; }
+__attribute__((weak)) void UnlockPubScreen(UBYTE *name, struct Screen *screen)
+{ (void)name; (void)screen; abort(); }
 
 /* The native recipe entry is linked with the layer bridge. These older
    fixtures never replay a paint recipe; its focused suite supplies strong

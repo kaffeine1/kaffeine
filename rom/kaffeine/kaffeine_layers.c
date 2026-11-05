@@ -369,6 +369,10 @@ struct LayerInfoLock
 struct OwnedBitMap
 {
     struct OwnedBitMap *next;
+    struct OwnedBitMap *friend_owner;
+    struct Screen *friend_screen;
+    ULONG friend_refs;
+    BOOL retired, friend_visitor;
     struct BitMap planar, *native;
     ULONG guest, bytes, width, height, depth, flags, charge;
     UBYTE header[M68K_SIZEOF_BITMAP];
@@ -1488,6 +1492,14 @@ static BOOL layers_paint_signal_releasable(struct KaffeineContext *ctx, ULONG bi
     return !ctx->layers || Kaffeine_PaintHookSignalReleasable(ctx->layers->paint_hooks, bits);
 }
 
+static BOOL layers_bitmap_screen_held(struct KaffeineContext *ctx, struct Screen *screen)
+{
+    struct OwnedBitMap *b;
+    for (b = ctx->layers ? ctx->layers->bitmaps : NULL; b; b = b->next)
+        if (b->friend_screen == screen) return TRUE;
+    return FALSE;
+}
+
 static const struct KaffeineLayerOps layer_ops =
 {
     layers_window_opened,
@@ -1505,7 +1517,7 @@ static const struct KaffeineLayerOps layer_ops =
     layers_task_removed,
     layers_paint_signal_mask, layers_paint_poll,
     layers_paint_memory_releasable, layers_paint_signal_releasable,
-    layers_native_bitmap, layers_bitmap_source
+    layers_native_bitmap, layers_bitmap_source, layers_bitmap_screen_held
 };
 
 /* ── Depth calls ─────────────────────────────────────────────────── */
@@ -2920,7 +2932,7 @@ static struct OwnedBitMap *layers_bitmap_owned(struct KaffeineLayers *st, ULONG 
 {
     struct OwnedBitMap *b;
     for (b = st ? st->bitmaps : NULL; b; b = b->next)
-        if (b->guest == guest) return b;
+        if (b->guest == guest && !b->retired) return b;
     return NULL;
 }
 
@@ -3145,15 +3157,26 @@ static BOOL layers_bitmap_leased(struct KaffeineLayers *st, const struct OwnedBi
 static void layers_bitmap_release(struct KaffeineContext *ctx, struct KaffeineLayers *st,
                                   struct OwnedBitMap **link)
 {
-    struct OwnedBitMap *b = *link;
-    /* Unlink before freeing the guest allocation: the heap's general
-       release guard deliberately protects it even from FreeMem. */
-    *link = b->next;
-    st->bitmap_count--;
-    st->bitmap_charge -= b->charge;
-    if (b->native != &b->planar) FreeBitMap(b->native);
-    Kaffeine_HeapFree(ctx, b->guest, b->bytes);
-    FreeVec(b);
+    /* New children precede their older friends in this list. Unwind a
+       retired friend chain iteratively, after native child destruction,
+       so shared colormaps and pixel tables never outlive their owner. */
+    for (;;)
+    {
+        struct OwnedBitMap *b = *link, *owner = b->friend_owner;
+        struct Screen *screen = b->friend_screen;
+        BOOL visitor = b->friend_visitor;
+        *link = b->next;
+        st->bitmap_count--;
+        st->bitmap_charge -= b->charge;
+        if (b->native != &b->planar) FreeBitMap(b->native);
+        Kaffeine_HeapFree(ctx, b->guest, b->bytes);
+        FreeVec(b);
+        if (screen && ctx->screen_release) ctx->screen_release(ctx, screen);
+        if (visitor) UnlockPubScreen(NULL, screen);
+        if (!owner || --owner->friend_refs || !owner->retired) break;
+        for (link = &st->bitmaps; *link && *link != owner; link = &(*link)->next) {}
+        if (!*link) break; /* private ownership, never guest bytes */
+    }
 }
 
 /* V39 graphics -918: full ULONG D0/D1/D2/D3, friend A0. INTERLEAVED
@@ -3225,10 +3248,39 @@ IPTR Kaffeine_AllocBitMap(struct KaffeineContext *ctx, void *cpu)
     memset(ctx->mem + b->guest, 0, M68K_SIZEOF_BITMAP);
     if (opaque)
     {
+        /* Native HIDD friends share resources, not just an allocation
+           hint. Owned friends remain privately retained; borrowed screen
+           friends need an independent native public visitor. */
+        if (friend_native && !(friend_native->Flags & BMF_STANDARD))
+        {
+            b->friend_owner = layers_bitmap_owned(st, friend_guest);
+            if (b->friend_owner)
+                b->friend_owner->friend_refs++;
+            else
+            {
+                int k;
+                for (k = 0; k < KAFFEINE_MAX_PUBSCREENS; k++)
+                    if (ctx->pubscreens[k].native &&
+                        ctx->pubscreens[k].guest + M68K_SCR_BITMAP == friend_guest &&
+                        ctx->pubscreens[k].native->RastPort.BitMap == friend_native)
+                        break;
+                if (k == KAFFEINE_MAX_PUBSCREENS ||
+                    (!ctx->pubscreens[k].owned &&
+                     !Kaffeine_ScreenPublicHold(ctx->pubscreens[k].native)))
+                { Kaffeine_HeapFree(ctx, b->guest, b->bytes); FreeVec(b); return 0; }
+                b->friend_screen = ctx->pubscreens[k].native;
+                b->friend_visitor = !ctx->pubscreens[k].owned;
+            }
+        }
         ctx->bitmap_blits++;
         b->native = AllocBitMap(w, h, depth, flags, friend_native);
         ctx->bitmap_blits--;
-        if (!b->native) { Kaffeine_HeapFree(ctx, b->guest, b->bytes); FreeVec(b); return 0; }
+        if (!b->native)
+        {
+            if (b->friend_owner) b->friend_owner->friend_refs--;
+            if (b->friend_visitor) UnlockPubScreen(NULL, b->friend_screen);
+            Kaffeine_HeapFree(ctx, b->guest, b->bytes); FreeVec(b); return 0;
+        }
         b->width = GetBitMapAttr(b->native, BMA_WIDTH);
         b->height = GetBitMapAttr(b->native, BMA_HEIGHT);
         b->depth = GetBitMapAttr(b->native, BMA_DEPTH);
@@ -3236,6 +3288,8 @@ IPTR Kaffeine_AllocBitMap(struct KaffeineContext *ctx, void *cpu)
         if (b->width < w || b->height < h || b->depth < depth || b->depth > 32)
         {
             FreeBitMap(b->native);
+            if (b->friend_owner) b->friend_owner->friend_refs--;
+            if (b->friend_visitor) UnlockPubScreen(NULL, b->friend_screen);
             Kaffeine_HeapFree(ctx, b->guest, b->bytes);
             FreeVec(b);
             return 0;
@@ -3281,9 +3335,14 @@ IPTR Kaffeine_FreeBitMap(struct KaffeineContext *ctx, void *cpu)
         !layers_info_caller(ctx, cpu))
         return layers_refuse(ctx, "FreeBitMap(): during a native bitmap or layer operation");
     for (link = &st->bitmaps; *link && (*link)->guest != guest; link = &(*link)->next) {}
-    if (!*link || !layers_bitmap_unchanged(ctx, *link) || layers_bitmap_leased(st, *link) ||
+    if (!*link || (*link)->retired || !layers_bitmap_unchanged(ctx, *link) || layers_bitmap_leased(st, *link) ||
         !Kaffeine_PaintHookMemoryReleasable(st->paint_hooks, (*link)->guest, (*link)->bytes))
         return layers_refuse(ctx, "FreeBitMap(): foreign, changed or retained BitMap");
+    if ((*link)->friend_refs)
+    {
+        (*link)->retired = TRUE;
+        return 0;
+    }
     layers_bitmap_release(ctx, st, link);
     return 0;
 }

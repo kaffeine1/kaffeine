@@ -207,6 +207,8 @@ struct KaffeineLayerOps
        adapter for ordinary planes. Never accepts borrowed screen storage. */
     struct BitMap *(*bitmap_source)(struct KaffeineContext *ctx, ULONG bitmap,
                                    struct BitMap *adapter, ULONG *width, ULONG *height);
+    /* An allocated native friend still shares this screen's palette. */
+    BOOL (*bitmap_screen_held)(struct KaffeineContext *ctx, struct Screen *screen);
 };
 
 static inline ULONG Kaffeine_LayerSignalMask(struct KaffeineContext *ctx)

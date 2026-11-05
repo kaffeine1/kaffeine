@@ -135,12 +135,24 @@ int main(void)
         CHECK(display != NULL);
         if (display)
         {
+            struct BitMap *friend = AllocBitMap(32,16,3,BMF_CLEAR,display);
             InitRastPort(&rp);
             rp.BitMap = display;
             SetAPen(&rp,5);
             CHECK(WritePixel(&rp,7,5) != -1);
             CHECK(ReadPixel(&rp,7,5) == 5);
+            CHECK(friend != NULL);
             FreeBitMap(display);
+            if (friend)
+            {
+                /* The native HIDD allocation shares its friend's palette.
+                   The bridge must retain it after guest FreeBitMap(owner). */
+                rp.BitMap = friend;
+                SetAPen(&rp,5);
+                CHECK(WritePixel(&rp,7,5) != -1);
+                CHECK(ReadPixel(&rp,7,5) == 5);
+                FreeBitMap(friend);
+            }
         }
         CHECK(AllocBitMap(0,16,1,0,NULL) == NULL);
         CloseLibrary((struct Library *)GfxBase);

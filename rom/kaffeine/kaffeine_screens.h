@@ -11,6 +11,7 @@
 
 #include "kaffeine_thunks.h"
 #include "kaffeine_intern.h"
+#include "kaffeine_layers.h"
 #include "kaffeine_rastport.h"
 
 #include <intuition/intuition.h>
@@ -106,6 +107,8 @@ static inline BOOL Kaffeine_ScreenUsed(struct KaffeineContext *ctx, int i)
     /* pen leases (kaffeine_palette.c) keep it like a DrawInfo copy */
     return ctx->pubscreens[i].owned || ctx->pubscreens[i].locks || ctx->pubscreen_list_locks ||
            ctx->pubscreens[i].pens ||
+           (ctx->layer_ops && ctx->layer_ops->bitmap_screen_held &&
+            ctx->layer_ops->bitmap_screen_held(ctx, ctx->pubscreens[i].native)) ||
            Kaffeine_ScreenWindows(ctx, ctx->pubscreens[i].native) ||
            Kaffeine_ScreenVisuals(ctx, ctx->pubscreens[i].native) ||
            Kaffeine_ScreenDrawInfos(ctx, ctx->pubscreens[i].native);

@@ -429,6 +429,8 @@ struct NativeScreenBitMap
     std::vector<UBYTE> planes;
     ULONG width = 0;
     bool open = false;
+    unsigned visitors = 0;
+    NativeScreenBitMap *palette_owner = nullptr;
 };
 static std::vector<NativeScreenBitMap *> screen_bitmaps;
 static unsigned bitmap_attrs;
@@ -436,6 +438,20 @@ static unsigned bitmap_allocs, bitmap_frees;
 static bool bitmap_fail;
 static BitMap *last_friend;
 static std::vector<NativeScreenBitMap *> allocated_bitmaps;
+
+extern "C" BOOL Kaffeine_ScreenPublicHold(Screen *screen)
+{
+    for (auto *s : screen_bitmaps)
+        if (&s->screen == screen && s->open) { ++s->visitors; return TRUE; }
+    return FALSE;
+}
+extern "C" void UnlockPubScreen(UBYTE *name, Screen *screen)
+{
+    assert(!name);
+    for (auto *s : screen_bitmaps)
+        if (&s->screen == screen) { assert(s->open && s->visitors); --s->visitors; return; }
+    assert(false);
+}
 
 extern "C" struct BitMap *AllocBitMap(ULONG w, ULONG h, ULONG d, ULONG flags, struct BitMap *f)
 {
@@ -449,6 +465,8 @@ extern "C" struct BitMap *AllocBitMap(ULONG w, ULONG h, ULONG d, ULONG flags, st
     s->bm.Rows = h;
     s->bm.Depth = d == 24 ? 32 : d; // backend may upgrade depth
     s->bm.Flags = flags & BMF_DISPLAYABLE;
+    for (auto *owner : screen_bitmaps)
+        if (&owner->bm == f) { s->palette_owner = owner; break; }
     s->planes.resize((size_t)s->bm.BytesPerRow * h * std::min(d, 8u), 0);
     for (ULONG p = 0; p < std::min(d, 8u); p++)
         s->bm.Planes[p] = s->planes.data() + (size_t)p * s->bm.BytesPerRow * h;
@@ -465,6 +483,8 @@ extern "C" void FreeBitMap(struct BitMap *bm)
                           [bm](NativeScreenBitMap *s) { return &s->bm == bm; });
     assert(i != allocated_bitmaps.end());
     auto *s = *i;
+    for (auto *child : allocated_bitmaps)
+        assert(child->palette_owner != s); // native children share its palette
     screen_bitmaps.erase(std::find(screen_bitmaps.begin(), screen_bitmaps.end(), s));
     allocated_bitmaps.erase(i);
     delete s;
@@ -3411,10 +3431,23 @@ static void test_native_owned_bitmaps()
     for (int i=0;i<8;i++) assert(!f.L(bm + M68K_BM_PLANES + 4*i));
     const ULONG friend_bm = f.call(Fixture::graphics_base, 918, {bm}, {37,9,2,BMF_CLEAR});
     assert(friend_bm && bitmap_allocs == 2 && last_friend == &allocated_bitmaps[0]->bm);
-    assert(f.call(Fixture::graphics_base, 924, {bm}) == 0 && bitmap_frees == 1);
-    // Friendship is only an allocation hint, not a lifetime dependency.
+    assert(f.call(Fixture::graphics_base, 924, {bm}) == 0 && bitmap_frees == 0);
+    // Native HIDD friends share palette resources: retain the owner.
     assert(f.call(Fixture::graphics_base, 960, {friend_bm}, {0,BMA_WIDTH}) == 48);
     assert(f.call(Fixture::graphics_base, 924, {friend_bm}) == 0 && bitmap_frees == 2);
+    assert(f.avail() == initial);
+    // A retired friend chain and siblings release each native owner once,
+    // only after its final direct dependent has been destroyed.
+    const unsigned freed_before_chain = bitmap_frees;
+    const ULONG a = f.call(Fixture::graphics_base,918,{0},{16,8,24,0});
+    const ULONG b = f.call(Fixture::graphics_base,918,{a},{16,8,24,0});
+    const ULONG c = f.call(Fixture::graphics_base,918,{b},{16,8,24,0});
+    const ULONG d = f.call(Fixture::graphics_base,918,{a},{16,8,24,0});
+    assert(a && b && c && d);
+    assert(!f.call(Fixture::graphics_base,924,{a}));
+    assert(!f.call(Fixture::graphics_base,924,{b}) && bitmap_frees == freed_before_chain);
+    assert(!f.call(Fixture::graphics_base,924,{c}) && bitmap_frees == freed_before_chain + 2);
+    assert(!f.call(Fixture::graphics_base,924,{d}) && bitmap_frees == freed_before_chain + 4);
     assert(f.avail() == initial);
     bitmap_fail = true;
     assert(!f.call(Fixture::graphics_base, 918, {0}, {20,9,24,0}) && f.avail() == initial);
@@ -3425,8 +3458,10 @@ static void test_native_owned_bitmaps()
     const ULONG handle = sg + M68K_SCR_BITMAP;
     const ULONG borrowed = f.call(Fixture::graphics_base, 918, {handle}, {20,8,2,BMF_CLEAR});
     assert(borrowed && last_friend == &pub.bm);
-    f.close_screen(pub, sg);
+    assert(pub.visitors == 1 && f.ctx.layer_ops->bitmap_screen_held(&f.ctx, &pub.screen));
     assert(f.call(Fixture::graphics_base, 924, {borrowed}) == 0);
+    assert(!pub.visitors && !f.ctx.layer_ops->bitmap_screen_held(&f.ctx, &pub.screen));
+    f.close_screen(pub, sg);
     const ULONG left = f.call(Fixture::graphics_base, 918, {0}, {20,8,24,0});
     assert(left);
     Kaffeine_DestroyContext(&f.ctx);

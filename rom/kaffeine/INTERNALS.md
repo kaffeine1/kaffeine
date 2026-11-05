@@ -4161,3 +4161,14 @@ opens three original timers, adds a copied request, and checks that two more
 application signals remain available while completions and guards stay
 correct. Its native reference passes 8 checks; the previous bridge fails the
 fourth check before starting the asynchronous requests.
+
+
+Native HIDD bitmap friends share palette resources. A freed owned friend is
+retired from guest lookup immediately, while its native resource and protected
+guest allocation remain until the final dependent bitmap is destroyed. Chains
+release iteratively, child before owner. Native screen friends retain their
+typed screen identity; borrowed public screens take an independent visitor.
+CloseScreen returns FALSE while an owned screen has dependent bitmaps. Cleanup
+retries screen retirement after bitmap leases are released. Pen-array reads
+query BMA_DEPTH: the native compatibility BitMap.Depth field can remain eight
+for a truecolor bitmap and cannot authorize pen readback.
