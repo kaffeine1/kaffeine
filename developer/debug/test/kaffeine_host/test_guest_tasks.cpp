@@ -360,6 +360,7 @@ static IPTR free_signal(KaffeineContext *, void *);
 static IPTR port_wait(KaffeineContext *, void *);
 static IPTR private_io_wait(KaffeineContext *, void *);
 static IPTR private_socket_wait(KaffeineContext *, void *);
+static IPTR private_resource_wait(KaffeineContext *, void *);
 /* Native fallback of the production dispatcher when the last child ended. */
 static IPTR exec_wait(KaffeineContext *c, void *p)
 { return c->sched ? Kaffeine_TaskWait(c,p) : (IPTR)Wait(Kaffeine_GetD(p,0)); }
@@ -379,7 +380,7 @@ static const M68KThunkEntry exec_table[] =
     { 300, Kaffeine_TaskSetPri }, { 306, Kaffeine_TaskSetSignal }, { 318, exec_wait },
     { 324, Kaffeine_TaskSignal }, { 330, alloc_signal }, { 336, free_signal },
     { 366, guest_put }, { 372, guest_get }, { 378, guest_reply },
-    { 480, private_socket_wait }, { 474, private_io_wait }, { 384, port_wait }, { 390, guest_wait }
+    { 486, private_resource_wait }, { 480, private_socket_wait }, { 474, private_io_wait }, { 384, port_wait }, { 390, guest_wait }
 };
 
 /* dos.library: CreateProc() as kaffeine_dos_CreateProc() calls it, and two
@@ -1623,6 +1624,39 @@ static void test_private_socket_waiters()
           "socket completions resume three distinct owner retries when all guest tasks wait");
     check(native_waits==1 && native_wait_mask==IO_BIT && !native_recvd && !(w.at(ROOT+26)&IO_BIT),
           "all-socket wait uses only its private native signal without exposing it to the guest");
+}
+
+/* Cooperative resources use a private request identity, never tc_SigWait. */
+static unsigned resource_tokens[2], resource_grants;
+static ULONG resource_owners[2];
+static IPTR private_resource_wait(KaffeineContext *ctx, void *cpu)
+{
+    unsigned i=Kaffeine_GetA(cpu,1);IPTR result=0;assert(i<2);
+    resource_owners[i]=ctx->task_ops->caller_task(ctx,cpu);
+    if(resource_grants&(1u<<i))return 0x6600+i;
+    assert(ctx->task_ops->resource_wait(ctx,cpu,&resource_tokens[i],private_resource_wait,&result));
+    return result;
+}
+static void test_private_resource_waiters()
+{
+    World w;w.child(0,1);w.child(1,1);resource_grants=0;
+    Program(ROOT_CODE).d(0,0).call(132).add_task(TCB(0),CODE).add_task(TCB(1),CODE+0x100)
+      .call(138).op([](Mock &){
+        auto &ctx=world->ctx;
+        check(world->at(SHARED)==0&&world->at(SHARED+4)==0,"both cooperative resource owners are suspended");
+        ctx.task_ops->send_signal(&ctx,resource_owners[0],1UL<<12); /* classic CTRL-C */
+        ctx.task_ops->resource_ready(&ctx,&resource_tokens[1],resource_owners[0]);
+        ctx.task_ops->resource_ready(&ctx,&resource_tokens[0],resource_owners[1]);
+      }).see(0,[]{return world->at(SHARED)|world->at(SHARED+4);})
+      .op([](Mock &){resource_grants|=1;world->ctx.task_ops->resource_ready(&world->ctx,&resource_tokens[0],resource_owners[0]);})
+      .see(1,[]{return world->at(SHARED);}).see(2,[]{return world->at(SHARED+4);})
+      .op([](Mock &){resource_grants|=2;world->ctx.task_ops->resource_ready(&world->ctx,&resource_tokens[1],resource_owners[1]);})
+      .see(3,[]{return world->at(SHARED+4);}).d(0,0).rts();
+    Program(CODE).a(6,SYSBASE).a(1,0).call(486).store(SHARED,0).rts();
+    Program(CODE+0x100).a(6,SYSBASE).a(1,1).call(486).store(SHARED+4,0).rts();
+    check(w.run()==0&&!w.seen[0]&&w.seen[1]==0x6600&&!w.seen[2]&&w.seen[3]==0x6601,
+      "only a matching private resource and captured live owner complete each retry");
+    check(native_waits==0,"cooperative semaphore waiting consumes no native signal or blocking native Wait");
 }
 
 static void test_socket_reply_preempts_lower_priority()
@@ -3077,6 +3111,7 @@ int main()
     test_io_poll_failure();
     test_private_io_waiters();
     test_private_socket_waiters();
+    test_private_resource_waiters();
     test_socket_reply_preempts_lower_priority();
     test_process_handshake();
     test_process_priorities();

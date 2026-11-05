@@ -9,6 +9,7 @@
 #undef NDEBUG
 #endif
 #include <array>
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -16,6 +17,7 @@
 #include "kaffeine_intern.h"
 #include "kaffeine_exec_compat.h"
 #include "kaffeine_dispatch.h"
+#include "kaffeine_sched.h"
 
 /* The linked production heap also contains the library auto-open helper. */
 extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *, const char *)
@@ -129,6 +131,7 @@ struct Fixture
         const auto native_before = native;
         ctx.running = TRUE;
         ctx.exit_code = 0;
+        ctx.callback_failed = FALSE;
         KaffeineDispatchResult result = {};
         assert(Kaffeine_DispatchLibraryCall(&ctx, &cpu, base - lvo, &result));
         assert(result.return_pc == 0x76543210 && !result.supervisor);
@@ -518,8 +521,182 @@ static void test_fallback_controls()
     check(generated_calls == 13, "all thirteen poison controls were exercised");
 }
 
+
+/* Independent scheduler seam: token/owner matches are recorded, never guest
+   signals. Real scheduler switching is covered by the task and target suites. */
+static constexpr unsigned SEM_QUEUE_TEST_TASKS = KAFFEINE_MAX_GUEST_TASKS+1;
+static ULONG queue_caller;
+static void *queue_cpu;
+static const void *queue_tokens[SEM_QUEUE_TEST_TASKS];
+static KaffeineTaskRetry queue_retries[SEM_QUEUE_TEST_TASKS];
+static unsigned queue_wakes[SEM_QUEUE_TEST_TASKS];
+static bool queue_refuse;
+static unsigned queue_index(ULONG task)
+{
+    assert(task >= Fixture::task && task < Fixture::task + SEM_QUEUE_TEST_TASKS*0x100 && !(task & 0xff));
+    return (task - Fixture::task) / 0x100;
+}
+static ULONG queue_identity(KaffeineContext *, void *cpu)
+{ return cpu == queue_cpu ? queue_caller : 0; }
+static BOOL queue_known(KaffeineContext *, ULONG task)
+{ return task >= Fixture::task && task < Fixture::task+SEM_QUEUE_TEST_TASKS*0x100 && !(task&0xff); }
+static BOOL queue_block(KaffeineContext *, void *cpu, const void *token,
+                        KaffeineTaskRetry retry, IPTR *result)
+{
+    assert(cpu == queue_cpu && token && retry);
+    if(queue_refuse)return FALSE;
+    unsigned i=queue_index(queue_caller);
+    assert(!queue_tokens[i]);queue_tokens[i]=token;queue_retries[i]=retry;
+    *result=0;return TRUE;
+}
+static void queue_ready(KaffeineContext *, const void *token, ULONG owner)
+{
+    unsigned i=queue_index(owner);assert(queue_tokens[i]==token);++queue_wakes[i];
+}
+struct QueueFixture : Fixture
+{
+    KaffeineTaskOps tasks = {};
+    ULONG before;
+    QueueFixture()
+    {
+        ctx.heap_start=0x4000;ctx.heap_end=0x7000;
+        assert(Kaffeine_HeapInit(&ctx));before=Kaffeine_HeapAvail(&ctx,0);
+        ctx.sched=reinterpret_cast<KaffeineScheduler *>(1);
+        ctx.cpu=&cpu;ctx.task_ops=&tasks;
+        tasks.caller_task=queue_identity;tasks.known_task=queue_known;
+        tasks.resource_wait=queue_block;tasks.resource_ready=queue_ready;
+        queue_cpu=&cpu;queue_caller=task;queue_refuse=false;
+        std::memset(queue_tokens,0,sizeof(queue_tokens));std::memset(queue_retries,0,sizeof(queue_retries));
+        std::memset(queue_wakes,0,sizeof(queue_wakes));initialized(sem);
+    }
+    ~QueueFixture(){if(ctx.semaphore_cleanup)ctx.semaphore_cleanup(&ctx);}
+    void who(unsigned i){queue_caller=task+i*0x100;}
+    ULONG retry(unsigned i,ULONG address=sem)
+    {
+        who(i);auto retry=queue_retries[i];assert(retry);
+        state.a[0]=address;state.d[0]=0x0BAD0000+i;
+        auto result=retry(&ctx,&cpu);queue_tokens[i]=nullptr;queue_retries[i]=nullptr;
+        return result;
+    }
+    bool empty_queue(ULONG address=sem)
+    {return m68k_read32(&ctx,address+16)==address+20 && !m68k_read32(&ctx,address+20) && m68k_read32(&ctx,address+24)==address+16;}
+};
+static void test_cooperative_exclusive_queue()
+{
+    QueueFixture f;
+    check(f.call(564,f.sem)==f.initial_d0,"exclusive owner acquires before contention");
+    f.who(1);check(f.call(564,f.sem)==0&&f.ctx.running,"contended Obtain suspends instead of stopping the program");
+    ULONG node=m68k_read32(&f.ctx,f.sem+16);
+    check(node>=f.ctx.heap_start && node<f.ctx.heap_end && m68k_read32(&f.ctx,node)==f.sem+20 &&
+      m68k_read32(&f.ctx,node+4)==f.sem+16 && m68k_read32(&f.ctx,node+8)==f.task+0x100 &&
+      m68k_read16(&f.ctx,f.sem+44)==1,"queued request has exact classic MinNode and QueueCount");
+    check(!f.ctx.semaphore_release(&f.ctx,f.sem,46,FALSE),"pending request retains semaphore storage");
+    f.who(0);check(f.call(570,f.sem)==f.initial_d0 && queue_wakes[1]==1 && f.counts(f.sem,1,f.task+0x100)&&f.empty_queue(),
+      "release grants ownership and removes the queue node before waking exactly its owner");
+    check(f.call(576,f.sem)==0,"an unconsumed grant is already exclusive to its intended task");
+    check(f.retry(1)==f.initial_d0&&f.counts(f.sem,1,f.task+0x100),"retry preserves original D0 without double acquisition");
+    check(f.call(570,f.sem)==f.initial_d0&&f.counts(f.sem,0,0)&&Kaffeine_HeapAvail(&f.ctx,0)==f.before,
+      "completed handoff releases all mirror storage");
+    f.who(0);m68k_write32(&f.ctx,f.base+276,0xDEADBEEF);
+    check(f.call(564,f.sem)==f.initial_d0&&f.counts(f.sem,1,f.task),"scheduled semaphore ownership ignores forged guest ThisTask");
+    f.call(570,f.sem);
+}
+static void test_cooperative_fifo_and_nesting()
+{
+    QueueFixture f;f.call(564,f.sem);f.call(564,f.sem);
+    f.who(1);f.call(564,f.sem);f.who(2);f.call(564,f.sem);
+    f.who(0);f.call(570,f.sem);
+    check(!queue_wakes[1]&&!queue_wakes[2]&&m68k_read16(&f.ctx,f.sem+14)==1,"nested release does not wake a semaphore waiter early");
+    f.call(570,f.sem);
+    check(queue_wakes[1]==1&&!queue_wakes[2]&&m68k_read32(&f.ctx,f.sem+40)==f.task+0x100,"exclusive handoff follows queue order");
+    f.retry(1);f.call(570,f.sem);
+    check(queue_wakes[2]==1&&f.empty_queue(),"second exclusive waiter wakes only after the first owner releases");
+    f.retry(2);f.call(570,f.sem);
+    check(f.counts(f.sem,0,0)&&Kaffeine_HeapAvail(&f.ctx,0)==f.before,"nested FIFO cycle returns to a free semaphore and baseline memory");
+}
+static void test_cooperative_shared_cohort()
+{
+    QueueFixture f;f.call(564,f.sem);
+    f.who(1);f.call(678,f.sem);f.who(2);f.call(678,f.sem);
+    f.who(0);f.call(570,f.sem);
+    check(queue_wakes[1]==1&&queue_wakes[2]==1&&f.counts(f.sem,2,0)&&f.empty_queue(),"exclusive release grants a shared cohort exactly as native Exec");
+    check(f.retry(1)==f.initial_d0&&f.retry(2)==f.initial_d0&&f.counts(f.sem,2,0),"each shared waiter consumes its own grant without incrementing it again");
+    f.who(1);f.call(570,f.sem);f.who(2);f.call(570,f.sem);
+    check(f.counts(f.sem,0,0)&&Kaffeine_HeapAvail(&f.ctx,0)==f.before,"both shared releases balance the native-compatible nesting count");
+}
+static void test_cooperative_mixed_queue()
+{
+    QueueFixture f;f.call(564,f.sem);
+    f.who(1);f.call(678,f.sem);f.who(2);f.call(564,f.sem);f.who(3);f.call(678,f.sem);
+    f.who(4);const auto before=f.memory;
+    check(!f.call(576,f.sem)&&!f.call(720,f.sem)&&f.memory==before,"Attempt calls never enqueue behind a foreign exclusive owner");
+    f.who(0);f.call(570,f.sem);
+    check(queue_wakes[1]==1&&!queue_wakes[2]&&queue_wakes[3]==1&&m68k_read16(&f.ctx,f.sem+44)==2,
+      "shared head grants every shared waiter including one behind an exclusive request");
+    f.retry(1);f.retry(3);f.who(0);
+    check(f.call(678,f.sem)==f.initial_d0&&m68k_read16(&f.ctx,f.sem+14)==3&&m68k_read16(&f.ctx,f.sem+44)==3,
+      "new shared acquisition joins a shared cohort even while a writer waits");
+    f.call(570,f.sem);f.who(1);f.call(570,f.sem);
+    check(!queue_wakes[2],"writer stays blocked until every shared acquisition releases");
+    f.who(3);f.call(570,f.sem);
+    check(queue_wakes[2]==1&&f.counts(f.sem,1,f.task+0x200),"last shared release grants the waiting writer");
+    f.retry(2);f.call(570,f.sem);
+    check(f.counts(f.sem,0,0)&&Kaffeine_HeapAvail(&f.ctx,0)==f.before,"mixed queue restores both canonical free state and mirror capacity");
+}
+static void test_cooperative_grant_identity()
+{
+    for(unsigned mode=0;mode<2;++mode){
+        QueueFixture f;f.call(564,f.sem);f.who(1);f.call(564,f.sem);f.who(0);f.call(570,f.sem);f.who(1);
+        const auto before=f.memory;
+        if(!mode)check(f.call(564,f.second)==20&&!f.ctx.running&&f.memory==before,"changed A0 cannot consume a private semaphore grant");
+        else check(f.call(678,f.sem)==20&&!f.ctx.running&&f.memory==before,"changed obtain mode cannot consume a private semaphore grant");
+    }
+}
+static void test_cooperative_cancellation_and_storage()
+{
+    QueueFixture f;ULONG address=Kaffeine_HeapAlloc(&f.ctx,46,0);
+    assert(address);f.initialized(address);f.call(564,address);
+    f.who(1);f.call(564,address);
+    const auto before=f.memory;
+    check(!Kaffeine_HeapFreeExact(&f.ctx,address,46)&&f.memory==before,"guest FreeMem cannot recycle a semaphore with a blocked waiter");
+    f.ctx.semaphore_task_removed(&f.ctx,f.task+0x100);
+    check(f.ctx.running&&!queue_wakes[1]&&f.empty_queue(address)&&f.counts(address,1,f.task),"retiring a queued task cancels only its own request without a grant");
+    f.who(0);f.call(570,address);
+    check(Kaffeine_HeapFreeExact(&f.ctx,address,46)&&Kaffeine_HeapAvail(&f.ctx,0)==f.before,"cancellation releases the retained allocation and every request mirror");
+}
+static void test_cooperative_corruption_and_refusal()
+{
+    for(unsigned which=0;which<4;++which){
+        QueueFixture f;f.call(564,f.sem);f.who(1);f.call(564,f.sem);f.who(0);
+        if(which==0){ULONG n=m68k_read32(&f.ctx,f.sem+16);m68k_write32(&f.ctx,n+8,f.task);}
+        if(which==1)m68k_write16(&f.ctx,f.sem+44,0);
+        const auto before=f.memory;
+        if(which<2)check(f.call(570,f.sem)==20&&!f.ctx.running&&f.memory==before&&!queue_wakes[1],"corrupt queue bytes fail before handoff or native access");
+        if(which==2)check(f.call(558,f.sem)==20&&!f.ctx.running&&f.memory==before,"InitSemaphore cannot erase a live private wait queue");
+        if(which==3){f.ctx.semaphore_task_removed(&f.ctx,f.task);check(!f.ctx.running&&f.ctx.exit_code==20&&!queue_wakes[1],"owner retirement stops the domain without granting a stale task identity");}
+    }
+    {
+        QueueFixture f;f.call(564,f.sem);f.who(1);queue_refuse=true;const auto before=f.memory;
+        check(f.call(564,f.sem)==20&&!f.ctx.running&&
+          std::equal(before.begin()+f.sem,before.begin()+f.sem+46,f.memory.begin()+f.sem)&&
+          Kaffeine_HeapAvail(&f.ctx,0)==f.before,
+          "failed suspension rolls back private request and mirror allocation without guest writes");
+    }
+    {
+        QueueFixture f;f.call(564,f.sem);f.who(1);f.call(678,f.sem);f.who(0);f.call(570,f.sem);
+        f.ctx.semaphore_task_removed(&f.ctx,f.task+0x100);
+        check(!f.ctx.running&&f.ctx.exit_code==20,"retiring an unconsumed shared grant cannot leave a reusable task capability");
+    }
+}
 int main()
 {
+    test_cooperative_exclusive_queue();
+    test_cooperative_fifo_and_nesting();
+    test_cooperative_shared_cohort();
+    test_cooperative_mixed_queue();
+    test_cooperative_grant_identity();
+    test_cooperative_cancellation_and_storage();
+    test_cooperative_corruption_and_refusal();
     test_shared_regression();
     test_init_and_exclusive();
     test_shared_and_busy();

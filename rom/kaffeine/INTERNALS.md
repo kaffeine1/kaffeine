@@ -1821,6 +1821,29 @@ at 40 and signed WORD queue count at 44. `InitSemaphore()` follows
 multiple link untouched. The free state is nesting 0, owner NULL and queue
 count -1, with an empty wait queue containing guest sentinel addresses.
 
+Uncontended calls retain the classic fields and register behavior below.
+With a cooperative scheduler, exclusive and shared obtains also wait for a
+live guest owner. A private bounded waiter record owns a 12-byte classic
+SemaphoreRequest mirror; guest list bytes never select a native waiter.
+`ss_QueueCount` is nesting plus queued requests minus one. The releaser
+assigns ownership before waking an exact request/owner pair. An exclusive
+head grants one waiter; a shared head grants every shared waiter, including
+those behind an exclusive request, matching native Exec. A retry consumes
+its grant once and restores the original D0. The reserved SIGF_SINGLE is
+cleared before waiting; unrelated guest signals cannot complete the private
+request. No native semaphore or native blocking wait is used.
+
+A queued request retains its semaphore allocation and mirror node. Removal
+cancels a queued waiter before its task storage can be reused. Removal of an
+owner with pending requests, or of an unconsumed grant, stops the domain;
+corrupt queue mirrors and reinitialization of a tracked semaphore also stop
+before a handoff. Shared holders remain counted collectively, as in native
+Exec. An all-task semaphore deadlock is a deterministic domain failure.
+
+Still excluded: contended ObtainSemaphoreList, Procure/Vacate messages and
+waits inside a callback, DOS broker, IBase or LayerInfo scope. Without a
+scheduler a call which must wait retains its explicit rc20 refusal.
+
 For one guest task, the rules in `rom/exec/semaphores.c` reduce to:
 
 - An exclusive acquisition of a free semaphore sets owner to the guest
@@ -1833,20 +1856,22 @@ For one guest task, the rules in `rom/exec/semaphores.c` reduce to:
   NULL, nesting 0 and queue count -1. Attempts return exactly 1 or 0, as
   AROS does, and a failed attempt leaves the guest structure unchanged.
 
-The bridge accepts only initialized states with an empty wait queue and
-queue count equal to nesting minus one. It rejects count overflow, corrupt
+Untracked semaphores must have an empty wait queue and queue count equal
+to nesting minus one. Tracked queues must match every private waiter and
+canonical link/count field. The bridge rejects count overflow, corrupt
 links/counts, native shadow objects and any whole structure or string
 outside the guest arena. Subtraction-based bounds checks precede every
 guest access, including list links and strings; no unchecked guest address
 is passed to the generic inline memory accessors.
 
 Attempts fail with FALSE on invalid state, a missing task identity or a
-foreign owner. A void call that would wait, mutate corrupt state, release a
+foreign owner. A void call with no admissible cooperative wait, or one
+that would mutate corrupt state, release a
 foreign owner or underflow a free semaphore stops the context with
 `ctx->running = FALSE`, `ctx->exit_code = 20` and D0 = 20. It leaves the
-guest structures unchanged. A shared-to-exclusive blocking obtain takes
-that same path, since the guest cannot release its shared lock while
-waiting. `Procure()` and `Vacate()` always take this explicit stop path:
+guest structures unchanged. Without a scheduler a shared-to-exclusive obtain takes the same refusal
+path. With tasks it queues normally; a deadlock is detected if no running
+task can release the shared hold. `Procure()` and `Vacate()` always take this explicit stop path:
 their message queue/reply protocol has no bridge yet, and returning as if
 the void call succeeded could leave the caller waiting for a reply forever.
 No exception, native wait, message or signal is used. `Kaffeine_RunCPU()`

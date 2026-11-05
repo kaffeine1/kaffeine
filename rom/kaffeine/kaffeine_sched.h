@@ -151,6 +151,11 @@ struct KaffeineTaskOps
                         KaffeineTaskRetry, IPTR *);
     void  (*socket_ready)(struct KaffeineContext *, const void *, ULONG);
     ULONG (*socket_take_signals)(struct KaffeineContext *, void *, ULONG);
+    /* One private cooperative resource request of this live CPU. No guest
+       signal can complete it; only the captured request and owner can. */
+    BOOL (*resource_wait)(struct KaffeineContext *, void *, const void *,
+                         KaffeineTaskRetry, IPTR *);
+    void (*resource_ready)(struct KaffeineContext *, const void *, ULONG);
 };
 
 #ifdef __cplusplus

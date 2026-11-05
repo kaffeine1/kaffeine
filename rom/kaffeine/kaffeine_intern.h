@@ -316,6 +316,12 @@ struct KaffeineContext
     struct KaffeineScheduler *sched;
     const struct KaffeineTaskOps *task_ops;
     const struct KaffeineCPUFactory *cpu_factory;
+    /* Contended guest semaphores: private waiter identities and classic
+       queue mirrors, never native Exec semaphores or borrowed signal bits. */
+    struct KaffeineSemaphores *semaphores;
+    BOOL (*semaphore_release)(struct KaffeineContext *, ULONG, ULONG, BOOL);
+    void (*semaphore_task_removed)(struct KaffeineContext *, ULONG);
+    void (*semaphore_cleanup)(struct KaffeineContext *);
     /* Optional: the outermost Kaffeine_RunCPU() calls it after every
        KAFFEINE_GUI_POLL_SLICES completed slices, between slices, where no
        thunk and no guest callback runs, also without guest tasks. It

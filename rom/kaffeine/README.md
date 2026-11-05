@@ -604,7 +604,7 @@ message handling remains separate.
 - Pools allocate each block directly from the guest heap; puddle and threshold
   sizes are recorded as hints, with no data-puddle reservation. Ownership and
   MEMF_CLEAR are preserved, and DeletePool frees all remaining owned blocks.
-- `Forbid`/`Permit` and `Disable`/`Enable` prevent guest task switches across the cooperative guest scheduler. Semaphores operate within one guest context; a semaphore call that would block stops the context with rc 20. `Procure`/`Vacate` message protocols are unsupported and also stop with rc 20. See
+- `Forbid`/`Permit` and `Disable`/`Enable` prevent guest task switches across the cooperative guest scheduler. Semaphores operate within one guest context. Exclusive and shared obtains can wait cooperatively for another live guest task; the releaser transfers ownership before waking the captured waiter. Contended list acquisition and waits inside callbacks, brokers, IBase or LayerInfo scopes still stop with rc 20. `Procure`/`Vacate` message protocols are unsupported and also stop with rc 20. See
   [guest semaphore rules](INTERNALS.md#guest-semaphore-rules).
 
 ### Device I/O and DOS Packets

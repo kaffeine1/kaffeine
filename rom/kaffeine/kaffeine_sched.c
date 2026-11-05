@@ -106,6 +106,7 @@ struct GuestTask
     ULONG wait;                 /* the signals that it waits for */
     ULONG io_request;           /* private WaitIO retry identity; no signal bits */
     const void *socket_request; /* private native request, never a guest address */
+    const void *resource_request; /* private cooperative semaphore request */
     ULONG recvd;                /* a child's signals; the root's on child bits */
     ULONG alloc;                /* a child's tc_SigAlloc */
     ULONG native;               /* native bits that a child allocated */
@@ -609,6 +610,7 @@ static BOOL complete(struct KaffeineContext *ctx, struct KaffeineScheduler *s, s
         if (ctx->running && t->state == SLOT_WAIT)
             return FALSE;
         t->socket_request = NULL;
+        t->resource_request = NULL;
         Kaffeine_SetD(t->cpu, 0, (ULONG)result);
         mirror(ctx, s, t);
         return TRUE;
@@ -765,6 +767,7 @@ static void reap(struct KaffeineContext *ctx, struct KaffeineScheduler *s, struc
 
     /* Quarantine native requests before the task's signals or stack can
        be reused. Late replies must never write into that old stack. */
+    if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, tcb);
     if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, tcb);
     if (ctx->io_task_removed)
         ctx->io_task_removed(ctx, tcb);
@@ -938,7 +941,7 @@ static void schedule(struct KaffeineContext *ctx, struct KaffeineScheduler *s)
                 if ((!io_waiter || !ctx->io_signals) &&
                     (!socket_waiter || !ctx->socket_signals) && !Kaffeine_LayerSignalMask(ctx))
                 {
-                    stop(ctx, "every guest task waits for signals that nothing can send");
+                    stop(ctx, "every guest task waits for signals or resources that no running task can provide");
                     return;
                 }
             }
@@ -998,6 +1001,7 @@ static void sched_end(struct KaffeineContext *ctx)
     unsigned i;
 
     if (ctx->ibase_task_removed && s->current) ctx->ibase_task_removed(ctx, s->current->tcb);
+    if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, s->root.tcb);
     if (ctx->layer_ops && ctx->layer_ops->release_locks)
         ctx->layer_ops->release_locks(ctx);
     if (s->current != &s->root)
@@ -1031,6 +1035,7 @@ static void sched_end(struct KaffeineContext *ctx)
             ctx->layer_ops->task_removed(ctx, t->tcb);
         (void)finish_process_wait(ctx, s, t);
         if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, t->tcb);
+        if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, t->tcb);
         if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, t->tcb);
         if (ctx->io_task_removed)
             ctx->io_task_removed(ctx, t->tcb);
@@ -1666,6 +1671,7 @@ BOOL Kaffeine_SchedRecoverStart(struct KaffeineContext *ctx, struct KaffeineDosB
     /* Broker is consumed now. Restore a live parent view before destroying
        this CPU; the native caller still owns the module and unloads next. */
     if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, tcb);
+    if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, tcb);
     if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, tcb);
     if (ctx->io_task_removed) ctx->io_task_removed(ctx, tcb);
     if (ctx->idcmp_task_gone) ctx->idcmp_task_gone(ctx, tcb);
@@ -2035,6 +2041,7 @@ BOOL Kaffeine_SchedFinishRoot(struct KaffeineContext *ctx, void *cpu, LONG resul
     s->root.state = SLOT_REMOVED;
     s->reschedule = TRUE;
     if (ctx->ibase_task_removed) ctx->ibase_task_removed(ctx, s->root.tcb);
+    if (ctx->semaphore_task_removed) ctx->semaphore_task_removed(ctx, s->root.tcb);
     if (ctx->socket_task_removed) ctx->socket_task_removed(ctx, s->root.tcb);
     if (ctx->io_task_removed)
         ctx->io_task_removed(ctx, s->root.tcb);
@@ -2457,6 +2464,36 @@ static ULONG sched_socket_take_signals(struct KaffeineContext *ctx, void *cpu, U
     return take(ctx, s, s->current, mask & ~Kaffeine_AsyncSignalMask(ctx));
 }
 
+static BOOL sched_resource_wait(struct KaffeineContext *ctx, void *cpu,
+                                const void *request, KaffeineTaskRetry retry, IPTR *result)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s ? s->current : NULL;
+    if (!request || !retry || !t || ctx->callback_depth ||
+        !sched_caller_task(ctx, cpu) || ctx->cpu != cpu ||
+        ctx->broker_call || Kaffeine_LayerInfoLocked(ctx) ||
+        (ctx->ibase_locked && ctx->ibase_locked(ctx)) ||
+        t->socket_request || t->io_request || t->resource_request)
+        return FALSE;
+    t->resource_request = request;
+    /* Native ObtainSemaphore clears SIGF_SINGLE before waiting. Completion
+       still uses only the private request, so a forged signal cannot grant. */
+    (void)take(ctx, s, t, 1UL << 4);
+    t->wait = 0;
+    t->retry = retry;
+    suspend(ctx, s, t);
+    *result = 0;
+    return ctx->running;
+}
+
+static void sched_resource_ready(struct KaffeineContext *ctx, const void *request, ULONG owner)
+{
+    struct KaffeineScheduler *s = ctx->sched;
+    struct GuestTask *t = s ? task_of(s, owner) : NULL;
+    if (t && t->state == SLOT_WAIT && t->resource_request == request)
+        wake(ctx, s, t);
+}
+
 const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
 {
     Kaffeine_TaskAdd, Kaffeine_TaskRemove, sched_find_named, Kaffeine_TaskSetPri,
@@ -2468,5 +2505,6 @@ const struct KaffeineTaskOps Kaffeine_GuestTaskOps =
     sched_is_root, sched_caller_task, sched_block_io, sched_io_completed,
     sched_dos_call, Kaffeine_SchedFinishRoot, sched_root_result,
     sched_root_task, sched_can_signal, sched_packet_call, sched_icon_call,
-    sched_socket_wait, sched_socket_ready, sched_socket_take_signals
+    sched_socket_wait, sched_socket_ready, sched_socket_take_signals,
+    sched_resource_wait, sched_resource_ready
 };
