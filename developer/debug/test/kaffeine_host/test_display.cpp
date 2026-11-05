@@ -244,8 +244,8 @@ int main()
         for(ULONG lvo:{714U,720U,726U}) { f.ctx.callback_failed=FALSE; f.reject(0,DTAG_DIMS,0,0,lvo); }
     }
     {
-        /* A NULL-handle DISP query at a nonaligned buffer near the arena's
-           end, with room for sizeof(struct DisplayInfo) and its reserved
+        /* A NULL-handle DISP query at a 4- but not 8-aligned buffer near the
+           arena's end, with room for sizeof(struct DisplayInfo) and its reserved
            tail. Only the classic payload may change. */
         DisplayFixture f; f.ctx.ibase_locked=ibase_held;
         const ULONG out=f.ctx.mem_size-308; auto want=expected(DTAG_DISP);
