@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 struct Task *FindTask(CONST_STRPTR name);
+void Forbid(void);
+void Permit(void);
 #ifdef __cplusplus
 }
 #endif

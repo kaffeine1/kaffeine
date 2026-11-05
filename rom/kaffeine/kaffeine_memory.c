@@ -362,6 +362,7 @@ void Kaffeine_DestroyContext(struct KaffeineContext *ctx)
 {
     if (!ctx) return;
     if (ctx->ibase_cleanup) ctx->ibase_cleanup(ctx);
+    if (ctx->semaphore_cleanup) ctx->semaphore_cleanup(ctx);
     if (ctx->socket_cleanup) ctx->socket_cleanup(ctx);
     if (ctx->idcmp_cleanup) ctx->idcmp_cleanup(ctx);
     if (ctx->segments_cleanup) ctx->segments_cleanup(ctx);
@@ -563,6 +564,7 @@ static BOOL heap_io_keeps(struct KaffeineContext *ctx,
     if (allocation->consuming) return TRUE;
     heap_payload(allocation, &block, &size);
     if (!Kaffeine_LayerMemoryReleasable(ctx, block, size)) return TRUE;
+    if (ctx->semaphore_release && !ctx->semaphore_release(ctx, block, size, FALSE)) return TRUE;
     if (ctx->idcmp_release && !ctx->idcmp_release(ctx, block, size, FALSE)) return TRUE;
     if (ctx->io_release && !ctx->io_release(ctx, block, size, commit)) return TRUE;
     return commit && ctx->idcmp_release && !ctx->idcmp_release(ctx, block, size, TRUE);

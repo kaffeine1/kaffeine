@@ -1755,3 +1755,21 @@ nonce, opens only its own window, draws a known 32x32 RGB marker, and expires af
 effects to that nonce; no input should be sent without the matching fresh proof.
 The fixture signals only its own named witness on cleanup. These tests use a
 nonempty public loopback fixture key and do not configure a real machine.
+
+
+The explicit targets `build/net_amigent_viewer` and `build/net_amigent_volumes`
+exercise the original daemon on native loopback, without input. The viewer case
+pipelines the original small RGB332 regions, two requests in flight, then reads
+SYSINFO and VOLUMES while keeping the screen connection responsive. The volumes
+case requires three nonempty lists containing the volume independently resolved
+from SYS:, followed by PING and normal daemon shutdown. Stage the original
+`amigentd` and a file named `amigent-test.key` containing
+`public-loopback-fixture-key` in `SYS:EMU68`. Use a native loopback TCP stack and
+Workbench; no original daemon executable is distributed with these sources.
+
+`build/dos_doslist` is a Kaffeine-only negative-contract test: it deliberately
+requests a WRITE lock and expects refusal. Do not run it on native AmigaOS/AROS,
+where successful locking has a different lifetime. Its 68 checks cover read
+snapshots, filters, classic layout, names after unlock, ownership and repeated
+walks, including the original daemon's unlock-before-Info sequence. It is kept
+out of the default cross-system battery.

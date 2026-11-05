@@ -15,6 +15,11 @@ IPTR kaffeine_dos_GetProgramDir(struct KaffeineContext *, void *);
 IPTR kaffeine_dos_MakeLink(struct KaffeineContext *, void *);
 IPTR kaffeine_dos_AssignAddToList(struct KaffeineContext *, void *);
 IPTR kaffeine_dos_ReadLinkUnsupported(struct KaffeineContext *, void *);
+IPTR kaffeine_dos_LockDosList(struct KaffeineContext *, void *);
+IPTR kaffeine_dos_UnLockDosList(struct KaffeineContext *, void *);
+IPTR kaffeine_dos_AttemptLockDosList(struct KaffeineContext *, void *);
+IPTR kaffeine_dos_FindDosEntry(struct KaffeineContext *, void *);
+IPTR kaffeine_dos_NextDosEntry(struct KaffeineContext *, void *);
 IPTR kaffeine_dos_UnsupportedLockObject(struct KaffeineContext *, void *);
 #define KAFFEINE_DOS_LOCK_THUNKS \
     { 96, kaffeine_dos_DupLock }, \
@@ -25,13 +30,13 @@ IPTR kaffeine_dos_UnsupportedLockObject(struct KaffeineContext *, void *);
     { 480, kaffeine_dos_UnsupportedLockObject }, \
     { 594, kaffeine_dos_SetProgramDir }, \
     { 600, kaffeine_dos_GetProgramDir }, \
-    { 654, kaffeine_dos_UnsupportedLockObject }, \
-    { 660, kaffeine_dos_UnsupportedLockObject }, \
-    { 666, kaffeine_dos_UnsupportedLockObject }, \
+    { 654, kaffeine_dos_LockDosList }, \
+    { 660, kaffeine_dos_UnLockDosList }, \
+    { 666, kaffeine_dos_AttemptLockDosList }, \
     { 672, kaffeine_dos_UnsupportedLockObject }, \
     { 678, kaffeine_dos_UnsupportedLockObject }, \
-    { 684, kaffeine_dos_UnsupportedLockObject }, \
-    { 690, kaffeine_dos_UnsupportedLockObject }, \
+    { 684, kaffeine_dos_FindDosEntry }, \
+    { 690, kaffeine_dos_NextDosEntry }, \
     { 696, kaffeine_dos_UnsupportedLockObject }, \
     { 702, kaffeine_dos_UnsupportedLockObject }, \
     { 984, kaffeine_dos_SameDevice }, \

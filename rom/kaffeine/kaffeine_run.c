@@ -46,6 +46,7 @@ static void cleanup_owned(struct KaffeineContext *ctx)
 {
     Kaffeine_StartupFinish(ctx);
     if (ctx->ibase_cleanup) ctx->ibase_cleanup(ctx);
+    if (ctx->semaphore_cleanup) ctx->semaphore_cleanup(ctx);
     if (ctx->socket_cleanup) ctx->socket_cleanup(ctx);
     /* ASL requests the program left, which no screen or window outlives */
     Kaffeine_AslCleanup(ctx);

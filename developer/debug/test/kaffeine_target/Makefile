@@ -436,6 +436,11 @@ all: $(PROGRAM_FILES) $(EXEC_LIBRARIES_LIBS)
 
 # This probe asserts Kaffeine's explicit unsupported-extension contract;
 # build it on request, not as a stock-Amiga compatibility battery member.
+# These negative-contract and daemon regressions are explicit targets.
+# dos_doslist expects Kaffeine to refuse native WRITE/mutation operations.
+$(BUILD_DIR)/dos_doslist $(BUILD_DIR)/net_amigent_viewer $(BUILD_DIR)/net_amigent_volumes: $(BUILD_DIR)/%: $(TEST_DIR)/%.c $(TEST_DIR)/m68ktest.h $(TEST_DIR)/socket_fixture_abi.h | $(BUILD_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $<
+
 $(BUILD_DIR)/gfx_font_extension: $(TEST_DIR)/gfx_font_extension.c $(TEST_DIR)/m68ktest.h | $(BUILD_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) $(M68K_LDFLAGS) -o $@ $<
 

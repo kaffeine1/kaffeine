@@ -9,6 +9,8 @@
 
 static const char *name(struct KaffeineContext *ctx, ULONG address)
 {
+    const char *snapshot = Kaffeine_LockReadString(ctx, address);
+    if (snapshot) return snapshot;
     if (!ctx->mem || !address || address >= ctx->mem_size ||
         Kaffeine_LockProtected(ctx, address, 1) ||
         !memchr(ctx->mem + address, 0, ctx->mem_size - address))
@@ -102,8 +104,25 @@ IPTR kaffeine_dos_AssignAddToList(struct KaffeineContext *ctx, void *cpu)
     return result;
 }
 
-/* These APIs expose DosList nodes, polymorphic native pointers, or a
-   handler protocol not yet covered by typed wrappers. Fail before DOS. */
+IPTR kaffeine_dos_LockDosList(struct KaffeineContext *ctx, void *cpu)
+{ return Kaffeine_DosListLock(ctx, cpu, THUNK_D(1), FALSE); }
+
+IPTR kaffeine_dos_AttemptLockDosList(struct KaffeineContext *ctx, void *cpu)
+{ return Kaffeine_DosListLock(ctx, cpu, THUNK_D(1), TRUE); }
+
+IPTR kaffeine_dos_UnLockDosList(struct KaffeineContext *ctx, void *cpu)
+{
+    Kaffeine_DosListUnlock(ctx, cpu, THUNK_D(1));
+    return 0; /* void API; D0 is not an input or a defined result. */
+}
+
+IPTR kaffeine_dos_NextDosEntry(struct KaffeineContext *ctx, void *cpu)
+{ return Kaffeine_DosListNext(ctx, cpu, THUNK_D(1), THUNK_D(2)); }
+
+IPTR kaffeine_dos_FindDosEntry(struct KaffeineContext *ctx, void *cpu)
+{ return Kaffeine_DosListFind(ctx, cpu, THUNK_D(1), THUNK_D(2), THUNK_D(3)); }
+
+/* Mutating DosList APIs and untyped handler objects remain refused. */
 IPTR kaffeine_dos_UnsupportedLockObject(struct KaffeineContext *ctx, void *cpu)
 {
     (void)ctx;

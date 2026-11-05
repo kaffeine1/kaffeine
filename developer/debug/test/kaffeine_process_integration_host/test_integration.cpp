@@ -32,6 +32,7 @@ struct KaffeineContext {
     ULONG guest_exec_task{},io_signals{},layer_signals{},guest_signals{},entry_point{},m68k_argptr{},m68k_argsize{},m68k_sysbase{};
     ULONG socket_signals{};
     void (*ibase_cleanup)(KaffeineContext *){}; void (*socket_cleanup)(KaffeineContext *){};
+    void (*semaphore_cleanup)(KaffeineContext *){};
     char program_name[256]{};
     BOOL running{TRUE}; LONG exit_code{};
     void *sched{}; const Ops *task_ops{};

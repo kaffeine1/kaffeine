@@ -37,6 +37,39 @@ enum
     MAX_EXEC_LIST = 256
 };
 
+/* At most one blocked Obtain per live CPU. Native bookkeeping owns every
+   link and waiter; the classic list is a checked read-only mirror of it. */
+#define SEM_WAITERS (KAFFEINE_MAX_GUEST_TASKS + 1)
+struct SemaphoreQueue;
+struct SemaphoreWaiter
+{
+    struct SemaphoreQueue *queue;
+    struct SemaphoreWaiter *next;
+    ULONG task, node, d0;
+    BOOL shared, granted;
+};
+struct SemaphoreQueue
+{
+    ULONG sem, owner;
+    UWORD nest, queued;
+    struct SemaphoreWaiter *head, *tail;
+};
+struct KaffeineSemaphores
+{
+    struct SemaphoreQueue queues[SEM_WAITERS];
+    struct SemaphoreWaiter waiters[SEM_WAITERS];
+};
+
+static struct SemaphoreQueue *semaphore_queue(struct KaffeineContext *ctx, ULONG sem)
+{
+    unsigned i;
+    if (ctx->semaphores)
+        for (i = 0; i < SEM_WAITERS; ++i)
+            if (ctx->semaphores->queues[i].sem == sem)
+                return &ctx->semaphores->queues[i];
+    return NULL;
+}
+
 static BOOL guest_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)
 {
     if (!ctx->mem || !addr || addr >= ctx->mem_size || ctx->mem_size - addr < size)
@@ -74,6 +107,10 @@ static ULONG semaphore_task(struct KaffeineContext *ctx)
 {
     ULONG task;
 
+    if (ctx->sched)
+        return ctx->task_ops && ctx->task_ops->caller_task ?
+            ctx->task_ops->caller_task(ctx, ctx->cpu) : 0;
+
     if (!guest_range(ctx, ctx->m68k_sysbase, M68K_EXECBASE_THISTASK + 4))
         return 0;
     task = m68k_read32(ctx, ctx->m68k_sysbase + M68K_EXECBASE_THISTASK);
@@ -82,14 +119,137 @@ static ULONG semaphore_task(struct KaffeineContext *ctx)
 
 static IPTR semaphore_failure(struct KaffeineContext *ctx, const char *operation)
 {
-    /* One guest task cannot wait for a different owner or service a message
-       protocol. Stop through the C run-loop flag, never through an exception.
-       D0 must also be 20 because Kaffeine_RunCPU returns that register. */
+    /* Invalid state or a missing cooperative route is never sent to native
+       Exec. Preserve the authoritative stop even when the current task ends. */
     bug("[kaffeine] %s: unsupported or invalid guest semaphore operation, stopping (20)\n",
         operation);
     ctx->running = FALSE;
     ctx->exit_code = 20;
+    ctx->callback_failed = TRUE;
     return 20;
+}
+
+static void semaphore_mirror(struct KaffeineContext *ctx, struct SemaphoreQueue *q)
+{
+    struct SemaphoreWaiter *w;
+    ULONG pred = q->sem + SS_WAIT;
+    m68k_write32(ctx, q->sem + SS_WAIT, q->head ? q->head->node : pred + 4);
+    m68k_write32(ctx, q->sem + SS_WAIT + 4, 0);
+    for (w = q->head; w; w = w->next)
+    {
+        m68k_write32(ctx, w->node, w->next ? w->next->node : q->sem + SS_WAIT + 4);
+        m68k_write32(ctx, w->node + 4, pred);
+        m68k_write32(ctx, w->node + 8, w->task | (w->shared ? 1UL : 0));
+        pred = w->node;
+    }
+    m68k_write32(ctx, q->sem + SS_WAIT + 8, pred);
+    m68k_write32(ctx, q->sem + SS_OWNER, q->owner);
+    m68k_write16(ctx, q->sem + SS_NEST, q->nest);
+    m68k_write16(ctx, q->sem + SS_QUEUE, (UWORD)(q->nest + q->queued - 1));
+}
+
+static BOOL semaphore_mirror_valid(struct KaffeineContext *ctx, struct SemaphoreQueue *q)
+{
+    struct SemaphoreWaiter *w;
+    ULONG pred = q->sem + SS_WAIT;
+    unsigned n = 0;
+    if (m68k_read16(ctx, q->sem + SS_NEST) != q->nest ||
+        m68k_read32(ctx, q->sem + SS_OWNER) != q->owner ||
+        m68k_read16(ctx, q->sem + SS_QUEUE) != (UWORD)(q->nest + q->queued - 1) ||
+        m68k_read32(ctx, pred) != (q->head ? q->head->node : pred + 4) ||
+        m68k_read32(ctx, pred + 4)) return FALSE;
+    for (w = q->head; w; w = w->next)
+    {
+        if (++n > SEM_WAITERS || w->queue != q || w->granted ||
+            !guest_range(ctx, w->node, 12) ||
+            m68k_read32(ctx, w->node) != (w->next ? w->next->node : q->sem + SS_WAIT + 4) ||
+            m68k_read32(ctx, w->node + 4) != pred ||
+            m68k_read32(ctx, w->node + 8) != (w->task | (w->shared ? 1UL : 0))) return FALSE;
+        pred = w->node;
+    }
+    return n == q->queued && m68k_read32(ctx, q->sem + SS_WAIT + 8) == pred;
+}
+
+static void semaphore_queue_retire(struct KaffeineContext *ctx, struct SemaphoreQueue *q)
+{
+    unsigned i;
+    if (q->queued) return;
+    for (i = 0; i < SEM_WAITERS; ++i)
+        if (ctx->semaphores->waiters[i].queue == q) return;
+    memset(q, 0, sizeof(*q));
+}
+
+static void semaphore_waiter_drop(struct KaffeineContext *ctx, struct SemaphoreWaiter *w)
+{
+    struct SemaphoreQueue *q = w->queue;
+    ULONG node = w->node;
+    memset(w, 0, sizeof(*w));
+    semaphore_queue_retire(ctx, q);
+    Kaffeine_MirrorRelease(ctx, node);
+}
+
+static BOOL semaphore_memory_release(struct KaffeineContext *ctx, ULONG addr, ULONG size, BOOL commit)
+{
+    unsigned i;
+    (void)commit;
+    for (i = 0; i < SEM_WAITERS; ++i)
+    {
+        struct SemaphoreQueue *q = &ctx->semaphores->queues[i];
+        struct SemaphoreWaiter *w = &ctx->semaphores->waiters[i];
+        if ((q->sem && guest_overlap(addr, size, q->sem, SS_SIZE)) ||
+            (w->queue && guest_overlap(addr, size, w->node, 12))) return FALSE;
+    }
+    return TRUE;
+}
+
+static void semaphore_task_removed(struct KaffeineContext *ctx, ULONG task)
+{
+    unsigned i;
+    for (i = 0; ctx->running && i < SEM_WAITERS; ++i)
+        if (ctx->semaphores->waiters[i].queue &&
+            ctx->semaphores->waiters[i].task == task &&
+            ctx->semaphores->waiters[i].granted)
+        {
+            semaphore_failure(ctx, "task retired with an unconsumed semaphore grant");
+            return;
+        }
+    for (i = 0; i < SEM_WAITERS; ++i)
+    {
+        struct SemaphoreQueue *q = &ctx->semaphores->queues[i];
+        struct SemaphoreWaiter **at, *w;
+        if (!q->sem) continue;
+        if (ctx->running && (q->owner == task || !semaphore_mirror_valid(ctx, q)))
+        {
+            semaphore_failure(ctx, "semaphore owner retired or queue changed");
+            return;
+        }
+        at = &q->head;
+        while ((w = *at))
+        {
+            if (w->task != task) { at = &w->next; continue; }
+            *at = w->next;
+            --q->queued;
+            if (q->tail == w) q->tail = NULL;
+            /* Rebuild tail before publishing, without guest list traversal. */
+            if (!q->tail) { struct SemaphoreWaiter *v; for (v=q->head;v;v=v->next) q->tail=v; }
+            semaphore_mirror(ctx, q);
+            semaphore_waiter_drop(ctx, w);
+            if (!q->sem) break;
+        }
+    }
+}
+
+static void semaphore_cleanup(struct KaffeineContext *ctx)
+{
+    struct KaffeineSemaphores *s = ctx->semaphores;
+    unsigned i;
+    ctx->semaphores = NULL;
+    ctx->semaphore_release = NULL;
+    ctx->semaphore_task_removed = NULL;
+    ctx->semaphore_cleanup = NULL;
+    for (i = 0; i < SEM_WAITERS; ++i)
+        if (s->waiters[i].node) Kaffeine_MirrorRelease(ctx, s->waiters[i].node);
+    FreeVec(s);
 }
 
 static void semaphore_init(struct KaffeineContext *ctx, ULONG sem)
@@ -106,10 +266,13 @@ static void semaphore_init(struct KaffeineContext *ctx, ULONG sem)
 static BOOL semaphore_valid(struct KaffeineContext *ctx, ULONG sem)
 {
     UWORD nest;
+    struct SemaphoreQueue *q;
 
     if (!guest_object(ctx, sem, SS_SIZE))
         return FALSE;
     nest = m68k_read16(ctx, sem + SS_NEST);
+    q = semaphore_queue(ctx, sem);
+    if (q) return ctx->mem[sem + SS_TYPE] == NT_SIGNALSEM_68K && semaphore_mirror_valid(ctx, q);
     /* There can be no queued task or message in this context. In AROS the
        queue count equals acquisitions minus one when the wait queue is empty. */
     return ctx->mem[sem + SS_TYPE] == NT_SIGNALSEM_68K && nest <= 32767 &&
@@ -124,9 +287,12 @@ static BOOL semaphore_can_obtain(struct KaffeineContext *ctx, ULONG sem,
                                  ULONG task, BOOL shared)
 {
     ULONG owner;
+    struct SemaphoreQueue *q;
 
     if (!task || !semaphore_valid(ctx, sem) || m68k_read16(ctx, sem + SS_NEST) == 32767)
         return FALSE;
+    q = semaphore_queue(ctx, sem);
+    if (q && (ULONG)q->nest + q->queued >= 32767) return FALSE;
     owner = m68k_read32(ctx, sem + SS_OWNER);
     return !m68k_read16(ctx, sem + SS_NEST) || owner == task || (shared && !owner);
 }
@@ -135,6 +301,15 @@ static void semaphore_obtain(struct KaffeineContext *ctx, ULONG sem,
                              ULONG task, BOOL shared)
 {
     UWORD nest = m68k_read16(ctx, sem + SS_NEST);
+    struct SemaphoreQueue *q = semaphore_queue(ctx, sem);
+
+    if (q)
+    {
+        if (!nest) q->owner = shared ? 0 : task;
+        ++q->nest;
+        semaphore_mirror(ctx, q);
+        return;
+    }
 
     if (!nest)
         m68k_write32(ctx, sem + SS_OWNER, shared ? 0 : task);
@@ -155,6 +330,37 @@ static BOOL semaphore_can_release(struct KaffeineContext *ctx, ULONG sem, ULONG 
 static void semaphore_release(struct KaffeineContext *ctx, ULONG sem)
 {
     UWORD nest = m68k_read16(ctx, sem + SS_NEST) - 1;
+    struct SemaphoreQueue *q = semaphore_queue(ctx, sem);
+
+    if (q)
+    {
+        struct SemaphoreWaiter **at, *w;
+        BOOL shared;
+        q->nest = nest;
+        if (!nest)
+        {
+            q->owner = 0;
+            shared = q->head && q->head->shared;
+            at = &q->head;
+            while ((w = *at))
+            {
+                if (w->shared != shared) { at = &w->next; continue; }
+                *at = w->next;
+                --q->queued;
+                ++q->nest;
+                q->owner = shared ? 0 : w->task;
+                w->granted = TRUE;
+                w->next = NULL;
+                ctx->task_ops->resource_ready(ctx, w, w->task);
+                if (!shared) break;
+            }
+            q->tail = NULL;
+            for (w=q->head;w;w=w->next) q->tail=w;
+        }
+        semaphore_mirror(ctx, q);
+        semaphore_queue_retire(ctx, q);
+        return;
+    }
 
     m68k_write16(ctx, sem + SS_NEST, nest);
     m68k_write16(ctx, sem + SS_QUEUE, (UWORD)(nest - 1));
@@ -162,12 +368,81 @@ static void semaphore_release(struct KaffeineContext *ctx, ULONG sem)
         m68k_write32(ctx, sem + SS_OWNER, 0);
 }
 
+static IPTR semaphore_wait(struct KaffeineContext *ctx, void *cpu, ULONG sem,
+                           ULONG task, BOOL shared, KaffeineTaskRetry retry)
+{
+    struct KaffeineSemaphores *s;
+    struct SemaphoreQueue *q;
+    struct SemaphoreWaiter *w = NULL;
+    ULONG node, owner = m68k_read32(ctx, sem + SS_OWNER);
+    IPTR result = 0;
+    unsigned i;
+    if ((sem & 1) || !Kaffeine_HeapGuestRange(ctx,sem,SS_SIZE) || !ctx->sched ||
+        !ctx->task_ops || !ctx->task_ops->resource_wait ||
+        !ctx->task_ops->resource_ready || !ctx->task_ops->known_task ||
+        !ctx->task_ops->caller_task || ctx->task_ops->caller_task(ctx,cpu)!=task ||
+        ctx->callback_depth || ctx->broker_call || Kaffeine_LayerInfoLocked(ctx) ||
+        (ctx->ibase_locked && ctx->ibase_locked(ctx)) ||
+        (owner && !ctx->task_ops->known_task(ctx,owner)))
+        return semaphore_failure(ctx,"semaphore has no cooperative live owner");
+    if (!ctx->semaphores)
+    {
+        ctx->semaphores = AllocVec(sizeof(*ctx->semaphores), MEMF_PUBLIC | MEMF_CLEAR);
+        if (!ctx->semaphores) return semaphore_failure(ctx,"semaphore waiter storage");
+        ctx->semaphore_release = semaphore_memory_release;
+        ctx->semaphore_task_removed = semaphore_task_removed;
+        ctx->semaphore_cleanup = semaphore_cleanup;
+    }
+    s = ctx->semaphores;
+    q = semaphore_queue(ctx,sem);
+    for (i=0;i<SEM_WAITERS;++i)
+    {
+        if (s->waiters[i].queue && s->waiters[i].task==task)
+            return semaphore_failure(ctx,"task already has a semaphore request");
+        if (!s->waiters[i].queue) w=&s->waiters[i];
+    }
+    if (!q)
+        for (i=0;i<SEM_WAITERS;++i) if (!s->queues[i].sem) { q=&s->queues[i];break; }
+    if (!q || !w || (ULONG)m68k_read16(ctx,sem+SS_NEST)+(q->sem?q->queued:0)>=32767)
+        return semaphore_failure(ctx,"semaphore waiter capacity");
+    node=Kaffeine_MirrorAlloc(ctx,12);
+    if (!node) return semaphore_failure(ctx,"semaphore request mirror");
+    if (!q->sem) { q->sem=sem;q->owner=owner;q->nest=m68k_read16(ctx,sem+SS_NEST); }
+    w->queue=q;w->task=task;w->node=node;w->shared=shared;w->d0=THUNK_D(0);
+    if (!ctx->task_ops->resource_wait(ctx,cpu,w,retry,&result))
+    {
+        semaphore_waiter_drop(ctx,w);
+        return semaphore_failure(ctx,"semaphore suspension refused");
+    }
+    if (q->tail) q->tail->next=w;else q->head=w;
+    q->tail=w;++q->queued;
+    semaphore_mirror(ctx,q);
+    return result;
+}
+
+static BOOL semaphore_granted(struct KaffeineContext *ctx, ULONG sem, ULONG task,
+                              BOOL shared, IPTR *result)
+{
+    unsigned i;
+    if (!ctx->semaphores) return FALSE;
+    for (i=0;i<SEM_WAITERS;++i)
+    {
+        struct SemaphoreWaiter *w=&ctx->semaphores->waiters[i];
+        if (!w->queue || w->task!=task) continue;
+        if (w->queue->sem!=sem || w->shared!=shared || !w->granted || !semaphore_valid(ctx,sem))
+            *result=semaphore_failure(ctx,"semaphore grant identity or mirror");
+        else { *result=w->d0;semaphore_waiter_drop(ctx,w); }
+        return TRUE;
+    }
+    return FALSE;
+}
+
 /* -558: InitSemaphore(A0=semaphore), preserving D0 on success. */
 IPTR Kaffeine_InitSemaphore(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG sem = THUNK_A(0);
 
-    if (!guest_object(ctx, sem, SS_SIZE))
+    if (!guest_object(ctx, sem, SS_SIZE) || semaphore_queue(ctx,sem))
         return semaphore_failure(ctx, "InitSemaphore");
     semaphore_init(ctx, sem);
     return THUNK_D(0);
@@ -177,9 +452,13 @@ IPTR Kaffeine_InitSemaphore(struct KaffeineContext *ctx, void *cpu)
 IPTR Kaffeine_ObtainSemaphore(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG sem = THUNK_A(0), task = semaphore_task(ctx);
+    IPTR result;
+
+    if (semaphore_granted(ctx,sem,task,FALSE,&result)) return result;
+    if (!task || !semaphore_valid(ctx,sem)) return semaphore_failure(ctx,"ObtainSemaphore");
 
     if (!semaphore_can_obtain(ctx, sem, task, FALSE))
-        return semaphore_failure(ctx, "ObtainSemaphore");
+        return semaphore_wait(ctx,cpu,sem,task,FALSE,Kaffeine_ObtainSemaphore);
     semaphore_obtain(ctx, sem, task, FALSE);
     return THUNK_D(0);
 }
@@ -210,9 +489,13 @@ IPTR Kaffeine_AttemptSemaphore(struct KaffeineContext *ctx, void *cpu)
 IPTR Kaffeine_ObtainSemaphoreShared(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG sem = THUNK_A(0), task = semaphore_task(ctx);
+    IPTR result;
+
+    if (semaphore_granted(ctx,sem,task,TRUE,&result)) return result;
+    if (!task || !semaphore_valid(ctx,sem)) return semaphore_failure(ctx,"ObtainSemaphoreShared");
 
     if (!semaphore_can_obtain(ctx, sem, task, TRUE))
-        return semaphore_failure(ctx, "ObtainSemaphoreShared");
+        return semaphore_wait(ctx,cpu,sem,task,TRUE,Kaffeine_ObtainSemaphoreShared);
     semaphore_obtain(ctx, sem, task, TRUE);
     return THUNK_D(0);
 }
@@ -329,7 +612,7 @@ IPTR Kaffeine_AddSemaphore(struct KaffeineContext *ctx, void *cpu)
     unsigned count, i, pos;
     int priority;
 
-    if (!guest_object(ctx, sem, SS_SIZE) ||
+    if (!guest_object(ctx, sem, SS_SIZE) || semaphore_queue(ctx,sem) ||
         !guest_string(ctx, m68k_read32(ctx, sem + SS_NAME)) ||
         !semaphore_list(ctx, list, nodes, &count) || count == MAX_EXEC_LIST ||
         guest_overlap(sem, SS_SIZE, list, LIST_SIZE))
