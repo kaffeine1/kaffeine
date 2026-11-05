@@ -8,7 +8,13 @@
 #include <graphics/gfx.h>
 #include <proto/graphics.h>
 #include <proto/layers.h>
+#include <proto/intuition.h>
 #include "kaffeine_intuibase.h"
+
+__attribute__((weak)) BOOL Kaffeine_ScreenPublicHold(struct Screen *screen)
+{ (void)screen; return FALSE; }
+__attribute__((weak)) void UnlockPubScreen(UBYTE *name, struct Screen *screen)
+{ (void)name; (void)screen; abort(); }
 
 /* The native recipe entry is linked with the layer bridge. These older
    fixtures never replay a paint recipe; its focused suite supplies strong
@@ -58,6 +64,16 @@ __attribute__((weak)) struct Region *InstallClipRegion(struct Layer *layer, stru
     abort();
 }
 
+__attribute__((weak)) struct BitMap *AllocBitMap(ULONG w, ULONG h, ULONG d, ULONG flags, struct BitMap *f)
+{
+    (void)w; (void)h; (void)d; (void)flags; (void)f;
+    abort();
+}
+__attribute__((weak)) void FreeBitMap(struct BitMap *b)
+{
+    (void)b;
+    abort();
+}
 __attribute__((weak)) void InitBitMap(struct BitMap *bm, BYTE depth, UWORD width, UWORD height)
 {
     (void)bm; (void)depth; (void)width; (void)height;

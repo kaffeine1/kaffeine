@@ -37,16 +37,18 @@ struct KaffeineContext {
     BOOL running{TRUE}; LONG exit_code{};
     void *sched{}; const Ops *task_ops{};
     unsigned native_resources{};
+    bool screen_live{},bitmap_screen_lease{};
     bool startup_published{},startup_retired{};
 };
 static unsigned checks,failures,native_signals,scheduler_calls,refusals,cnp_calls,cpu_calls,autolibs;
 static unsigned file_cleanup,handler_cleanup,lock_cleanup,asl_cleanup,screen_cleanup;
+static unsigned screen_releases,bitmap_lease_releases;
 static unsigned destroy_calls;
 static unsigned startup_publish_calls,startup_finish_calls;
 static unsigned last_native_resources;
 static ULONG captured_streams[3];
 static Task *destroy_task,*shadow_task,*autolibs_task,*cpu_task;
-static Task *asl_cleanup_task,*screen_cleanup_task;
+static Task *asl_cleanup_task,*screen_cleanup_task,*layers_cleanup_task;
 static Task *startup_publish_task,*startup_finish_task;
 static bool owner_bound;
 static ULONG native_bits;
@@ -69,10 +71,23 @@ static void Kaffeine_StartupFinish(KaffeineContext *ctx){
     ++startup_finish_calls;startup_finish_task=current_task;ctx->startup_retired=true;
 }
 static void Kaffeine_AslCleanup(KaffeineContext *){++asl_cleanup;asl_cleanup_task=current_task;}
-static void Kaffeine_ScreensCleanup(KaffeineContext *){
+static void Kaffeine_ScreensCleanup(KaffeineContext *ctx){
     ++screen_cleanup;screen_cleanup_task=current_task;
     check(asl_cleanup==1&&asl_cleanup_task==current_task,
           "ASL cleanup precedes screen cleanup in the same native owner");
+    if(ctx->screen_live&&!ctx->bitmap_screen_lease){
+        ctx->screen_live=false;++screen_releases;
+    }
+}
+static void Kaffeine_LayersCleanup(KaffeineContext *ctx){
+    layers_cleanup_task=current_task;
+    if(ctx->bitmap_screen_lease){
+        check(screen_cleanup==1&&screen_cleanup_task==current_task&&ctx->screen_live,
+              "first screen cleanup preserves the screen while a native bitmap depends on it");
+        ctx->bitmap_screen_lease=false;++bitmap_lease_releases;
+    }else{
+        check(!ctx->screen_live,"later disposal repeats layer cleanup without reviving a retired screen");
+    }
 }
 static void Kaffeine_FileCleanup(KaffeineContext *ctx){
     check(ctx->startup_retired&&startup_finish_task==current_task,
@@ -86,7 +101,6 @@ static void Kaffeine_LockCleanup(KaffeineContext *ctx){++lock_cleanup;ctx->nativ
 #define Kaffeine_GadgetsCleanup noop
 #define Kaffeine_VisualInfosCleanup noop
 #define Kaffeine_IOCleanup noop
-#define Kaffeine_LayersCleanup noop
 #define Kaffeine_RegionsCleanup noop
 #define Kaffeine_SegmentsCleanup noop
 #define Kaffeine_ReadArgsCleanup noop
@@ -113,6 +127,7 @@ static ULONG m68k_read32(KaffeineContext *ctx,ULONG at){ULONG v=0;for(unsigned i
 static void shadow_init_execbase(KaffeineContext *ctx,ULONG,int){
     shadow_task=current_task;owner_bound&=ctx->exec_task==current_task;
     ctx->guest_exec_task=shadow_ok?0x500:0;ctx->native_resources=7;
+    ctx->screen_live=ctx->bitmap_screen_lease=true;
     if(ctx->guest_exec_task){m68k_write32(ctx,ctx->guest_exec_task+M68K_PR_CIS,0x101);m68k_write32(ctx,ctx->guest_exec_task+M68K_PR_COS,0x102);m68k_write32(ctx,ctx->guest_exec_task+M68K_PR_CES,0x103);}
 }
 static BOOL Kaffeine_StartupPublish(KaffeineContext *ctx){
@@ -143,7 +158,8 @@ static void reset()
 {
     native_signals=scheduler_calls=refusals=cnp_calls=cpu_calls=autolibs=0;
     file_cleanup=handler_cleanup=lock_cleanup=asl_cleanup=screen_cleanup=0;native_bits=0;cleanup_task=nullptr;
-    asl_cleanup_task=screen_cleanup_task=nullptr;
+    screen_releases=bitmap_lease_releases=0;
+    asl_cleanup_task=screen_cleanup_task=layers_cleanup_task=nullptr;
     destroy_calls=0;destroy_task=shadow_task=autolibs_task=cpu_task=nullptr;last_native_resources=0xff;owner_bound=true;
     for(auto &v:captured_streams)v=0;
     current_task=&parent_task;shadow_ok=library_ok=startup_ok=true;
@@ -178,8 +194,9 @@ int main()
         check(cleanup_task==(stack?&worker_task:&parent_task)&&!cpu_calls&&cnp_calls==bool(stack)&&!autolibs,
               "failed shadow initialization cleans up in its actual direct or driver owner");
         check(owner_bound&&shadow_task==cleanup_task,"native owner is bound before shadow creation without a registry hook");
-        check(asl_cleanup==1&&screen_cleanup==1&&asl_cleanup_task==cleanup_task&&screen_cleanup_task==cleanup_task,
-              "failed startup cleans ASL and screens exactly once in its execution owner");
+        check(asl_cleanup==1&&screen_releases==1&&bitmap_lease_releases==1&&!ctx.screen_live&&!ctx.bitmap_screen_lease&&
+              asl_cleanup_task==cleanup_task&&screen_cleanup_task==cleanup_task&&layers_cleanup_task==cleanup_task,
+              "failed startup releases the retained screen exactly once after bitmap cleanup in its execution owner");
         check(transferred==bool(stack)&&destroy_calls==bool(stack),"only a published domain owns disposal after failed startup");
         check(!stack||destroy_task==&worker_task,"failed transferred startup disposes in the driver owner");
     }
@@ -193,8 +210,9 @@ int main()
               "shadow, AutoOpen and CPU keep the same directly bound native owner");
         check(cleanup_task==(stack?&worker_task:&parent_task)&&cnp_calls==(stack?1u:0u),
               "cleanup remains in actual execution owner for both modes");
-        check(asl_cleanup==1&&screen_cleanup==1&&asl_cleanup_task==cleanup_task&&screen_cleanup_task==cleanup_task,
-              "normal execution cleans ASL and screens exactly once in its execution owner");
+        check(asl_cleanup==1&&screen_releases==1&&bitmap_lease_releases==1&&!ctx.screen_live&&!ctx.bitmap_screen_lease&&
+              asl_cleanup_task==cleanup_task&&screen_cleanup_task==cleanup_task&&layers_cleanup_task==cleanup_task,
+              "normal execution releases the retained screen exactly once after bitmap cleanup in its execution owner");
         check(transferred==bool(stack)&&destroy_calls==(stack?1u:0u),"asynchronous domain alone transfers/disposes context ownership");
         check(!stack||destroy_task==&worker_task,"transferred context disposal stays in driver owner");
         check(captured_streams[0]==0x101&&captured_streams[1]==0x102&&captured_streams[2]==0x103,"startup captures typed borrowed streams before CPU/autolibs");
@@ -207,6 +225,8 @@ int main()
               "failed publication retires the startup protocol before returning");
         check(!cpu_calls&&!autolibs&&!ctx.native_resources&&file_cleanup==1&&lock_cleanup==1,
               "failed publication never runs guest code and releases native resources");
+        check(screen_releases==1&&!ctx.screen_live&&!ctx.bitmap_screen_lease,
+              "failed publication also retires a screen held by native bitmap resources");
         check(startup_publish_task==(stack?&worker_task:&parent_task)&&startup_finish_task==startup_publish_task,
               "publication and failure cleanup use the same direct or driver owner");
         check(transferred==bool(stack)&&destroy_calls==bool(stack),

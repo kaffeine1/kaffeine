@@ -363,6 +363,21 @@ struct LayerInfoLock
     UWORD depth;
 };
 
+/* AllocBitMap owns this pair, never the generic pointer shadow map.
+   Classic planes live in one guest allocation after the 40-byte header;
+   an opaque native bitmap exposes no native address to the program. */
+struct OwnedBitMap
+{
+    struct OwnedBitMap *next;
+    struct OwnedBitMap *friend_owner;
+    struct Screen *friend_screen;
+    ULONG friend_refs;
+    BOOL retired, friend_visitor;
+    struct BitMap planar, *native;
+    ULONG guest, bytes, width, height, depth, flags, charge;
+    UBYTE header[M68K_SIZEOF_BITMAP];
+};
+
 /* Native BeginRefresh retains these locks even when BeginUpdate fails.
    The existence of this private record, never writable Window.Flags, owns
    exactly one EndRefresh. Only one update may run: native cr2 is nonnested. */
@@ -380,6 +395,8 @@ struct WindowRefresh
 struct KaffeineLayers
 {
     struct KaffeinePaintHooks *paint_hooks;
+    struct OwnedBitMap *bitmaps;
+    ULONG bitmap_count, bitmap_charge;
     struct LayerRecord records[KAFFEINE_LAYER_MAX_RECORDS];
     struct LayerGraph graphs[KAFFEINE_LAYER_MAX_GRAPHS];
     struct LayerHook hooks[KAFFEINE_LAYER_MAX_HOOKS];
@@ -1450,6 +1467,8 @@ static void layers_request_closing(struct KaffeineContext *ctx, struct Layer *l)
 
 static BOOL layers_draw_target(struct KaffeineContext *ctx, ULONG layer, ULONG bitmap,
                                struct RastPort *rp, struct BitMap *adapter);
+static struct BitMap *layers_native_bitmap(struct KaffeineContext *, ULONG, ULONG *, ULONG *);
+static struct BitMap *layers_bitmap_source(struct KaffeineContext *, ULONG, struct BitMap *, ULONG *, ULONG *);
 
 static ULONG layers_paint_signal_mask(struct KaffeineContext *ctx)
 {
@@ -1461,11 +1480,24 @@ static BOOL layers_paint_poll(struct KaffeineContext *ctx)
 }
 static BOOL layers_paint_memory_releasable(struct KaffeineContext *ctx, ULONG a, ULONG n)
 {
+    struct OwnedBitMap *b;
+    for (b = ctx->layers ? ctx->layers->bitmaps : NULL; b; b = b->next)
+        if (n && a < b->guest + b->bytes &&
+            (a >= b->guest || n > b->guest - a))
+            return FALSE;
     return !ctx->layers || Kaffeine_PaintHookMemoryReleasable(ctx->layers->paint_hooks, a, n);
 }
 static BOOL layers_paint_signal_releasable(struct KaffeineContext *ctx, ULONG bits)
 {
     return !ctx->layers || Kaffeine_PaintHookSignalReleasable(ctx->layers->paint_hooks, bits);
+}
+
+static BOOL layers_bitmap_screen_held(struct KaffeineContext *ctx, struct Screen *screen)
+{
+    struct OwnedBitMap *b;
+    for (b = ctx->layers ? ctx->layers->bitmaps : NULL; b; b = b->next)
+        if (b->friend_screen == screen) return TRUE;
+    return FALSE;
 }
 
 static const struct KaffeineLayerOps layer_ops =
@@ -1484,7 +1516,8 @@ static const struct KaffeineLayerOps layer_ops =
     layers_info_locked,
     layers_task_removed,
     layers_paint_signal_mask, layers_paint_poll,
-    layers_paint_memory_releasable, layers_paint_signal_releasable
+    layers_paint_memory_releasable, layers_paint_signal_releasable,
+    layers_native_bitmap, layers_bitmap_source, layers_bitmap_screen_held
 };
 
 /* ── Depth calls ─────────────────────────────────────────────────── */
@@ -2895,7 +2928,30 @@ static void layers_private_cleanup(struct KaffeineContext *ctx, struct KaffeineL
 
 /* ── Blits ───────────────────────────────────────────────────────── */
 
-enum { BLIT_REFUSED, BLIT_COMMON, BLIT_SCREEN, BLIT_PLANAR };
+static struct OwnedBitMap *layers_bitmap_owned(struct KaffeineLayers *st, ULONG guest)
+{
+    struct OwnedBitMap *b;
+    for (b = st ? st->bitmaps : NULL; b; b = b->next)
+        if (b->guest == guest && !b->retired) return b;
+    return NULL;
+}
+
+static BOOL layers_bitmap_unchanged(struct KaffeineContext *ctx, const struct OwnedBitMap *b)
+{
+    return !memcmp(ctx->mem + b->guest, b->header, sizeof(b->header));
+}
+
+static struct BitMap *layers_native_bitmap(struct KaffeineContext *ctx, ULONG guest,
+                                            ULONG *width, ULONG *height)
+{
+    struct OwnedBitMap *b = layers_bitmap_owned(ctx->layers, guest);
+    if (!b || b->native == &b->planar || !layers_bitmap_unchanged(ctx, b)) return NULL;
+    *width = b->width;
+    *height = b->height;
+    return b->native;
+}
+
+enum { BLIT_REFUSED, BLIT_COMMON, BLIT_SCREEN, BLIT_PLANAR, BLIT_ALLOCATED };
 
 /* One BitMap of a blit: the native BitMap that graphics gets and the size
    of it in pixels. For an ordinary planar 68k BitMap, desc is that BitMap
@@ -2906,6 +2962,7 @@ struct BlitSide
     struct BitMap *native;
     struct LayerCommon desc;
     ULONG width, height;
+    BOOL planar;
     int kind;
 };
 
@@ -2922,6 +2979,7 @@ static int layers_blit_side(struct KaffeineContext *ctx, ULONG bm, struct BlitSi
 {
     struct KaffeineLayers *st = ctx->layers;
     struct Screen *scr;
+    struct OwnedBitMap *b;
     BOOL known = FALSE;
     int i;
 
@@ -2933,6 +2991,18 @@ static int layers_blit_side(struct KaffeineContext *ctx, ULONG bm, struct BlitSi
         return s->kind = s->native ? BLIT_SCREEN : BLIT_REFUSED;
     case KAFFEINE_SCREEN_BITMAP_BORROWED:
         return s->kind = BLIT_REFUSED;
+    }
+    b = layers_bitmap_owned(st, bm);
+    if (b)
+    {
+        if (!layers_bitmap_unchanged(ctx, b)) return BLIT_REFUSED;
+        s->native = b->native;
+        s->width = b->width;
+        s->height = b->height;
+        s->desc.depth = b->depth;
+        s->desc.flags = b->flags;
+        s->planar = b->native == &b->planar;
+        return s->kind = BLIT_ALLOCATED;
     }
     for (i = 0; st && bm && i < KAFFEINE_LAYER_MAX_INFOS; i++)
     {
@@ -2955,6 +3025,7 @@ static int layers_blit_side(struct KaffeineContext *ctx, ULONG bm, struct BlitSi
         return s->kind = BLIT_REFUSED;
     s->width = (ULONG)s->desc.bpr * 8;
     s->height = s->desc.rows;
+    s->planar = TRUE;
     return s->kind = BLIT_PLANAR;
 }
 
@@ -2976,6 +3047,26 @@ static BOOL layers_blit_adapter(struct KaffeineContext *ctx, struct BlitSide *s)
         d->bitmap.Planes[i] = i < d->depth ? ctx->mem + d->planes[i] : NULL;
     s->native = &d->bitmap;
     return TRUE;
+}
+
+static struct BitMap *layers_bitmap_source(struct KaffeineContext *ctx, ULONG guest,
+                                            struct BitMap *adapter, ULONG *width, ULONG *height)
+{
+    struct BlitSide s;
+    if (layers_blit_side(ctx, guest, &s) == BLIT_REFUSED) return NULL;
+    if (s.kind == BLIT_SCREEN)
+    {
+        s.width = GetBitMapAttr(s.native, BMA_WIDTH);
+        s.height = GetBitMapAttr(s.native, BMA_HEIGHT);
+    }
+    if (s.kind == BLIT_PLANAR)
+    {
+        if (!layers_blit_adapter(ctx, &s)) return NULL;
+        *adapter = s.desc.bitmap;
+        s.native = adapter;
+    }
+    *width = s.width; *height = s.height;
+    return s.native;
 }
 
 /* graphics -960: GetBitMapAttr(A0=bitmap, D1=attribute) -> D0=value.
@@ -3016,7 +3107,7 @@ IPTR Kaffeine_GetBitMapAttr(struct KaffeineContext *ctx, void *cpu)
     case BMA_WIDTH: return side.width;
     case BMA_HEIGHT: return side.height;
     case BMA_DEPTH: return side.desc.depth;
-    case BMA_FLAGS: return side.desc.flags & BMF_STANDARD;
+    case BMA_FLAGS: return side.desc.flags & (BMF_STANDARD | BMF_DISPLAYABLE | BMF_INTERLEAVED);
     }
     return 0;
 }
@@ -3045,6 +3136,217 @@ static BOOL layers_bitmap_retained(struct KaffeineLayers *st, ULONG bm)
     return FALSE;
 }
 
+/* A common layer bitmap can alias planes without sharing its header.
+   Its internal root keeps those planes until DisposeLayerInfo returns. */
+static BOOL layers_bitmap_leased(struct KaffeineLayers *st, const struct OwnedBitMap *b)
+{
+    int i, p;
+    for (i = 0; i < KAFFEINE_LAYER_MAX_INFOS; i++)
+    {
+        const struct LayerCommon *c = st->infos[i].common;
+        if (!st->infos[i].native || !c) continue;
+        if (c->guest >= b->guest && c->guest - b->guest < b->bytes) return TRUE;
+        for (p = 0; p < c->depth; p++)
+            if (c->planes[p] < b->guest + b->bytes &&
+                (c->planes[p] >= b->guest ||
+                 (ULONG)c->bpr * c->rows > b->guest - c->planes[p])) return TRUE;
+    }
+    return layers_bitmap_retained(st, b->guest);
+}
+
+static void layers_bitmap_release(struct KaffeineContext *ctx, struct KaffeineLayers *st,
+                                  struct OwnedBitMap **link)
+{
+    /* New children precede their older friends in this list. Unwind a
+       retired friend chain iteratively, after native child destruction,
+       so shared colormaps and pixel tables never outlive their owner. */
+    for (;;)
+    {
+        struct OwnedBitMap *b = *link, *owner = b->friend_owner;
+        struct Screen *screen = b->friend_screen;
+        BOOL visitor = b->friend_visitor;
+        *link = b->next;
+        st->bitmap_count--;
+        st->bitmap_charge -= b->charge;
+        if (b->native != &b->planar) FreeBitMap(b->native);
+        Kaffeine_HeapFree(ctx, b->guest, b->bytes);
+        FreeVec(b);
+        if (screen && ctx->screen_release) ctx->screen_release(ctx, screen);
+        if (visitor) UnlockPubScreen(NULL, screen);
+        if (!owner || --owner->friend_refs || !owner->retired) break;
+        for (link = &st->bitmaps; *link && *link != owner; link = &(*link)->next) {}
+        if (!*link) break; /* private ownership, never guest bytes */
+    }
+}
+
+/* V39 graphics -918: full ULONG D0/D1/D2/D3, friend A0. INTERLEAVED
+   and MINPLANES are optimization hints; classic allocations may use
+   separate planes and the full header. DISPLAYABLE, deep bitmaps and
+   native friends use native graphics, represented by an opaque header.
+   SPECIALFMT/RTG tag-list extensions need their own typed translation;
+   unsupported flags return allocation failure, never a raw pointer cast. */
+IPTR Kaffeine_AllocBitMap(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG w = THUNK_D(0), h = THUNK_D(1), depth = THUNK_D(2), flags = THUNK_D(3);
+    ULONG friend_guest = THUNK_A(0), row, plane, bytes, i, charge = 0;
+    struct KaffeineLayers *st = ctx->layers;
+    struct OwnedBitMap *b;
+    struct BitMap *friend_native = NULL;
+    struct BlitSide friend_side;
+    int query;
+    BOOL opaque;
+
+    if (!st && !Kaffeine_LayersSetup(ctx)) return 0;
+    st = ctx->layers;
+    if (ctx->bitmap_blits || st->gate || st->callbacks || st->locks || st->private_locks ||
+        !layers_info_caller(ctx, cpu))
+        return layers_refuse(ctx, "AllocBitMap(): during a native bitmap or layer operation");
+    if (!w || !h || w > 65535 || h > 65535 || !depth || depth > 32 ||
+        (flags & ~(BMF_CLEAR | BMF_DISPLAYABLE | BMF_INTERLEAVED | BMF_MINPLANES)) ||
+        st->bitmap_count >= KAFFEINE_MAX_SHADOWS) return 0;
+    if (friend_guest)
+    {
+        query = Kaffeine_ScreenBitMapQuery(ctx, friend_guest, &friend_native);
+        if (query == KAFFEINE_SCREEN_QUERY_REFUSED)
+            return layers_refuse(ctx, "AllocBitMap(): invalid screen friend");
+        if (!friend_native)
+        {
+            if (layers_blit_side(ctx, friend_guest, &friend_side) == BLIT_REFUSED)
+                return layers_refuse(ctx, "AllocBitMap(): invalid friend BitMap");
+            if (friend_side.kind == BLIT_PLANAR && !layers_blit_adapter(ctx, &friend_side)) return 0;
+            friend_native = friend_side.native;
+        }
+    }
+    row = ((w + 15) >> 4) * 2;
+    plane = row * h; /* 8192 * 65535 fits ULONG */
+    opaque = depth > 8 || (flags & BMF_DISPLAYABLE) ||
+             (friend_native && !(friend_native->Flags & BMF_STANDARD));
+    bytes = M68K_SIZEOF_BITMAP;
+    if (!opaque)
+    {
+        if (plane > (ctx->mem_size - bytes) / depth) return 0;
+        bytes += plane * depth;
+    }
+    else
+    {
+        /* Bound native storage independently of the tiny guest handle.
+           Four bytes per pixel covers every admitted depth; aggregate
+           allocations cannot consume more than this guest's arena. */
+        if (row * 8 > ctx->mem_size / 4 / h) return 0;
+        charge = row * 8 * h * 4;
+        if (st->bitmap_charge > ctx->mem_size - charge) return 0;
+    }
+    b = AllocVec(sizeof(*b), MEMF_ANY | MEMF_CLEAR);
+    if (!b) return 0;
+    b->guest = Kaffeine_HeapAlloc(ctx, bytes, (flags & BMF_CLEAR) ? MEMF_CLEAR : MEMF_ANY);
+    if (!b->guest) { FreeVec(b); return 0; }
+    b->bytes = bytes;
+    b->width = row * 8;
+    b->height = h;
+    b->depth = depth;
+    b->charge = charge;
+    memset(ctx->mem + b->guest, 0, M68K_SIZEOF_BITMAP);
+    if (opaque)
+    {
+        /* Native HIDD friends share resources, not just an allocation
+           hint. Owned friends remain privately retained; borrowed screen
+           friends need an independent native public visitor. */
+        if (friend_native && !(friend_native->Flags & BMF_STANDARD))
+        {
+            b->friend_owner = layers_bitmap_owned(st, friend_guest);
+            if (b->friend_owner)
+                b->friend_owner->friend_refs++;
+            else
+            {
+                int k;
+                for (k = 0; k < KAFFEINE_MAX_PUBSCREENS; k++)
+                    if (ctx->pubscreens[k].native &&
+                        ctx->pubscreens[k].guest + M68K_SCR_BITMAP == friend_guest &&
+                        ctx->pubscreens[k].native->RastPort.BitMap == friend_native)
+                        break;
+                if (k == KAFFEINE_MAX_PUBSCREENS ||
+                    (!ctx->pubscreens[k].owned &&
+                     !Kaffeine_ScreenPublicHold(ctx->pubscreens[k].native)))
+                { Kaffeine_HeapFree(ctx, b->guest, b->bytes); FreeVec(b); return 0; }
+                b->friend_screen = ctx->pubscreens[k].native;
+                b->friend_visitor = !ctx->pubscreens[k].owned;
+            }
+        }
+        ctx->bitmap_blits++;
+        b->native = AllocBitMap(w, h, depth, flags, friend_native);
+        ctx->bitmap_blits--;
+        if (!b->native)
+        {
+            if (b->friend_owner) b->friend_owner->friend_refs--;
+            if (b->friend_visitor) UnlockPubScreen(NULL, b->friend_screen);
+            Kaffeine_HeapFree(ctx, b->guest, b->bytes); FreeVec(b); return 0;
+        }
+        b->width = GetBitMapAttr(b->native, BMA_WIDTH);
+        b->height = GetBitMapAttr(b->native, BMA_HEIGHT);
+        b->depth = GetBitMapAttr(b->native, BMA_DEPTH);
+        b->flags = GetBitMapAttr(b->native, BMA_FLAGS) & (BMF_DISPLAYABLE | BMF_INTERLEAVED);
+        if (b->width < w || b->height < h || b->depth < depth || b->depth > 32)
+        {
+            FreeBitMap(b->native);
+            if (b->friend_owner) b->friend_owner->friend_refs--;
+            if (b->friend_visitor) UnlockPubScreen(NULL, b->friend_screen);
+            Kaffeine_HeapFree(ctx, b->guest, b->bytes);
+            FreeVec(b);
+            return 0;
+        }
+    }
+    else
+    {
+        InitBitMap(&b->planar, depth, w, h);
+        if (b->planar.BytesPerRow != row || b->planar.Rows != h || b->planar.Depth != depth)
+        { Kaffeine_HeapFree(ctx, b->guest, b->bytes); FreeVec(b); return 0; }
+        b->native = &b->planar;
+        b->flags = BMF_STANDARD;
+        m68k_write16(ctx, b->guest + M68K_BM_BYTESPERROW, row);
+        for (i = 0; i < depth; i++)
+        {
+            ULONG p = b->guest + M68K_SIZEOF_BITMAP + i * plane;
+            m68k_write32(ctx, b->guest + M68K_BM_PLANES + 4 * i, p);
+            b->planar.Planes[i] = ctx->mem + p;
+        }
+    }
+    m68k_write16(ctx, b->guest + M68K_BM_ROWS, b->height);
+    ctx->mem[b->guest + M68K_BM_DEPTH] = b->depth;
+    ctx->mem[b->guest + M68K_BM_FLAGS] = b->flags;
+    memcpy(b->header, ctx->mem + b->guest, sizeof(b->header));
+    b->next = st->bitmaps;
+    st->bitmaps = b;
+    st->bitmap_count++;
+    st->bitmap_charge += charge;
+    D(bug("[kaffeine] AllocBitMap %lux%lux%lu flags=%lx friend=%lx -> %lx\n",
+          w, h, depth, flags, friend_guest, b->guest));
+    return b->guest;
+}
+
+/* V39 graphics -924: FreeBitMap(A0). Ownership comes only from the
+   private registry. Caller-writable bytes cannot select native storage. */
+IPTR Kaffeine_FreeBitMap(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG guest = THUNK_A(0);
+    struct KaffeineLayers *st = ctx->layers;
+    struct OwnedBitMap **link;
+    if (!guest) return 0;
+    if (!st || ctx->bitmap_blits || st->gate || st->callbacks || st->locks || st->private_locks ||
+        !layers_info_caller(ctx, cpu))
+        return layers_refuse(ctx, "FreeBitMap(): during a native bitmap or layer operation");
+    for (link = &st->bitmaps; *link && (*link)->guest != guest; link = &(*link)->next) {}
+    if (!*link || (*link)->retired || !layers_bitmap_unchanged(ctx, *link) || layers_bitmap_leased(st, *link) ||
+        !Kaffeine_PaintHookMemoryReleasable(st->paint_hooks, (*link)->guest, (*link)->bytes))
+        return layers_refuse(ctx, "FreeBitMap(): foreign, changed or retained BitMap");
+    if ((*link)->friend_refs)
+    {
+        (*link)->retired = TRUE;
+        return 0;
+    }
+    layers_bitmap_release(ctx, st, link);
+    return 0;
+}
+
 /* graphics -390: InitBitMap(A0=bm, D0=depth, D1=width, D2=height), VOID,
    so D0 is 0. As graphics does, with the BYTE and UWORD arguments from
    the low halves alone: Depth, Rows, Flags BMF_STANDARD, pad 0 and
@@ -3070,6 +3372,8 @@ IPTR Kaffeine_InitBitMap(struct KaffeineContext *ctx, void *cpu)
         return layers_refuse(ctx, "InitBitMap(): the BitMap of a screen");
     if (layers_bitmap_retained(ctx->layers, bm))
         return layers_refuse(ctx, "InitBitMap(): the common BitMap of a LayerInfo");
+    if (layers_bitmap_owned(ctx->layers, bm))
+        return layers_refuse(ctx, "InitBitMap(): an AllocBitMap allocation");
     m68k_write16(ctx, bm + M68K_BM_BYTESPERROW, (UWORD)(((width + 15) >> 3) & ~0x1));
     m68k_write16(ctx, bm + M68K_BM_ROWS, height);
     ctx->mem[bm + M68K_BM_FLAGS] = BMF_STANDARD;
@@ -3144,7 +3448,7 @@ IPTR Kaffeine_BltBitMap(struct KaffeineContext *ctx, void *cpu)
        ordinary depth-one planes. For two fully checked guest planar
        bitmaps, the selected plane count is known without native state.
        Keep native failure results and opaque screen/common results. */
-    if (planes == 8 && src.kind == BLIT_PLANAR && dst.kind == BLIT_PLANAR)
+    if (planes == 8 && src.planar && dst.planar)
     {
         ULONG depth = src.desc.depth < dst.desc.depth ? src.desc.depth : dst.desc.depth;
         planes = 0;
@@ -3200,7 +3504,19 @@ static BOOL layers_draw_target(struct KaffeineContext *ctx, ULONG layer, ULONG b
 
     if (!layer)
     {
-        if (layers_blit_side(ctx, bitmap, &side) != BLIT_PLANAR)
+        int kind = layers_blit_side(ctx, bitmap, &side);
+        if (kind == BLIT_ALLOCATED)
+        {
+            rp->Layer = NULL;
+            if (side.planar)
+            {
+                *adapter = *side.native;
+                rp->BitMap = adapter;
+            }
+            else rp->BitMap = side.native;
+            return TRUE;
+        }
+        if (kind != BLIT_PLANAR)
             return layers_draw_refuse(ctx, "drawing without a layer: not an ordinary planar BitMap of the program");
         if (!layers_blit_adapter(ctx, &side))
             return layers_draw_refuse(ctx, "drawing without a layer: InitBitMap() disagrees with the 68k BitMap");
@@ -3344,6 +3660,11 @@ void Kaffeine_LayersCleanup(struct KaffeineContext *ctx)
        their internal root layers and then their common BitMaps. One with
        any other layer, such as one that layers refused to delete, is left
        to native memory with its common BitMap rather than freed under it. */
+    /* Preserve the ownership registry if a foreign native layer still
+       keeps a common bitmap. Do not release its guest planes below it. */
+    if (st->bitmaps)
+        for (i = 0; i < KAFFEINE_LAYER_MAX_INFOS; i++)
+            if (st->infos[i].native && layers_info_kept(st, i)) return;
     for (i = 0; i < KAFFEINE_LAYER_MAX_INFOS; i++)
     {
         BOOL kept;
@@ -3356,6 +3677,7 @@ void Kaffeine_LayersCleanup(struct KaffeineContext *ctx)
             DisposeLayerInfo(st->infos[i].native);
         layers_info_release(ctx, &st->infos[i], !kept);
     }
+    while (st->bitmaps) layers_bitmap_release(ctx, st, &st->bitmaps);
     if (ctx->gui_poll == Kaffeine_LayersRefresh)
         ctx->gui_poll = NULL;
     if (ctx->layer_ops == &layer_ops)

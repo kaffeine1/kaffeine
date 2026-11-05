@@ -327,6 +327,13 @@ static BOOL draw_rastport(struct KaffeineContext *ctx, ULONG guest, BOOL text,
     memset(t->planes, 0, sizeof(t->planes));
     if (!t->rp.Layer)
     {
+        if (t->rp.BitMap != &t->adapter && ops->native_bitmap &&
+            ops->native_bitmap(ctx, t->bitmap, &t->width, &t->height) == t->rp.BitMap &&
+            t->rp.BitMap)
+        {
+            t->before = t->rp;
+            return TRUE;
+        }
         if (t->rp.BitMap != &t->adapter || !t->adapter.Depth || t->adapter.Depth > 8)
             return draw_refuse(ctx, guest, call, "the planar target is not this call's own BitMap");
         t->depth = t->adapter.Depth;
@@ -831,6 +838,196 @@ IPTR thunk_gfx_RectFill(struct KaffeineContext *ctx, void *cpu)
     return 0;
 }
 
+/* ClipBlit accepts two complete typed drawing targets. Clip layerless
+   sides in lockstep, preserving the source/destination displacement;
+   native layers keep their own ClipRect clipping. No temporary descriptor
+   or borrowed bitmap outlives the synchronous blit. */
+IPTR thunk_gfx_ClipBlit(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG guest[2] = {THUNK_A(0), THUNK_A(1)};
+    LONG x[2] = {(WORD)THUNK_D(0), (WORD)THUNK_D(2)};
+    LONG y[2] = {(WORD)THUNK_D(1), (WORD)THUNK_D(3)};
+    LONG w = (WORD)THUNK_D(4), h = (WORD)THUNK_D(5), delta;
+    struct DrawTemporary t[2];
+    struct RastPort *rp[2];
+    BOOL copied[2];
+    int i;
+
+    if (w <= 0 || h <= 0) return 0;
+    for (i=0;i<2;i++)
+    {
+        rp[i] = Kaffeine_RastPortIn(ctx, guest[i]);
+        copied[i] = rp[i] == NULL;
+        if (copied[i])
+        {
+            if (!draw_rastport(ctx, guest[i], FALSE, DRAW_REQUIRE_AREA_STATE_NULL, &t[i], "ClipBlit"))
+                return ctx->exit_code;
+            rp[i] = &t[i].rp;
+        }
+        else
+        {
+            memset(&t[i], 0, sizeof(t[i]));
+            if (rp[i]->BitMap && !rp[i]->Layer)
+            {
+                t[i].width = GetBitMapAttr(rp[i]->BitMap, BMA_WIDTH);
+                t[i].height = GetBitMapAttr(rp[i]->BitMap, BMA_HEIGHT);
+            }
+        }
+        if (!rp[i]->BitMap) return refuse(ctx, "ClipBlit(): target has no BitMap");
+    }
+    /* Native overlap ordering distinguishes the very same RastPort and
+       BitMap. Preserve those identities also for temporary conversions. */
+    if (guest[0] == guest[1]) rp[1] = rp[0];
+    else if (copied[0] && copied[1] && t[0].bitmap == t[1].bitmap &&
+             rp[0]->BitMap == &t[0].adapter && rp[1]->BitMap == &t[1].adapter)
+        rp[1]->BitMap = rp[0]->BitMap;
+    for (i=0;i<2;i++)
+    {
+        if (rp[i]->Layer) continue;
+        if (x[i] < 0) { delta=-x[i]; x[0]+=delta; x[1]+=delta; w-=delta; }
+        if (y[i] < 0) { delta=-y[i]; y[0]+=delta; y[1]+=delta; h-=delta; }
+        if (w<=0 || h<=0 || (ULONG)x[i]>=t[i].width || (ULONG)y[i]>=t[i].height) return 0;
+        if ((ULONG)w > t[i].width-(ULONG)x[i]) w=t[i].width-(ULONG)x[i];
+        if ((ULONG)h > t[i].height-(ULONG)y[i]) h=t[i].height-(ULONG)y[i];
+    }
+    if (x[0]>32767 || x[1]>32767 || y[0]>32767 || y[1]>32767 ||
+        x[0]+w-1>32767 || x[1]+w-1>32767 || y[0]+h-1>32767 || y[1]+h-1>32767)
+        return refuse(ctx, "ClipBlit(): clipped extent exceeds native WORD coordinates");
+    if (copied[1] && guest[0] != guest[1] &&
+        !draw_source(&t[1], guest[1], guest[0], M68K_SIZEOF_RASTPORT))
+        return refuse(ctx, "ClipBlit(): source RastPort aliases destination pixels");
+    draw_begin(ctx);
+    ClipBlit(rp[0],x[0],y[0],rp[1],x[1],y[1],w,h,(UBYTE)THUNK_D(6));
+    WaitBlit();
+    ctx->bitmap_blits--;
+    for (i=0;i<2;i++)
+        if (copied[i]) Kaffeine_RastPortStateOut(ctx, guest[i], &t[i].before, rp[i]);
+    return ctx->running ? 0 : ctx->exit_code;
+}
+
+IPTR thunk_gfx_BltBitMapRastPort(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG bitmap=THUNK_A(0),guest=THUNK_A(1),width,height;
+    LONG x=(WORD)THUNK_D(0),y=(WORD)THUNK_D(1),xd=(WORD)THUNK_D(2),yd=(WORD)THUNK_D(3);
+    LONG w=(WORD)THUNK_D(4),h=(WORD)THUNK_D(5),d;
+    struct DrawTemporary target;
+    struct BitMap adapter,*source;
+    struct RastPort *rp;
+    BOOL copied;
+    if(w<=0 || h<=0)return 0;
+    if(!ctx->layer_ops || !ctx->layer_ops->bitmap_source ||
+       !(source=ctx->layer_ops->bitmap_source(ctx,bitmap,&adapter,&width,&height)))
+        return refuse(ctx,"BltBitMapRastPort(): invalid source bitmap");
+    rp=Kaffeine_RastPortIn(ctx,guest);copied=rp==NULL;
+    if(copied)
+    {
+        if(!draw_rastport(ctx,guest,FALSE,DRAW_REQUIRE_AREA_STATE_NULL,&target,"BltBitMapRastPort"))return ctx->exit_code;
+        rp=&target.rp;
+    }
+    else if(rp->BitMap && !rp->Layer)
+    {
+        target.width=GetBitMapAttr(rp->BitMap,BMA_WIDTH);
+        target.height=GetBitMapAttr(rp->BitMap,BMA_HEIGHT);
+    }
+    if(!rp->BitMap)return refuse(ctx,"BltBitMapRastPort(): no destination bitmap");
+    if(x<0){d=-x;x+=d;xd+=d;w-=d;}
+    if(y<0){d=-y;y+=d;yd+=d;h-=d;}
+    if(!rp->Layer)
+    {
+        if(xd<0){d=-xd;xd+=d;x+=d;w-=d;}
+        if(yd<0){d=-yd;yd+=d;y+=d;h-=d;}
+        if(w<=0 || h<=0 || (ULONG)xd>=target.width || (ULONG)yd>=target.height)return 0;
+        if((ULONG)w>target.width-xd)w=target.width-xd;
+        if((ULONG)h>target.height-yd)h=target.height-yd;
+    }
+    if(w<=0 || h<=0 || (ULONG)x>=width || (ULONG)y>=height)return 0;
+    if((ULONG)w>width-x)w=width-x;
+    if((ULONG)h>height-y)h=height-y;
+    if(x>32767 || y>32767 || xd>32767 || yd>32767 || x+w-1>32767 || y+h-1>32767 ||
+       xd+w-1>32767 || yd+h-1>32767)return refuse(ctx,"BltBitMapRastPort(): extent exceeds native WORD");
+    if(copied && target.bitmap==bitmap && rp->BitMap==&target.adapter)rp->BitMap=source;
+    draw_begin(ctx);
+    BltBitMapRastPort(source,x,y,rp,xd,yd,w,h,(UBYTE)THUNK_D(6));
+    WaitBlit();ctx->bitmap_blits--;
+    if(copied)Kaffeine_RastPortStateOut(ctx,guest,&target.before,rp);
+    return ctx->running ? 0 : ctx->exit_code;
+}
+
+/* V39 pen-array transfers. The native backend does not use the classic
+   scratch RastPort, but translate and validate it too: no classic guest
+   structure ever reaches a native function. Preserve the original padded
+   row stride; layerless targets require the complete rectangle to fit. */
+static IPTR pixel_array8(struct KaffeineContext *ctx, BOOL read, ULONG guest, ULONG scratch,
+                         ULONG array, ULONG x, ULONG y, ULONG xe, ULONG ye)
+{
+    struct DrawTemporary target, temp;
+    struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
+    ULONG stride, bytes;
+    LONG result;
+    BOOL copied = rp == NULL;
+
+    if (xe < x || ye < y) return 0;
+    if (xe > 32767 || ye > 32767 || xe - x >= 32767 || ye - y >= 32767)
+        return refuse(ctx, "PixelArray8(): coordinates exceed the native WORD range");
+    stride = (xe - x + 16) & ~15UL;
+    if (stride > ctx->mem_size / (ye - y + 1))
+        return refuse(ctx, "PixelArray8(): array size exceeds the guest arena");
+    bytes = stride * (ye - y + 1);
+    if (copied)
+    {
+        if (!draw_rastport(ctx, guest, FALSE, DRAW_REQUIRE_AREA_STATE_NULL, &target, "PixelArray8"))
+            return ctx->exit_code;
+        rp = &target.rp;
+        if (!rp->Layer && (xe >= target.width || ye >= target.height))
+            return refuse(ctx, "PixelArray8(): rectangle outside the layerless bitmap");
+    }
+    else
+    {
+        memset(&target, 0, sizeof(target));
+        target.bitmap = m68k_read32(ctx, guest + G_RP_BITMAP);
+    }
+    if (!rp->BitMap || !program_memory(ctx, array, bytes) ||
+        !draw_source(&target, guest, array, bytes))
+        return refuse(ctx, "PixelArray8(): array is protected or aliases the target");
+    if (!scratch || !draw_rastport(ctx, scratch, FALSE, DRAW_REQUIRE_AREA_STATE_NULL, &temp, "PixelArray8 scratch"))
+        return refuse(ctx, "PixelArray8(): requires a valid scratch RastPort");
+    if (temp.rp.Layer || !temp.rp.BitMap || temp.height != 1 || temp.width < stride ||
+        temp.rp.BitMap->Depth < rp->BitMap->Depth ||
+        !draw_source(&temp, scratch, array, bytes) ||
+        overlaps(scratch, M68K_SIZEOF_RASTPORT, guest, M68K_SIZEOF_RASTPORT))
+        return refuse(ctx, "PixelArray8(): invalid or aliased scratch storage");
+    if (read && GetBitMapAttr(rp->BitMap, BMA_DEPTH) > 8)
+        return refuse(ctx, "ReadPixelArray8(): truecolor pen readback is unsupported");
+    draw_begin(ctx);
+    result = read ? ReadPixelArray8(rp, x, y, xe, ye, ctx->mem + array, &temp.rp)
+                  : WritePixelArray8(rp, x, y, xe, ye, ctx->mem + array, &temp.rp);
+    WaitBlit();
+    ctx->bitmap_blits--;
+    if (copied) Kaffeine_RastPortStateOut(ctx, guest, &target.before, rp);
+    return ctx->running ? (IPTR)(ULONG)result : (IPTR)ctx->exit_code;
+}
+
+IPTR thunk_gfx_ReadPixelLine8(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG x = (UWORD)THUNK_D(0), y = (UWORD)THUNK_D(1), width = (UWORD)THUNK_D(2);
+    return width ? pixel_array8(ctx, TRUE, THUNK_A(0), THUNK_A(1), THUNK_A(2), x, y, x + width - 1, y) : 0;
+}
+IPTR thunk_gfx_WritePixelLine8(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG x = (UWORD)THUNK_D(0), y = (UWORD)THUNK_D(1), width = (UWORD)THUNK_D(2);
+    return width ? pixel_array8(ctx, FALSE, THUNK_A(0), THUNK_A(1), THUNK_A(2), x, y, x + width - 1, y) : 0;
+}
+IPTR thunk_gfx_ReadPixelArray8(struct KaffeineContext *ctx, void *cpu)
+{
+    return pixel_array8(ctx, TRUE, THUNK_A(0), THUNK_A(1), THUNK_A(2),
+                        (UWORD)THUNK_D(0), (UWORD)THUNK_D(1), (UWORD)THUNK_D(2), (UWORD)THUNK_D(3));
+}
+IPTR thunk_gfx_WritePixelArray8(struct KaffeineContext *ctx, void *cpu)
+{
+    return pixel_array8(ctx, FALSE, THUNK_A(0), THUNK_A(1), THUNK_A(2),
+                        (UWORD)THUNK_D(0), (UWORD)THUNK_D(1), (UWORD)THUNK_D(2), (UWORD)THUNK_D(3));
+}
+
 /* Read-only classic planar access. No guest structure or plane pointer is
    converted into a native RastPort, BitMap or graphics driver object. */
 static IPTR guest_read_pixel(struct KaffeineContext *ctx, ULONG guest, WORD x, WORD y)
@@ -881,11 +1078,14 @@ IPTR thunk_gfx_ReadPixel(struct KaffeineContext *ctx, void *cpu)
     struct RastPort *rp = Kaffeine_RastPortIn(ctx, guest);
     struct DrawTemporary t;
     LONG pen;
+    ULONG width, height;
 
     if (rp)
         return (IPTR)ReadPixel(rp, (WORD)THUNK_D(0), (WORD)THUNK_D(1));
     if (!(guest & 1) && guest_range(ctx, guest, M68K_SIZEOF_RASTPORT) &&
-        m68k_read32(ctx, guest + G_RP_LAYER))
+        (m68k_read32(ctx, guest + G_RP_LAYER) ||
+         (ctx->layer_ops && ctx->layer_ops->native_bitmap &&
+          ctx->layer_ops->native_bitmap(ctx, m68k_read32(ctx, guest + G_RP_BITMAP), &width, &height))))
     {
         if (!draw_rastport(ctx, guest, FALSE, DRAW_REQUIRE_AREA_STATE_NULL, &t, "ReadPixel"))
             return ctx->exit_code;

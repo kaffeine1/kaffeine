@@ -47,8 +47,11 @@ void BltTemplate(PLANEPTR source, WORD xSrc, WORD srcMod, struct RastPort *rp,
                  WORD xDest, WORD yDest, WORD width, WORD height);
 void ClipBlit(struct RastPort *src, WORD xSrc, WORD ySrc, struct RastPort *dest,
               WORD xDest, WORD yDest, WORD width, WORD height, UBYTE minterm);
+void BltBitMapRastPort(struct BitMap *,WORD,WORD,struct RastPort *,WORD,WORD,WORD,WORD,UBYTE);
 LONG ReadPixel(struct RastPort *rp, WORD x, WORD y);
 LONG WritePixel(struct RastPort *rp, WORD x, WORD y);
+LONG ReadPixelArray8(struct RastPort *, WORD, WORD, WORD, WORD, UBYTE *, struct RastPort *);
+LONG WritePixelArray8(struct RastPort *, WORD, WORD, WORD, WORD, UBYTE *, struct RastPort *);
 void SetAPen(struct RastPort *rp, ULONG pen);
 void SetBPen(struct RastPort *rp, ULONG pen);
 void SetDrMd(struct RastPort *rp, ULONG drawMode);
@@ -67,6 +70,8 @@ PLANEPTR AllocRaster(ULONG width, ULONG height);
 void FreeRaster(PLANEPTR p, ULONG width, ULONG height);
 void BltClear(void *memBlock, ULONG bytecount, ULONG flags);
 void InitBitMap(struct BitMap *bm, BYTE depth, UWORD width, UWORD height);
+struct BitMap *AllocBitMap(ULONG width, ULONG height, ULONG depth, ULONG flags, struct BitMap *friend_bitmap);
+void FreeBitMap(struct BitMap *bitmap);
 /* The native Region calls of the Region bridge (graphics.conf) */
 struct Region;
 struct Rectangle;

@@ -8,9 +8,11 @@ struct BitMap
     UWORD pad;
     PLANEPTR Planes[8];
 };
+#define BMF_CLEAR       (1L<<0)
 #define BMF_DISPLAYABLE (1L<<1)
 #define BMF_INTERLEAVED (1L<<2)
 #define BMF_STANDARD    (1L<<3)
+#define BMF_MINPLANES   (1L<<4)
 /* GetBitMapAttr() attributes */
 #define BMA_HEIGHT 0
 #define BMA_DEPTH  4

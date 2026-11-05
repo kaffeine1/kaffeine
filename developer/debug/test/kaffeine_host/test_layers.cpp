@@ -740,7 +740,7 @@ static void test_registration()
     }
     assert(!kaffeine_thunks_layers_manual[std::size(lvos)].lvo &&
            !kaffeine_thunks_layers_manual[std::size(lvos)].thunk);
-    assert(std::size(graphics_manual) == 16 && graphics_manual[5].lvo == 30 &&
+    assert(std::size(graphics_manual) == 15 && graphics_manual[5].lvo == 30 &&
            graphics_manual[5].thunk == Kaffeine_BltBitMap && graphics_manual[0].lvo == 432 &&
            graphics_manual[0].thunk == Kaffeine_LockLayerRom && graphics_manual[1].lvo == 438 &&
            graphics_manual[1].thunk == Kaffeine_UnlockLayerRom && graphics_manual[2].lvo == 444 &&

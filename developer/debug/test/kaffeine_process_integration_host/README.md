@@ -18,3 +18,8 @@ Process shadow, task operations and captured streams, then precedes AutoOpen
 and CPU execution. Publication failure exercises rollback in both the direct
 and domain owners; retirement precedes native resource cleanup and final
 disposal. The real message adapter and replies are tested separately.
+
+Screen cleanup uses a recording screen with a native bitmap lease: the first
+pass must keep it alive, layer cleanup releases the lease in the same owner,
+and the final pass must close the screen exactly once. This checks resource
+retirement rather than assuming the cleanup function can only be called once.

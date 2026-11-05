@@ -169,6 +169,8 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
             if (!(lib->dos && ctx->sched && ctx->task_ops->dos_call &&
                   ctx->task_ops->dos_call(ctx, cpu, entry->thunk, &ret)))
                 ret = entry->thunk(ctx, cpu);
+            if (!ctx->running && ctx->exit_code == 20)
+                bug("[kaffeine] stopped in %s LVO -%lu\n", lib->name, (unsigned long)lvo);
             if (ctx->after_thunk)
             {
                 void (*after)(struct KaffeineContext *) = ctx->after_thunk;
