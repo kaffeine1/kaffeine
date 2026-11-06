@@ -66,6 +66,10 @@ GFX_CPPFLAGS := -I$(TEST_DIR)/gfx_stubs $(TEST_CPPFLAGS)
 # The state calls of caller-owned RastPorts check their storage with the
 # production message boundary (Kaffeine_MessageMemory()).
 GFX_THUNK_OBJS := $(BUILD_DIR)/gfx_generated_rp.o $(BUILD_DIR)/gfx_thunk_copy.o $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
+# The IBase snapshot, compiled from production, over a recording native
+# Intuition and a counting guest heap (test_ibase_snapshot).
+IBASE_CPPFLAGS := -I$(TEST_DIR)/ibase_stubs $(GFX_CPPFLAGS)
+IBASE_OBJS := $(BUILD_DIR)/ibase_intuibase.o
 DISKFONT_CPPFLAGS := -I$(TEST_DIR)/memory_stubs $(GFX_CPPFLAGS)
 DISKFONT_OBJS := $(BUILD_DIR)/gfx_thunk_copy.o $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/diskfont_,cpu.o dispatch.o thunks_diskfont.o thunks_gfx.o rastport.o fontattr.o taglist.o memory.o)
 WINDOW_OBJS := $(BUILD_DIR)/message_messages.o $(BUILD_DIR)/message_native_unused.o $(addprefix $(BUILD_DIR)/gfx_thunk_,cpu.o dispatch.o window.o requester.o copy.o format.o rastport.o memory.o taglist.o)
@@ -133,6 +137,7 @@ TESTS += test_regions
 TESTS += test_m68klib
 TESTS += test_hosted_jit
 TESTS += test_blitter
+TESTS += test_ibase_snapshot
 TESTS += test_process_tags
 TESTS += test_guest_tasks
 TESTS += test_socket_codec
@@ -439,6 +444,12 @@ $(BUILD_DIR)/test_startup: $(TEST_DIR)/test_startup.cpp $(STARTUP_OBJS) | $(BUIL
 $(BUILD_DIR)/test_screens: $(TEST_DIR)/test_screens.cpp $(SCREEN_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(SCREEN_OBJS) $(LDLIBS)
 
+$(BUILD_DIR)/ibase_intuibase.o: $(KAFFEINE_DIR)/kaffeine_intuibase.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(IBASE_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_ibase_snapshot: $(TEST_DIR)/test_ibase_snapshot.cpp $(IBASE_OBJS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(IBASE_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(IBASE_OBJS) $(LDLIBS)
+
 $(BUILD_DIR)/refresh_native_generated.h: $(TEST_DIR)/refresh_native_extract.py $(AROS_ROOT)/rom/intuition/beginrefresh.c $(AROS_ROOT)/rom/intuition/endrefresh.c | $(BUILD_DIR)
 	$(PYTHON) $< $(AROS_ROOT) $@
 $(BUILD_DIR)/test_layers: $(TEST_DIR)/test_layers.cpp $(BUILD_DIR)/refresh_native_generated.h $(LAYER_OBJS) | $(BUILD_DIR)
@@ -518,6 +529,7 @@ clean:
 	rm -f $(STARTUP_OBJS) $(STARTUP_OBJS:.o=.d)
 	rm -f $(M68KLIB_OBJS) $(M68KLIB_OBJS:.o=.d) $(BUILD_DIR)/m68klib_library_thunks.c
 	rm -f $(SCREEN_OBJS) $(SCREEN_OBJS:.o=.d)
+	rm -f $(IBASE_OBJS) $(IBASE_OBJS:.o=.d)
 	rm -f $(LAYER_OBJS) $(LAYER_OBJS:.o=.d)
 	rm -f $(LOCALE_HOOK_OBJS) $(LOCALE_HOOK_OBJS:.o=.d)
 	rm -f $(CALLBACK_OBJS) $(CALLBACK_OBJS:.o=.d)

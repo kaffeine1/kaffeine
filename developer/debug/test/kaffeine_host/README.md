@@ -87,14 +87,14 @@ Darwin-specific JIT constraints.
 ## Coverage
 
 The Makefile is the authoritative list of executables. The current suite
-has 56 test executables and a thunk-registration audit.
+has 57 test executables and a thunk-registration audit.
 
 | Area | Coverage |
 | --- | --- |
 | CPU and loaders | Real Moira instructions, A-line dispatch, registers and condition codes, HUNK loading and relocations, callback faults and guest bounds |
 | Exec | Heap and pools, lists, signals, task snapshots, embedded ExecBase list headers and bounded Moira callback traversal, semaphores, public ports, guest message queues, I/O requests and timer boundaries |
 | DOS | Handle identities and lifetimes, buffers, packet thunks and FileHandle actions, handler ports (`DeviceProc`/`GetDeviceProc`), formatting, CLI state, argument parsing, data structures and directory traversal (`ExAll`/`ExAllEnd`) |
-| Graphics, Layers and Intuition | RastPorts, fonts, display and monitor metadata, owned and public screens, `DrawInfo`, live and offscreen planar layers and backfill hooks, clip regions, bitmaps (`InitBitMap`/`BltBitMap`/`GetBitMapAttr`), windows, IDCMP, requests, menus, gadgets and Workbench objects |
+| Graphics, Layers and Intuition | RastPorts, fonts, display and monitor metadata, owned and public screens, `DrawInfo`, live and offscreen planar layers and backfill hooks, clip regions, bitmaps (`InitBitMap`/`BltBitMap`/`GetBitMapAttr`), windows, IDCMP, requests, menus, gadgets and Workbench objects; the `LockIBase()` snapshot of the production `kaffeine_intuibase.c` beyond 1024 and up to 2048 objects, its refusals, stable guest tokens and bounded mirrors across changing windows and menus (`test_ibase_snapshot`) |
 | Libraries and devices | Library-path lookup, mathffp and IEEE conversion, locale hooks, `icon.library` metadata snapshots, no-window console calls, typed default-keymap InputEvents and diskfont snapshots |
 | CPU backend extension | Production AArch64 translator, hosted differential tests and library mode contracts |
 | Custom chips | The area blitter of `kaffeine_blitter.h` through its registers (`test_blitter`): all 256 minterms against an independent oracle, A/B shifts, masks and the row carry, held BLTBDAT, modulos of both signs, ascending and descending overlap, DMACON enables, BZERO, BLTSIZE/BLTSIZV/BLTSIZH and BLTCON0L, refusals (line mode, fill, DOFF, bounds, work) that leave the arena byte-identical, and OwnBlitter()/DisownBlitter() holds given back only by their context on the task that took them (repeat, self-owned, foreign-caller, no-record and failed-acquire cases); both backends start blits, read DMACONR, run code a blit rewrote and stop with 20 on a refused blit (`test_hosted_jit` `blitter`, `blitter-refused`) |

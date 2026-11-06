@@ -22,11 +22,17 @@
 #include "kaffeine_sched.h"
 #include "kaffeine_cpu.h"
 #include "kaffeine_callback.h"
-#define CAPACITY 1024
+/* One snapshot reaches at most CURRENT views (a Personal Paint screen with
+   its menus takes about 1100). The table has room for the views of the
+   last snapshot that fitted and as many new ones: a view keeps its guest
+   address while the snapshots reach its native object, and its mirror goes
+   back after the first snapshot that fits without reaching it. */
+#define CURRENT 2048
+#define SLOTS (2 * CURRENT)
 #define MAX_DEPTH 128
 struct IBaseView { const struct M68KStructLayout *layout; void *native;
                    ULONG guest, size, epoch; BOOL string; };
-struct KaffeineIBase { struct IBaseView views[CAPACITY]; ULONG count, epoch, depth, owner, key; BOOL failed; };
+struct KaffeineIBase { struct IBaseView views[SLOTS]; ULONG count, reached, epoch, depth, owner, key; BOOL failed; };
 static IPTR refuse(struct KaffeineContext *ctx, const char *why)
 { bug("[kaffeine] IBase: %s, stopping (20)\n",why); Kaffeine_StopGuest(ctx,ctx->cpu,20); return 20; }
 static ULONG caller(struct KaffeineContext *ctx)
@@ -40,10 +46,12 @@ static struct IBaseView *view(struct KaffeineContext *ctx, void *native, const c
     if (!native || !size) return NULL;
     for (i=0;i<s->count;++i)
         if (s->views[i].native==native && s->views[i].layout==layout && s->views[i].string==!name) return &s->views[i];
-    if (s->count==CAPACITY) { s->failed=TRUE; return NULL; }
+    if (s->count==SLOTS) { s->failed=TRUE; return NULL; }
     v=&s->views[s->count]; v->guest=Kaffeine_MirrorAlloc(ctx,size);
     if (!v->guest) { s->failed=TRUE; return NULL; }
-    v->size=size;v->native=native;v->layout=layout;v->string=!name;++s->count;return v;
+    /* A slot that prune() or drop() freed still holds an old view: a new
+       mirror takes epoch 0, which is never current, and is copied now. */
+    v->size=size;v->native=native;v->layout=layout;v->string=!name;v->epoch=0;++s->count;return v;
 }
 /* Only classic offsets are fixed. Native members are always C field
    accesses: native Library/Layer_Info layouts differ across AROS builds. */
@@ -60,10 +68,12 @@ static void bitmap_fields(struct KaffeineContext *ctx, ULONG g, struct BitMap *n
 static ULONG snapshot(struct KaffeineContext *ctx, const char *name, void *native, unsigned depth)
 {
     struct KaffeineIBase *s=ctx->ibase;struct IBaseView *v;ULONG g;
-    if (!native) return 0;
+    /* A snapshot that has failed is refused whole: stop walking at once. */
+    if (!native || s->failed) return 0;
     if (depth>MAX_DEPTH) { s->failed=TRUE;return 0; }
     v=view(ctx,native,name);if(!v)return 0;g=v->guest;
     if(v->epoch==s->epoch)return g;
+    if(++s->reached>CURRENT) { s->failed=TRUE;return 0; }
     v->epoch=s->epoch;memset(ctx->mem+g,0,v->size);
     if(!name) { size_t n=0;while(n<255 && ((char*)native)[n])++n;memcpy(ctx->mem+g,native,n);return g; }
     if(!strcmp(name,"Screen"))
@@ -122,7 +132,8 @@ static ULONG snapshot(struct KaffeineContext *ctx, const char *name, void *nativ
     else if(!strcmp(name,"PropInfo"))
     { struct PropInfo *n=native;W(0,n->Flags);W(2,n->HorizPot);W(4,n->VertPot);W(6,n->HorizBody);W(8,n->VertBody);W(10,n->CWidth);W(12,n->CHeight);W(14,n->HPotRes);W(16,n->VPotRes);W(18,n->LeftBorder);W(20,n->TopBorder); }
     else if(!strcmp(name,"Menu"))
-    { struct Menu *n=native;LINK(0,NextMenu,"Menu");W(4,n->LeftEdge);W(6,n->TopEdge);W(8,n->Width);W(10,n->Height);W(12,n->Flags);LINK(14,MenuName,NULL);LINK(18,FirstItem,"MenuItem"); }
+    /* MenuName is BYTE * in AROS and const in other SDKs */
+    { struct Menu *n=native;LINK(0,NextMenu,"Menu");W(4,n->LeftEdge);W(6,n->TopEdge);W(8,n->Width);W(10,n->Height);W(12,n->Flags);L(14,snapshot(ctx,NULL,(void *)n->MenuName,depth+1));LINK(18,FirstItem,"MenuItem"); }
     else if(!strcmp(name,"MenuItem"))
     { struct MenuItem *n=native;LINK(0,NextItem,"MenuItem");W(4,n->LeftEdge);W(6,n->TopEdge);W(8,n->Width);W(10,n->Height);W(12,n->Flags);L(14,n->MutualExclude);B(26,n->Command);LINK(28,SubItem,"MenuItem");W(32,n->NextSelect);if(n->Flags&ITEMTEXT) LINK(18,ItemFill,"IntuiText"); }
     return g;
@@ -131,6 +142,25 @@ static ULONG snapshot(struct KaffeineContext *ctx, const char *name, void *nativ
 #undef B
 #undef W
 #undef L
+/* After a snapshot that fitted: the mirrors of what it did not reach, the
+   windows, menus, gadgets and strings gone since the last one, go back.
+   The views that it reached keep their guest addresses. */
+static void prune(struct KaffeineContext *ctx, struct KaffeineIBase *s)
+{
+    ULONG i, kept=0;
+    for(i=0;i<s->count;++i)
+        if(s->views[i].epoch==s->epoch) s->views[kept++]=s->views[i];
+        else Kaffeine_MirrorRelease(ctx,s->views[i].guest);
+    s->count=kept;
+}
+/* After one that did not: every mirror goes back, so that no guest token
+   of it or of an older snapshot outlives the refusal. */
+static void drop(struct KaffeineContext *ctx, struct KaffeineIBase *s)
+{
+    ULONG i;
+    for(i=0;i<s->count;++i)Kaffeine_MirrorRelease(ctx,s->views[i].guest);
+    s->count=0;
+}
 IPTR Kaffeine_LockIBase(struct KaffeineContext *ctx, void *cpu)
 {
     struct KaffeineIBase *s=ctx->ibase;ULONG who=caller(ctx),base=Kaffeine_FindLibBase(ctx,"intuition.library");
@@ -139,7 +169,9 @@ IPTR Kaffeine_LockIBase(struct KaffeineContext *ctx, void *cpu)
     if(Kaffeine_LayerInfoLocked(ctx))return refuse(ctx,"layer lock order");
     if(!s) { s=AllocVec(sizeof(*s),MEMF_PUBLIC|MEMF_CLEAR);if(!s)return refuse(ctx,"no private snapshot storage");ctx->ibase=s; }
     ctx->ibase_locked=Kaffeine_IBaseLocked;ctx->ibase_cleanup=Kaffeine_IBaseCleanup;ctx->ibase_task_removed=Kaffeine_IBaseTaskRemoved;
-    s->key=LockIBase(0);s->depth=1;s->owner=who;s->failed=FALSE;
+    s->key=LockIBase(0);s->depth=1;s->owner=who;s->failed=FALSE;s->reached=0;
+    /* Epoch 0 is never current: after the wrap no view counts as reached
+       until this snapshot reaches it again. */
     if(++s->epoch==0) { ULONG i;s->epoch=1;for(i=0;i<s->count;++i)s->views[i].epoch=0; }
     /* Preserve this fake library's own size/open bookkeeping. */
     m68k_write16(ctx,base+20,IntuitionBase->LibNode.lib_Version);
@@ -150,7 +182,13 @@ IPTR Kaffeine_LockIBase(struct KaffeineContext *ctx, void *cpu)
     m68k_write32(ctx,base+64,IntuitionBase->Flags);
     m68k_write16(ctx,base+68,IntuitionBase->MouseY);m68k_write16(ctx,base+70,IntuitionBase->MouseX);
     m68k_write32(ctx,base+72,IntuitionBase->Seconds);m68k_write32(ctx,base+76,IntuitionBase->Micros);
-    if(s->failed) { UnlockIBase(s->key);s->depth=0;s->owner=0;return refuse(ctx,"snapshot capacity exceeded"); }
+    if(s->failed)
+    {
+        UnlockIBase(s->key);s->depth=0;s->owner=0;
+        m68k_write32(ctx,base+52,0);m68k_write32(ctx,base+56,0);m68k_write32(ctx,base+60,0);
+        drop(ctx,s);return refuse(ctx,"snapshot capacity exceeded");
+    }
+    prune(ctx,s);
     return s->key;
 }
 IPTR Kaffeine_UnlockIBase(struct KaffeineContext *ctx, void *cpu)
