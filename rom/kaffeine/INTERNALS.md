@@ -1166,6 +1166,8 @@ takes the exit code.
 | -432 | LockLayerRom | Validates a registered or owned guest `Layer`, locks its native layer if present and increments its guest lock count (`kaffeine_layers.c`) |
 | -438 | UnlockLayerRom | Releases a lock acquired by `LockLayerRom` or `AttemptLockLayerRom` (`kaffeine_layers.c`) |
 | -444, -450 | SyncSBitMap, CopySBitMap | Stop the guest with rc 20 (`kaffeine_layers_Unsupported`) |
+| -456 | OwnBlitter | Native, with the hold this context took recorded; a second call by the owning task stops with rc 20, and the end of the context gives back a hold left behind (`kaffeine_thunks.c`, `kaffeine_blitter.h`) |
+| -462 | DisownBlitter | Gives back only the hold this context took; without one stops with rc 20 (`kaffeine_thunks.c`, `kaffeine_blitter.h`) |
 | -474 | AskFont | Writes an aligned 8-byte big-endian TextAttr with a readable cached guest font name, height, style and flags; accepts registered RastPorts or checked caller-owned RastPorts with a live guest TextFont. Overlapping outputs and unknown fonts stop with rc 20 |
 | -510 | OrRectRegion | Unions a checked 8-byte 68k `Rectangle` into an owned 68k `Region` and splits non-overlapping `RegionRectangle` nodes (`kaffeine_regions.c`) |
 | -516 | NewRegion | Allocates an owned 20-byte 68k `Region` (`kaffeine_regions.c`) |
@@ -3505,16 +3507,29 @@ and host test that compiles one needs no other object.
   chip wrap. Before a blit touches memory, the span of every enabled channel
   is computed from its pointer, modulo, size and direction and must lie in
   guest memory outside this window, and the size must not exceed the
-  arena's word count. Line mode, area fill (IFE, EFE) and failed checks run
-  nothing: the program stops with 20 and a `[kaffeine] blitter` line.
+  arena's word count. Line mode, area fill (IFE, EFE), the ECS DOFF bit
+  (BLTCON1 bit 7) and failed checks run nothing: the program stops with 20
+  and a `[kaffeine] blitter` line.
 - After a blit that wrote D, `Kaffeine_FlushCode()` announces the D span, so
   guest code that a blit changed runs anew under the JIT (a new
   `jit_generation`); Moira fetches from guest memory.
+- The initial DMAEN and BLTEN are a virtual state of the running OS that
+  this context models; native AROS writes no guest custom register.
+- graphics -456 `OwnBlitter()` and -462 `DisownBlitter()` are manual
+  (`kaffeine_thunks.c`): the native calls, which record the task in
+  `GfxBase->BlitOwner` and wait while any task owns the blitter, with the
+  hold this context took recorded. A second `OwnBlitter()` by the owning
+  task, which would wait for ever, and a `DisownBlitter()` without a hold,
+  which would clear another task's, stop the program with 20.
+  `Kaffeine_DestroyContext()` first gives back a hold the program still has,
+  only while `BlitOwner` is that recorded task, so a program that stopped
+  while it owned the blitter keeps no later one waiting.
 
 Tests: `test_blitter.cpp` (registers, all 256 minterms, shifts, masks,
-modulos, overlap, DMACON, BZERO, refusals), `test_hosted_jit.cpp`
-`blitter` and `blitter-refused` (both backends), and the target
-`hw_blitter.c`.
+modulos, overlap, DMACON, BZERO, refusals, ownership), `test_hosted_jit.cpp`
+`blitter` and `blitter-refused` (both backends), and the targets
+`hw_blitter.c` and `hw_blitter_fault.c` (a stop while owning the blitter,
+then `hw_blitter` in the same boot).
 
 ### Beam Counter
 
@@ -3552,7 +3567,7 @@ Two generators exist:
 
 `developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
 plus `test_thunk_registrations.py` (which verifies 340 explicit native-vector
-cases and all 604 manual thunk registrations across the 20 production tables)
+cases and all 606 manual thunk registrations across the 20 production tables)
 and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
 [developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
 for coverage details; the host Makefile is the authoritative executable list.
@@ -3836,10 +3851,12 @@ this capability to accept a 1024x768 image. SetChipRev returns this published
 byte for any requested configuration, without a native call or a write.
 All other positive fields, including the library version, stay zero.
 
-This is an OS-call compatibility capability, not an ECS hardware model:
-there is no custom-register blitter, BEAMCON0 or 2 MB Chip addressing.
-VPOSR still reports Agnus ID 0; software probing hardware directly cannot
-use this bit as a hardware guarantee. AllocBitMap uses the separate owned
+This is an OS-call compatibility capability, not an ECS hardware model.
+The custom-register blitter of each context (Custom Chip Emulation,
+Blitter) runs area blits with the ECS BLTSIZV/BLTSIZH sizes, but there is
+no line mode, area fill, BEAMCON0, other ECS register or 2 MB Chip
+addressing. VPOSR still reports Agnus ID 0; software probing hardware
+directly cannot use this bit as a guarantee of a complete chipset. AllocBitMap uses the separate owned
 bitmap adapter below; other unconverted bitmap operations remain refused.
 QBlit and QBSBlit stop with rc 20 instead
 of passing guest code and 32-bit links into a native queue. BltClear accepts

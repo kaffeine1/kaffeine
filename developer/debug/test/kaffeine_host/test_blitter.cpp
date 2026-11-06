@@ -293,6 +293,9 @@ static void refusals()
     CHECK(t.w(0x058, size(1, 1)) == 20 && untouched());
     t.reset(0x09F0, KAFFEINE_BLT_DESC | 0x0010);
     CHECK(t.w(0x058, size(1, 1)) == 20 && untouched());
+    /* nor is the ECS DOFF bit, which would keep D from memory */
+    t.reset(0x09F0, KAFFEINE_BLT_DOFF);
+    CHECK(t.w(0x058, size(1, 1)) == 20 && untouched());
     /* a refused waiting blit is not kept */
     t.w(0x096, KAFFEINE_DMACON_BLTEN);
     t.reset(0x01F0); t.ptr(0x054, ARENA);
@@ -322,6 +325,55 @@ static void sizes()
     CHECK(t.w(0x02C, 0x1234) == 0 && t.w(0x100, 0xFFFF) == 0 && t.ctx->blitter.con0 == con0);
 }
 
+/* Native ownership stand-ins: AROS's OwnBlitter() takes a free blitter
+   for the caller; DisownBlitter() clears it for whoever calls */
+static APTR fake_task, fake_blit_owner;
+static int fake_owns, fake_disowns;
+static APTR fake_self() { return fake_task; }
+static APTR fake_owner() { return fake_blit_owner; }
+static void fake_own() { fake_owns++; fake_blit_owner = fake_task; }
+static void fake_disown() { fake_disowns++; fake_blit_owner = nullptr; }
+static const KaffeineBlitterOwnership fake_native = { fake_self, fake_owner, fake_own, fake_disown };
+
+static void ownership()
+{
+    Arena t;
+    int a, b, other;
+
+    fake_task = &a; fake_blit_owner = nullptr; fake_owns = fake_disowns = 0;
+    /* balanced use */
+    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 0);
+    CHECK(t.ctx->blitter.owner == &a && fake_blit_owner == &a && fake_owns == 1);
+    CHECK(Kaffeine_BlitterDisown(t.ctx, &fake_native) == 0);
+    CHECK(!t.ctx->blitter.owner && !fake_blit_owner && fake_disowns == 1);
+    /* DisownBlitter() without a hold would clear another task's: refused */
+    fake_blit_owner = &other;
+    CHECK(Kaffeine_BlitterDisown(t.ctx, &fake_native) == 20);
+    CHECK(fake_blit_owner == &other && fake_disowns == 1);
+    fake_blit_owner = nullptr;
+    /* a second OwnBlitter() by the owning task would wait for ever: refused */
+    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 0);
+    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 20);
+    CHECK(fake_owns == 2 && t.ctx->blitter.owner == &a && fake_blit_owner == &a);
+    /* the end of a context that still holds the blitter gives it back */
+    Kaffeine_BlitterRelease(t.ctx, &fake_native);
+    CHECK(!t.ctx->blitter.owner && !fake_blit_owner && fake_disowns == 2);
+    Kaffeine_BlitterRelease(t.ctx, &fake_native);
+    CHECK(fake_disowns == 2);
+    /* never another task's hold, even if the record says otherwise */
+    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 0);
+    fake_blit_owner = &other;
+    Kaffeine_BlitterRelease(t.ctx, &fake_native);
+    CHECK(!t.ctx->blitter.owner && fake_blit_owner == &other && fake_disowns == 2);
+    /* another task of the same program goes to the native call, which
+       waits there while the first task owns the blitter */
+    fake_blit_owner = nullptr;
+    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 0);
+    fake_task = &b;
+    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 0);
+    CHECK(fake_owns == 5 && t.ctx->blitter.owner == &b);
+}
+
 int main()
 {
     minterms();
@@ -336,6 +388,7 @@ int main()
     dma_enable();
     refusals();
     sizes();
+    ownership();
     std::printf("test_blitter: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }

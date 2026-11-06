@@ -47,11 +47,17 @@
     computed from its pointer, modulo, size and direction and checked
     against the guest arena without the custom chip window, as for CPU
     accesses, and its size against the arena's word count (the work bound).
-    A blit that fails a check, line mode (BLTCON1 bit 0) and area fill
-    (IFE or EFE) are not run at all: nothing is read or written, and the
-    caller stops the program with the 20 it gets. After a blit that wrote
-    D, the written span is announced to the CPU backend
-    (Kaffeine_FlushCode()), so that guest code a blit changed runs anew.
+    A blit that fails a check, line mode (BLTCON1 bit 0), area fill (IFE
+    or EFE) and the ECS DOFF bit (BLTCON1 bit 7) are not run at all:
+    nothing is read or written, and the caller stops the program with the
+    20 it gets. After a blit that wrote D, the written span is announced to
+    the CPU backend (Kaffeine_FlushCode()), so that guest code a blit
+    changed runs anew.
+
+    OwnBlitter() and DisownBlitter() of the program go to native graphics
+    through Kaffeine_BlitterOwn() and Kaffeine_BlitterDisown(), which record
+    and give back only the hold this context took; the end of the context
+    gives back a hold that a stopped program left (Kaffeine_BlitterRelease()).
 
     Only word writes reach here (a long is two word writes); both
     backends ignore byte writes to the window, and every blitter register
@@ -83,6 +89,7 @@
 #define KAFFEINE_BLT_LINE 0x0001
 #define KAFFEINE_BLT_DESC 0x0002
 #define KAFFEINE_BLT_FILL 0x0018  /* IFE and EFE */
+#define KAFFEINE_BLT_DOFF 0x0080  /* ECS: D output disabled */
 
 /* A new context's blitter: idle, with DMAEN and BLTEN set */
 static inline void Kaffeine_BlitterInit(struct KaffeineBlitter *blt)
@@ -160,6 +167,8 @@ static inline int Kaffeine_BlitterRun(struct KaffeineContext *ctx, ULONG w, ULON
         return Kaffeine_BlitterRefuse(blt, "line mode is not implemented", w, h);
     if (con1 & KAFFEINE_BLT_FILL)
         return Kaffeine_BlitterRefuse(blt, "area fill is not implemented", w, h);
+    if (con1 & KAFFEINE_BLT_DOFF)
+        return Kaffeine_BlitterRefuse(blt, "DOFF is not implemented", w, h);
     if ((unsigned long long)w * h > ctx->mem_size / 2)
         return Kaffeine_BlitterRefuse(blt, "more words than the guest arena holds", w, h);
     Kaffeine_BlitterSpan(blt->apt, blt->amod, w, h, desc, &alo, &ahi);
@@ -337,6 +346,69 @@ static inline UWORD Kaffeine_BlitterDmaconr(const struct KaffeineContext *ctx)
     return (UWORD)((blt->dmacon & KAFFEINE_DMACON_WRITABLE) |
                    (blt->pending ? KAFFEINE_DMACON_BBUSY : 0) |
                    (blt->zero ? KAFFEINE_DMACON_BZERO : 0));
+}
+
+/* The native ownership of the blitter as the context uses it: the
+   calling native task, GfxBase->BlitOwner, OwnBlitter() and
+   DisownBlitter() of graphics.library (kaffeine_thunks.c), or stand-ins
+   in the host tests.
+
+   AROS's OwnBlitter() records the caller in BlitOwner and waits while any
+   task, the caller included, owns the blitter; DisownBlitter() clears it
+   for whoever calls. A program that stops while it owns the blitter, for
+   a refused blit for instance, would keep it from every later program.
+   So the context records the task whose hold it took, and gives back only
+   that hold: at DisownBlitter() and at the end of the context. */
+struct KaffeineBlitterOwnership
+{
+    APTR (*self)(void);         /* FindTask(NULL) */
+    APTR (*owner)(void);        /* GfxBase->BlitOwner */
+    void (*own)(void);          /* OwnBlitter() */
+    void (*disown)(void);       /* DisownBlitter() */
+};
+
+/* Give back the hold of this context if native graphics still records
+   it; never another task's. */
+static inline void Kaffeine_BlitterRelease(struct KaffeineContext *ctx,
+                                           const struct KaffeineBlitterOwnership *n)
+{
+    APTR owner = ctx->blitter.owner;
+
+    ctx->blitter.owner = NULL;
+    if (owner && n->owner() == owner)
+        n->disown();
+}
+
+/* OwnBlitter() of the program: native, waiting while another task owns
+   the blitter. 20 when the calling task holds it already, where native
+   graphics would wait for ever. */
+static inline int Kaffeine_BlitterOwn(struct KaffeineContext *ctx,
+                                      const struct KaffeineBlitterOwnership *n)
+{
+    APTR me = n->self();
+
+    if (ctx->blitter.owner == me)
+    {
+        bug("[kaffeine] OwnBlitter() by the task that owns the blitter already, stopping (20)\n");
+        return 20;
+    }
+    n->own();
+    ctx->blitter.owner = me;
+    return 0;
+}
+
+/* DisownBlitter() of the program: 20 when it holds no blitter, as native
+   graphics would clear another task's hold. */
+static inline int Kaffeine_BlitterDisown(struct KaffeineContext *ctx,
+                                         const struct KaffeineBlitterOwnership *n)
+{
+    if (!ctx->blitter.owner)
+    {
+        bug("[kaffeine] DisownBlitter() without owning the blitter, stopping (20)\n");
+        return 20;
+    }
+    Kaffeine_BlitterRelease(ctx, n);
+    return 0;
 }
 
 #endif /* KAFFEINE_BLITTER_H */

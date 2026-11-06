@@ -194,10 +194,14 @@ struct KaffeineFile
 };
 #define KAFFEINE_MAX_MESSAGE_PORTS 64
 
+struct KaffeineContext;
+
 /* The blitter registers of one guest context (kaffeine_blitter.h). The
    pointers are guest addresses, never native ones. */
 struct KaffeineBlitter
 {
+    APTR  owner;                /* the native task whose OwnBlitter() this context holds */
+    void (*release)(struct KaffeineContext *);  /* drops that hold at context end */
     ULONG apt, bpt, cpt, dpt;   /* BLTAPT, BLTBPT, BLTCPT, BLTDPT */
     UWORD con0, con1;           /* BLTCON0, BLTCON1 */
     UWORD afwm, alwm;           /* BLTAFWM, BLTALWM */
