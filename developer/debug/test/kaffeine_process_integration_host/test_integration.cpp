@@ -33,6 +33,7 @@ struct KaffeineContext {
     ULONG socket_signals{};
     void (*ibase_cleanup)(KaffeineContext *){}; void (*socket_cleanup)(KaffeineContext *){};
     void (*semaphore_cleanup)(KaffeineContext *){};
+    struct { void (*release)(KaffeineContext *){}; bool held{}; } blitter;
     char program_name[256]{};
     BOOL running{TRUE}; LONG exit_code{};
     void *sched{}; const Ops *task_ops{};
@@ -45,6 +46,10 @@ static unsigned file_cleanup,handler_cleanup,lock_cleanup,asl_cleanup,screen_cle
 static unsigned screen_releases,bitmap_lease_releases;
 static unsigned destroy_calls;
 static unsigned startup_publish_calls,startup_finish_calls;
+static unsigned blitter_callbacks,blitter_releases;
+static Task *blitter_release_task;
+static bool leave_blitter_held;
+static LONG cpu_result=7;
 static unsigned last_native_resources;
 static ULONG captured_streams[3];
 static Task *destroy_task,*shadow_task,*autolibs_task,*cpu_task;
@@ -67,7 +72,17 @@ static const Ops Kaffeine_GuestTaskOps{sched_signal};
 static void noop(KaffeineContext *) {}
 /* Recording protocol collaborators; the adapter itself has separate real
    unit/target coverage. These enforce startup ordering and rollback. */
+static void release_blitter(KaffeineContext *ctx){
+    ++blitter_callbacks;
+    check(ctx->exec_task==current_task,"blitter cleanup runs in the native execution owner");
+    check(!startup_finish_calls&&!asl_cleanup&&!screen_cleanup&&!file_cleanup,
+          "blitter cleanup precedes startup retirement and GUI/native teardown");
+    if(ctx->blitter.held){
+        ctx->blitter.held=false;++blitter_releases;blitter_release_task=current_task;
+    }
+}
 static void Kaffeine_StartupFinish(KaffeineContext *ctx){
+    check(!ctx->blitter.held,"startup retirement cannot retain a native blitter hold");
     ++startup_finish_calls;startup_finish_task=current_task;ctx->startup_retired=true;
 }
 static void Kaffeine_AslCleanup(KaffeineContext *){++asl_cleanup;asl_cleanup_task=current_task;}
@@ -111,10 +126,16 @@ static void Kaffeine_LockCleanup(KaffeineContext *ctx){++lock_cleanup;ctx->nativ
 #define Kaffeine_IconsCleanup noop
 static void Kaffeine_DestroyContext(KaffeineContext *ctx){
     check(ctx->startup_retired,"context disposal completes startup protocol first");
+    check(!ctx->blitter.held,"context disposal cannot retain a native blitter hold");
     ++destroy_calls;destroy_task=current_task;
 }
 static LONG GetVar(const char *,char *out,LONG,LONG){std::strcpy(out,"moira");return 5;}
-static LONG Kaffeine_Execute(KaffeineContext *ctx){++cpu_calls;cpu_task=current_task;owner_bound&=ctx->exec_task==current_task;return 7;}
+static LONG Kaffeine_Execute(KaffeineContext *ctx){
+    ++cpu_calls;cpu_task=current_task;owner_bound&=ctx->exec_task==current_task;
+    ctx->blitter.held=leave_blitter_held;
+    if(cpu_result==RETURN_FAIL){ctx->running=FALSE;ctx->exit_code=RETURN_FAIL;}
+    return cpu_result;
+}
 static LONG Kaffeine_ExecuteJIT(KaffeineContext *ctx){++cpu_calls;cpu_task=current_task;owner_bound&=ctx->exec_task==current_task;return 8;}
 static ULONG Kaffeine_SetupLibBase(KaffeineContext *,unsigned,...){return library_ok?0x1000:0;}
 static int kaffeine_thunks_exec,kaffeine_thunks_exec_count,kaffeine_thunks_exec_gen,kaffeine_thunks_exec_gen_count;
@@ -164,6 +185,8 @@ static void reset()
     for(auto &v:captured_streams)v=0;
     current_task=&parent_task;shadow_ok=library_ok=startup_ok=true;
     startup_publish_calls=startup_finish_calls=0;startup_publish_task=startup_finish_task=nullptr;
+    blitter_callbacks=blitter_releases=0;blitter_release_task=nullptr;
+    leave_blitter_held=false;cpu_result=7;
 }
 int main()
 {
@@ -231,6 +254,19 @@ int main()
               "publication and failure cleanup use the same direct or driver owner");
         check(transferred==bool(stack)&&destroy_calls==bool(stack),
               "publication failure preserves direct versus transferred context ownership");
+    }
+    for(ULONG stack:{0u,65536u})for(bool held:{false,true})for(LONG result:{7,RETURN_FAIL}){
+        reset();KaffeineContext ctx;ctx.exec_task=&parent_task;BOOL transferred=FALSE;
+        ctx.blitter.release=release_blitter;leave_blitter_held=held;cpu_result=result;
+        check(setup_and_execute(&ctx,0x200,nullptr,0,stack,"original-helper",&transferred)==result,
+              "normal and protected stops preserve the result with a blitter callback");
+        Task *owner=stack?&worker_task:&parent_task;
+        check(blitter_callbacks==1&&blitter_releases==unsigned(held)&&!ctx.blitter.held,
+              "owner cleanup invokes the callback once and releases only an outstanding hold");
+        check(!held||blitter_release_task==owner,"outstanding blitter hold is released by its execution owner");
+        if(!stack)dispose_context(&ctx);
+        check(destroy_calls==1&&destroy_task==owner&&blitter_callbacks==1&&blitter_releases==unsigned(held),
+              "later context disposal does not release the hold twice");
     }
     reset();KaffeineContext ctx;library_ok=false;BOOL transferred=TRUE;
     check(setup_and_execute(&ctx,0x200,nullptr,0,0,"original-helper",&transferred)==-1&&!ctx.native_resources&&!file_cleanup&&!asl_cleanup&&!screen_cleanup,

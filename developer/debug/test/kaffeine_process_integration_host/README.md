@@ -23,3 +23,10 @@ Screen cleanup uses a recording screen with a native bitmap lease: the first
 pass must keep it alive, layer cleanup releases the lease in the same owner,
 and the final pass must close the screen exactly once. This checks resource
 retirement rather than assuming the cleanup function can only be called once.
+
+A recording blitter collaborator checks that the production owner cleanup
+invokes its release callback before startup retirement and GUI/native teardown.
+Normal returns and protected stops cover direct and domain owners, with and
+without an outstanding hold; later context disposal cannot release it twice.
+The actual blitter ownership implementation is tested by the separate blitter
+host and target suites.

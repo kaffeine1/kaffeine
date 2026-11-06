@@ -8,6 +8,7 @@
 #define HOST_STRING_BYTE UBYTE
 #endif
 typedef unsigned char UBYTE; typedef unsigned short UWORD;
+typedef signed short WORD;
 typedef unsigned int ULONG; typedef signed int LONG;
 typedef unsigned long IPTR; typedef signed long SIPTR;
 typedef int BOOL; typedef void *APTR;

@@ -132,6 +132,7 @@ TESTS += test_layers_private
 TESTS += test_regions
 TESTS += test_m68klib
 TESTS += test_hosted_jit
+TESTS += test_blitter
 TESTS += test_process_tags
 TESTS += test_guest_tasks
 TESTS += test_socket_codec
@@ -601,3 +602,11 @@ $(BUILD_DIR)/locks_%.o: $(KAFFEINE_DIR)/kaffeine_%.c | $(BUILD_DIR)
 $(BUILD_DIR)/test_locks: $(TEST_DIR)/test_locks.cpp $(LOCK_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(LOCK_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -Werror -MMD -MP $(LDFLAGS) -o $@ $< $(LOCK_OBJS) $(LDLIBS)
 -include $(LOCK_OBJS:.o=.d)
+
+# Compiler dependency files sit next to their objects and tests (-MMD -MP).
+# Read all of them as well, so that a change to a shared header, such as a
+# new field in kaffeine_intern.h, also rebuilds the objects of a group that
+# no list above names (P96_OBJS and ASL_OBJS had none) and of any group
+# added later. Rereading a .d file named above only repeats the same
+# prerequisites, and only files that exist are read.
+-include $(wildcard $(BUILD_DIR)/*.d)

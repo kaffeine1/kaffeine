@@ -31,6 +31,7 @@
 #include "kaffeine_dispatch.h"
 #include "kaffeine_sched.h"
 #include "kaffeine_jit.h"
+#include "kaffeine_blitter.h"
 
 #if defined(__AROS__)
 #include <aros/config.h>
@@ -3048,12 +3049,16 @@ static uint16_t custom_read16(struct KaffeineContext *ctx, uint16_t reg)
     case 0x004: return (uint16_t)((uint16_t)ctx->beam_lof << 15 | ((ctx->beam_v >> 8) & 1));
     case 0x006: return (uint16_t)((uint16_t)(ctx->beam_v & 0xFF) << 8 | ctx->beam_h);
     case 0x016: return POTGOR_DEFAULT;
+    case 0x002: return Kaffeine_BlitterDmaconr(ctx);
     default: return 0;
     }
 }
 
-static void custom_write16(struct KaffeineContext *ctx, uint16_t reg, uint16_t val)
+/* 0, or the code a refused blit stops the program with */
+static int custom_write16(struct KaffeineContext *ctx, uint16_t reg, uint16_t val)
 {
+    int stop = Kaffeine_BlitterWrite(ctx, reg, val);
+
     if (reg == 0x02A)
     {
         ctx->beam_lof = (UBYTE)((val >> 15) & 1);
@@ -3064,6 +3069,7 @@ static void custom_write16(struct KaffeineContext *ctx, uint16_t reg, uint16_t v
         ctx->beam_v = (UWORD)((ctx->beam_v & 0x100) | (val >> 8));
         ctx->beam_h = (UBYTE)(val & 0xFF);
     }
+    return stop;
 }
 
 static int guest_access(struct HJBackend *b, uint32_t addr, uint32_t size, uint32_t pc)
@@ -3116,7 +3122,8 @@ static void slow_write16(struct HJBackend *b, uint32_t addr, uint32_t val, uint3
         return;
     if ((addr & CUSTOM_MASK) == CUSTOM_BASE)
     {
-        custom_write16(b->ctx, (uint16_t)(addr & 0xFFE), (uint16_t)val);
+        if (custom_write16(b->ctx, (uint16_t)(addr & 0xFFE), (uint16_t)val))
+            stop_fault(b, "refused blit", pc);
         return;
     }
     if (guest_access(b, addr, 2, pc))

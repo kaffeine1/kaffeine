@@ -2626,6 +2626,141 @@ static void test_keyboard_matrix()
     f.call(672, p);
 }
 
+/* KBD_READMATRIX while the guest holds IBase: the one DoIO() admitted there
+   (Kaffeine_DoIOHeldRead()). It reads the same matrix with one native call
+   and keeps every buffer and error rule. Every other request stops at the
+   IBase guard before any write, native call, open or pump. */
+static BOOL ibase_held(KaffeineContext *) { return TRUE; }
+static const M68KThunkEntry no_manual_doio[] = { { 366, guest_put } };
+
+static void held_refused(Fixture &f, ULONG req, const char *what)
+{
+    const auto before = f.memory;
+    const unsigned kbd = kbd_doio_calls, input = input_doio_calls, doio = doio_calls;
+    const unsigned opens = open_calls, gets = getsystime_calls;
+    check(f.call(456, 0xA0A0A0A0, req) == 20 && f.stopped() && f.memory == before &&
+          kbd_doio_calls == kbd && input_doio_calls == input && doio_calls == doio &&
+          open_calls == opens && getsystime_calls == gets, what);
+    f.ctx.callback_failed = FALSE;
+}
+
+static int io_slot(const Fixture &f, ULONG req)
+{
+    for (int i = 0; i < KAFFEINE_MAX_IO_REQUESTS; ++i)
+        if (f.ctx.io_requests[i].guest == req && !f.ctx.io_requests[i].orphan) return i;
+    return -1;
+}
+
+static void test_keyboard_matrix_held()
+{
+    Fixture f;
+    const ULONG p = f.port();
+    const ULONG r = f.request(p, IOSTDREQ);
+    const ULONG buf = 0x2810;
+    check(!f.ctx.io_held_read, "no held-IBase DoIO check before keyboard.device opens");
+    f.open(r, 0, Fixture::kbd_name);
+    check(f.ctx.io_held_read == Kaffeine_DoIOHeldRead, "opening keyboard.device sets the held-IBase DoIO check");
+
+    std::memset(f.memory.data() + buf, 0xA5, 64);
+    unsigned calls = kbd_doio_calls;
+    check(f.std_io(r, KBD_READMATRIX, 13, buf) == 0 && kbd_doio_calls == calls + 1 && f.matrix_is(buf, 13),
+          "outside IBase: a 13-byte matrix");
+    const std::vector<UBYTE> outside(f.memory.begin() + buf - 16, f.memory.begin() + buf + 48);
+    const ULONG outside_actual = m68k_read32(&f.ctx, r + IO_ACTUAL);
+
+    f.ctx.ibase_locked = ibase_held;
+    std::memset(f.memory.data() + buf, 0xA5, 64);
+    m68k_write32(&f.ctx, r + IO_ACTUAL, 0x11111111);
+    calls = kbd_doio_calls;
+    check(f.std_io(r, KBD_READMATRIX, 13, buf) == 0 && f.ctx.running && kbd_doio_calls == calls + 1 &&
+          kbd_length == 13, "inside IBase: KBD_READMATRIX runs with exactly one native call");
+    check(std::equal(outside.begin(), outside.end(), f.memory.begin() + buf - 16) &&
+          m68k_read32(&f.ctx, r + IO_ACTUAL) == outside_actual && f.error(r) == 0 &&
+          f.memory[r + IO_FLAGS] == IOF_QUICK && f.ctx.ibase_locked == ibase_held,
+          "inside IBase: the same bytes, guards, io_Actual and result as outside; the lock is only asked");
+    calls = kbd_doio_calls;
+    check(f.std_io(r, KBD_READMATRIX, 4, 0) == 0xFFFFFFFB && f.error(r) == -5 &&
+          kbd_doio_calls == calls && f.ctx.running,
+          "inside IBase: a bad io_Data still gets IOERR_BADADDRESS before the device");
+
+    /* A request in the program's own storage, with no CreateIORequest
+       capacity, works the same. */
+    f.ctx.ibase_locked = nullptr;
+    const ULONG storage = Fixture::storage;
+    std::memset(f.memory.data() + storage, 0, IOSTDREQ);
+    f.open(storage, 0, Fixture::kbd_name);
+    const int own = io_slot(f, storage);
+    check(own >= 0 && !f.ctx.io_requests[own].capacity, "the storage request has no capacity record");
+    f.ctx.ibase_locked = ibase_held;
+    std::memset(f.memory.data() + buf, 0xA5, 64);
+    check(f.std_io(storage, KBD_READMATRIX, 16, buf) == 0 && f.ctx.running && f.matrix_is(buf, 16) &&
+          f.fill_is(buf + 16, 32, 0xA5), "inside IBase: a request in guest storage reads its matrix");
+
+    /* Everything else stops at the guard, the request untouched. */
+    m68k_write32(&f.ctx, r + IO_LENGTH, 13);
+    m68k_write32(&f.ctx, r + IO_DATA, buf);
+    for (UWORD command : { (UWORD)CMD_INVALID, (UWORD)CMD_READ, (UWORD)CMD_CLEAR,
+                           (UWORD)KBD_READEVENT, (UWORD)KBD_ADDRESETHANDLER, (UWORD)0x4000 })
+    {
+        m68k_write16(&f.ctx, r + IO_COMMAND, command);
+        held_refused(f, r, "inside IBase: another keyboard command stops at the guard");
+    }
+    m68k_write16(&f.ctx, r + IO_COMMAND, KBD_READMATRIX);
+    m68k_write32(&f.ctx, r + IO_DEVICE, 0x12345678);
+    held_refused(f, r, "inside IBase: a request naming another device stops");
+    m68k_write32(&f.ctx, r + IO_DEVICE, f.ctx.keyboard_base);
+    m68k_write32(&f.ctx, r + IO_UNIT, 1);
+    held_refused(f, r, "inside IBase: a request naming another unit stops");
+    m68k_write32(&f.ctx, r + IO_UNIT, 0);
+    const int slot = io_slot(f, r);
+    check(slot >= 0, "the keyboard request has a record");
+    if (slot >= 0)
+    {
+        auto &e = f.ctx.io_requests[slot];
+        UBYTE *states[] = { &e.pending, &e.replied, &e.copy, &e.waiting, &e.orphan };
+        for (UBYTE *state : states)
+        {
+            *state = 1;
+            held_refused(f, r, "inside IBase: a pending, replied, copied, waited or orphaned record stops");
+            *state = 0;
+        }
+    }
+    held_refused(f, 0, "inside IBase: DoIO(NULL) stops");
+    held_refused(f, f.ctx.mem_size - 40, "inside IBase: a request too short for an IOStdReq at the end stops");
+    held_refused(f, 0x3100, "inside IBase: a request with no record stops");
+
+    /* timer.device and input.device requests stay refused there. */
+    f.ctx.ibase_locked = nullptr;
+    const ULONG t = f.request(p, 40), in = f.request(p, IOSTDREQ);
+    f.open(t);
+    f.open(in, 0, Fixture::input_name);
+    f.ctx.ibase_locked = ibase_held;
+    m68k_write16(&f.ctx, t + IO_COMMAND, TR_GETSYSTIME);
+    held_refused(f, t, "inside IBase: timer TR_GETSYSTIME stops");
+    m68k_write16(&f.ctx, t + IO_COMMAND, TR_ADDREQUEST);
+    held_refused(f, t, "inside IBase: timer TR_ADDREQUEST stops");
+    m68k_write16(&f.ctx, in + IO_COMMAND, IND_WRITEEVENT);
+    m68k_write32(&f.ctx, in + IO_LENGTH, 22);
+    m68k_write32(&f.ctx, in + IO_DATA, buf);
+    held_refused(f, in, "inside IBase: input IND_WRITEEVENT stops");
+    std::memset(f.memory.data() + Fixture::copy, 0, 40);
+    m68k_write32(&f.ctx, Fixture::copy + IO_DEVICE, f.ctx.timer_base);
+    m68k_write16(&f.ctx, Fixture::copy + IO_COMMAND, TR_GETSYSTIME);
+    held_refused(f, Fixture::copy, "inside IBase: a copied timer request stops");
+
+    /* Only the manual DoIO() is admitted: the generated one stops too. */
+    f.ctx.libs[0].thunks = no_manual_doio;
+    f.ctx.libs[0].num_thunks = std::size(no_manual_doio);
+    held_refused(f, r, "inside IBase: the generated -456 stops");
+    f.ctx.libs[0].thunks = manual;
+    f.ctx.libs[0].num_thunks = std::size(manual);
+    f.ctx.ibase_locked = nullptr;
+    f.call(450, 0xA0A0A0A0, t);
+    f.call(450, 0xA0A0A0A0, in);
+    f.call(450, 0xA0A0A0A0, storage);
+    f.call(450, 0xA0A0A0A0, r);
+}
+
 static void test_keyboard_identity()
 {
     Fixture f;
@@ -3326,6 +3461,7 @@ int main()
     test_input_base_rollback();
     test_keyboard_matrix();
     test_keyboard_identity();
+    test_keyboard_matrix_held();
     test_input_commands();
     test_input_write_event();
     test_input_vectors();

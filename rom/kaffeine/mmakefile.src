@@ -104,6 +104,18 @@ KAFFEINE_CXXFILES := \
     cxxfiles="$(KAFFEINE_CXXFILES)" \
     uselibs="stdc++ posixc stdcio stdc"
 
+# The dependency file of the C++ wrapper. scripts/mkdep pipes the compiler
+# into sed, so a Makedepend that fails, as it does while the Moira
+# submodule is not checked out, still leaves an empty .d without an error.
+# That file then counts as current, and kaffeine_moira.o, which reads the
+# KaffeineContext through kaffeine_intern.h, is never rebuilt for a header
+# change again. Run Makedepend again whenever a Kaffeine or Moira header it
+# can include is newer than the .d, so that the object gets its real
+# prerequisites back. The Moira objects keep their own dependency files.
+$(kernel-kaffeine-library_OBJDIR)/kaffeine_moira.d : \
+    $(wildcard $(SRCDIR)/$(CURDIR)/kaffeine_*.h) \
+    $(wildcard $(SRCDIR)/$(CURDIR)/Moira/Moira/*.h)
+
 %common
 
 # ── Shadow layout regeneration (needed for any new target architecture) ──

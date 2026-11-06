@@ -19,6 +19,9 @@ IPTR Kaffeine_FreeSignal(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_OpenDevice(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_CloseDevice(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu);
+/* TRUE when the DoIO() in A1 may run while the guest holds IBase: an idle
+   open keyboard.device request with KBD_READMATRIX. Reads only. */
+BOOL Kaffeine_DoIOHeldRead(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_SendIO(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_CheckIO(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_WaitIO(struct KaffeineContext *ctx, void *cpu);

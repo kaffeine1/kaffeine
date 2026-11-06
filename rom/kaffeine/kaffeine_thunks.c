@@ -63,6 +63,9 @@
 #include "kaffeine_keymap.h"
 #include "kaffeine_socket.h"
 #include "kaffeine_intuibase.h"
+#include "kaffeine_callback.h"
+#include "kaffeine_blitter.h"
+#include <graphics/gfxbase.h>
 
 extern const struct M68KThunkEntry kaffeine_thunks_intuition_manual[];
 extern const ULONG kaffeine_thunks_intuition_manual_count;
@@ -778,9 +781,50 @@ const struct M68KThunkEntry kaffeine_thunks_keymap_manual[] = {
 const ULONG kaffeine_thunks_keymap_manual_count =
     sizeof(kaffeine_thunks_keymap_manual) / sizeof(kaffeine_thunks_keymap_manual[0]) - 1;
 
+/* graphics -456 OwnBlitter() and -462 DisownBlitter(): the native calls,
+   with the hold that this context took recorded, so that only that hold
+   is given back, also when the program ends while it owns the blitter
+   (kaffeine_blitter.h). */
+static APTR blitter_self(void) { return FindTask(NULL); }
+static APTR blitter_owner(void) { return ((struct GfxBase *)GfxBase)->BlitOwner; }
+static void blitter_own(void) { OwnBlitter(); }
+static void blitter_disown(void) { DisownBlitter(); }
+
+static const struct KaffeineBlitterOwnership blitter_native = {
+    blitter_self, blitter_owner, blitter_own, blitter_disown
+};
+
+static void blitter_release(struct KaffeineContext *ctx)
+{
+    Kaffeine_BlitterRelease(ctx, &blitter_native);
+}
+
+static IPTR kaffeine_graphics_OwnBlitter(struct KaffeineContext *ctx, void *cpu)
+{
+    if (Kaffeine_BlitterOwn(ctx, &blitter_native))
+    {
+        Kaffeine_StopGuest(ctx, cpu, 20);
+        return 20;
+    }
+    ctx->blitter.release = blitter_release;
+    return 0;
+}
+
+static IPTR kaffeine_graphics_DisownBlitter(struct KaffeineContext *ctx, void *cpu)
+{
+    if (Kaffeine_BlitterDisown(ctx, &blitter_native))
+    {
+        Kaffeine_StopGuest(ctx, cpu, 20);
+        return 20;
+    }
+    return 0;
+}
+
 /* ── Graphics manual thunks (shadow RastPort) ── */
 const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
     { 792, Kaffeine_IBaseVPMode },
+    { 456, kaffeine_graphics_OwnBlitter },
+    { 462, kaffeine_graphics_DisownBlitter },
     KAFFEINE_GRAPHICS_COMPAT_THUNKS,
     KAFFEINE_GRAPHICS_RASTPORT_THUNKS,
     KAFFEINE_GRAPHICS_DISPLAY_THUNKS,

@@ -18,7 +18,15 @@ inside that scope; the scope admits only the explicitly registered read operatio
 and their bounded allocation/time helpers.
 
 `GetVPModeID`, `GetBitMapAttr`, `GetCyberMapAttr` and `ReadPixelArray` resolve typed
-screen/bitmap/RastPort identities. Pixel output goes through private native
+screen/bitmap/RastPort identities. `GetDisplayInfoData` (NULL handle, `DTAG_DISP`,
+`DTAG_DIMS`, `DTAG_NAME` and `DTAG_MNTR`) also runs in that scope, as native Intuition
+queries display data under IBase itself: AROS's call takes no lock but the display
+mode database's semaphore, shared and released inside, and none of that semaphore's
+holders waits for IBase. Its generated forwarder and the other display vectors stay
+refused there. Of `DoIO`, only keyboard.device `KBD_READMATRIX` of an idle open
+request runs in that scope: AROS copies the matrix inside BeginIO() with no lock and
+no reply, so the call neither waits nor reaches input.device or Intuition. Timer
+delays, input events and every other request stay refused while IBase is held. Pixel output goes through private native
 scratch and bounded row copyback, preserving untouched clipping, padding and
 prefixes. Supported formats are the native packed RGB families. Unsupported
 LUT8/GREY/RAW formats and native memory-address attributes are not exposed.

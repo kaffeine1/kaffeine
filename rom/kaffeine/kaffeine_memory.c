@@ -21,6 +21,7 @@
 #include "kaffeine_layers.h"
 #include "kaffeine_paint_memory.h"
 #include "kaffeine_thunks.h"
+#include "kaffeine_blitter.h"
 
 enum
 {
@@ -356,12 +357,20 @@ struct KaffeineContext *Kaffeine_CreateContext(struct KaffeineLibBase *base)
         FreeMem(mem, KAFFEINE_MEM_SIZE + KAFFEINE_MEM_GUARD);
         return NULL;
     }
+    /* the blitter as the running OS leaves it: idle, DMAEN and BLTEN set;
+       it holds no allocation, so the context needs no blitter teardown */
+    Kaffeine_BlitterInit(&ctx->blitter);
     return ctx;
 }
 
 void Kaffeine_DestroyContext(struct KaffeineContext *ctx)
 {
     if (!ctx) return;
+    /* Fallback for the blitter hold of a program that stopped while owning
+       it, which cleanup_owned() gives back on the owning task: here too
+       the hold is given back only when this runs on that task (see
+       Kaffeine_BlitterRelease()). */
+    if (ctx->blitter.release) ctx->blitter.release(ctx);
     /* LayersCleanup deliberately keeps its state when native layers or
        callbacks still borrow guest storage. Their bitmap planes live in
        this arena: retaining only the native descriptor would be a UAF. */

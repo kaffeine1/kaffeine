@@ -942,6 +942,8 @@ static ULONG guest_device(struct KaffeineContext *ctx, enum KaffeineIODeviceKind
             ctx->keyboard_base = device_base(ctx, "keyboard.device", KAFFEINE_KEYBOARD_VECTORS,
                                              kaffeine_thunks_keyboard,
                                              kaffeine_thunks_keyboard_count, native);
+        if (ctx->keyboard_base)
+            ctx->io_held_read = Kaffeine_DoIOHeldRead;
         return ctx->keyboard_base;
     case KAFFEINE_IO_INPUT:
         if (!ctx->input_base)
@@ -1495,6 +1497,34 @@ IPTR Kaffeine_DoIO(struct KaffeineContext *ctx, void *cpu)
         error = IOERR_NOCMD;
     ctx->mem[req + G_IO_ERROR] = (UBYTE)error;
     return (IPTR)(LONG)error;
+}
+
+/* The one DoIO() that may run while the guest holds IBase: KBD_READMATRIX
+   of an idle keyboard.device request of this context, an IOStdReq in guest
+   memory that names the guest keyboard device and the unit it was opened
+   on, with a native request and nothing pending, replied, copied, waited
+   for or orphaned. AROS's keyboard.device copies its matrix inside BeginIO()
+   with no lock and replies nothing to the quick request of DoIO()
+   (rom/devs/keyboard/keyboard.c), so the call neither waits nor reaches
+   input.device or Intuition, which takes IBase. Kaffeine_DoIO() then runs
+   unchanged: std_doio() and read_matrix() keep every check, buffer rule and
+   result, IOERR_BADADDRESS included. This only reads: no write, native
+   call, pump or allocation. Every other request, timer and input.device
+   ones included, stays refused while IBase is held. */
+BOOL Kaffeine_DoIOHeldRead(struct KaffeineContext *ctx, void *cpu)
+{
+    ULONG req = THUNK_A(1);
+    const struct KaffeineIORequest *entry;
+
+    if (!ctx->mem || !req || !request_range(ctx, req, G_IOSTDREQ_SIZE))
+        return FALSE;
+    entry = request_entry(ctx, req);
+    return entry && entry->native && entry->kind == KAFFEINE_IO_KEYBOARD &&
+           !entry->pending && !entry->replied && !entry->copy && !entry->waiting &&
+           !entry->orphan && ctx->keyboard_base &&
+           m68k_read32(ctx, req + G_IO_DEVICE) == ctx->keyboard_base &&
+           m68k_read32(ctx, req + G_IO_UNIT) == entry->unit &&
+           m68k_read16(ctx, req + G_IO_COMMAND) == KBD_READMATRIX;
 }
 
 /* -462: SendIO(A1=iORequest). timer.device alone: of a request opened

@@ -803,7 +803,7 @@ before `lib->gen_thunks[]` (generated).
 | -414 | CloseLibrary | Calls the `Close()` of a 68k library from disk, also for a base that its `Open()` made for the opener (one whose `Close()` lies in the hunks of the library); the library goes when `Close()` gives its seglist back after an expunge; nothing for the base of a native library (`kaffeine_m68klib.c`) |
 | -444 | OpenDevice | timer.device on a native timerequest, and console.device unit -1 on a native IOStdReq, sharing one private native reply port and signal; keyboard.device and input.device unit zero use native IOStdReq adapters. Console accepts the 32-byte guest IORequest prefix, including zero mn_Length; its guest unit is -1. Adapter selection uses trusted native records |
 | -450 | CloseDevice | Closes and deletes native request and port. Console clears guest io_Device and io_Unit to zero; timer keeps its -1 closed-device marker |
-| -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. keyboard.device KBD_READMATRIX and input.device IND_WRITEEVENT through temporary native copies. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter |
+| -456 | DoIO | timer.device TR_ADDREQUEST and TR_GETSYSTIME with both time fields copied each way. keyboard.device KBD_READMATRIX and input.device IND_WRITEEVENT through temporary native copies. Console commands, TR_SETSYSTIME and EClock delays return IOERR_NOCMD without native I/O; guest device/unit edits cannot select another adapter. While the guest holds IBase only one request is admitted, by `Kaffeine_DoIOHeldRead()`: KBD_READMATRIX of an idle open keyboard.device request that names the guest keyboard device and its unit. AROS copies the matrix inside BeginIO() with no lock and no reply, so DoIO() neither waits nor reaches input.device or Intuition; every other request stops at the IBase guard |
 | -462 | SendIO | Current-task native async timer submit with checked reply queues; copied MICROHZ/VBLANK timerequests share one private FIFO completion port |
 | -468 | CheckIO | Pumps completions and returns NULL only while the trusted native record is pending; unknown requests retain Exec marker checks |
 | -474 | WaitIO | Captured-owner wait for pending native timer I/O, yielding through the guest scheduler when active; completes in place or removes only its own queued reply |
@@ -1166,6 +1166,8 @@ takes the exit code.
 | -432 | LockLayerRom | Validates a registered or owned guest `Layer`, locks its native layer if present and increments its guest lock count (`kaffeine_layers.c`) |
 | -438 | UnlockLayerRom | Releases a lock acquired by `LockLayerRom` or `AttemptLockLayerRom` (`kaffeine_layers.c`) |
 | -444, -450 | SyncSBitMap, CopySBitMap | Stop the guest with rc 20 (`kaffeine_layers_Unsupported`) |
+| -456 | OwnBlitter | Native, with the hold this context took recorded; a call while this context holds the blitter, or while `BlitOwner` is the caller, stops with rc 20 without the native call; the end of the program gives back a hold left behind, on the task that took it (`kaffeine_thunks.c`, `kaffeine_blitter.h`, `kaffeine_run.c`) |
+| -462 | DisownBlitter | Gives back only the hold this context took, on the task that took it; on any other task, or without one, stops with rc 20 (`kaffeine_thunks.c`, `kaffeine_blitter.h`) |
 | -474 | AskFont | Writes an aligned 8-byte big-endian TextAttr with a readable cached guest font name, height, style and flags; accepts registered RastPorts or checked caller-owned RastPorts with a live guest TextFont. Overlapping outputs and unknown fonts stop with rc 20 |
 | -510 | OrRectRegion | Unions a checked 8-byte 68k `Rectangle` into an owned 68k `Region` and splits non-overlapping `RegionRectangle` nodes (`kaffeine_regions.c`) |
 | -516 | NewRegion | Allocates an owned 20-byte 68k `Region` (`kaffeine_regions.c`) |
@@ -1178,7 +1180,7 @@ takes the exit code.
 | -714 | OpenMonitor | Refuses owned monitor opens by stopping with rc 20 (`kaffeine_display.c`) |
 | -720 | CloseMonitor | Refuses monitor closes by stopping with rc 20 (`kaffeine_display.c`) |
 | -726 | FindDisplayInfo | Refuses display handle lookups by stopping with rc 20 (`kaffeine_display.c`) |
-| -756 | GetDisplayInfoData | Queries native display info for `DTAG_DISP`, `DTAG_DIMS`, `DTAG_NAME` or `DTAG_MNTR` (with NULL handle and mode ID in D2) and writes classic big-endian structures and borrowed `MonitorSpec` snapshots (`kaffeine_display.c`) |
+| -756 | GetDisplayInfoData | Queries native display info for `DTAG_DISP`, `DTAG_DIMS`, `DTAG_NAME` or `DTAG_MNTR` (with NULL handle and mode ID in D2) and writes classic big-endian structures and borrowed `MonitorSpec` snapshots (`kaffeine_display.c`). Also admitted while the guest holds IBase: the native call takes only the display mode database's semaphore, shared and released inside, and no holder of that semaphore waits for IBase |
 | -858 | GetAPen | Native getter after the fields of the 68k RastPort |
 | -864 | GetBPen | Native getter after the fields of the 68k RastPort |
 | -870 | GetDrMd | Native getter after the fields of the 68k RastPort |
@@ -3439,7 +3441,8 @@ Screen of.
 
 ## Custom Chip Emulation
 
-All accesses to `$DFF000–$DFFFFF` are intercepted in `AROSMoira::read8/read16/write8/write16`.
+All accesses to `$DFF000-$DFFFFF` are intercepted in `AROSMoira::read8/read16/write8/write16`
+and in the JIT's slow access paths (`kaffeine_jit.c`), which behave the same.
 
 `CUSTOM_MASK` compares all 32 address bits, as the 68EC040 model decodes
 them: the registers appear once, and `$1DFF000` in the 32 MB arena is
@@ -3450,7 +3453,7 @@ Allocator), so no allocation lies under the registers.
 
 | Offset | Name | Value |
 |--------|------|-------|
-| 0x002 | DMACONR | 0 |
+| 0x002 | DMACONR | DMACON bits 10-0, BBUSY while a started blit waits for DMA, BZERO of the last blit (Blitter, below) |
 | 0x004 | VPOSR | `(beam_lof << 15) \| ((beam_v >> 8) & 1)` |
 | 0x006 | VHPOSR | `((beam_v & 0xFF) << 8) \| beam_h` |
 | 0x010 | ADKCONR | 0 |
@@ -3467,9 +3470,72 @@ Every read calls `beamAdvance(2)` — 2 color clocks per register access.
 |--------|------|--------|
 | 0x02A | VPOSW | Sets beam_lof from bit 15, merges V8 into beam_v |
 | 0x02C | VHPOSW | Sets beam_v[7:0] and beam_h |
+| 0x040-0x074 | Blitter | Latched; BLTSIZE (0x058) and BLTSIZH (0x05E) start a blit (Blitter, below) |
+| 0x096 | DMACON | Sets (bit 15 set) or clears bits 10-0; may release a waiting blit |
 | other | — | Silently ignored |
 
-Byte writes (`write8`) to the custom chip range are silently ignored.
+Byte writes (`write8`) to the custom chip range are silently ignored, so
+only word writes (a long is two) reach the registers, and every blitter
+register but DMACONR reads as 0. No copper, display, sprite, audio, disk
+or interrupt hardware is modelled.
+
+### Blitter
+
+`kaffeine_blitter.h` holds the OCS/ECS blitter of each context
+(`ctx->blitter`) in area mode, after the Hardware Reference Manual (3rd
+edition, chapter 6), for programs that own it with `OwnBlitter()` and
+start blits through the registers. It is inline so that every CPU adapter
+and host test that compiles one needs no other object.
+
+- `Kaffeine_CreateContext()` starts it idle with DMAEN and BLTEN set, as the
+  running OS leaves DMACON for its programs; a blit runs only while both
+  are set, and one started without them waits, with BBUSY set, until a
+  DMACON write sets them.
+- A start runs the whole blit before the write returns, so BBUSY is never
+  seen for a running blit. Per word: A from BLTAPT or BLTADAT, ANDed with
+  BLTAFWM on the first word of a row and BLTALWM on the last (both for one
+  word), then shifted right by ASH (left in descending mode) with the bits
+  of the previous A word shifted in: zeros at the start of the blit, carried
+  across rows. B from BLTBPT is shifted the same way without masks; with B
+  off, the held value that the last BLTBDAT write (shifted once with the BSH
+  of that moment) or B fetch left. C from BLTCPT or BLTCDAT. D is the
+  BLTCON0 minterm, written to BLTDPT one word late, after the next sources,
+  as the hardware pipeline does; BZERO follows it also with D off.
+  Pointers move by 2 per word and by their modulo per row, both subtracted
+  in descending mode; pointers of channels that are off stay.
+- Pointers are guest addresses with bit 0 ignored, without a 19- or 21-bit
+  chip wrap. Before a blit touches memory, the span of every enabled channel
+  is computed from its pointer, modulo, size and direction and must lie in
+  guest memory outside this window, and the size must not exceed the
+  arena's word count. Line mode, area fill (IFE, EFE), the ECS DOFF bit
+  (BLTCON1 bit 7) and failed checks run nothing: the program stops with 20
+  and a `[kaffeine] blitter` line.
+- After a blit that wrote D, `Kaffeine_FlushCode()` announces the D span, so
+  guest code that a blit changed runs anew under the JIT (a new
+  `jit_generation`); Moira fetches from guest memory.
+- The initial DMAEN and BLTEN are a virtual state of the running OS that
+  this context models; native AROS writes no guest custom register.
+- graphics -456 `OwnBlitter()` and -462 `DisownBlitter()` are manual
+  (`kaffeine_thunks.c`): the native calls, which record the task in
+  `GfxBase->BlitOwner` and wait while any task owns the blitter, with the
+  hold this context took recorded. `OwnBlitter()` while this context holds
+  the blitter, or while `BlitOwner` is the caller already (it would wait on
+  itself for ever), and a `DisownBlitter()` by any task but the recorded
+  one, which would clear a hold that is not its own, stop the program with
+  20; so does an `OwnBlitter()` that came back without the blitter, which
+  is then not recorded. A hold the program still has when it ends is given
+  back first in `cleanup_owned()` (`kaffeine_run.c`), on the task that took
+  it and before any GUI teardown, with `Kaffeine_DestroyContext()` as a
+  fallback; both give it back only on the recorded task and only while
+  `BlitOwner` is that task. On any other task the record stays for the
+  owner. So a program that stopped while it owned the blitter keeps no
+  later one waiting.
+
+Tests: `test_blitter.cpp` (registers, all 256 minterms, shifts, masks,
+modulos, overlap, DMACON, BZERO, refusals, ownership), `test_hosted_jit.cpp`
+`blitter` and `blitter-refused` (both backends), and the targets
+`hw_blitter.c` and `hw_blitter_fault.c` (a stop while owning the blitter,
+then `hw_blitter` in the same boot).
 
 ### Beam Counter
 
@@ -3507,7 +3573,7 @@ Two generators exist:
 
 `developer/debug/test/kaffeine_host/` builds and runs 47 host test executables
 plus `test_thunk_registrations.py` (which verifies 340 explicit native-vector
-cases and all 604 manual thunk registrations across the 20 production tables)
+cases and all 606 manual thunk registrations across the 20 production tables)
 and `run_sanitizers.sh` (AddressSanitizer + UndefinedBehaviorSanitizer). See
 [developer/debug/test/kaffeine_host/README.md](../../developer/debug/test/kaffeine_host/README.md)
 for coverage details; the host Makefile is the authoritative executable list.
@@ -3791,10 +3857,12 @@ this capability to accept a 1024x768 image. SetChipRev returns this published
 byte for any requested configuration, without a native call or a write.
 All other positive fields, including the library version, stay zero.
 
-This is an OS-call compatibility capability, not an ECS hardware model:
-there is no custom-register blitter, BEAMCON0 or 2 MB Chip addressing.
-VPOSR still reports Agnus ID 0; software probing hardware directly cannot
-use this bit as a hardware guarantee. AllocBitMap uses the separate owned
+This is an OS-call compatibility capability, not an ECS hardware model.
+The custom-register blitter of each context (Custom Chip Emulation,
+Blitter) runs area blits with the ECS BLTSIZV/BLTSIZH sizes, but there is
+no line mode, area fill, BEAMCON0, other ECS register or 2 MB Chip
+addressing. VPOSR still reports Agnus ID 0; software probing hardware
+directly cannot use this bit as a guarantee of a complete chipset. AllocBitMap uses the separate owned
 bitmap adapter below; other unconverted bitmap operations remain refused.
 QBlit and QBSBlit stop with rc 20 instead
 of passing guest code and 32-bit links into a native queue. BltClear accepts

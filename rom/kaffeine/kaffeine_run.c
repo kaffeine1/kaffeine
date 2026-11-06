@@ -44,6 +44,9 @@
    semaphore: release them there, before that task ends. */
 static void cleanup_owned(struct KaffeineContext *ctx)
 {
+    /* first, on the native task that took it: the blitter that a program
+       stopped while owning (kaffeine_blitter.h), before any GUI teardown */
+    if (ctx->blitter.release) ctx->blitter.release(ctx);
     Kaffeine_StartupFinish(ctx);
     if (ctx->ibase_cleanup) ctx->ibase_cleanup(ctx);
     if (ctx->semaphore_cleanup) ctx->semaphore_cleanup(ctx);
