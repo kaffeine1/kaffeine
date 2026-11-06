@@ -741,9 +741,11 @@ static void blitter()
     Machine moira, jit;
     for (Machine *m : { &moira, &jit })
         blitter_program(*m);
-    CHECK(moira.run(MOIRA) == 0);
+    /* The snapshot preserves D0: the patched function returns 2, which
+       is also the program result. D4/D5 below still prove 1 then 2. */
+    CHECK(moira.run(MOIRA) == 2);
     Seen ref = snap;
-    CHECK(jit.run(JIT) == 0);
+    CHECK(jit.run(JIT) == 2);
     CHECK(ref.d[4] == 1 && ref.d[5] == 2 && (ref.d[3] & 0xFFFF) == 0x0240);
     CHECK(snap.d[4] == ref.d[4] && snap.d[5] == ref.d[5] && snap.d[3] == ref.d[3]);
     for (Machine *m : { &moira, &jit })
