@@ -132,6 +132,7 @@ TESTS += test_layers_private
 TESTS += test_regions
 TESTS += test_m68klib
 TESTS += test_hosted_jit
+TESTS += test_blitter
 TESTS += test_process_tags
 TESTS += test_guest_tasks
 TESTS += test_socket_codec

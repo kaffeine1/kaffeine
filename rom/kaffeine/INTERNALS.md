@@ -3439,7 +3439,8 @@ Screen of.
 
 ## Custom Chip Emulation
 
-All accesses to `$DFF000–$DFFFFF` are intercepted in `AROSMoira::read8/read16/write8/write16`.
+All accesses to `$DFF000–$DFFFFF` are intercepted in `AROSMoira::read8/read16/write8/write16`
+and in the JIT's slow access paths (`kaffeine_jit.c`), which behave the same.
 
 `CUSTOM_MASK` compares all 32 address bits, as the 68EC040 model decodes
 them: the registers appear once, and `$1DFF000` in the 32 MB arena is
@@ -3450,7 +3451,7 @@ Allocator), so no allocation lies under the registers.
 
 | Offset | Name | Value |
 |--------|------|-------|
-| 0x002 | DMACONR | 0 |
+| 0x002 | DMACONR | DMACON bits 10-0, BBUSY while a started blit waits for DMA, BZERO of the last blit (Blitter, below) |
 | 0x004 | VPOSR | `(beam_lof << 15) \| ((beam_v >> 8) & 1)` |
 | 0x006 | VHPOSR | `((beam_v & 0xFF) << 8) \| beam_h` |
 | 0x010 | ADKCONR | 0 |
@@ -3467,9 +3468,53 @@ Every read calls `beamAdvance(2)` — 2 color clocks per register access.
 |--------|------|--------|
 | 0x02A | VPOSW | Sets beam_lof from bit 15, merges V8 into beam_v |
 | 0x02C | VHPOSW | Sets beam_v[7:0] and beam_h |
+| 0x040–0x074 | Blitter | Latched; BLTSIZE (0x058) and BLTSIZH (0x05E) start a blit (Blitter, below) |
+| 0x096 | DMACON | Sets (bit 15 set) or clears bits 10-0; may release a waiting blit |
 | other | — | Silently ignored |
 
-Byte writes (`write8`) to the custom chip range are silently ignored.
+Byte writes (`write8`) to the custom chip range are silently ignored, so
+only word writes (a long is two) reach the registers, and every blitter
+register but DMACONR reads as 0. No copper, display, sprite, audio, disk
+or interrupt hardware is modelled.
+
+### Blitter
+
+`kaffeine_blitter.h` holds the OCS/ECS blitter of each context
+(`ctx->blitter`) in area mode, after the Hardware Reference Manual (3rd
+edition, chapter 6), for programs that own it with `OwnBlitter()` and
+start blits through the registers. It is inline so that every CPU adapter
+and host test that compiles one needs no other object.
+
+- `Kaffeine_CreateContext()` starts it idle with DMAEN and BLTEN set, as the
+  running OS leaves DMACON for its programs; a blit runs only while both
+  are set, and one started without them waits, with BBUSY set, until a
+  DMACON write sets them.
+- A start runs the whole blit before the write returns, so BBUSY is never
+  seen for a running blit. Per word: A from BLTAPT or BLTADAT, ANDed with
+  BLTAFWM on the first word of a row and BLTALWM on the last (both for one
+  word), then shifted right by ASH (left in descending mode) with the bits
+  of the previous A word shifted in: zeros at the start of the blit, carried
+  across rows. B from BLTBPT is shifted the same way without masks; with B
+  off, the held value that the last BLTBDAT write (shifted once with the BSH
+  of that moment) or B fetch left. C from BLTCPT or BLTCDAT. D is the
+  BLTCON0 minterm, written to BLTDPT one word late, after the next sources,
+  as the hardware pipeline does; BZERO follows it also with D off.
+  Pointers move by 2 per word and by their modulo per row, both subtracted
+  in descending mode; pointers of channels that are off stay.
+- Pointers are guest addresses with bit 0 ignored, without a 19- or 21-bit
+  chip wrap. Before a blit touches memory, the span of every enabled channel
+  is computed from its pointer, modulo, size and direction and must lie in
+  guest memory outside this window, and the size must not exceed the
+  arena's word count. Line mode, area fill (IFE, EFE) and failed checks run
+  nothing: the program stops with 20 and a `[kaffeine] blitter` line.
+- After a blit that wrote D, `Kaffeine_FlushCode()` announces the D span, so
+  guest code that a blit changed runs anew under the JIT (a new
+  `jit_generation`); Moira fetches from guest memory.
+
+Tests: `test_blitter.cpp` (registers, all 256 minterms, shifts, masks,
+modulos, overlap, DMACON, BZERO, refusals), `test_hosted_jit.cpp`
+`blitter` and `blitter-refused` (both backends), and the target
+`hw_blitter.c`.
 
 ### Beam Counter
 

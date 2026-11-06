@@ -21,6 +21,7 @@
 #include "kaffeine_layers.h"
 #include "kaffeine_paint_memory.h"
 #include "kaffeine_thunks.h"
+#include "kaffeine_blitter.h"
 
 enum
 {
@@ -356,6 +357,9 @@ struct KaffeineContext *Kaffeine_CreateContext(struct KaffeineLibBase *base)
         FreeMem(mem, KAFFEINE_MEM_SIZE + KAFFEINE_MEM_GUARD);
         return NULL;
     }
+    /* the blitter as the running OS leaves it: idle, DMAEN and BLTEN set;
+       it holds no allocation, so the context needs no blitter teardown */
+    Kaffeine_BlitterInit(&ctx->blitter);
     return ctx;
 }
 

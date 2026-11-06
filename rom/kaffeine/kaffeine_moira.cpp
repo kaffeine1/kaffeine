@@ -11,6 +11,7 @@
 #include "kaffeine_dispatch.h"
 #include "kaffeine_callback.h"
 #include "kaffeine_sched.h"
+#include "kaffeine_blitter.h"
 #include "Moira/Moira.h"
 
 #include <new>
@@ -105,8 +106,8 @@ public:
                 return 0;
             case 0x01E: /* INTENA */
                 return 0;
-            case 0x002: /* DMACONR */
-                return 0;
+            case 0x002: /* DMACONR: the blitter's (kaffeine_blitter.h) */
+                return Kaffeine_BlitterDmaconr(ctx);
             default:
                 return 0;
         }
@@ -114,6 +115,12 @@ public:
 
     void customWrite16(u16 reg, u16 val) const
     {
+        /* The blitter registers and DMACON; a refused blit stops the
+           program, which ends this slice as any stopped guest does. */
+        int stop = Kaffeine_BlitterWrite(ctx, reg, val);
+
+        if (stop)
+            Kaffeine_StopGuest(ctx, const_cast<struct KaffeineCPU *>(&cpu_handle), stop);
         switch (reg)
         {
             case 0x02A: /* VPOSW */

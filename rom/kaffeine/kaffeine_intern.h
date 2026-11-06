@@ -194,6 +194,23 @@ struct KaffeineFile
 };
 #define KAFFEINE_MAX_MESSAGE_PORTS 64
 
+/* The blitter registers of one guest context (kaffeine_blitter.h). The
+   pointers are guest addresses, never native ones. */
+struct KaffeineBlitter
+{
+    ULONG apt, bpt, cpt, dpt;   /* BLTAPT, BLTBPT, BLTCPT, BLTDPT */
+    UWORD con0, con1;           /* BLTCON0, BLTCON1 */
+    UWORD afwm, alwm;           /* BLTAFWM, BLTALWM */
+    UWORD adat, bdat, cdat;     /* BLTADAT, BLTBDAT, BLTCDAT */
+    UWORD bhold;                /* B after its shifter: from a BLTBDAT write or a B fetch */
+    WORD  amod, bmod, cmod, dmod;
+    UWORD sizv;                 /* BLTSIZV */
+    UWORD dmacon;               /* DMACON bits 10-0 */
+    UWORD pend_w, pend_h;       /* the size of a started blit that waits for DMA */
+    UBYTE pending;              /* a started blit waits for DMAEN and BLTEN */
+    UBYTE zero;                 /* BZERO of the last blit */
+};
+
 struct KaffeineContext
 {
     struct KaffeineIBase *ibase;
@@ -565,6 +582,9 @@ struct KaffeineContext
     UWORD   beam_v;     /* vertical position 0-312 */
     UBYTE   beam_h;     /* horizontal position 0-226 */
     UBYTE   beam_lof;   /* long frame flag (toggled each frame) */
+
+    /* The custom chip blitter of this context (kaffeine_blitter.h) */
+    struct KaffeineBlitter blitter;
 };
 
 static inline void *m68k_to_host(struct KaffeineContext *ctx, ULONG addr)

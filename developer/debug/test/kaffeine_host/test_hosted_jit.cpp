@@ -700,6 +700,88 @@ static void custom_page()
     CHECK(HJ_GetStats(jit.jit)->slow_accesses == 4);
 }
 
+/* The blitter (kaffeine_blitter.h) through both backends' custom chip
+   writes: a two-word A to D copy and DMACONR, then a blit that writes
+   MOVEQ #2,D0 over guest code that already ran, so the second call must
+   see the new instruction (the blitter announces its D span through
+   Kaffeine_FlushCode()). These machines skip Kaffeine_CreateContext(),
+   so the program sets DMAEN and BLTEN itself. */
+static const Build blitter_program = [](Machine &m) {
+    const ULONG src = Layout::data, dst = Layout::data + 0x100, fn = Layout::scratch;
+    m.code(m.pc, {
+        0x33FC, 0x8240, 0x00DF, 0xF096,                        /* MOVE.W #$8240,DMACON */
+        0x4EB9, (UWORD)(fn >> 16), (UWORD)fn,                  /* JSR fn: D0 = 1 */
+        0x2800,                                                /* MOVE.L D0,D4 */
+        0x33FC, 0x09F0, 0x00DF, 0xF040,                        /* BLTCON0: USEA USED, D = A */
+        0x33FC, 0x0000, 0x00DF, 0xF042,                        /* BLTCON1 */
+        0x33FC, 0xFFFF, 0x00DF, 0xF044,                        /* BLTAFWM */
+        0x33FC, 0xFFFF, 0x00DF, 0xF046,                        /* BLTALWM */
+        0x33FC, 0x0000, 0x00DF, 0xF064,                        /* BLTAMOD */
+        0x33FC, 0x0000, 0x00DF, 0xF066,                        /* BLTDMOD */
+        0x23FC, (UWORD)(src >> 16), (UWORD)src, 0x00DF, 0xF050, /* MOVE.L #src,BLTAPT */
+        0x23FC, (UWORD)(dst >> 16), (UWORD)dst, 0x00DF, 0xF054, /* MOVE.L #dst,BLTDPT */
+        0x33FC, 0x0042, 0x00DF, 0xF058,                        /* BLTSIZE: 2 words, 1 row */
+        0x3639, 0x00DF, 0xF002,                                /* MOVE.W DMACONR,D3 */
+        0x33FC, 0x01F0, 0x00DF, 0xF040,                        /* BLTCON0: USED, D = A off */
+        0x33FC, 0x7002, 0x00DF, 0xF074,                        /* BLTADAT: MOVEQ #2,D0 */
+        0x23FC, (UWORD)(fn >> 16), (UWORD)fn, 0x00DF, 0xF054,  /* MOVE.L #fn,BLTDPT */
+        0x33FC, 0x0041, 0x00DF, 0xF058,                        /* BLTSIZE: 1 word */
+        0x4EB9, (UWORD)(fn >> 16), (UWORD)fn,                  /* JSR fn: D0 = 2 now */
+        0x2A00,                                                /* MOVE.L D0,D5 */
+        0x4EAE, (UWORD)-36,                                    /* JSR -36(A6) */
+        0x4E75
+    });
+    m.code(fn, { 0x7001, 0x4E75 });                            /* MOVEQ #1,D0; RTS */
+    m.code(src, { 0x1234, 0xABCD });
+    m.ctx.m68k_sysbase = Layout::probe;
+};
+
+static void blitter()
+{
+    Machine moira, jit;
+    for (Machine *m : { &moira, &jit })
+        blitter_program(*m);
+    CHECK(moira.run(MOIRA) == 0);
+    Seen ref = snap;
+    CHECK(jit.run(JIT) == 0);
+    CHECK(ref.d[4] == 1 && ref.d[5] == 2 && (ref.d[3] & 0xFFFF) == 0x0240);
+    CHECK(snap.d[4] == ref.d[4] && snap.d[5] == ref.d[5] && snap.d[3] == ref.d[3]);
+    for (Machine *m : { &moira, &jit })
+    {
+        CHECK(m->read(Layout::data + 0x100) == 0x1234ABCD);
+        CHECK(m->ctx.blitter.apt == Layout::data + 4 && m->ctx.blitter.dpt == Layout::scratch + 2);
+    }
+    CHECK(same_memory(jit, moira, snap.a[7]));
+}
+
+/* A blit the blitter refuses (line mode) stops the program with 20 in
+   both backends before anything is written or the next instruction runs */
+static const Build blitter_refused_program = [](Machine &m) {
+    const ULONG dst = Layout::data;
+    m.code(m.pc, {
+        0x33FC, 0x8240, 0x00DF, 0xF096,                        /* DMACON: DMAEN BLTEN */
+        0x33FC, 0x0BCA, 0x00DF, 0xF040,                        /* BLTCON0 */
+        0x33FC, 0x0001, 0x00DF, 0xF042,                        /* BLTCON1: LINE */
+        0x23FC, (UWORD)(dst >> 16), (UWORD)dst, 0x00DF, 0xF054, /* BLTDPT */
+        0x33FC, 0x0102, 0x00DF, 0xF058,                        /* BLTSIZE: refused */
+        0x4EAE, (UWORD)-36,                                    /* JSR -36(A6): never */
+        0x4E75
+    });
+    m.ctx.m68k_sysbase = Layout::probe;
+};
+
+static void blitter_refused()
+{
+    Machine moira, jit;
+    for (Machine *m : { &moira, &jit })
+        blitter_refused_program(*m);
+    snap_calls = 0;
+    CHECK(moira.run(MOIRA) == 20);
+    CHECK(jit.run(JIT) == 20);
+    CHECK(snap_calls == 0);
+    CHECK(moira.read(Layout::data) == 0xA5A5A5A5 && jit.read(Layout::data) == 0xA5A5A5A5);
+}
+
 /* ------------------------------------------------------------------
    3. A translated program
    ------------------------------------------------------------------ */
@@ -2471,7 +2553,8 @@ int main(int argc, char **argv)
     const struct { const char *name; void (*run)(); bool hosted; } tests[] = {
         {"encoder", encoder, false}, {"translate-only", translate_only, false},
         {"exec-memory", exec_memory, true}, {"endian", endian, true},
-        {"custom-page", custom_page, true}, {"program", program, true},
+        {"custom-page", custom_page, true}, {"blitter", blitter, true},
+        {"blitter-refused", blitter_refused, true}, {"program", program, true},
         {"dbcc-targets", dbcc_targets, true},
         {"block-limits", block_limits, true}, {"code-reset", code_reset, true},
         {"library-calls", library_calls, true}, {"callback-depth", callback_depth, true},
