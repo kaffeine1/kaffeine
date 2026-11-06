@@ -1202,6 +1202,9 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w)
     if (ctx->layer_ops && !ctx->layer_ops->window_opened(ctx, mw, w))
         goto fail;
     if (peer) peer->users++;
+    /* IntuitionBase roots now name this 68k Window for its native one */
+    if (ctx->ibase_identity)
+        ctx->ibase_identity(ctx, mw, FALSE);
     return mw;
 fail:
     Kaffeine_UserPortDelete(ctx, port);
@@ -1219,6 +1222,9 @@ static void window_delete(struct KaffeineContext *ctx, ULONG mw, BOOL layers_don
 
     if (!w)
         return;
+    /* no IntuitionBase root or link keeps the 68k Window */
+    if (ctx->ibase_identity)
+        ctx->ibase_identity(ctx, mw, TRUE);
     /* the program's layer locks and its 68k Layer go while the native
        layer is still there */
     if (!layers_done && ctx->layer_ops)

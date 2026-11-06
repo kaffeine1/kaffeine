@@ -188,6 +188,11 @@ BOOL Kaffeine_DispatchLibraryCall(struct KaffeineContext *ctx,
                 ctx->after_thunk = NULL;
                 after(ctx);
             }
+            /* What the program reads of IntuitionBase without LockIBase
+               follows Intuition before it goes on; three pointer
+               comparisons when nothing has changed. */
+            if (ctx->ibase_refresh && ctx->running)
+                ctx->ibase_refresh(ctx);
             if (ctx->sv_redirect)
                 result->supervisor = TRUE;
             else

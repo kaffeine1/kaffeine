@@ -446,6 +446,9 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
     }
     if (scr->ViewPort.ColorMap)
         *colormap = guest + cm_offset;
+    /* IntuitionBase roots now name this 68k Screen for its native one */
+    if (ctx->ibase_identity)
+        ctx->ibase_identity(ctx, guest, FALSE);
     return guest;
 }
 
@@ -475,6 +478,9 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
     ULONG guest = ctx->pubscreens[i].guest;
     UWORD type = ctx->pubscreens[i].owned ? KAFFEINE_SHADOW_SCREEN : KAFFEINE_SHADOW_PUBSCREEN;
 
+    /* no IntuitionBase root or link keeps the 68k Screen */
+    if (guest && ctx->ibase_identity)
+        ctx->ibase_identity(ctx, guest, TRUE);
     if (ctx->video_screen_retire)
         ctx->video_screen_retire(ctx, ctx->pubscreens[i].native);
     /* the layer snapshot of the screen goes with its last holder, before

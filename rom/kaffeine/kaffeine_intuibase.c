@@ -2,7 +2,10 @@
    Author: Michele Dipace (@kaffeine1)
 
    Bounded read-only classic snapshots. Native identity and lock ownership
-   stay private; no guest field is a native capability. */
+   stay private; no guest field is a native capability. A Window or Screen
+   of the program is its own 68k object in a snapshot, never a mirror, and
+   the roots that a program may read without LockIBase follow Intuition
+   between snapshots. */
 #include <exec/memory.h>
 #include <aros/debug.h>
 #include <intuition/intuitionbase.h>
@@ -32,7 +35,17 @@
 #define MAX_DEPTH 128
 struct IBaseView { const struct M68KStructLayout *layout; void *native;
                    ULONG guest, size, epoch; BOOL string; };
-struct KaffeineIBase { struct IBaseView views[SLOTS]; ULONG count, reached, epoch, depth, owner, key; BOOL failed; };
+/* ActiveWindow, ActiveScreen and FirstScreen, at base+52, +56 and +60 */
+#define ROOTS 3
+struct KaffeineIBase { struct IBaseView views[SLOTS]; ULONG count, reached, epoch, depth, owner, key, base; BOOL failed;
+                       /* the epoch that last reached each shadow-map entry as the program's own object */
+                       ULONG visit[KAFFEINE_MAX_SHADOWS];
+                       /* natives, compared and never dereferenced: those that the roots were
+                          written from (rooted); those of the last refresh that left a root of
+                          another program unwritten (pending); those of a refresh snapshot that
+                          did not fit (refusal), tried again after backoff refresh calls */
+                       void *root[ROOTS], *seen[ROOTS], *refused[ROOTS]; BOOL rooted[ROOTS], pending, refusal;
+                       ULONG backoff, waited; };
 static IPTR refuse(struct KaffeineContext *ctx, const char *why)
 { bug("[kaffeine] IBase: %s, stopping (20)\n",why); Kaffeine_StopGuest(ctx,ctx->cpu,20); return 20; }
 static ULONG caller(struct KaffeineContext *ctx)
@@ -56,6 +69,23 @@ static struct IBaseView *view(struct KaffeineContext *ctx, void *native, const c
 /* Only classic offsets are fixed. Native members are always C field
    accesses: native Library/Layer_Info layouts differ across AROS builds. */
 static ULONG snapshot(struct KaffeineContext *, const char *, void *, unsigned);
+static ULONG token(struct KaffeineContext *, int, const char *, void *, unsigned);
+/* The program's own 68k Window or Screen of a native one: the index of its
+   shadow-map entry, or -1. Pointers are compared, never dereferenced. A
+   BuildSysRequest() window has a WINDOW entry too. A screen is one that the
+   program opened, else one that it holds through LockPubScreen() or a
+   window (PUBSCREEN, as Kaffeine_ScreenGuest()). */
+static int owned(struct KaffeineContext *ctx, const void *native, BOOL window)
+{
+    UWORD i;int pub=-1;
+    for(i=0;native && i<ctx->num_shadows;++i) if(ctx->shadow_map[i].native_ptr==native)
+    {
+        UWORD type=ctx->shadow_map[i].type;
+        if(window?type==KAFFEINE_SHADOW_WINDOW:type==KAFFEINE_SHADOW_SCREEN)return i;
+        if(!window && type==KAFFEINE_SHADOW_PUBSCREEN)pub=i;
+    }
+    return pub;
+}
 #define W(off,value) m68k_write16(ctx,g+(off),(UWORD)(value))
 #define L(off,value) m68k_write32(ctx,g+(off),(ULONG)(value))
 #define B(off,value) (ctx->mem[g+(off)]=(UBYTE)(value))
@@ -71,6 +101,8 @@ static ULONG snapshot(struct KaffeineContext *ctx, const char *name, void *nativ
     /* A snapshot that has failed is refused whole: stop walking at once. */
     if (!native || s->failed) return 0;
     if (depth>MAX_DEPTH) { s->failed=TRUE;return 0; }
+    if (name && (!strcmp(name,"Window") || !strcmp(name,"Screen")))
+    { int k=owned(ctx,native,*name=='W');if(k>=0)return token(ctx,k,name,native,depth); }
     v=view(ctx,native,name);if(!v)return 0;g=v->guest;
     if(v->epoch==s->epoch)return g;
     if(++s->reached>CURRENT) { s->failed=TRUE;return 0; }
@@ -138,6 +170,45 @@ static ULONG snapshot(struct KaffeineContext *ctx, const char *name, void *nativ
     { struct MenuItem *n=native;LINK(0,NextItem,"MenuItem");W(4,n->LeftEdge);W(6,n->TopEdge);W(8,n->Width);W(10,n->Height);W(12,n->Flags);L(14,n->MutualExclude);B(26,n->Command);LINK(28,SubItem,"MenuItem");W(32,n->NextSelect);if(n->Flags&ITEMTEXT) LINK(18,ItemFill,"IntuiText"); }
     return g;
 }
+/* The program's own Window or Screen is its 68k object, never a mirror.
+   Only what Intuition keeps and a program only reads is written, once per
+   snapshot: the list links, which name objects of this snapshot, and the
+   scalars of Kaffeine_WindowSync() that need no collaborator. What the
+   bridges keep (WScreen, UserPort, RPort, MenuStrip, gadgets, Flags, the
+   layers, the BitMap handle, the ViewPort) stays as it is. */
+static ULONG token(struct KaffeineContext *ctx, int k, const char *name, void *native, unsigned depth)
+{
+    struct KaffeineIBase *s=ctx->ibase;ULONG g=ctx->shadow_map[k].m68k_addr;
+    if(s->visit[k]==s->epoch)return g;
+    if(++s->reached>CURRENT) { s->failed=TRUE;return 0; }
+    s->visit[k]=s->epoch;
+    if(*name=='W')
+    {
+        struct Window *n=native;
+        LINK(0,NextWindow,"Window");W(4,n->LeftEdge);W(6,n->TopEdge);W(8,n->Width);W(10,n->Height);
+        W(12,n->MouseY);W(14,n->MouseX);
+        W(108,n->GZZMouseX);W(110,n->GZZMouseY);W(112,n->GZZWidth);W(114,n->GZZHeight);
+    }
+    else
+    { struct Screen *n=native;LINK(0,NextScreen,"Screen");LINK(4,FirstWindow,"Window");W(16,n->MouseY);W(18,n->MouseX); }
+    return g;
+}
+/* The list links that token() writes. After a snapshot that fitted, those
+   of the program's objects that it did not reach go to 0, as their views
+   may go back now; after one that did not, or when an object of the
+   program goes, all of them, so that no link of the program's own objects
+   names a mirror that has gone back. */
+static void unlink_owned(struct KaffeineContext *ctx, struct KaffeineIBase *s, BOOL all)
+{
+    UWORD i;
+    for(i=0;i<ctx->num_shadows;++i)
+    {
+        UWORD type=ctx->shadow_map[i].type;ULONG g=ctx->shadow_map[i].m68k_addr;
+        if(!all && s->visit[i]==s->epoch)continue;
+        if(type==KAFFEINE_SHADOW_WINDOW)L(0,0);
+        else if(type==KAFFEINE_SHADOW_SCREEN || type==KAFFEINE_SHADOW_PUBSCREEN) { L(0,0);L(4,0); }
+    }
+}
 #undef LINK
 #undef B
 #undef W
@@ -161,35 +232,152 @@ static void drop(struct KaffeineContext *ctx, struct KaffeineIBase *s)
     for(i=0;i<s->count;++i)Kaffeine_MirrorRelease(ctx,s->views[i].guest);
     s->count=0;
 }
+static const char *const root_kind[ROOTS]={"Window","Screen","Screen"};
+static void *root_native(int i)
+{ return i==0?(void *)IntuitionBase->ActiveWindow:i==1?(void *)IntuitionBase->ActiveScreen:(void *)IntuitionBase->FirstScreen; }
+/* The scalars that a program reads with the roots */
+static void scalars(struct KaffeineContext *ctx, ULONG base)
+{
+    m68k_write32(ctx,base+64,IntuitionBase->Flags);
+    m68k_write16(ctx,base+68,IntuitionBase->MouseY);m68k_write16(ctx,base+70,IntuitionBase->MouseX);
+    m68k_write32(ctx,base+72,IntuitionBase->Seconds);m68k_write32(ctx,base+76,IntuitionBase->Micros);
+}
+static BOOL same(void *const *a, void *const *b)
+{ return a[0]==b[0] && a[1]==b[1] && a[2]==b[2]; }
+/* Private storage, and the collaborators that it answers, for the program */
+static struct KaffeineIBase *storage(struct KaffeineContext *ctx)
+{
+    struct KaffeineIBase *s=ctx->ibase;
+    if(!s) { s=AllocVec(sizeof(*s),MEMF_PUBLIC|MEMF_CLEAR);if(!s)return NULL;ctx->ibase=s; }
+    ctx->ibase_locked=Kaffeine_IBaseLocked;ctx->ibase_cleanup=Kaffeine_IBaseCleanup;ctx->ibase_task_removed=Kaffeine_IBaseTaskRemoved;
+    ctx->ibase_identity=Kaffeine_IBaseIdentity;
+    return s;
+}
+/* One snapshot of the roots under the native lock, which the caller holds:
+   the natives are read here, after the lock. FALSE when it does not fit:
+   the roots and the program's links are 0 before every view goes back. */
+static BOOL take(struct KaffeineContext *ctx, struct KaffeineIBase *s, ULONG base)
+{
+    ULONG g[ROOTS];void *n[ROOTS];int i;
+    s->failed=FALSE;s->reached=0;
+    /* Epoch 0 is never current: after the wrap no view and no object of the
+       program counts as reached until this snapshot reaches it again. */
+    if(++s->epoch==0)
+    {
+        ULONG k;s->epoch=1;
+        for(k=0;k<s->count;++k)s->views[k].epoch=0;
+        for(k=0;k<KAFFEINE_MAX_SHADOWS;++k)s->visit[k]=0;
+    }
+    for(i=0;i<ROOTS;++i) { n[i]=root_native(i);g[i]=snapshot(ctx,root_kind[i],n[i],0); }
+    scalars(ctx,base);
+    if(s->failed)
+    {
+        /* A refresh tries the same natives again after 64 calls, then after
+           twice as many each time, up to 2^20: capacity or mirrors may come
+           back while the roots stay the same, but no math loop may take a
+           failing snapshot on every call. */
+        s->backoff=s->refusal && same(n,s->refused) && s->backoff ? (s->backoff<(1UL<<20)?2*s->backoff:s->backoff) : 64;
+        for(i=0;i<ROOTS;++i) { m68k_write32(ctx,base+52+4*i,0);s->rooted[i]=FALSE;s->refused[i]=n[i]; }
+        s->refusal=TRUE;s->waited=0;unlink_owned(ctx,s,TRUE);drop(ctx,s);return FALSE;
+    }
+    for(i=0;i<ROOTS;++i) { m68k_write32(ctx,base+52+4*i,g[i]);s->root[i]=n[i];s->rooted[i]=TRUE; }
+    s->pending=s->refusal=FALSE;unlink_owned(ctx,s,FALSE);prune(ctx,s);
+    return TRUE;
+}
 IPTR Kaffeine_LockIBase(struct KaffeineContext *ctx, void *cpu)
 {
     struct KaffeineIBase *s=ctx->ibase;ULONG who=caller(ctx),base=Kaffeine_FindLibBase(ctx,"intuition.library");
     if(THUNK_D(0) || !base || !who || ctx->broker_call || ctx->callback_depth || FindTask(NULL)!=ctx->exec_task) return refuse(ctx,"invalid lock owner or selector");
     if(s && s->depth) { if(s->owner!=who || s->depth==1024)return refuse(ctx,"lock nesting or owner");++s->depth;return s->key; }
     if(Kaffeine_LayerInfoLocked(ctx))return refuse(ctx,"layer lock order");
-    if(!s) { s=AllocVec(sizeof(*s),MEMF_PUBLIC|MEMF_CLEAR);if(!s)return refuse(ctx,"no private snapshot storage");ctx->ibase=s; }
-    ctx->ibase_locked=Kaffeine_IBaseLocked;ctx->ibase_cleanup=Kaffeine_IBaseCleanup;ctx->ibase_task_removed=Kaffeine_IBaseTaskRemoved;
-    s->key=LockIBase(0);s->depth=1;s->owner=who;s->failed=FALSE;s->reached=0;
-    /* Epoch 0 is never current: after the wrap no view counts as reached
-       until this snapshot reaches it again. */
-    if(++s->epoch==0) { ULONG i;s->epoch=1;for(i=0;i<s->count;++i)s->views[i].epoch=0; }
+    if(!(s=storage(ctx)))return refuse(ctx,"no private snapshot storage");
+    s->key=LockIBase(0);s->depth=1;s->owner=who;s->base=base;
     /* Preserve this fake library's own size/open bookkeeping. */
     m68k_write16(ctx,base+20,IntuitionBase->LibNode.lib_Version);
     m68k_write16(ctx,base+22,IntuitionBase->LibNode.lib_Revision);
-    m68k_write32(ctx,base+52,snapshot(ctx,"Window",IntuitionBase->ActiveWindow,0));
-    m68k_write32(ctx,base+56,snapshot(ctx,"Screen",IntuitionBase->ActiveScreen,0));
-    m68k_write32(ctx,base+60,snapshot(ctx,"Screen",IntuitionBase->FirstScreen,0));
-    m68k_write32(ctx,base+64,IntuitionBase->Flags);
-    m68k_write16(ctx,base+68,IntuitionBase->MouseY);m68k_write16(ctx,base+70,IntuitionBase->MouseX);
-    m68k_write32(ctx,base+72,IntuitionBase->Seconds);m68k_write32(ctx,base+76,IntuitionBase->Micros);
-    if(s->failed)
+    if(!take(ctx,s,base))
     {
         UnlockIBase(s->key);s->depth=0;s->owner=0;
-        m68k_write32(ctx,base+52,0);m68k_write32(ctx,base+56,0);m68k_write32(ctx,base+60,0);
-        drop(ctx,s);return refuse(ctx,"snapshot capacity exceeded");
+        return refuse(ctx,"snapshot capacity exceeded");
     }
-    prune(ctx,s);
     return s->key;
+}
+/* Whether a refresh may take the native IBase lock here: never inside a
+   native callback or broker call, under a lock of the program's that
+   Intuition may wait for, or on another task. */
+static BOOL admitted(struct KaffeineContext *ctx)
+{
+    return ctx->running && !ctx->broker_call && !ctx->callback_depth && !ctx->pubscreen_list_locks &&
+           !Kaffeine_LayerInfoLocked(ctx) &&
+           !(ctx->layer_ops && ctx->layer_ops->has_locks && ctx->layer_ops->has_locks(ctx)) &&
+           FindTask(NULL)==ctx->exec_task;
+}
+/* The roots that need no lock: NULL, and the program's own objects, found
+   by pointer comparison alone. A root of another program keeps its value,
+   a view that stays until the next snapshot rewrites the roots. TRUE when
+   such a root waits for a snapshot of exactly these natives. */
+static BOOL settle(struct KaffeineContext *ctx, struct KaffeineIBase *s, void *const *n)
+{
+    int i;BOOL foreign=FALSE;
+    for(i=0;i<ROOTS;++i) { s->seen[i]=n[i];if(!s->rooted[i] || n[i]!=s->root[i])
+    {
+        int k=n[i]?owned(ctx,n[i],!i):-1;
+        if(n[i] && k<0) { foreign=TRUE;continue; }
+        m68k_write32(ctx,s->base+52+4*i,k<0?0:ctx->shadow_map[k].m68k_addr);s->root[i]=n[i];s->rooted[i]=TRUE;
+    } }
+    return s->pending=foreign;
+}
+/* ctx->ibase_refresh, after each library call of the program: the roots
+   that it may read without LockIBase, as Intuition has them now. Nothing
+   while the program holds IBase, as it reads its own snapshot then. The
+   fast path compares three native pointers. A root of another program
+   needs a snapshot, taken under the native lock where that is admitted,
+   else on a later call for the same natives; one that did not fit is
+   taken again for the same natives only after its backoff. */
+void Kaffeine_IBaseRefresh(struct KaffeineContext *ctx)
+{
+    struct KaffeineIBase *s=ctx->ibase;void *n[ROOTS];int i;ULONG key;BOOL fitted;
+    if(s && s->depth)return;
+    if(!s || !s->base)
+    {
+        ULONG base=Kaffeine_FindLibBase(ctx,"intuition.library");
+        if(!base || !(s=storage(ctx)))return;
+        s->base=base;
+    }
+    scalars(ctx,s->base);
+    for(i=0;i<ROOTS;++i)n[i]=root_native(i);
+    if(!s->pending || !same(n,s->seen))
+    {
+        if(s->rooted[0] && s->rooted[1] && s->rooted[2] && same(n,s->root))return;
+        if(!settle(ctx,s,n))return;
+    }
+    if(s->refusal && same(n,s->refused) && ++s->waited<s->backoff)return;
+    if(!admitted(ctx))return;
+    key=LockIBase(0);fitted=take(ctx,s,s->base);UnlockIBase(key);
+    if(fitted)return;
+    bug("[kaffeine] IBase: roots of other programs do not fit a snapshot, left 0\n");
+    /* The roots that need no lock again, from the natives as they are now,
+       read after the unlock: not those of before the lock, which may have
+       gone in between. The others stay 0. */
+    for(i=0;i<ROOTS;++i)n[i]=root_native(i);
+    settle(ctx,s,n);
+}
+/* ctx->ibase_identity: a Window or Screen of the program has come or goes.
+   A root that names one that goes is 0 at once, as are the links of the
+   program's objects; every root is taken again by the next refresh, so a
+   native that the program now holds becomes its own object there, and one
+   that it no longer holds a view again. */
+void Kaffeine_IBaseIdentity(struct KaffeineContext *ctx, ULONG guest, BOOL gone)
+{
+    struct KaffeineIBase *s=ctx->ibase;int i;
+    if(!s)return;
+    for(i=0;i<ROOTS;++i)
+    {
+        if(gone && s->base && m68k_read32(ctx,s->base+52+4*i)==guest)m68k_write32(ctx,s->base+52+4*i,0);
+        s->rooted[i]=FALSE;
+    }
+    s->pending=s->refusal=FALSE;
+    if(gone)unlink_owned(ctx,s,TRUE);
 }
 IPTR Kaffeine_UnlockIBase(struct KaffeineContext *ctx, void *cpu)
 {
@@ -207,8 +395,13 @@ void Kaffeine_IBaseCleanup(struct KaffeineContext *ctx)
 {
     struct KaffeineIBase *s=ctx->ibase;ULONG i;if(!s)return;
     if(s->depth)UnlockIBase(s->key);
+    /* no root names a mirror that goes back */
+    if(s->base)for(i=0;i<ROOTS;++i)m68k_write32(ctx,s->base+52+4*i,0);
     for(i=0;i<s->count;++i)Kaffeine_MirrorRelease(ctx,s->views[i].guest);
     FreeVec(s);ctx->ibase=NULL;ctx->ibase_locked=NULL;ctx->ibase_cleanup=NULL;ctx->ibase_task_removed=NULL;
+    /* ibase_refresh stays: it was set with the intuition.library base, which
+       outlives this storage, and allocates it again if the program goes on */
+    ctx->ibase_identity=NULL;
 }
 static struct IBaseView *active(struct KaffeineContext *ctx, ULONG guest, const char *kind)
 {

@@ -224,6 +224,11 @@ struct KaffeineContext
     BOOL (*io_held_read)(struct KaffeineContext *, void *cpu);
     void (*ibase_cleanup)(struct KaffeineContext *);
     void (*ibase_task_removed)(struct KaffeineContext *, ULONG);
+    /* kaffeine_intuibase.c: the classic IntuitionBase roots after each
+       library call, and a 68k Window or Screen of the program that comes
+       or goes (Kaffeine_IBaseRefresh(), Kaffeine_IBaseIdentity()) */
+    void (*ibase_refresh)(struct KaffeineContext *);
+    void (*ibase_identity)(struct KaffeineContext *, ULONG, BOOL);
     struct KaffeineSockets *sockets;
     BOOL (*socket_poll)(struct KaffeineContext *);
     void (*socket_cleanup)(struct KaffeineContext *);
