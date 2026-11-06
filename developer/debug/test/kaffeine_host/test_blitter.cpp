@@ -329,9 +329,10 @@ static void sizes()
    for the caller; DisownBlitter() clears it for whoever calls */
 static APTR fake_task, fake_blit_owner;
 static int fake_owns, fake_disowns;
+static bool fake_own_takes = true;
 static APTR fake_self() { return fake_task; }
 static APTR fake_owner() { return fake_blit_owner; }
-static void fake_own() { fake_owns++; fake_blit_owner = fake_task; }
+static void fake_own() { fake_owns++; if (fake_own_takes) fake_blit_owner = fake_task; }
 static void fake_disown() { fake_disowns++; fake_blit_owner = nullptr; }
 static const KaffeineBlitterOwnership fake_native = { fake_self, fake_owner, fake_own, fake_disown };
 
@@ -346,32 +347,52 @@ static void ownership()
     CHECK(t.ctx->blitter.owner == &a && fake_blit_owner == &a && fake_owns == 1);
     CHECK(Kaffeine_BlitterDisown(t.ctx, &fake_native) == 0);
     CHECK(!t.ctx->blitter.owner && !fake_blit_owner && fake_disowns == 1);
+
     /* DisownBlitter() without a hold would clear another task's: refused */
     fake_blit_owner = &other;
     CHECK(Kaffeine_BlitterDisown(t.ctx, &fake_native) == 20);
     CHECK(fake_blit_owner == &other && fake_disowns == 1);
+
+    /* OwnBlitter() while native graphics names the caller, with no record
+       here, would wait on itself: refused without a native call */
+    fake_blit_owner = &a;
+    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 20);
+    CHECK(fake_owns == 1 && !t.ctx->blitter.owner && fake_blit_owner == &a);
     fake_blit_owner = nullptr;
-    /* a second OwnBlitter() by the owning task would wait for ever: refused */
+
+    /* a second OwnBlitter() while this context holds the blitter, by the
+       owner or by another task of the program: refused, token kept */
     CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 0);
     CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 20);
+    fake_task = &b;
+    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 20);
     CHECK(fake_owns == 2 && t.ctx->blitter.owner == &a && fake_blit_owner == &a);
-    /* the end of a context that still holds the blitter gives it back */
+
+    /* DisownBlitter() and Release on another task: refused or no-op, the
+       record stays for its owner */
+    CHECK(Kaffeine_BlitterDisown(t.ctx, &fake_native) == 20);
+    Kaffeine_BlitterRelease(t.ctx, &fake_native);
+    CHECK(t.ctx->blitter.owner == &a && fake_blit_owner == &a && fake_disowns == 1);
+
+    /* the owner's cleanup gives it back; a second one does nothing */
+    fake_task = &a;
     Kaffeine_BlitterRelease(t.ctx, &fake_native);
     CHECK(!t.ctx->blitter.owner && !fake_blit_owner && fake_disowns == 2);
     Kaffeine_BlitterRelease(t.ctx, &fake_native);
     CHECK(fake_disowns == 2);
-    /* never another task's hold, even if the record says otherwise */
+
+    /* never another task's native hold, even with a record of ours */
     CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 0);
     fake_blit_owner = &other;
     Kaffeine_BlitterRelease(t.ctx, &fake_native);
     CHECK(!t.ctx->blitter.owner && fake_blit_owner == &other && fake_disowns == 2);
-    /* another task of the same program goes to the native call, which
-       waits there while the first task owns the blitter */
     fake_blit_owner = nullptr;
-    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 0);
-    fake_task = &b;
-    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 0);
-    CHECK(fake_owns == 5 && t.ctx->blitter.owner == &b);
+
+    /* a native call that comes back without the blitter is not recorded */
+    fake_own_takes = false;
+    CHECK(Kaffeine_BlitterOwn(t.ctx, &fake_native) == 20);
+    CHECK(!t.ctx->blitter.owner && !fake_blit_owner && fake_owns == 4);
+    fake_own_takes = true;
 }
 
 int main()

@@ -1166,8 +1166,8 @@ takes the exit code.
 | -432 | LockLayerRom | Validates a registered or owned guest `Layer`, locks its native layer if present and increments its guest lock count (`kaffeine_layers.c`) |
 | -438 | UnlockLayerRom | Releases a lock acquired by `LockLayerRom` or `AttemptLockLayerRom` (`kaffeine_layers.c`) |
 | -444, -450 | SyncSBitMap, CopySBitMap | Stop the guest with rc 20 (`kaffeine_layers_Unsupported`) |
-| -456 | OwnBlitter | Native, with the hold this context took recorded; a second call by the owning task stops with rc 20, and the end of the context gives back a hold left behind (`kaffeine_thunks.c`, `kaffeine_blitter.h`) |
-| -462 | DisownBlitter | Gives back only the hold this context took; without one stops with rc 20 (`kaffeine_thunks.c`, `kaffeine_blitter.h`) |
+| -456 | OwnBlitter | Native, with the hold this context took recorded; a call while this context holds the blitter, or while `BlitOwner` is the caller, stops with rc 20 without the native call; the end of the program gives back a hold left behind, on the task that took it (`kaffeine_thunks.c`, `kaffeine_blitter.h`, `kaffeine_run.c`) |
+| -462 | DisownBlitter | Gives back only the hold this context took, on the task that took it; on any other task, or without one, stops with rc 20 (`kaffeine_thunks.c`, `kaffeine_blitter.h`) |
 | -474 | AskFont | Writes an aligned 8-byte big-endian TextAttr with a readable cached guest font name, height, style and flags; accepts registered RastPorts or checked caller-owned RastPorts with a live guest TextFont. Overlapping outputs and unknown fonts stop with rc 20 |
 | -510 | OrRectRegion | Unions a checked 8-byte 68k `Rectangle` into an owned 68k `Region` and splits non-overlapping `RegionRectangle` nodes (`kaffeine_regions.c`) |
 | -516 | NewRegion | Allocates an owned 20-byte 68k `Region` (`kaffeine_regions.c`) |
@@ -3518,12 +3518,18 @@ and host test that compiles one needs no other object.
 - graphics -456 `OwnBlitter()` and -462 `DisownBlitter()` are manual
   (`kaffeine_thunks.c`): the native calls, which record the task in
   `GfxBase->BlitOwner` and wait while any task owns the blitter, with the
-  hold this context took recorded. A second `OwnBlitter()` by the owning
-  task, which would wait for ever, and a `DisownBlitter()` without a hold,
-  which would clear another task's, stop the program with 20.
-  `Kaffeine_DestroyContext()` first gives back a hold the program still has,
-  only while `BlitOwner` is that recorded task, so a program that stopped
-  while it owned the blitter keeps no later one waiting.
+  hold this context took recorded. `OwnBlitter()` while this context holds
+  the blitter, or while `BlitOwner` is the caller already (it would wait on
+  itself for ever), and a `DisownBlitter()` by any task but the recorded
+  one, which would clear a hold that is not its own, stop the program with
+  20; so does an `OwnBlitter()` that came back without the blitter, which
+  is then not recorded. A hold the program still has when it ends is given
+  back first in `cleanup_owned()` (`kaffeine_run.c`), on the task that took
+  it and before any GUI teardown, with `Kaffeine_DestroyContext()` as a
+  fallback; both give it back only on the recorded task and only while
+  `BlitOwner` is that task. On any other task the record stays for the
+  owner. So a program that stopped while it owned the blitter keeps no
+  later one waiting.
 
 Tests: `test_blitter.cpp` (registers, all 256 minterms, shifts, masks,
 modulos, overlap, DMACON, BZERO, refusals, ownership), `test_hosted_jit.cpp`

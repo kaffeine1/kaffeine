@@ -366,9 +366,10 @@ struct KaffeineContext *Kaffeine_CreateContext(struct KaffeineLibBase *base)
 void Kaffeine_DestroyContext(struct KaffeineContext *ctx)
 {
     if (!ctx) return;
-    /* A program that ended while it owned the blitter, for instance after
-       a refused blit, gives back the native hold it took (and only that),
-       before anything else, so that no later program waits for it. */
+    /* Fallback for the blitter hold of a program that stopped while owning
+       it, which cleanup_owned() gives back on the owning task: here too
+       the hold is given back only when this runs on that task (see
+       Kaffeine_BlitterRelease()). */
     if (ctx->blitter.release) ctx->blitter.release(ctx);
     /* LayersCleanup deliberately keeps its state when native layers or
        callbacks still borrow guest storage. Their bitmap planes live in

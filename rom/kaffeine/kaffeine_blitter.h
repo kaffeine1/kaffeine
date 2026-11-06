@@ -357,8 +357,12 @@ static inline UWORD Kaffeine_BlitterDmaconr(const struct KaffeineContext *ctx)
    task, the caller included, owns the blitter; DisownBlitter() clears it
    for whoever calls. A program that stops while it owns the blitter, for
    a refused blit for instance, would keep it from every later program.
-   So the context records the task whose hold it took, and gives back only
-   that hold: at DisownBlitter() and at the end of the context. */
+   So the context records the task whose hold it took, and only that task
+   gives it back: at DisownBlitter(), and first in the cleanup that runs on
+   it when the program ends (cleanup_owned() in kaffeine_run.c), with
+   Kaffeine_DestroyContext() as a fallback that again acts only on that
+   task. A hold is given back only while BlitOwner still names that task;
+   no caller ever releases a hold that is not its own. */
 struct KaffeineBlitterOwnership
 {
     APTR (*self)(void);         /* FindTask(NULL) */
@@ -367,44 +371,59 @@ struct KaffeineBlitterOwnership
     void (*disown)(void);       /* DisownBlitter() */
 };
 
-/* Give back the hold of this context if native graphics still records
-   it; never another task's. */
+/* Give back the hold of this context, on the task that took it, while
+   native graphics still names that task. Called on another task it keeps
+   the record for the owner's own cleanup and touches nothing. */
 static inline void Kaffeine_BlitterRelease(struct KaffeineContext *ctx,
                                            const struct KaffeineBlitterOwnership *n)
 {
     APTR owner = ctx->blitter.owner;
 
+    if (!owner || n->self() != owner)
+        return;
     ctx->blitter.owner = NULL;
-    if (owner && n->owner() == owner)
+    if (n->owner() == owner)
         n->disown();
 }
 
 /* OwnBlitter() of the program: native, waiting while another task owns
-   the blitter. 20 when the calling task holds it already, where native
-   graphics would wait for ever. */
+   the blitter. 20 without a native call while this context holds it
+   already, or while native graphics names the caller (it would wait on
+   itself for ever); 20 also if the native call came back without the
+   blitter, which is then not recorded. */
 static inline int Kaffeine_BlitterOwn(struct KaffeineContext *ctx,
                                       const struct KaffeineBlitterOwnership *n)
 {
     APTR me = n->self();
 
-    if (ctx->blitter.owner == me)
+    if (ctx->blitter.owner)
     {
-        bug("[kaffeine] OwnBlitter() by the task that owns the blitter already, stopping (20)\n");
+        bug("[kaffeine] OwnBlitter() while the program owns the blitter, stopping (20)\n");
+        return 20;
+    }
+    if (n->owner() == me)
+    {
+        bug("[kaffeine] OwnBlitter() by the task that owns the blitter, stopping (20)\n");
         return 20;
     }
     n->own();
+    if (n->owner() != me)
+    {
+        bug("[kaffeine] OwnBlitter() returned without the blitter, stopping (20)\n");
+        return 20;
+    }
     ctx->blitter.owner = me;
     return 0;
 }
 
-/* DisownBlitter() of the program: 20 when it holds no blitter, as native
-   graphics would clear another task's hold. */
+/* DisownBlitter() of the program: only by the task whose hold this
+   context took; 20 otherwise, as native graphics would clear any hold. */
 static inline int Kaffeine_BlitterDisown(struct KaffeineContext *ctx,
                                          const struct KaffeineBlitterOwnership *n)
 {
-    if (!ctx->blitter.owner)
+    if (!ctx->blitter.owner || n->self() != ctx->blitter.owner)
     {
-        bug("[kaffeine] DisownBlitter() without owning the blitter, stopping (20)\n");
+        bug("[kaffeine] DisownBlitter() by a task that does not own the blitter, stopping (20)\n");
         return 20;
     }
     Kaffeine_BlitterRelease(ctx, n);
