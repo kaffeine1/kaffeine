@@ -61,6 +61,7 @@ struct Window
     struct Requester *DMRequest;
     UWORD ReqCount;
     struct RastPort *BorderRPort;
+    struct Window *NextWindow;   /* read by the IBase snapshot */
 };
 #define WFLG_BACKDROP 0x00000100
 #define WFLG_GIMMEZEROZERO 0x00000400
