@@ -1,4 +1,4 @@
-/* Copyright (C) 2026 Michele Dipace. All rights reserved.
+/* Copyright (C) 2026, The AROS Development Team. All rights reserved.
    Author: Michele Dipace (@kaffeine1)
 
    Real classic menus exercise a read-only IBase snapshot larger than the
