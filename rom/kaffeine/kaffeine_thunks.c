@@ -799,7 +799,7 @@ static void blitter_release(struct KaffeineContext *ctx)
     Kaffeine_BlitterRelease(ctx, &blitter_native);
 }
 
-static IPTR thunk_graphics_OwnBlitter_owned(struct KaffeineContext *ctx, void *cpu)
+static IPTR kaffeine_graphics_OwnBlitter(struct KaffeineContext *ctx, void *cpu)
 {
     if (Kaffeine_BlitterOwn(ctx, &blitter_native))
     {
@@ -810,7 +810,7 @@ static IPTR thunk_graphics_OwnBlitter_owned(struct KaffeineContext *ctx, void *c
     return 0;
 }
 
-static IPTR thunk_graphics_DisownBlitter_owned(struct KaffeineContext *ctx, void *cpu)
+static IPTR kaffeine_graphics_DisownBlitter(struct KaffeineContext *ctx, void *cpu)
 {
     if (Kaffeine_BlitterDisown(ctx, &blitter_native))
     {
@@ -823,8 +823,8 @@ static IPTR thunk_graphics_DisownBlitter_owned(struct KaffeineContext *ctx, void
 /* ── Graphics manual thunks (shadow RastPort) ── */
 const struct M68KThunkEntry kaffeine_thunks_graphics_manual[] = {
     { 792, Kaffeine_IBaseVPMode },
-    { 456, thunk_graphics_OwnBlitter_owned },
-    { 462, thunk_graphics_DisownBlitter_owned },
+    { 456, kaffeine_graphics_OwnBlitter },
+    { 462, kaffeine_graphics_DisownBlitter },
     KAFFEINE_GRAPHICS_COMPAT_THUNKS,
     KAFFEINE_GRAPHICS_RASTPORT_THUNKS,
     KAFFEINE_GRAPHICS_DISPLAY_THUNKS,
