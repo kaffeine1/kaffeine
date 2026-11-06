@@ -3441,7 +3441,7 @@ Screen of.
 
 ## Custom Chip Emulation
 
-All accesses to `$DFF000–$DFFFFF` are intercepted in `AROSMoira::read8/read16/write8/write16`
+All accesses to `$DFF000-$DFFFFF` are intercepted in `AROSMoira::read8/read16/write8/write16`
 and in the JIT's slow access paths (`kaffeine_jit.c`), which behave the same.
 
 `CUSTOM_MASK` compares all 32 address bits, as the 68EC040 model decodes
@@ -3470,7 +3470,7 @@ Every read calls `beamAdvance(2)` — 2 color clocks per register access.
 |--------|------|--------|
 | 0x02A | VPOSW | Sets beam_lof from bit 15, merges V8 into beam_v |
 | 0x02C | VHPOSW | Sets beam_v[7:0] and beam_h |
-| 0x040–0x074 | Blitter | Latched; BLTSIZE (0x058) and BLTSIZH (0x05E) start a blit (Blitter, below) |
+| 0x040-0x074 | Blitter | Latched; BLTSIZE (0x058) and BLTSIZH (0x05E) start a blit (Blitter, below) |
 | 0x096 | DMACON | Sets (bit 15 set) or clears bits 10-0; may release a waiting blit |
 | other | — | Silently ignored |
 
