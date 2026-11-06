@@ -49,7 +49,9 @@ static struct IBaseView *view(struct KaffeineContext *ctx, void *native, const c
     if (s->count==SLOTS) { s->failed=TRUE; return NULL; }
     v=&s->views[s->count]; v->guest=Kaffeine_MirrorAlloc(ctx,size);
     if (!v->guest) { s->failed=TRUE; return NULL; }
-    v->size=size;v->native=native;v->layout=layout;v->string=!name;++s->count;return v;
+    /* A slot that prune() or drop() freed still holds an old view: a new
+       mirror takes epoch 0, which is never current, and is copied now. */
+    v->size=size;v->native=native;v->layout=layout;v->string=!name;v->epoch=0;++s->count;return v;
 }
 /* Only classic offsets are fixed. Native members are always C field
    accesses: native Library/Layer_Info layouts differ across AROS builds. */
