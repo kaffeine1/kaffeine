@@ -14,6 +14,12 @@ IPTR Kaffeine_UnlockIBase(struct KaffeineContext *, void *);
 void Kaffeine_IBaseCleanup(struct KaffeineContext *);
 void Kaffeine_IBaseTaskRemoved(struct KaffeineContext *, ULONG);
 BOOL Kaffeine_IBaseLocked(struct KaffeineContext *);
+/* ctx->ibase_refresh, set with the intuition.library base: after each
+   library call, the roots of the classic IntuitionBase as Intuition has
+   them. ctx->ibase_identity: a 68k Window or Screen of the program has
+   come (gone FALSE) or goes (gone TRUE), before its guest memory does. */
+void Kaffeine_IBaseRefresh(struct KaffeineContext *);
+void Kaffeine_IBaseIdentity(struct KaffeineContext *, ULONG, BOOL);
 struct BitMap *Kaffeine_IBaseBitmap(struct KaffeineContext *, ULONG);
 struct RastPort *Kaffeine_IBaseRastPort(struct KaffeineContext *, ULONG);
 IPTR Kaffeine_IBaseScreenToFront(struct KaffeineContext *, void *);

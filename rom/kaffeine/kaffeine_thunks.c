@@ -115,6 +115,10 @@ ULONG Kaffeine_PublishNativeLibrary(struct KaffeineContext *ctx, ULONG base, con
     SetIoErr(error);
     if (!Kaffeine_PublishLibrary(ctx, base, version, revision))
         bug("[kaffeine] %s: base without a struct Library, no header\n", name);
+    /* From its first base on, the classic roots of IntuitionBase follow
+       Intuition, also for a program that never calls LockIBase(). */
+    if (!strcmp(name, "intuition.library"))
+        ctx->ibase_refresh = Kaffeine_IBaseRefresh;
     return base;
 }
 

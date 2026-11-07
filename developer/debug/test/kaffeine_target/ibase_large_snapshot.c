@@ -1,9 +1,13 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
    Author: Michele Dipace (@kaffeine1)
 
-   Real classic menus exercise a read-only IBase snapshot larger than the
-   former 1024-view bound. All assertions and DOS output run after unlock.
-   There is no input, image operation, or application-specific dependency. */
+   Real classic menus on the program's own window. Under LockIBase() the
+   snapshot shows that Window itself, not a mirror, and its MenuStrip names
+   the program's own 1240 menu, item, text and string records, which stay
+   as they are. Capacity beyond 1024 objects of other programs is covered
+   by the host fixture test_ibase_snapshot.cpp, not here. All assertions
+   and DOS output run after unlock. There is no input, image operation, or
+   application-specific dependency. */
 #include <exec/types.h>
 #include <intuition/intuitionbase.h>
 #include <intuition/intuition.h>
@@ -15,7 +19,7 @@
 struct IntuitionBase *IntuitionBase;
 #define MENUS 20
 #define ITEMS 20
-#define VIEWS (MENUS * (2 + ITEMS * 3))
+#define RECORDS (MENUS * (2 + ITEMS * 3))
 struct Strip {
     struct Menu menu[MENUS];
     struct MenuItem item[MENUS][ITEMS];
@@ -24,7 +28,7 @@ struct Strip {
 };
 static struct Strip strip[2];
 static const char title[] = "IBase large snapshot";
-static APTR seen[VIEWS];
+static APTR seen[RECORDS];
 static ULONG seen_count;
 
 static void init_strip(struct Strip *s, unsigned variant)
@@ -57,7 +61,7 @@ static void init_strip(struct Strip *s, unsigned variant)
 static BOOL unique(APTR p)
 {
     ULONG i;
-    if (!p || seen_count == VIEWS) return FALSE;
+    if (!p || seen_count == RECORDS) return FALSE;
     for (i = 0; i < seen_count; ++i) if (seen[i] == p) return FALSE;
     seen[seen_count++] = p;
     return TRUE;
@@ -96,7 +100,7 @@ static BOOL walk(struct Menu *m, const struct Strip *expected)
         if (item) return FALSE;
         m = m->NextMenu;
     }
-    return m == NULL && seen_count == VIEWS;
+    return m == NULL && seen_count == RECORDS;
 }
 int main(void)
 {
@@ -114,33 +118,35 @@ int main(void)
         for (epoch = 0; epoch < 8; ++epoch) {
             struct Strip *s = &strip[epoch & 1];
             ULONG key, nested, count;
-            struct Window *mirror, *again;
+            struct Window *own, *again;
             struct Menu *menu_token;
             BOOL valid, stable, detached;
             if (!check(SetMenuStrip(window, s->menu), "400 real menu items attach")) break;
             key = LockIBase(0);
-            mirror = find_window();
-            menu_token = mirror ? mirror->MenuStrip : NULL;
-            valid = mirror && walk(menu_token, s);
+            own = find_window();
+            menu_token = own ? own->MenuStrip : NULL;
+            valid = own && walk(menu_token, s);
             count = seen_count;
             nested = LockIBase(0);
             again = find_window();
-            stable = nested == key && again == mirror && again && again->MenuStrip == menu_token;
+            stable = nested == key && again == own && again && again->MenuStrip == menu_token;
             UnlockIBase(nested);
             UnlockIBase(key);
-            check(valid, "all menu items, text and distinct strings survive the snapshot");
-            check_long("the visited strip alone exceeds 1024 distinct views", count, VIEWS);
-            check(stable, "a nested lock preserves live mirror identities");
+            check(own == window, "the snapshot shows the program's own Window, not a mirror");
+            check(menu_token == s->menu, "its MenuStrip is the program's own strip");
+            check(valid, "all own menus, items, texts and distinct strings are reached");
+            check_long("own strip records reached", count, RECORDS);
+            check(stable, "a nested lock shows the same own Window and strip");
             key = LockIBase(0);
             again = find_window();
-            stable = again == mirror && again && again->MenuStrip == menu_token && walk(menu_token, s);
+            stable = again == own && again && again->MenuStrip == menu_token && walk(menu_token, s);
             UnlockIBase(key);
-            check(stable, "the next successful epoch preserves live mirror identities");
+            check(stable, "the next snapshot shows the same own Window and strip");
             ClearMenuStrip(window);
             key = LockIBase(0);
             again = find_window(); detached = again && !again->MenuStrip;
             UnlockIBase(key);
-            check(detached, "the next epoch excludes the detached strip");
+            check(detached, "the next snapshot shows the strip detached");
         }
         ClearMenuStrip(window);
         CloseWindow(window);

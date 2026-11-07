@@ -54,11 +54,18 @@ def main():
     if re.search(r"^ULONG Kaffeine_PublishNativeLibrary\(", thunks, re.MULTILINE):
         function = extract_function(thunks, "Kaffeine_PublishNativeLibrary") + function
     symbols = sorted(set(re.findall(r"\bkaffeine_thunks_[a-z0-9_]+\b", function)))
+    # The IBase refresh that the intuition.library base turns on, in the
+    # sources that have it, is an inert collaborator like the tables.
+    ibase = ""
+    if re.search(r"\bKaffeine_IBaseRefresh\b", function):
+        ibase = ('#include "kaffeine_intuibase.h"\n'
+                 "void Kaffeine_IBaseRefresh(struct KaffeineContext *ctx) { (void)ctx; }\n")
     wrapper = build_dir / "open_library.c"
     wrapper.write_text('#include <string.h>\n#include <aros/debug.h>\n'
                        '#include <proto/exec.h>\n#include <proto/dos.h>\n'
                        '#include "kaffeine_intern.h"\n#include "kaffeine_thunks.h"\n'
                        '#include "kaffeine_gfxbase.h"\n#include "kaffeine_socket.h"\n' +
+                       ibase +
                        "\n".join(("const ULONG " + n + " = 0;" if n.endswith("_count") else
                                    "const struct M68KThunkEntry " + n + "[] = {{0, NULL}};")
                                   for n in symbols) + "\n" + function)
