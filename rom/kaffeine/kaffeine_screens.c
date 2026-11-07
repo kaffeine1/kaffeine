@@ -262,20 +262,22 @@ static ULONG screen_generation(struct KaffeineContext *ctx, const struct Screen 
     return ctx->owned_screen_ops ? ctx->owned_screen_ops->generation(ctx->emuBase, scr) : 0;
 }
 
-/* Before Intuition frees a screen that the program opened: its slot goes
-   CLOSING, so that no input event of any program takes it any more, and
-   then, with no lock of the bridge held, the events that took it before
-   are waited for (kaffeine_owned_screens.c). FALSE for a screen without a
-   slot, which no event can name. */
-static BOOL screen_drain(struct KaffeineContext *ctx, int i)
+/* The slot of a screen that the program opened goes CLOSING, so that no
+   input event of any program takes it any more (kaffeine_owned_screens.c).
+   FALSE for a screen without a slot, which no event can name. */
+static BOOL screen_gate_closing(struct KaffeineContext *ctx, int i)
 {
     const struct KaffeineOwnedScreenOps *ops = ctx->owned_screen_ops;
 
-    if (!ops || !ctx->pubscreens[i].generation ||
-        !ops->closing(ctx->emuBase, ctx->pubscreens[i].slot, ctx->pubscreens[i].generation))
-        return FALSE;
-    ops->drain(ctx->emuBase, ctx->pubscreens[i].slot);
-    return TRUE;
+    return ops && ctx->pubscreens[i].generation &&
+           ops->closing(ctx->emuBase, ctx->pubscreens[i].slot, ctx->pubscreens[i].generation);
+}
+
+/* Before Intuition frees a screen whose slot is CLOSING: with no lock of
+   the bridge held, the events that held it before are waited for. */
+static void screen_drain(struct KaffeineContext *ctx, int i)
+{
+    ctx->owned_screen_ops->drain(ctx->emuBase, ctx->pubscreens[i].slot);
 }
 
 /* After the native CloseScreen() of a drained screen: closed leaves the
@@ -1349,7 +1351,7 @@ IPTR Kaffeine_OpenScreenTagList(struct KaffeineContext *ctx, void *cpu)
 IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG screen = THUNK_A(0);
-    BOOL drained;
+    BOOL gated;
     int i;
 
     if (!screen)
@@ -1372,20 +1374,21 @@ IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
         return FALSE;
     if (ctx->layer_ops && ctx->layer_ops->has_locks && ctx->layer_ops->has_locks(ctx))
         return refuse(ctx, "CloseScreen(): a layer of the program is locked");
-    drained = screen_drain(ctx, i);
+    if ((gated = screen_gate_closing(ctx, i)))
+        screen_drain(ctx, i);
     /* no 68k Layer may stand for a layer of a screen that closes; when
        Intuition refuses, the next snapshot is taken afresh */
     if (ctx->layer_ops)
         ctx->layer_ops->screen_closing(ctx, ctx->pubscreens[i].native);
     if (!CloseScreen(ctx->pubscreens[i].native))
     {
-        if (drained)
+        if (gated)
             screen_undrain(ctx, i, FALSE, TRUE);
         if (ctx->layer_ops)
             ctx->layer_ops->screen_mirrored(ctx, ctx->pubscreens[i].native);
         return FALSE;
     }
-    if (drained)
+    if (gated)
         screen_undrain(ctx, i, TRUE, FALSE);
     screen_closed(ctx, i);
     return TRUE;
@@ -1647,8 +1650,17 @@ IPTR Kaffeine_FreeScreenDrawInfo(struct KaffeineContext *ctx, void *cpu)
 
 void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
 {
+    BOOL gated[KAFFEINE_MAX_PUBSCREENS];
     ULONG left = 0;
     int i;
+
+    /* First, before anything here that waits: every screen that the program
+       opened stops taking input events of any program, also one that stays
+       open. Its slot keeps the generation, CLOSING, for as long as the
+       screen may be open, and is never freed while it may be; a second pass
+       finds it CLOSING already and changes nothing. */
+    for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
+        gated[i] = ctx->pubscreens[i].owned && screen_gate_closing(ctx, i);
 
     /* End read-only VPE borrows before any final native screen hold goes. */
     if (ctx->video_screen_retire)
@@ -1682,15 +1694,6 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
     for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
         if (ctx->pubscreens[i].owned)
         {
-            BOOL drained;
-
-            /* No input event of another program takes it from now on, also
-               when it stays open: its slot keeps the generation, CLOSING, for
-               as long as the screen may be open, and is never freed while it
-               may be. */
-            if (ctx->owned_screen_ops && ctx->pubscreens[i].generation)
-                ctx->owned_screen_ops->closing(ctx->emuBase, ctx->pubscreens[i].slot,
-                                               ctx->pubscreens[i].generation);
             if (Kaffeine_ScreenWindows(ctx, ctx->pubscreens[i].native) ||
                 (ctx->layer_ops && ctx->layer_ops->bitmap_screen_held &&
                  ctx->layer_ops->bitmap_screen_held(ctx, ctx->pubscreens[i].native)))
@@ -1699,17 +1702,18 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
                     ctx->pubscreens[i].native);
                 continue;
             }
-            drained = screen_drain(ctx, i);
+            if (gated[i])
+                screen_drain(ctx, i);
             if (CloseScreen(ctx->pubscreens[i].native))
             {
                 bug("[kaffeine] screen %p that the program left, closed\n", ctx->pubscreens[i].native);
-                if (drained)
+                if (gated[i])
                     screen_undrain(ctx, i, TRUE, FALSE);
                 screen_closed(ctx, i);
             }
             else
             {
-                if (drained)
+                if (gated[i])
                     screen_undrain(ctx, i, FALSE, FALSE);
                 bug("[kaffeine] screen %p that the program left, Intuition did not close it\n",
                     ctx->pubscreens[i].native);

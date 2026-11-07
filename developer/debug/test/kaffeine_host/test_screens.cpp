@@ -3812,8 +3812,9 @@ static BOOL reg_closing(KaffeineLibBase *, LONG slot, ULONG generation)
 {
     auto &e = reg_slots.at(slot);
     assert(e.generation == generation && (e.state == KAFFEINE_OWNED_OPEN || e.state == KAFFEINE_OWNED_CLOSING));
+    /* a slot already CLOSING changes nothing */
+    reg_note(e.state == KAFFEINE_OWNED_CLOSING ? "reclosing" : "closing", slot);
     e.state = KAFFEINE_OWNED_CLOSING;
-    reg_note("closing", slot);
     return TRUE;
 }
 static void reg_drain(KaffeineLibBase *, LONG slot)
@@ -3923,33 +3924,50 @@ static void test_owned_screen_registry()
     }
 }
 
-/* The end of the program: every slot of its screens goes CLOSING at once;
-   one that can close is drained and closed; one with a window stays open
-   and keeps its slot, CLOSING, with its generation, until a later pass can
-   close it. */
+/* The end of the program: every slot of its screens goes CLOSING, in table
+   order, before the first drain; then only a screen that can close is
+   drained, right before Intuition closes it, whether it comes first or
+   last; one with a window stays open and keeps its slot CLOSING with its
+   generation. A later pass finds that slot CLOSING, changes nothing, and
+   drains and closes the screen once its window has gone. */
 static void test_owned_screen_cleanup()
 {
-    Fixture f;
-    reg_reset(2);
-    f.ctx.owned_screen_ops = &registry_ops;
-    const ULONG kept = f.open(0, 0); assert(kept);
-    Screen *ks = native->opened.back().result;
-    const ULONG closed = f.open(0, 0); assert(closed);
-    const LONG kslot = f.ctx.pubscreens[f.entry(kept)].slot, cslot = f.ctx.pubscreens[f.entry(closed)].slot;
-    assert(f.entry(kept) < f.entry(closed));
-    Window w{}; w.WScreen = ks; ks->FirstWindow = &w;
-    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &w, KAFFEINE_SHADOW_WINDOW));
-    reg_events.clear();
-    Kaffeine_ScreensCleanup(&f.ctx);
-    assert(reg_trace() == "closing closing drain finish" && reg_events[3].closed);
-    assert(reg_slots.at(kslot).state == KAFFEINE_OWNED_CLOSING && Kaffeine_ScreenNative(&f.ctx, kept) == ks);
-    assert(!reg_slots.count(cslot) && !Kaffeine_ScreenNative(&f.ctx, closed) && native->count(CLOSE) == 1);
-    ks->FirstWindow = nullptr;
-    Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
-    reg_events.clear();
-    Kaffeine_ScreensCleanup(&f.ctx);
-    assert(reg_trace() == "closing drain finish" && !reg_slots.count(kslot) && native->count(CLOSE) == 2);
-    f.ctx.owned_screen_ops = nullptr;
+    for (bool first_stays : { true, false })
+    {
+        Fixture f;
+        reg_reset(2);
+        f.ctx.owned_screen_ops = &registry_ops;
+        const ULONG a = f.open(0, 0); assert(a);
+        Screen *as = native->opened.back().result;
+        const ULONG b = f.open(0, 0); assert(b);
+        Screen *bs = native->opened.back().result;
+        assert(f.entry(a) < f.entry(b));
+        const LONG first = f.ctx.pubscreens[f.entry(a)].slot, second = f.ctx.pubscreens[f.entry(b)].slot;
+        const ULONG kept = first_stays ? a : b, gone = first_stays ? b : a;
+        Screen *ks = first_stays ? as : bs, *gs = first_stays ? bs : as;
+        const LONG kslot = first_stays ? first : second, gslot = first_stays ? second : first;
+        const ULONG kgen = reg_slots.at(kslot).generation;
+        Window w{}; w.WScreen = ks; ks->FirstWindow = &w;
+        assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &w, KAFFEINE_SHADOW_WINDOW));
+        reg_events.clear();
+        Kaffeine_ScreensCleanup(&f.ctx);
+        assert(reg_trace() == "closing closing drain finish");
+        assert(reg_events[0].slot == first && reg_events[1].slot == second);
+        assert(reg_events[2].slot == gslot && reg_events[3].slot == gslot && reg_events[3].closed);
+        assert(native->calls[reg_events[2].at].kind == CLOSE && native->calls[reg_events[2].at].screen == gs);
+        assert(native->count(CLOSE) == 1 && !reg_slots.count(gslot) && !Kaffeine_ScreenNative(&f.ctx, gone));
+        assert(reg_slots.at(kslot).state == KAFFEINE_OWNED_CLOSING && reg_slots.at(kslot).generation == kgen);
+        assert(Kaffeine_ScreenNative(&f.ctx, kept) == ks && f.ctx.pubscreens[f.entry(kept)].generation == kgen);
+        ks->FirstWindow = nullptr;
+        Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
+        reg_events.clear();
+        Kaffeine_ScreensCleanup(&f.ctx);
+        assert(reg_trace() == "reclosing drain finish");
+        assert(reg_events[1].slot == kslot && reg_events[2].closed);
+        assert(native->calls[reg_events[1].at].kind == CLOSE && native->calls[reg_events[1].at].screen == ks);
+        assert(!reg_slots.count(kslot) && native->count(CLOSE) == 2 && !Kaffeine_ScreenNative(&f.ctx, kept));
+        f.ctx.owned_screen_ops = nullptr;
+    }
 }
 
 /* A 68k Screen that goes keeps its block, all 0, with its address booked:
