@@ -36,14 +36,15 @@
 #include "kaffeine_exec_io.h"
 #include "kaffeine_icon.h"
 #include "kaffeine_intern.h"
+#include "kaffeine_intuibase.h"
 #include "kaffeine_offsets.h"
 #include "kaffeine_rastport.h"
 
 /* These fixtures borrow metadata-only fonts and acquire no native opens. */
 extern "C" void CloseFont(struct TextFont *) { std::abort(); }
 /* Nor do they write input events. */
-extern "C" BOOL Kaffeine_IBaseScreenHold(KaffeineContext *, ULONG, struct Screen **) { std::abort(); }
-extern "C" void Kaffeine_IBaseScreenDrop(struct Screen *) { std::abort(); }
+extern "C" BOOL Kaffeine_IBaseInputScreenHold(KaffeineContext *, ULONG, KaffeineScreenHold *) { std::abort(); }
+extern "C" void Kaffeine_IBaseInputScreenDrop(KaffeineContext *, KaffeineScreenHold *) { std::abort(); }
 #include "kaffeine_window.h"
 #include "kaffeine_workbench.h"
 #include "kaffeine_layers.h"

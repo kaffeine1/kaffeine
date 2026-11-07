@@ -1265,7 +1265,7 @@ static BYTE write_event(struct KaffeineContext *ctx, ULONG req, struct KaffeineI
     ULONG data = m68k_read32(ctx, req + G_IO_DATA), pixel, held;
     struct InputEvent event;
     struct IEPointerPixel position;
-    struct Screen *screen = NULL;
+    struct KaffeineScreenHold hold = { NULL, -1, FALSE };
     enum EventPayload payload;
     BYTE error;
 
@@ -1314,13 +1314,15 @@ static BYTE write_event(struct KaffeineContext *ctx, ULONG req, struct KaffeineI
         held = m68k_read32(ctx, pixel + G_IEPP_SCREEN);
         position.iepp_Position.X = (WORD)m68k_read16(ctx, pixel + G_IEPP_X);
         position.iepp_Position.Y = (WORD)m68k_read16(ctx, pixel + G_IEPP_Y);
-        /* The last check: Intuition's handler reads the screen it gets */
-        if (!held || !Kaffeine_IBaseScreenHold(ctx, held, &screen))
+        /* The last check: Intuition's handler reads the screen it gets, so
+           it stays open until DoIO() has returned, also a screen of another
+           program (kaffeine_owned_screens.c) */
+        if (!held || !Kaffeine_IBaseInputScreenHold(ctx, held, &hold))
         {
             bug("[kaffeine] IND_WRITEEVENT: screen %08lx cannot be held\n", (unsigned long)held);
             return G_IOERR_BADADDRESS;
         }
-        position.iepp_Screen = screen;
+        position.iepp_Screen = hold.screen;
         event.ie_EventAddress = &position;
     }
     native->io_Command = IND_WRITEEVENT;
@@ -1330,8 +1332,8 @@ static BYTE write_event(struct KaffeineContext *ctx, ULONG req, struct KaffeineI
     error = DoIO((struct IORequest *)native);
     native->io_Data = NULL;
     native->io_Length = 0;
-    if (screen)
-        Kaffeine_IBaseScreenDrop(screen);
+    if (hold.screen)
+        Kaffeine_IBaseInputScreenDrop(ctx, &hold);
     if (!error)
     {
         m68k_write32(ctx, data + G_IE_NEXTEVENT, 0);

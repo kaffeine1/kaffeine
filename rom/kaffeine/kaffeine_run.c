@@ -275,6 +275,7 @@ static LONG run_hunks(struct KaffeineLibBase *KaffeineBase, BPTR segList,
     }
     ctx->startup_native = startup;
     ctx->screen_window = Kaffeine_ScreenFromWindow;
+    ctx->owned_screen_ops = &Kaffeine_OwnedScreenOps;
     Kaffeine_GadgetsSetup(ctx);
     Kaffeine_LayersSetup(ctx);
 
@@ -390,6 +391,7 @@ static LONG run_hunks(struct KaffeineLibBase *KaffeineBase, BPTR segList,
     ctx = Kaffeine_CreateContext(KaffeineBase);
     if (!ctx) { FreeMem(fileData, fileSize); return -1; }
     ctx->screen_window = Kaffeine_ScreenFromWindow;
+    ctx->owned_screen_ops = &Kaffeine_OwnedScreenOps;
     Kaffeine_GadgetsSetup(ctx);
     Kaffeine_LayersSetup(ctx);
 

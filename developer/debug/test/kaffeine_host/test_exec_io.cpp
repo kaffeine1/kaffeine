@@ -32,6 +32,7 @@
 #include <devices/keyboard.h>
 #include <devices/input.h>
 #include "kaffeine_intern.h"
+#include "kaffeine_intuibase.h"
 #include "kaffeine_exec_io.h"
 #include "kaffeine_dispatch.h"
 #include "kaffeine_messages.h"
@@ -106,20 +107,26 @@ extern "C" WORD MapRawKey(InputEvent *, STRPTR, LONG, KeyMap *)
     assert(false && "timer fixture must not reach native keymap conversion");
     return -1;
 }
-extern "C" BOOL Kaffeine_IBaseScreenHold(KaffeineContext *, ULONG guest, Screen **out)
+/* The input hold of kaffeine_intuibase.c: a failed one leaves nothing to
+   drop, a successful one is dropped once, after the DoIO(). */
+extern "C" BOOL Kaffeine_IBaseInputScreenHold(KaffeineContext *, ULONG guest, KaffeineScreenHold *hold)
 {
     ++hold_calls;
     held_screen = guest;
-    *out = nullptr;
+    hold->screen = nullptr;
+    hold->slot = -1;
+    hold->visitor = FALSE;
     if (!guest || guest != holdable_screen) return FALSE;
     ++screen_holds;
-    *out = &native_screen;
+    hold->screen = &native_screen;
+    hold->slot = 5;
     return TRUE;
 }
-extern "C" void Kaffeine_IBaseScreenDrop(Screen *screen)
+extern "C" void Kaffeine_IBaseInputScreenDrop(KaffeineContext *, KaffeineScreenHold *hold)
 {
-    assert(screen == &native_screen && screen_drops < screen_holds);
+    assert(hold->screen == &native_screen && hold->slot == 5 && screen_drops < screen_holds);
     ++screen_drops;
+    hold->screen = nullptr;
 }
 
 extern "C" APTR AllocMem(ULONG size, ULONG)

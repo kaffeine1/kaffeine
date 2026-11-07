@@ -64,6 +64,7 @@ KAFFEINE_FILES := \
     kaffeine_menus \
     kaffeine_gadgets \
     kaffeine_screens \
+    kaffeine_owned_screens \
     kaffeine_palette \
     kaffeine_videocontrol \
     kaffeine_layers \

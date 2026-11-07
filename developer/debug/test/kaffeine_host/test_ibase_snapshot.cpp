@@ -15,6 +15,12 @@
     over guest blocks of their own: the snapshot shows them as themselves,
     and the roots follow Intuition without LockIBase() through
     Kaffeine_IBaseRefresh(), with every native lock and mirror counted.
+
+    A Screen view that goes is retired, not released: its block stays
+    allocated with its bytes 0, so live() counts the mirrors without the
+    retired ones. A recording registry stands for kaffeine_owned_screens.c
+    where a case installs it: generations per native, an epoch, and the
+    input holds and drops of IND_WRITEEVENT.
 */
 
 #include <array>
@@ -146,6 +152,46 @@ extern "C" void Kaffeine_MirrorRelease(struct KaffeineContext *ctx, ULONG addr)
     mirrors.erase(it);
 }
 
+/* ---- the registry of screens that programs opened ----------------------- */
+
+/* Generations per native, CLOSING ones, an epoch, whether a generation-0
+   screen is still foreign after its visitor lock, and the input holds:
+   kaffeine_owned_screens.c's answers without its semaphores. */
+struct Registry
+{
+    std::map<const struct Screen *, ULONG> gen;
+    std::map<const struct Screen *, bool> closing;
+    ULONG epoch = 0;
+    bool foreign = true;
+    int gen_calls = 0, holds = 0, drops = 0, foreign_calls = 0;
+    LONG last_drop = -2;
+};
+static Registry registry;
+static ULONG reg_generation(struct KaffeineLibBase *, const struct Screen *n)
+{
+    ++registry.gen_calls;
+    auto it = registry.gen.find(n);
+    return it == registry.gen.end() ? 0 : it->second;
+}
+static BOOL reg_hold(struct KaffeineLibBase *, const struct Screen *n, ULONG g, LONG *slot)
+{
+    auto it = registry.gen.find(n);
+    *slot = -1;
+    if (it == registry.gen.end() || it->second != g || registry.closing[n]) return FALSE;
+    ++registry.holds;
+    *slot = 7;
+    return TRUE;
+}
+static void reg_drop(struct KaffeineLibBase *, LONG slot) { ++registry.drops; registry.last_drop = slot; }
+static BOOL reg_foreign(struct KaffeineLibBase *, const struct Screen *n)
+{ ++registry.foreign_calls; return registry.foreign && !registry.gen.count(n); }
+static ULONG reg_epoch(struct KaffeineLibBase *) { return registry.epoch; }
+/* the bridge's operations are not this file's */
+static const struct KaffeineOwnedScreenOps registry_ops = {
+    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    reg_generation, reg_hold, reg_drop, reg_foreign, reg_epoch
+};
+
 /* ---- fixtures ------------------------------------------------------------ */
 
 /* A native screen, one window on it and a menu strip of menus menus that
@@ -222,6 +268,7 @@ struct Fixture
         stop_code = 0;
         focus_on_lock = nullptr;
         native_ib = {};
+        registry = Registry();
     }
     ~Fixture()
     {
@@ -271,6 +318,27 @@ struct Fixture
     std::vector<UBYTE> bytes(ULONG guest, ULONG size)
     { return std::vector<UBYTE>(ctx->mem + guest, ctx->mem + guest + size); }
     IPTR vp_mode(ULONG guest) { a_regs[0] = guest; return Kaffeine_IBaseVPMode(ctx, nullptr); }
+    /* retired Screen addresses: allocated, out of use */
+    size_t retired() const { return ctx->screen_book_count; }
+    size_t live() const { return mirrors.size() - retired(); }
+    /* every retired block is still a mirror, and all 0 */
+    bool retired_zeroed() const
+    {
+        for (UWORD i = 0; i < ctx->screen_book_count; ++i)
+        {
+            ULONG g = ctx->screen_book[i].guest;
+            if (!mirrors.count(g)) return false;
+            for (ULONG o = 0; o < ctx->screen_book[i].size; ++o)
+                if (ctx->mem[g + o]) return false;
+        }
+        return true;
+    }
+    bool zero(ULONG guest, ULONG size) const
+    {
+        for (ULONG o = 0; o < size; ++o)
+            if (ctx->mem[guest + o]) return false;
+        return true;
+    }
 };
 
 /* ---- cases ---------------------------------------------------------------- */
@@ -326,7 +394,7 @@ static void limit_2048()
         CHECK(f.lock() == 20);
         CHECK(stops == 1 && stop_code == 20);
         CHECK(native_holds == 0 && !Kaffeine_IBaseLocked(f.ctx));
-        CHECK(mirrors.empty() && !bad_releases);
+        CHECK(f.live() == 0 && f.retired_zeroed() && !bad_releases);
         CHECK(!f.active_window() && !m68k_read32(f.ctx, IBASE + 56) && !f.first_screen());
     }
 }
@@ -345,8 +413,8 @@ static void old_and_new_2048()
     CHECK(f.unlock() == 0);
     b.show();
     CHECK(f.lock() == native_key);
-    CHECK(!stops && mirrors.size() == 2048 && !bad_releases);
-    CHECK(f.first_screen() != old_screen);
+    CHECK(!stops && f.live() == 2048 && f.retired() == 1 && !bad_releases);
+    CHECK(f.first_screen() != old_screen && f.zero(old_screen, SCREEN_SIZE));
     CHECK(f.unlock() == 0 && native_holds == 0);
 }
 
@@ -364,13 +432,14 @@ static void disjoint_epochs_bounded()
         NativeUI &ui = round & 1 ? y : x;
         ui.show();
         CHECK(f.lock() == native_key);
-        CHECK(mirrors.size() == ui.views());
+        CHECK(f.live() == ui.views());
         CHECK(f.unlock() == 0);
         if (round == 1) top_after_two = heap_top;
     }
     CHECK(!stops && !bad_releases && native_holds == 0);
     CHECK(heap_top == top_after_two);
-    CHECK(freed.size() == x.views());
+    /* the screen of the other UI is retired and comes back at its address */
+    CHECK(freed.size() == x.views() - 1 && f.retired() == 1 && f.retired_zeroed());
 }
 
 /* A screen that the snapshot no longer reaches: its guest token resolves
@@ -413,7 +482,7 @@ static void mirror_failure()
     mirror_budget = 100;
     CHECK(f.lock() == 20);
     CHECK(stops == 1 && native_holds == 0 && !Kaffeine_IBaseLocked(f.ctx));
-    CHECK(mirrors.empty() && !bad_releases);
+    CHECK(f.live() == 0 && f.retired_zeroed() && !bad_releases);
 }
 
 /* The depth limit stays: one menu of 130 items nests deeper than 128. */
@@ -424,7 +493,7 @@ static void depth_limit()
 
     ui.show();
     CHECK(f.lock() == 20);
-    CHECK(stops == 1 && native_holds == 0 && mirrors.empty());
+    CHECK(stops == 1 && native_holds == 0 && f.live() == 0 && f.retired_zeroed());
 }
 
 /* Nesting by the owner takes no second native lock and no new snapshot;
@@ -453,7 +522,8 @@ static void nesting_and_owner()
         CHECK(f.lock() == 20 && native_holds == 1);
         CHECK(f.unlock() == 20 && native_holds == 1);
         Kaffeine_IBaseCleanup(f.ctx);
-        CHECK(native_holds == 0 && mirrors.empty() && !f.ctx->ibase && !bad_releases);
+        CHECK(native_holds == 0 && f.live() == 0 && f.retired() == 1 && f.retired_zeroed() &&
+              !f.ctx->ibase && !bad_releases);
     }
     {
         Fixture f;
@@ -628,7 +698,7 @@ static void own_objects_count_once()
         ui.show();
         native_ib.ActiveWindow = &mine;
         CHECK(f.lock() == 20 && stops == 1 && stop_code == 20);
-        CHECK(native_holds == 0 && mirrors.empty() && !bad_releases);
+        CHECK(native_holds == 0 && f.live() == 0 && f.retired_zeroed() && !bad_releases);
         CHECK(!f.active_window() && !f.active_screen() && !f.first_screen());
         CHECK(!f.read(mw) && f.kept(mw, before, true));
     }
@@ -775,7 +845,7 @@ static void refresh_refused()
     mirror_budget = 100;
     f.refresh();
     CHECK(!stops && native_holds == 0 && lock_calls == 1);
-    CHECK(mirrors.empty() && !bad_releases);
+    CHECK(f.live() == 0 && f.retired_zeroed() && !bad_releases);
     CHECK(f.active_window() == mw && !f.active_screen() && !f.first_screen());
     f.refresh();
     CHECK(lock_calls == 1);
@@ -869,6 +939,8 @@ static void same_native_acquired()
     CHECK(!f.first_screen() && !f.active_screen());
     f.refresh();
     CHECK(mirrors.count(f.first_screen()) && f.first_screen() != gp && lock_calls == 3);
+    /* the very screen again: the view's retired address comes back */
+    CHECK(f.first_screen() == view && !f.retired());
     CHECK(native_holds == 0 && !stops && !bad_releases);
 }
 
@@ -926,6 +998,172 @@ static void refresh_recovers()
     CHECK(lock_calls == 4 && native_holds == 0 && !stops && !bad_releases);
 }
 
+/* ---- screens that programs of this library opened ------------------------ */
+
+static struct KaffeineScreenHold hold_of(Fixture &f, ULONG guest, BOOL *held)
+{
+    struct KaffeineScreenHold h { reinterpret_cast<struct Screen *>(0x1), 99, TRUE };
+    *held = Kaffeine_IBaseInputScreenHold(f.ctx, guest, &h);
+    return h;
+}
+
+/* Closed and opened again at the same native address: another generation
+   is another screen, with another address; the old address is retired and
+   holds nothing; the window's WScreen follows the new one. */
+static void generation_is_identity()
+{
+    Fixture f;
+    NativeUI ui(1, 2);
+    ULONG v1, v2;
+    BOOL held;
+    struct KaffeineScreenHold h;
+
+    f.ctx->owned_screen_ops = &registry_ops;
+    registry.gen[&ui.screen] = 1;
+    registry.epoch = 1;
+    ui.show();
+    CHECK(f.lock() == native_key);
+    v1 = f.first_screen();
+    CHECK(f.unlock() == 0);
+    h = hold_of(f, v1, &held);
+    CHECK(held && h.screen == &ui.screen && h.slot == 7 && !h.visitor && registry.holds == 1);
+    Kaffeine_IBaseInputScreenDrop(f.ctx, &h);
+    CHECK(registry.drops == 1 && registry.last_drop == 7 && !h.screen && h.slot == -1 && !public_drops);
+
+    registry.gen[&ui.screen] = 2;
+    registry.epoch = 4;
+    CHECK(f.lock() == native_key);
+    v2 = f.first_screen();
+    CHECK(v2 && v2 != v1 && f.zero(v1, SCREEN_SIZE) && f.retired() == 1);
+    CHECK(f.read(f.active_window() + 46) == v2);
+    CHECK(f.unlock() == 0);
+    h = hold_of(f, v1, &held);
+    CHECK(!held && !h.screen && registry.holds == 1 && !public_holds);
+    h = hold_of(f, v2, &held);
+    CHECK(held && h.screen == &ui.screen && registry.holds == 2);
+    Kaffeine_IBaseInputScreenDrop(f.ctx, &h);
+    CHECK(registry.drops == 2 && !stops && !bad_releases);
+}
+
+/* A CLOSING screen keeps its generation: the same view and address, and
+   no input hold, neither through the gate nor by a public visitor lock. */
+static void closing_keeps_generation()
+{
+    Fixture f;
+    NativeUI ui(1, 2);
+    ULONG v;
+    BOOL held;
+
+    f.ctx->owned_screen_ops = &registry_ops;
+    registry.gen[&ui.screen] = 3;
+    registry.epoch = 1;
+    ui.show();
+    f.refresh();
+    v = f.first_screen();
+    CHECK(v && lock_calls == 1);
+    registry.closing[&ui.screen] = true;
+    ++registry.epoch;
+    f.refresh();
+    CHECK(f.first_screen() == v && lock_calls == 1);
+    CHECK(f.lock() == native_key && f.first_screen() == v && f.unlock() == 0);
+    hold_of(f, v, &held);
+    CHECK(!held && !registry.holds && !public_holds && !registry.foreign_calls);
+}
+
+/* Between snapshots a generation is looked up only when a root native or
+   the registry's epoch changed; another generation at the same root
+   natives takes a snapshot. */
+static void root_generations()
+{
+    Fixture f;
+    NativeUI ui(1, 2);
+    ULONG v;
+    int looked;
+
+    f.ctx->owned_screen_ops = &registry_ops;
+    registry.gen[&ui.screen] = 1;
+    registry.epoch = 1;
+    ui.show();
+    f.refresh();
+    v = f.first_screen();
+    CHECK(lock_calls == 1 && v);
+    looked = registry.gen_calls;
+    f.refresh();
+    f.refresh();
+    native_ib.MouseX = 9;
+    f.refresh();
+    CHECK(lock_calls == 1 && registry.gen_calls == looked && f.read16(IBASE + 70) == 9);
+    registry.gen[&ui.screen] = 5;
+    registry.epoch = 9;
+    f.refresh();
+    CHECK(lock_calls == 2 && f.first_screen() != v && f.active_screen() == f.first_screen());
+    CHECK(f.zero(v, SCREEN_SIZE) && native_holds == 0 && !stops);
+}
+
+/* A screen that no program of this library opened: a real visitor lock
+   first, then the registry must still know it as foreign and bind none
+   just opened; otherwise the visitor lock goes back. Without a registry the
+   visitor lock alone, as before. */
+static void public_revalidated()
+{
+    Fixture f;
+    NativeUI ui(1, 2);
+    ULONG v;
+    BOOL held;
+    struct KaffeineScreenHold h;
+
+    f.ctx->owned_screen_ops = &registry_ops;
+    ui.show();
+    CHECK(f.lock() == native_key);
+    v = f.first_screen();
+    CHECK(f.unlock() == 0);
+    registry.foreign = false;
+    h = hold_of(f, v, &held);
+    CHECK(!held && !h.screen && public_holds == 1 && public_drops == 1 && registry.foreign_calls == 1);
+    registry.foreign = true;
+    h = hold_of(f, v, &held);
+    CHECK(held && h.screen == &ui.screen && h.visitor && public_holds == 2 && !registry.holds);
+    Kaffeine_IBaseInputScreenDrop(f.ctx, &h);
+    CHECK(public_drops == 2 && !registry.drops && !h.screen && !h.visitor);
+    f.ctx->owned_screen_ops = nullptr;
+    h = hold_of(f, v, &held);
+    CHECK(held && h.visitor && public_holds == 3 && registry.foreign_calls == 2);
+    Kaffeine_IBaseInputScreenDrop(f.ctx, &h);
+    CHECK(public_drops == 3);
+    CHECK(f.lock() == native_key);
+    h = hold_of(f, v, &held);
+    CHECK(!held && public_holds == 3);
+    CHECK(f.unlock() == 0 && !stops);
+}
+
+/* The program's own screen, which it opened: held by its slot's gate with
+   the generation of its entry, also its own private screen; once CLOSING,
+   not at all. */
+static void own_opened_screen()
+{
+    Fixture f;
+    struct Screen scr {};
+    BOOL held;
+    struct KaffeineScreenHold h;
+
+    f.ctx->owned_screen_ops = &registry_ops;
+    registry.gen[&scr] = 4;
+    f.ctx->pubscreens[0].native = &scr;
+    f.ctx->pubscreens[0].guest = OWN_SCREEN;
+    f.ctx->pubscreens[0].owned = TRUE;
+    f.ctx->pubscreens[0].generation = 4;
+    f.ctx->pubscreens[0].slot = 2;
+    h = hold_of(f, OWN_SCREEN, &held);
+    CHECK(held && h.screen == &scr && h.slot == 7 && !h.visitor && !public_holds);
+    Kaffeine_IBaseInputScreenDrop(f.ctx, &h);
+    CHECK(registry.drops == 1);
+    registry.closing[&scr] = true;
+    h = hold_of(f, OWN_SCREEN, &held);
+    CHECK(!held && !h.screen && !public_holds && registry.holds == 1);
+    h = hold_of(f, 0, &held);
+    CHECK(!held && !h.screen);
+}
+
 int main()
 {
     fits_beyond_1024();
@@ -951,6 +1189,11 @@ int main()
     teardown();
     own_lookups();
     same_native_acquired();
+    generation_is_identity();
+    closing_keeps_generation();
+    root_generations();
+    public_revalidated();
+    own_opened_screen();
     std::printf("ibase snapshot: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

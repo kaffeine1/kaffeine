@@ -612,7 +612,16 @@ struct Fixture
         assert(!ctx.pen_leases && pens.held.empty());
         native = previous;
     }
-    ULONG avail() { return Kaffeine_HeapAvail(&ctx, 0); }
+    /* The heap as the end of the context leaves it: the blocks of retired
+       68k Screens, which stay allocated while the context lives
+       (kaffeine_screen_book.h), go back first. */
+    ULONG avail()
+    {
+        for (UWORD i = 0; i < ctx.screen_book_count; ++i)
+            Kaffeine_MirrorRelease(&ctx, ctx.screen_book[i].guest);
+        ctx.screen_book_count = 0;
+        return Kaffeine_HeapAvail(&ctx, 0);
+    }
     UWORD word(ULONG a) { return m68k_read16(&ctx, a); }
     ULONG lng(ULONG a) { return m68k_read32(&ctx, a); }
     std::string string(ULONG a)
@@ -3753,6 +3762,219 @@ static void test_pen_cleanup()
     sb->FirstWindow = nullptr; Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
 }
 
+/* ---- the registry of screens that programs opened ------------------------ */
+
+/* kaffeine_owned_screens.c's operations as the bridge calls them, each
+   recorded with the number of native Intuition calls before it, over
+   slots that check every transition. */
+struct RegistryEvent { std::string what; LONG slot; size_t at; BOOL closed, reopen; };
+struct RegistrySlot { ULONG generation; int state; Screen *native; };
+static std::vector<RegistryEvent> reg_events;
+static std::map<LONG, RegistrySlot> reg_slots;
+static LONG reg_room, reg_slot_next;
+static ULONG reg_next;
+static void reg_reset(LONG room)
+{ reg_events.clear(); reg_slots.clear(); reg_room = room; reg_slot_next = 0; reg_next = 40; }
+static void reg_note(const char *what, LONG slot, BOOL closed = FALSE, BOOL reopen = FALSE)
+{ reg_events.push_back({ what, slot, native->calls.size(), closed, reopen }); }
+static std::string reg_trace()
+{
+    std::string t;
+    for (const auto &e : reg_events) { if (!t.empty()) t += ' '; t += e.what; }
+    return t;
+}
+static LONG reg_reserve(KaffeineLibBase *, ULONG *generation)
+{
+    *generation = 0;
+    if (!reg_room) { reg_note("full", -1); return -1; }
+    --reg_room;
+    const LONG slot = ++reg_slot_next;
+    *generation = ++reg_next;
+    reg_slots[slot] = { *generation, KAFFEINE_OWNED_RESERVED, nullptr };
+    reg_note("reserve", slot);
+    return slot;
+}
+static void reg_bind(KaffeineLibBase *, LONG slot, Screen *screen)
+{
+    assert(reg_slots.at(slot).state == KAFFEINE_OWNED_RESERVED);
+    reg_slots[slot].state = KAFFEINE_OWNED_OPEN;
+    reg_slots[slot].native = screen;
+    reg_note("bind", slot);
+}
+static void reg_unreserve(KaffeineLibBase *, LONG slot)
+{
+    assert(reg_slots.at(slot).state == KAFFEINE_OWNED_RESERVED);
+    reg_slots.erase(slot);
+    ++reg_room;
+    reg_note("unreserve", slot);
+}
+static BOOL reg_closing(KaffeineLibBase *, LONG slot, ULONG generation)
+{
+    auto &e = reg_slots.at(slot);
+    assert(e.generation == generation && (e.state == KAFFEINE_OWNED_OPEN || e.state == KAFFEINE_OWNED_CLOSING));
+    e.state = KAFFEINE_OWNED_CLOSING;
+    reg_note("closing", slot);
+    return TRUE;
+}
+static void reg_drain(KaffeineLibBase *, LONG slot)
+{
+    assert(reg_slots.at(slot).state == KAFFEINE_OWNED_CLOSING);
+    reg_note("drain", slot);
+}
+static void reg_finish(KaffeineLibBase *, LONG slot, BOOL closed, BOOL reopen)
+{
+    auto &e = reg_slots.at(slot);
+    assert(e.state == KAFFEINE_OWNED_CLOSING);
+    reg_note("finish", slot, closed, reopen);
+    if (closed) { reg_slots.erase(slot); ++reg_room; }
+    else if (reopen) e.state = KAFFEINE_OWNED_OPEN;
+}
+static ULONG reg_generation(KaffeineLibBase *, const Screen *screen)
+{
+    for (const auto &kv : reg_slots)
+        if (kv.second.native == screen && kv.second.state >= KAFFEINE_OWNED_OPEN) return kv.second.generation;
+    return 0;
+}
+/* input holds are kaffeine_intuibase.c's */
+static BOOL reg_hold(KaffeineLibBase *, const Screen *, ULONG, LONG *) { assert(false); return FALSE; }
+static void reg_drop(KaffeineLibBase *, LONG) { assert(false); }
+static BOOL reg_foreign(KaffeineLibBase *, const Screen *) { assert(false); return FALSE; }
+static ULONG reg_epoch(KaffeineLibBase *) { return 0; }
+static const KaffeineOwnedScreenOps registry_ops = {
+    reg_reserve, reg_bind, reg_unreserve, reg_closing, reg_drain, reg_finish,
+    reg_generation, reg_hold, reg_drop, reg_foreign, reg_epoch
+};
+static BOOL layers_locked(KaffeineContext *) { return TRUE; }
+
+/* Every opened screen has a registry slot: reserved before Intuition, so
+   that a full registry gives OSERR_NOMEM without OpenScreenTagList(),
+   bound as soon as Intuition returns the screen, given back when it does
+   not open. CloseScreen() makes the slot CLOSING and drains it before the
+   native CloseScreen(), never answering FALSE for it; Intuition's refusal
+   opens the slot again with the same generation. A layer lock of the
+   program stops CloseScreen() before any of it. */
+static void test_owned_screen_registry()
+{
+    {
+        Fixture f;
+        reg_reset(2);
+        f.ctx.owned_screen_ops = &registry_ops;
+        const ULONG g = f.open(0, 0); assert(g);
+        Screen *s = native->opened.back().result;
+        const int i = f.entry(g);
+        const LONG slot = f.ctx.pubscreens[i].slot;
+        assert(reg_trace() == "reserve bind");
+        assert(native->calls[reg_events[0].at].kind == OPEN && reg_events[1].at == reg_events[0].at + 1);
+        assert(f.ctx.pubscreens[i].generation == reg_slots.at(slot).generation && reg_slots.at(slot).native == s);
+        native->close_refuse = true;
+        assert(f.close(g) == 0);
+        native->close_refuse = false;
+        assert(reg_trace() == "reserve bind closing drain finish");
+        assert(native->calls[reg_events[3].at].kind == CLOSE && !reg_events[4].closed && reg_events[4].reopen);
+        assert(reg_slots.at(slot).state == KAFFEINE_OWNED_OPEN && f.owned() == 1);
+        reg_events.clear();
+        assert(f.close(g) == 1);
+        assert(reg_trace() == "closing drain finish" && reg_events[2].closed);
+        assert(native->calls[reg_events[1].at].kind == CLOSE && native->calls[reg_events[1].at].screen == s);
+        assert(!reg_slots.count(slot) && !f.owned());
+        f.absent(g, s);
+        // its address stays allocated, all 0, and names nothing
+        assert(f.ctx.screen_book_count == 1 && f.ctx.screen_book[0].guest == g);
+        for (ULONG o = 0; o < f.ctx.screen_book[0].size; ++o) assert(f.memory[g + o] == 0);
+        f.ctx.owned_screen_ops = nullptr;
+    }
+    {
+        Fixture f;
+        reg_reset(0);
+        f.ctx.owned_screen_ops = &registry_ops;
+        m68k_write32(&f.ctx, f.error_at, 0);
+        f.put_tags(f.tags_at, { { SA_ErrorCode, f.error_at } });
+        const ULONG heap = f.avail();
+        assert(f.open(0, f.tags_at) == 0 && !f.stopped() && native->count(OPEN) == 0);
+        assert(f.lng(f.error_at) == OSERR_NOMEM && f.avail() == heap && !f.entries() && reg_trace() == "full");
+        reg_reset(1);
+        native->open_fail = true;
+        assert(f.open(0, 0) == 0 && reg_trace() == "reserve unreserve" && reg_room == 1);
+        native->open_fail = false;
+        // no 68k Screen for it: drained and closed again
+        native->font_result = nullptr;
+        reg_events.clear();
+        assert(f.open(0, 0) == 0 && reg_trace() == "reserve bind closing drain finish");
+        assert(reg_events.back().closed && reg_slots.empty() && native->opened.back().closed);
+        native->font_result = &f.font;
+        f.ctx.owned_screen_ops = nullptr;
+    }
+    {
+        Fixture f;
+        reg_reset(1);
+        f.ctx.owned_screen_ops = &registry_ops;
+        const ULONG g = f.open(0, 0); assert(g);
+        KaffeineLayerOps ops = recording_layer_ops;
+        ops.has_locks = layers_locked;
+        f.ctx.layer_ops = &ops;
+        reg_events.clear();
+        layer_op_calls.clear();
+        const auto calls = native->calls.size();
+        assert(f.close(g) == 20 && f.stopped() && native->calls.size() == calls);
+        assert(reg_events.empty() && layer_op_calls.empty() && f.owned() == 1);
+        f.ctx.layer_ops = nullptr;
+        assert(f.close(g) == 1 && reg_trace() == "closing drain finish");
+        f.ctx.owned_screen_ops = nullptr;
+    }
+}
+
+/* The end of the program: every slot of its screens goes CLOSING at once;
+   one that can close is drained and closed; one with a window stays open
+   and keeps its slot, CLOSING, with its generation, until a later pass can
+   close it. */
+static void test_owned_screen_cleanup()
+{
+    Fixture f;
+    reg_reset(2);
+    f.ctx.owned_screen_ops = &registry_ops;
+    const ULONG kept = f.open(0, 0); assert(kept);
+    Screen *ks = native->opened.back().result;
+    const ULONG closed = f.open(0, 0); assert(closed);
+    const LONG kslot = f.ctx.pubscreens[f.entry(kept)].slot, cslot = f.ctx.pubscreens[f.entry(closed)].slot;
+    assert(f.entry(kept) < f.entry(closed));
+    Window w{}; w.WScreen = ks; ks->FirstWindow = &w;
+    assert(Kaffeine_ShadowAdd(&f.ctx, 0x3500, &w, KAFFEINE_SHADOW_WINDOW));
+    reg_events.clear();
+    Kaffeine_ScreensCleanup(&f.ctx);
+    assert(reg_trace() == "closing closing drain finish" && reg_events[3].closed);
+    assert(reg_slots.at(kslot).state == KAFFEINE_OWNED_CLOSING && Kaffeine_ScreenNative(&f.ctx, kept) == ks);
+    assert(!reg_slots.count(cslot) && !Kaffeine_ScreenNative(&f.ctx, closed) && native->count(CLOSE) == 1);
+    ks->FirstWindow = nullptr;
+    Kaffeine_ShadowForget(&f.ctx, 0x3500, KAFFEINE_SHADOW_WINDOW);
+    reg_events.clear();
+    Kaffeine_ScreensCleanup(&f.ctx);
+    assert(reg_trace() == "closing drain finish" && !reg_slots.count(kslot) && native->count(CLOSE) == 2);
+    f.ctx.owned_screen_ops = nullptr;
+}
+
+/* A 68k Screen that goes keeps its block, all 0, with its address booked:
+   the very screen locked again takes the same address, another screen
+   never does. */
+static void test_retired_screen_address()
+{
+    Fixture f;
+    auto &wb = f.add();
+    f.add("Other");
+    const ULONG g = f.lock(); assert(g);
+    f.unlock(g);
+    f.absent(g, &wb.screen);
+    assert(f.ctx.screen_book_count == 1 && f.ctx.screen_book[0].guest == g);
+    assert(f.ctx.screen_book[0].native == &wb.screen && f.ctx.screen_book[0].size);
+    for (ULONG o = 0; o < f.ctx.screen_book[0].size; ++o) assert(f.memory[g + o] == 0);
+    const ULONG other = f.lock(f.name("Other")); assert(other && other != g);
+    assert(f.ctx.screen_book_count == 1);
+    const ULONG again = f.lock(); assert(again == g && f.ctx.screen_book_count == 0);
+    assert(Kaffeine_ScreenNative(&f.ctx, g) == &wb.screen);
+    f.unlock(again);
+    f.unlock(other);
+    assert(f.ctx.screen_book_count == 2);
+}
+
 int main()
 {
     const struct Test { const char *name; void (*run)(); } tests[] =
@@ -3815,7 +4037,10 @@ int main()
         { "Native failure, untrackable pens, unholdable screens and the 4096 cap keep nothing; cleanup frees 4096 once", test_pen_failures },
         { "A lease keeps a borrowed screen after unlock and window; the last release retires before its visitor lock", test_pen_borrowed_lifetime },
         { "Pen leases mix with DrawInfo copies and VisualInfos in either order", test_pen_mixed_holds },
-        { "Cleanup gives back every pen once before any unlock, DrawInfo free, close or font, also after a stop", test_pen_cleanup }
+        { "Cleanup gives back every pen once before any unlock, DrawInfo free, close or font, also after a stop", test_pen_cleanup },
+        { "Opened screens hold a registry slot: reserved before Intuition, drained before CloseScreen, never FALSE for input; layer locks stop", test_owned_screen_registry },
+        { "The end of the program drains closable screens and keeps a CLOSING slot for one left open", test_owned_screen_cleanup },
+        { "A retired 68k Screen stays allocated and zero, and comes back only for the very screen", test_retired_screen_address }
     };
     for (const auto &test : tests)
     {
