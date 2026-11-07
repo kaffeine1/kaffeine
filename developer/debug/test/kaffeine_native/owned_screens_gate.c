@@ -29,15 +29,13 @@
     Each task signals its end under Forbid(), so it is gone before the probe
     runs again (rom/exec/remtask.c: a task that removes itself never runs
     again), and nothing shared is freed before every task has ended. Waits
-    are bounded; a wait that ends without its event is a failure, and then
-    the probe still lets go of every task it started, and keeps the shared
-    memory of one that did not end. Before it returns with such a task, the
-    probe detaches: under Forbid() it clears the coordinator that the tasks
-    signal, and every task reads it and signals under Forbid() too, so on a
-    uniprocessor Exec no late notification can reach the probe's process
-    once it has gone. A task that did not end stays blocked in Exec unless
-    another task wakes it, and its code goes with the probe's segment: such
-    a run is a failure, never a result.
+    are individually bounded; a wait that ends without its event is a
+    failure. If a task did not end, the probe detaches its notifications
+    under Forbid() and retains the coordinator, shared memory AND executable
+    segment: main must not return and let DOS unload code that the task may
+    still execute. It reports and flushes this failed retained state, then
+    parks until the isolated VM's outer deadline stops the failed boot.
+    That deadline is never a success oracle. Run only in an isolated UP VM.
 
     The native screens here are opaque addresses: the registry compares them
     and never reads them. This probe is the registry alone; the library,
@@ -407,7 +405,13 @@ out:
         Forbid();
         p->coordinator = NULL;
         Permit();
-        Printf((CONST_STRPTR)"owned_screens_gate: a task did not end; detached, its shared memory stays\n");
+        Printf((CONST_STRPTR)"FAIL owned_screens_gate: unjoined task; retaining coordinator, code and shared memory for VM stop\n");
+        Flush(Output());
+        /* Returning would unload this executable, including any worker
+           that can still wake. The outer VM deadline records a failed
+           boot and stops all of these isolated participants together. */
+        for (;;)
+            Delay(50);
     }
     return failures ? 10 : 0;
 }

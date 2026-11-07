@@ -104,10 +104,12 @@ the drainer returns owning the gate exclusively; only then does it finish
 the slot as closed. The old generation is refused, a new screen at the same
 slot and native address is held, and a refused close opens the slot again
 with its generation. Each task signals its end under `Forbid()`, and shared
-memory is freed only after both have ended; a task that does not end keeps
-it, and the probe then detaches under `Forbid()` before it returns, so that
-no late notification of that task reaches the probe's process. Such a run
-is a failure.
+memory is freed only after both have ended. If a task does not end, the
+probe detaches its notifications under `Forbid()`, prints and flushes a
+failure, then retains the coordinator, shared memory and executable segment
+without returning. Otherwise DOS could unload code that the task may still
+execute. The isolated VM's outer deadline stops that failed boot; a timeout
+is never a success result. Run this probe only in an isolated UP VM.
 
 The observation needs a uniprocessor Exec, so the probe does not build for
 an SMP Exec. It covers the registry alone: the library, `IND_WRITEEVENT` and
