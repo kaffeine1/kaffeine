@@ -5,7 +5,8 @@ heap, bounded guest-buffer checks and CPU interface. It extracts the complete
 `Kaffeine_OpenLibrary()` function from `kaffeine_thunks.c` unchanged, with
 `Kaffeine_PublishNativeLibrary()`, which copies the header of the native
 library into each base it makes, in the sources that have it; generated
-library and unrelated manual thunk tables are inert collaborators. Native Exec
+library and unrelated manual thunk tables, and the IBase refresh that the
+intuition.library base turns on, are inert collaborators. Native Exec
 allocation, library opens and font opens are recording collaborators.
 There is no application code or application input.
 
