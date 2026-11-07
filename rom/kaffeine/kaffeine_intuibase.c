@@ -72,6 +72,20 @@ static ULONG screen_gen(struct KaffeineContext *ctx, const void *native)
 }
 static BOOL screen_view(const struct IBaseView *v)
 { return v->layout && !strcmp(v->layout->name,"Screen"); }
+/* The generation of a native Screen in the snapshot being taken: that of
+   the Screen view of it that this snapshot has reached already, so that a
+   bind that lands while the snapshot is taken cannot make one native two
+   objects in it, else the registry's now. Views of an earlier snapshot
+   carry an older epoch. */
+static ULONG take_gen(struct KaffeineContext *ctx, struct KaffeineIBase *s, void *native)
+{
+    ULONG i;
+    if(!native)return 0;
+    for(i=0;i<s->count;++i)
+        if(s->views[i].native==native && s->views[i].epoch==s->epoch && screen_view(&s->views[i]))
+            return s->views[i].gen;
+    return screen_gen(ctx,native);
+}
 /* A view goes: a Screen address may still be in the program's hands, so
    it is retired, every other mirror goes back */
 static void view_release(struct KaffeineContext *ctx, const struct IBaseView *v)
@@ -134,7 +148,7 @@ static ULONG snapshot(struct KaffeineContext *ctx, const char *name, void *nativ
     if (depth>MAX_DEPTH) { s->failed=TRUE;return 0; }
     if (name && (!strcmp(name,"Window") || !strcmp(name,"Screen")))
     { int k=owned(ctx,native,*name=='W');if(k>=0)return token(ctx,k,name,native,depth); }
-    v=view(ctx,native,name,name && !strcmp(name,"Screen") ? screen_gen(ctx,native) : 0);if(!v)return 0;g=v->guest;
+    v=view(ctx,native,name,name && !strcmp(name,"Screen") ? take_gen(ctx,s,native) : 0);if(!v)return 0;g=v->guest;
     if(v->epoch==s->epoch)return g;
     if(++s->reached>CURRENT) { s->failed=TRUE;return 0; }
     v->epoch=s->epoch;memset(ctx->mem+g,0,v->size);
@@ -315,7 +329,11 @@ static BOOL take(struct KaffeineContext *ctx, struct KaffeineIBase *s, ULONG bas
         for(k=0;k<s->count;++k)s->views[k].epoch=0;
         for(k=0;k<KAFFEINE_MAX_SHADOWS;++k)s->visit[k]=0;
     }
-    for(i=0;i<ROOTS;++i) { n[i]=root_native(i);gen[i]=i?screen_gen(ctx,n[i]):0;g[i]=snapshot(ctx,root_kind[i],n[i],0); }
+    for(i=0;i<ROOTS;++i) { n[i]=root_native(i);g[i]=snapshot(ctx,root_kind[i],n[i],0); }
+    /* the roots carry the generations that the walk chose for their views;
+       a root that is the program's own screen, or that the walk did not
+       reach, the registry's, once for the same native */
+    for(i=0;i<ROOTS;++i)gen[i]=!i?0:i==2 && n[2]==n[1]?gen[1]:take_gen(ctx,s,n[i]);
     scalars(ctx,base);
     if(s->failed)
     {

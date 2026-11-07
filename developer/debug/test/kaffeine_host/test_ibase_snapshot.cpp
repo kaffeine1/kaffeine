@@ -156,22 +156,34 @@ extern "C" void Kaffeine_MirrorRelease(struct KaffeineContext *ctx, ULONG addr)
 
 /* Generations per native, CLOSING ones, an epoch, whether a generation-0
    screen is still foreign after its visitor lock, and the input holds:
-   kaffeine_owned_screens.c's answers without its semaphores. */
+   kaffeine_owned_screens.c's answers without its semaphores. bind_screen
+   gets bind_gen right after its first lookup while a snapshot holds IBase,
+   as another program's bind() may land then, needing no IBase. */
 struct Registry
 {
     std::map<const struct Screen *, ULONG> gen;
     std::map<const struct Screen *, bool> closing;
     ULONG epoch = 0;
     bool foreign = true;
-    int gen_calls = 0, holds = 0, drops = 0, foreign_calls = 0;
+    int gen_calls = 0, holds = 0, drops = 0, foreign_calls = 0, binds = 0;
     LONG last_drop = -2;
+    const struct Screen *bind_screen = nullptr;
+    ULONG bind_gen = 0;
 };
 static Registry registry;
 static ULONG reg_generation(struct KaffeineLibBase *, const struct Screen *n)
 {
     ++registry.gen_calls;
     auto it = registry.gen.find(n);
-    return it == registry.gen.end() ? 0 : it->second;
+    ULONG g = it == registry.gen.end() ? 0 : it->second;
+    if (registry.bind_screen == n && native_holds > 0)
+    {
+        registry.gen[n] = registry.bind_gen;
+        ++registry.epoch;
+        ++registry.binds;
+        registry.bind_screen = nullptr;
+    }
+    return g;
 }
 static BOOL reg_hold(struct KaffeineLibBase *, const struct Screen *n, ULONG g, LONG *slot)
 {
@@ -1164,6 +1176,63 @@ static void own_opened_screen()
     CHECK(!held && !h.screen);
 }
 
+/* Another program binds its screen while a refresh snapshot holds IBase,
+   right after the snapshot's first look at it, through the window's
+   WScreen: the window, ActiveScreen and FirstScreen still name one object,
+   of the generation of that first look, and the snapshot makes no second
+   view of it. Input through that address fails closed, as the screen is a
+   program's now; the next refresh takes the new generation, retires the
+   old address, and the one after it needs no lock. When the bind lands in
+   a snapshot that does not fit (its Screen view is the ninth mirror, its
+   BitMap gets none), the refusal leaves nothing live, and the next refresh,
+   with mirrors back, needs no backoff for the new generation. */
+static void bind_during_snapshot()
+{
+    for (bool refused : { false, true })
+    {
+        Fixture f;
+        NativeUI ui(1, 2);
+        ULONG v = 0, w;
+        BOOL held;
+        struct KaffeineScreenHold h;
+
+        f.ctx->owned_screen_ops = &registry_ops;
+        registry.bind_screen = &ui.screen;
+        registry.bind_gen = 6;
+        ui.show();
+        CHECK(ui.views() == 10);
+        if (refused) mirror_budget = 9;
+        f.refresh();
+        CHECK(lock_calls == 1 && registry.binds == 1 && native_holds == 0 && !stops);
+        if (!refused)
+        {
+            v = f.first_screen();
+            CHECK(v && f.active_screen() == v && f.read(f.active_window() + 46) == v);
+            CHECK(f.live() == ui.views() && !f.retired());
+            h = hold_of(f, v, &held);
+            CHECK(!held && !h.screen && public_holds == 1 && public_drops == 1 && !registry.holds);
+        }
+        else
+        {
+            CHECK(!f.active_window() && !f.active_screen() && !f.first_screen());
+            CHECK(f.live() == 0 && f.retired() == 1 && f.retired_zeroed() && !bad_releases);
+            mirror_budget = -1;
+        }
+        f.refresh();
+        CHECK(lock_calls == 2 && native_holds == 0 && !stops);
+        w = f.first_screen();
+        CHECK(w && f.active_screen() == w && f.read(f.active_window() + 46) == w);
+        CHECK(f.live() == ui.views() && f.retired() == 1 && f.retired_zeroed());
+        if (!refused) CHECK(w != v && f.zero(v, SCREEN_SIZE));
+        h = hold_of(f, w, &held);
+        CHECK(held && h.screen == &ui.screen && h.slot == 7 && registry.holds == 1);
+        Kaffeine_IBaseInputScreenDrop(f.ctx, &h);
+        CHECK(registry.drops == 1);
+        f.refresh();
+        CHECK(lock_calls == 2 && f.first_screen() == w && !bad_releases);
+    }
+}
+
 int main()
 {
     fits_beyond_1024();
@@ -1194,6 +1263,7 @@ int main()
     root_generations();
     public_revalidated();
     own_opened_screen();
+    bind_during_snapshot();
     std::printf("ibase snapshot: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
