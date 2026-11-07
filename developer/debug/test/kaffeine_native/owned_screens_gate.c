@@ -31,7 +31,13 @@
     again), and nothing shared is freed before every task has ended. Waits
     are bounded; a wait that ends without its event is a failure, and then
     the probe still lets go of every task it started, and keeps the shared
-    memory of one that did not end.
+    memory of one that did not end. Before it returns with such a task, the
+    probe detaches: under Forbid() it clears the coordinator that the tasks
+    signal, and every task reads it and signals under Forbid() too, so on a
+    uniprocessor Exec no late notification can reach the probe's process
+    once it has gone. A task that did not end stays blocked in Exec unless
+    another task wakes it, and its code goes with the probe's segment: such
+    a run is a failure, never a result.
 
     The native screens here are opaque addresses: the registry compares them
     and never reads them. This probe is the registry alone; the library,
@@ -66,7 +72,9 @@ struct Probe
     struct Screen *native;
     LONG slot;
     ULONG generation;
-    struct Task *coordinator;
+    /* the task to notify, NULL once the probe has detached; read and
+       written only under Forbid() */
+    struct Task *volatile coordinator;
     /* the coordinator's signals, as masks */
     ULONG ready, drained, holder_done, drainer_done;
     /* the holder, and the signal that it allocated, -1 before */
@@ -124,6 +132,36 @@ static BOOL queue_empty(struct SignalSemaphore *gate)
     return IsListEmpty((struct List *)&gate->ss_WaitQueue);
 }
 
+/* A notification of the coordinator unless it has detached: the check and
+   Signal() under one Forbid(), as the detach is */
+static void notify(struct Probe *p, ULONG mask)
+{
+    Forbid();
+    if (p->coordinator)
+        Signal(p->coordinator, mask);
+    Permit();
+}
+
+/* The last notification of a task: under the Forbid() that lasts until the
+   task has been removed, so it is gone before the coordinator runs again */
+static void notify_end(struct Probe *p, ULONG mask)
+{
+    Forbid();
+    if (p->coordinator)
+        Signal(p->coordinator, mask);
+}
+
+/* An input hold of the coordinator, given back at once when it was
+   admitted, so that no check that fails keeps a share of the gate */
+static BOOL try_hold(struct Probe *p, ULONG generation, LONG *slot)
+{
+    BOOL held = p->ops->hold(p->base, p->native, generation, slot);
+
+    if (held)
+        p->ops->drop(p->base, *slot);
+    return held;
+}
+
 static UBYTE slot_state(struct Probe *p, LONG slot)
 {
     UBYTE state;
@@ -146,7 +184,7 @@ static void holder_main(void)
         p->held = p->ops->hold(p->base, p->native, p->generation, &slot);
     p->held_slot = slot;
     p->drop_sig = sig;
-    Signal(p->coordinator, p->ready);
+    notify(p, p->ready);
     if (sig >= 0)
     {
         Wait(1UL << sig);
@@ -157,9 +195,7 @@ static void holder_main(void)
         }
         FreeSignal(sig);
     }
-    /* gone before the coordinator runs again */
-    Forbid();
-    Signal(p->coordinator, p->holder_done);
+    notify_end(p, p->holder_done);
 }
 
 /* Makes the slot CLOSING and drains it, as CloseScreen() does, then
@@ -174,17 +210,16 @@ static void drainer_main(void)
     {
         p->ops->drain(p->base, p->slot);
         p->returned = TRUE;
-        Signal(p->coordinator, p->drained);
+        notify(p, p->drained);
         Wait(1UL << sig);
         p->ops->finish(p->base, p->slot, TRUE, FALSE);
         p->finished = TRUE;
     }
     else
-        Signal(p->coordinator, p->drained);
+        notify(p, p->drained);
     if (sig >= 0)
         FreeSignal(sig);
-    Forbid();
-    Signal(p->coordinator, p->drainer_done);
+    notify_end(p, p->drainer_done);
 }
 
 static struct Task *start(const char *name, void (*entry)(void), struct Probe *p)
@@ -279,8 +314,7 @@ int main(void)
           "slot CLOSING, drainer not returned");
     check(!(SetSignal(0, 0) & p->drained), "no drained signal while the holder holds");
     other = 99;
-    check(!ops->hold(base, p->native, generation, &other) && other == -1,
-          "CLOSING refuses a new hold");
+    check(!try_hold(p, generation, &other) && other == -1, "CLOSING refuses a new hold");
     {
         ULONG granted = AttemptSemaphoreShared(gate);
 
@@ -325,15 +359,18 @@ release:
     i = gate->ss_Owner == NULL && gate->ss_NestCount == 0 && gate->ss_QueueCount == -1 && queue_empty(gate);
     Permit();
     check(i, "gate free again");
-    check(!ops->hold(base, p->native, generation, &other), "old generation refused");
+    check(!try_hold(p, generation, &other), "old generation refused");
 
     /* 4. a new screen at the same slot and native address */
     reused = ops->reserve(base, &renewed);
+    if (!check(reused >= 0, "a slot for the new screen"))
+        goto out;
     check(reused == slot && renewed == generation + 1, "same slot, next generation");
     ops->bind(base, reused, p->native);
-    check(!ops->hold(base, p->native, generation, &other), "old generation refused at the reused native");
-    if (check(ops->hold(base, p->native, renewed, &other) && other == reused, "new generation held"))
-        ops->drop(base, other);
+    check(!try_hold(p, generation, &other), "old generation refused at the reused native");
+    other = -1;
+    check(try_hold(p, renewed, &other), "new generation held and dropped");
+    check(other == reused, "held at the reused slot");
 
     /* 5. a failed close opens the slot again with its generation */
     check(ops->closing(base, reused, renewed), "CLOSING again");
@@ -345,8 +382,7 @@ release:
     ops->finish(base, reused, FALSE, TRUE);
     check(slot_state(p, reused) == KAFFEINE_OWNED_OPEN && base->owned_screens.slot[reused].generation == renewed,
           "refused close: OPEN, same generation");
-    if (check(ops->hold(base, p->native, renewed, &other), "held again after the refused close"))
-        ops->drop(base, other);
+    check(try_hold(p, renewed, &other), "held again after the refused close");
     check(ops->closing(base, reused, renewed), "closing for good");
     ops->drain(base, reused);
     ops->finish(base, reused, TRUE, FALSE);
@@ -354,7 +390,8 @@ release:
 
 out:
     Printf((CONST_STRPTR)"owned_screens_gate: %ld checks, %ld failed\n", (LONG)checks, (LONG)failures);
-    /* nothing that a task may still use goes while it may */
+    /* nothing that a task may still use goes while it may, and no task
+       signals this process once it has gone */
     if (holder_gone && drainer_gone)
     {
         if (base)
@@ -366,6 +403,11 @@ out:
                 FreeSignal(sigs[i]);
     }
     else
-        Printf((CONST_STRPTR)"owned_screens_gate: a task did not end; its shared memory stays\n");
+    {
+        Forbid();
+        p->coordinator = NULL;
+        Permit();
+        Printf((CONST_STRPTR)"owned_screens_gate: a task did not end; detached, its shared memory stays\n");
+    }
     return failures ? 10 : 0;
 }

@@ -105,7 +105,9 @@ the slot as closed. The old generation is refused, a new screen at the same
 slot and native address is held, and a refused close opens the slot again
 with its generation. Each task signals its end under `Forbid()`, and shared
 memory is freed only after both have ended; a task that does not end keeps
-it.
+it, and the probe then detaches under `Forbid()` before it returns, so that
+no late notification of that task reaches the probe's process. Such a run
+is a failure.
 
 The observation needs a uniprocessor Exec, so the probe does not build for
 an SMP Exec. It covers the registry alone: the library, `IND_WRITEEVENT` and
