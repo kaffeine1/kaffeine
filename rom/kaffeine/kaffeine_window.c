@@ -22,7 +22,9 @@
     sees each original go back too. CloseWindow() gives Intuition and
     GadTools back every message of the window that the program has not
     replied, since the program cannot reply it once its 68k message is
-    gone.
+    gone. The Flags of a 68k Window are Intuition's, but for a
+    WFLG_RMBTRAP that the program writes there itself, which goes to the
+    native window before the program takes a message or waits.
 */
 
 #include "kaffeine_intern.h"
@@ -39,6 +41,7 @@
 #include "kaffeine_startup.h"
 #include "kaffeine_sched.h"
 
+#include <aros/atomic.h>
 #include <aros/debug.h>
 #include <exec/memory.h>
 #include <exec/nodes.h>
@@ -420,9 +423,77 @@ IPTR Kaffeine_OpenWindow(struct KaffeineContext *ctx, void *cpu)
 
 /* ── Windows ─────────────────────────────────────────────────────── */
 
+/* shadow_map[].window_pub of a Window shadow: the WFLG_RMBTRAP that
+   Kaffeine_WindowSync() last wrote to the 68k Window, if it wrote one */
+enum { RMBTRAP_UNPUBLISHED, RMBTRAP_PUBLISHED_CLEAR, RMBTRAP_PUBLISHED_SET };
+
+/* The Window shadow of a 68k Window of the program for its native window,
+   else -1 */
+static int window_shadow(struct KaffeineContext *ctx, ULONG mw, const struct Window *w)
+{
+    UWORD i;
+
+    for (i = 0; i < ctx->num_shadows; i++)
+        if (ctx->shadow_map[i].type == KAFFEINE_SHADOW_WINDOW &&
+            ctx->shadow_map[i].m68k_addr == mw && ctx->shadow_map[i].native_ptr == w)
+            return i;
+    return -1;
+}
+
+/* A program may set or clear WFLG_RMBTRAP in the Flags of its own window
+   directly, as AROS allows (rom/intuition/activatewindow.c): Personal
+   Paint clears it while the pointer is over the title bar, where the
+   right button then shows the menus, and sets it again over the picture,
+   where the button paints. Intuition reads only the native window, so the
+   bit that the program wrote over the one that Kaffeine_WindowSync() last
+   published goes there, bit by bit as the input handler changes others
+   meanwhile, and under Forbid(). No other bit of the Flags is the
+   program's to change, and a window that WindowSync() has not published
+   to yet has no bit of the program's either. Only Window shadows come
+   here, which are windows that the program opened; a window of another
+   program is a view of an IBase snapshot, never one. */
+static void window_rmbtrap(struct KaffeineContext *ctx, int i)
+{
+    struct Window *w = ctx->shadow_map[i].native_ptr;
+    UWORD pub = ctx->shadow_map[i].window_pub;
+    ULONG wrote;
+
+    if (pub == RMBTRAP_UNPUBLISHED)
+        return;
+    wrote = m68k_read32(ctx, ctx->shadow_map[i].m68k_addr + M68K_WIN_FLAGS) & WFLG_RMBTRAP;
+    if ((wrote != 0) == (pub == RMBTRAP_PUBLISHED_SET))
+        return;
+    Forbid();
+    if (wrote)
+        AROS_ATOMIC_OR(w->Flags, WFLG_RMBTRAP);
+    else
+        AROS_ATOMIC_AND(w->Flags, ~(ULONG)WFLG_RMBTRAP);
+    Permit();
+    ctx->shadow_map[i].window_pub = wrote ? RMBTRAP_PUBLISHED_SET : RMBTRAP_PUBLISHED_CLEAR;
+}
+
+/* Each window of the program gets the WFLG_RMBTRAP that the program wrote
+   since its last publication, before the program takes a message or
+   waits: it writes the bit while it handles one message and the next one
+   may already be the right button that it chose for. */
+void Kaffeine_WindowsPublish(struct KaffeineContext *ctx)
+{
+    UWORD i;
+
+    for (i = 0; i < ctx->num_shadows; i++)
+        if (ctx->shadow_map[i].type == KAFFEINE_SHADOW_WINDOW)
+            window_rmbtrap(ctx, i);
+}
+
 void Kaffeine_WindowSync(struct KaffeineContext *ctx, ULONG mw, struct Window *w)
 {
     ULONG shared = shared_identity(ctx, w->UserPort);
+    int i = window_shadow(ctx, mw, w);
+
+    /* what the program wrote goes to Intuition before Intuition's Flags
+       come back */
+    if (i >= 0)
+        window_rmbtrap(ctx, i);
     if (shared) m68k_write32(ctx, mw + M68K_WIN_USERPORT, shared);
     m68k_write16(ctx, mw + M68K_WIN_LEFTEDGE, (UWORD)w->LeftEdge);
     m68k_write16(ctx, mw + M68K_WIN_TOPEDGE, (UWORD)w->TopEdge);
@@ -438,6 +509,11 @@ void Kaffeine_WindowSync(struct KaffeineContext *ctx, ULONG mw, struct Window *w
        stays (kaffeine_layers.c) */
     m68k_write32(ctx, mw + M68K_WIN_FLAGS,
                  ctx->layer_ops ? ctx->layer_ops->window_flags(ctx, mw, w->Flags) : w->Flags);
+    /* the program now has Intuition's WFLG_RMBTRAP, also one that changed
+       natively while the program left its own alone */
+    if (i >= 0)
+        ctx->shadow_map[i].window_pub = (w->Flags & WFLG_RMBTRAP) ? RMBTRAP_PUBLISHED_SET
+                                                                  : RMBTRAP_PUBLISHED_CLEAR;
     ctx->mem[mw + M68K_WIN_BORDERLEFT] = (UBYTE)w->BorderLeft;
     ctx->mem[mw + M68K_WIN_BORDERTOP] = (UBYTE)w->BorderTop;
     ctx->mem[mw + M68K_WIN_BORDERRIGHT] = (UBYTE)w->BorderRight;
@@ -1018,7 +1094,8 @@ static ULONG guest_first(struct KaffeineContext *ctx, ULONG port, ULONG *next)
    (kaffeine_workbench.c). Any other 68k port with no message stops the
    program: no message can reach it yet. With AddTask() children, a guest
    task that waits for an empty IDCMP port lets the others run, and this
-   runs again for it once the port's signal arrives (kaffeine_sched.c). */
+   runs again for it once the port's signal arrives (kaffeine_sched.c).
+   The windows of the program get the WFLG_RMBTRAP that it wrote first. */
 IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG guest = THUNK_A(0), first, next, mw;
@@ -1027,6 +1104,7 @@ IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
     IPTR ready;
     int shared;
 
+    Kaffeine_WindowsPublish(ctx);
     for (;;)
     {
         shared = shared_ready(ctx, guest, TRUE, &port, &ready);
@@ -1087,7 +1165,9 @@ IPTR Kaffeine_WaitPort(struct KaffeineContext *ctx, void *cpu)
 
 /* exec -372: GetMsg(A0=port) -> D0=message. The 68k message of a window's
    IDCMP port, or the first node of a 68k port, where the next AppMessage
-   of the port of App objects comes when there is none. */
+   of the port of App objects comes when there is none. The windows of the
+   program get the WFLG_RMBTRAP that it wrote first, also when the port is
+   empty. */
 IPTR Kaffeine_GetMsg(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG guest = THUNK_A(0), first, next;
@@ -1095,7 +1175,10 @@ IPTR Kaffeine_GetMsg(struct KaffeineContext *ctx, void *cpu)
     struct IntuiMessage *im;
     ULONG msg;
     IPTR ready;
-    int shared = shared_ready(ctx, guest, FALSE, &port, &ready);
+    int shared;
+
+    Kaffeine_WindowsPublish(ctx);
+    shared = shared_ready(ctx, guest, FALSE, &port, &ready);
 
     if (shared == 2 || shared < 0) return ready;
 
@@ -1167,6 +1250,10 @@ ULONG Kaffeine_WindowCreate(struct KaffeineContext *ctx, struct Window *w)
         Kaffeine_HeapFree(ctx, mw, M68K_SIZEOF_WINDOW);
         return 0;
     }
+    /* the cleared 68k Window has no WFLG_RMBTRAP of the program yet: the
+       first WindowSync() publishes Intuition's, and Wait() publishes the
+       program's from now on */
+    ctx->window_publish = Kaffeine_WindowsPublish;
     Kaffeine_WindowSync(ctx, mw, w);
     /* A window without its 68k RastPort or IDCMP port would hand the
        program NULL where Intuition has an object. */
@@ -1440,7 +1527,9 @@ IPTR Kaffeine_ModifyIDCMP(struct KaffeineContext *ctx, void *cpu)
 
 /* gadtools -72: GT_GetIMsg(A0=iport) -> D0, as AROS's: each message from
    GetMsg() through GT_FilterIMsg(), which gives GadTools' copy for the
-   program or NULL for a message of GadTools only, which goes back. */
+   program or NULL for a message of GadTools only, which goes back. The
+   windows of the program get the WFLG_RMBTRAP that it wrote first, as at
+   GetMsg(). */
 IPTR Kaffeine_GT_GetIMsg(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG guest = THUNK_A(0);
@@ -1448,7 +1537,10 @@ IPTR Kaffeine_GT_GetIMsg(struct KaffeineContext *ctx, void *cpu)
     struct IntuiMessage *im, *copy;
     ULONG msg;
     IPTR ready;
-    int shared = shared_ready(ctx, guest, FALSE, &port, &ready);
+    int shared;
+
+    Kaffeine_WindowsPublish(ctx);
+    shared = shared_ready(ctx, guest, FALSE, &port, &ready);
 
     if (shared == 2 || shared < 0) return ready;
 

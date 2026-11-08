@@ -378,9 +378,12 @@ static IPTR thunk_exec_SetTaskPri(struct KaffeineContext *ctx, void *cpu)
    tasks run while one waits; otherwise the native task waits. With
    asynchronous I/O in flight it also wakes for the private bits behind it,
    so that the completions reach their guest ports, whose signals it then
-   takes; the private bits never reach D0. */
+   takes; the private bits never reach D0. The windows of the program get
+   the WFLG_RMBTRAP that it wrote first (kaffeine_window.c). */
 static IPTR thunk_exec_Wait(struct KaffeineContext *ctx, void *cpu)
 {
+    if (ctx->window_publish)
+        ctx->window_publish(ctx);
     if (ctx->sched)
         return ctx->task_ops->wait(ctx, cpu);
     return Kaffeine_AsyncWaitSignals(ctx, THUNK_D(0));

@@ -60,6 +60,10 @@ static BOOL Kaffeine_StartupReply(struct KaffeineContext *c, ULONG m, IPTR *r)
 { (void)m;(void)r; if(c->startup_native || c->startup_message) abort(); return FALSE; }
 static int shared_ready(struct KaffeineContext *c, ULONG p, BOOL w, struct MsgPort **n, IPTR *r)
 { (void)p;(void)w;(void)n;(void)r;if(c->idcmp_ports)abort();return 0; }
+/* GetMsg() and WaitPort() publish WFLG_RMBTRAP of the program's windows
+   first; this fixture has no window, and one here must fail */
+static void Kaffeine_WindowsPublish(struct KaffeineContext *c)
+{ UWORD i; for(i=0;i<c->num_shadows;i++) if(c->shadow_map[i].type==KAFFEINE_SHADOW_WINDOW) abort(); }
 ULONG Wait(ULONG signals) { (void)signals;abort(); }
 static void Kaffeine_AppPortGone(struct KaffeineContext *c, ULONG p) { (void)c;(void)p; }
 static void Kaffeine_AppSignalGone(struct KaffeineContext *c, BYTE b) { (void)c;(void)b; }

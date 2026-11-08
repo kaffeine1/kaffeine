@@ -125,9 +125,14 @@ struct KaffeineClassic
     WORD place[4];              /* the knob's LeftEdge, TopEdge, Width and Height, likewise */
 };
 
+/* size bytes of the program's own in guest memory at addr: none of them in
+   the system gadgets of a screen (kaffeine_screens.c), which the program
+   only reads, so that neither the bridge nor Intuition writes them as a
+   structure of the program's */
 static BOOL guest_range(struct KaffeineContext *ctx, ULONG addr, ULONG size)
 {
-    return ctx->mem && addr && addr < ctx->mem_size && ctx->mem_size - addr >= size;
+    return ctx->mem && addr && addr < ctx->mem_size && ctx->mem_size - addr >= size &&
+           !(ctx->screen_system_mirror && ctx->screen_system_mirror(ctx, addr, size));
 }
 
 /* Stop the program with return code 20, which the thunk returns to D0. */

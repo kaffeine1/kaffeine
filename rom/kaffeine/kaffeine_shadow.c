@@ -32,6 +32,7 @@ ULONG shadow_register(struct KaffeineContext *ctx, ULONG m68k_addr, void *native
         ctx->shadow_map[ctx->num_shadows].native_ptr = native;
         ctx->shadow_map[ctx->num_shadows].type = type;
         ctx->shadow_map[ctx->num_shadows].idcmp_window = 0;
+        ctx->shadow_map[ctx->num_shadows].window_pub = 0;
         ctx->num_shadows++;
         return m68k_addr;
     }

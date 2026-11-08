@@ -120,7 +120,7 @@ enum
     G_GD_HEIGHT = 10, G_GD_FLAGS = 12, G_GD_ACTIVATION = 14, G_GD_GADGETTYPE = 16,
     G_GD_GADGETRENDER = 18, G_GD_SELECTRENDER = 22, G_GD_GADGETTEXT = 26,
     G_GD_MUTUALEXCLUDE = 30, G_GD_SPECIALINFO = 34, G_GD_GADGETID = 38,
-    G_GD_USERDATA = 40, G_GD_MOREFLAGS = 44, G_GD_BOUNDSLEFTEDGE = 48,
+    G_GD_USERDATA = 40, G_GADGET_SIZE = 44, G_GD_MOREFLAGS = 44, G_GD_BOUNDSLEFTEDGE = 48,
     G_GD_BOUNDSTOPEDGE = 50, G_GD_BOUNDSWIDTH = 52, G_GD_BOUNDSHEIGHT = 54,
     G_EXTGADGET_SIZE = 56,
 
@@ -2129,6 +2129,19 @@ IPTR Kaffeine_GT_GetGadgetAttrsA(struct KaffeineContext *ctx, void *cpu)
     return count;
 }
 
+/* Whether the size bytes at guest meet a system gadget of a screen or its
+   Image, as Screen.FirstGadget shows them (kaffeine_screens.c): a
+   read-only copy in guest memory with no native object behind it, which
+   the calls below would pass to a native class as one, and OnGadget(),
+   OffGadget(), ModifyProp() and NewModifyProp() would change as a gadget
+   of the program. Those calls stop for it, also after the screen has
+   gone: the BOOPSI ones for an object there, the others for a Gadget that
+   reaches into it. */
+static BOOL screen_system(struct KaffeineContext *ctx, ULONG guest, ULONG size)
+{
+    return ctx->screen_system_mirror && ctx->screen_system_mirror(ctx, guest, size);
+}
+
 /* intuition -642: DisposeObject(A0=object). GadTools frees its gadgets with
    FreeGadgets(), and the bridge its batches with them. Other objects as
    the generated thunk passes them. */
@@ -2136,6 +2149,8 @@ IPTR Kaffeine_DisposeObject(struct KaffeineContext *ctx, void *cpu)
 {
     if (Kaffeine_ShadowNative(ctx, THUNK_A(0), KAFFEINE_SHADOW_GADGET))
         return refuse(ctx, "DisposeObject(): a gadget of GadTools, which FreeGadgets() frees");
+    if (screen_system(ctx, THUNK_A(0), 1))
+        return refuse(ctx, "DisposeObject(): a system gadget of a screen, which the program only reads");
     DisposeObject(m68k_to_host_or_shadow(ctx, THUNK_A(0)));
     return 0;
 }
@@ -2204,6 +2219,8 @@ IPTR Kaffeine_SetAttrsA(struct KaffeineContext *ctx, void *cpu)
     if (gadtools_gadget(ctx, THUNK_A(0)))
         return refuse(ctx, "SetAttrsA(): a gadget of GadTools, whose attributes "
                            "GT_SetGadgetAttrsA() sets");
+    if (screen_system(ctx, THUNK_A(0), 1))
+        return refuse(ctx, "SetAttrsA(): a system gadget of a screen, which the program only reads");
     tags = m68k_to_native_taglist(ctx, THUNK_A(1));
     SetAttrsA(m68k_to_host_or_shadow(ctx, THUNK_A(0)), tags);
     if (tags)
@@ -2220,6 +2237,8 @@ IPTR Kaffeine_GetAttr(struct KaffeineContext *ctx, void *cpu)
     if (gadtools_gadget(ctx, THUNK_A(0)))
         return refuse(ctx, "GetAttr(): a gadget of GadTools, whose attributes "
                            "GT_GetGadgetAttrsA() gives");
+    if (screen_system(ctx, THUNK_A(0), 1))
+        return refuse(ctx, "GetAttr(): a system gadget of a screen, whose fields the program reads");
     return (IPTR)GetAttr(THUNK_D(0), m68k_to_host_or_shadow(ctx, THUNK_A(0)),
                          m68k_to_host_or_shadow(ctx, THUNK_A(1)));
 }
@@ -2234,6 +2253,8 @@ IPTR Kaffeine_SetGadgetAttrsA(struct KaffeineContext *ctx, void *cpu)
     if (gadtools_gadget(ctx, THUNK_A(0)))
         return refuse(ctx, "SetGadgetAttrsA(): a gadget of GadTools, whose attributes "
                            "GT_SetGadgetAttrsA() sets");
+    if (screen_system(ctx, THUNK_A(0), 1))
+        return refuse(ctx, "SetGadgetAttrsA(): a system gadget of a screen, which the program only reads");
     tags = m68k_to_native_taglist(ctx, THUNK_A(3));
     ret = (IPTR)SetGadgetAttrsA((struct Gadget *)m68k_to_host_or_shadow(ctx, THUNK_A(0)),
                                 (struct Window *)m68k_to_host_or_shadow(ctx, THUNK_A(1)),
@@ -2250,6 +2271,8 @@ IPTR Kaffeine_DoGadgetMethodA(struct KaffeineContext *ctx, void *cpu)
 {
     if (gadtools_gadget(ctx, THUNK_A(0)))
         return refuse(ctx, "DoGadgetMethodA(): a gadget of GadTools");
+    if (screen_system(ctx, THUNK_A(0), 1))
+        return refuse(ctx, "DoGadgetMethodA(): a system gadget of a screen, which the program only reads");
     return (IPTR)DoGadgetMethodA((struct Gadget *)m68k_to_host_or_shadow(ctx, THUNK_A(0)),
                                  (struct Window *)m68k_to_host_or_shadow(ctx, THUNK_A(1)),
                                  (struct Requester *)m68k_to_host_or_shadow(ctx, THUNK_A(2)),
@@ -2264,7 +2287,8 @@ IPTR Kaffeine_DoGadgetMethodA(struct KaffeineContext *ctx, void *cpu)
    Then its 68k mirrors follow. A gadget that the program built itself
    changes through kaffeine_classic.c, its copy on a window and its own
    Flags; a native object behind a shadow as the generated thunks pass
-   it. */
+   it. A Gadget that reaches into a system gadget of a screen, which the
+   program only reads, stops the program before either. */
 static IPTR enable(struct KaffeineContext *ctx, void *cpu, BOOL off)
 {
     struct TagItem tags[] = { { GA_Disabled, off }, { TAG_DONE, 0 } };
@@ -2272,6 +2296,10 @@ static IPTR enable(struct KaffeineContext *ctx, void *cpu, BOOL off)
     struct KaffeineGadgetBatch *b = batch_of(ctx, THUNK_A(0), &g);
     void *object = m68k_to_host_or_shadow(ctx, THUNK_A(0));
     struct Window *w;
+
+    if (screen_system(ctx, THUNK_A(0), G_GADGET_SIZE))
+        return refuse(ctx, off ? "OffGadget(): a system gadget of a screen, which the program only reads"
+                               : "OnGadget(): a system gadget of a screen, which the program only reads");
 
     /* a native object behind a shadow, such as a gadget object, as the
        shadows of the window and the requester name them */
@@ -2327,6 +2355,11 @@ static IPTR modify_prop(struct KaffeineContext *ctx, void *cpu, WORD num, BOOL a
     struct Window *w;
     struct Gadget *g = NULL;
 
+    /* a Gadget that reaches into a system gadget of a screen, which the
+       program only reads */
+    if (screen_system(ctx, THUNK_A(0), G_GADGET_SIZE))
+        return refuse(ctx, all ? "ModifyProp(): a system gadget of a screen, which the program only reads"
+                               : "NewModifyProp(): a system gadget of a screen, which the program only reads");
     /* without a window AROS's Intuition changes nothing, where AmigaOS
        3.2.3 hangs */
     if (!THUNK_A(1))

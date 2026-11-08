@@ -4569,6 +4569,112 @@ static void test_intuition_guards()
         Kaffeine_ShadowForget(&f.ctx, a, FILLER);
 }
 
+/* What the screen bridge answers (kaffeine_screens.c) for the system
+   gadgets that a 68k Screen shows: copies in guest memory, here at
+   SYSTEM_ROOM, with no native object behind them, which size bytes at
+   address meet when they share one byte with them */
+static constexpr ULONG SYSTEM_ROOM = 0x3D00, SYSTEM_ROOM_SIZE = 384;
+static unsigned system_queries;
+static BOOL system_room_hook(KaffeineContext *, ULONG address, ULONG size)
+{
+    ++system_queries;
+    return size && address < SYSTEM_ROOM + SYSTEM_ROOM_SIZE &&
+           static_cast<uint64_t>(address) + size > SYSTEM_ROOM;
+}
+
+/* DisposeObject(), SetAttrsA(), GetAttr(), SetGadgetAttrsA(),
+   DoGadgetMethodA(), OnGadget() and OffGadget() stop for any byte of a
+   system gadget of a screen or of its Images, live or retired, before a
+   tag conversion, a native call or a write to guest memory; the object
+   just after the copies still goes to Intuition by itself, and the
+   program's own gadget just before them still changes. */
+static void test_screen_system_guards()
+{
+    Fixture f;
+    static int object;
+    assert(!f.ctx.screen_system_mirror);
+    f.ctx.screen_system_mirror = system_room_hook;
+    const unsigned calls = native_calls;
+    passed.clear();
+    disposed.clear();
+    converted_lists = 0;
+    system_queries = 0;
+    for (ULONG a : { SYSTEM_ROOM, SYSTEM_ROOM + 56, SYSTEM_ROOM + 76, SYSTEM_ROOM + SYSTEM_ROOM_SIZE - 1 })
+    {
+        f.call_at(Fixture::intuition, 642, { a });
+        assert(f.stopped());
+        f.call_at(Fixture::intuition, 648, { a, Fixture::tags });
+        assert(f.stopped());
+        f.call_at(Fixture::intuition, 654, { a, OUT }, { GA_Disabled });
+        assert(f.stopped());
+        f.call_at(Fixture::intuition, 660, { a, 0, 0, Fixture::tags });
+        assert(f.stopped());
+        f.call_at(Fixture::intuition, 810, { a, 0, 0, Fixture::tags });
+        assert(f.stopped());
+    }
+    assert(native_calls == calls && passed.empty() && disposed.empty() && converted_lists == 0);
+    assert(system_queries == 20);
+    const ULONG after = SYSTEM_ROOM + SYSTEM_ROOM_SIZE;
+    assert(Kaffeine_ShadowAdd(&f.ctx, after, &object, FILLER));
+    f.call_at(Fixture::intuition, 642, { after });
+    assert(!f.stopped() && disposed.size() == 1 && disposed[0] == &object);
+    assert(f.call_at(Fixture::intuition, 648, { after, Fixture::tags }) == 0 && !f.stopped());
+    assert(passed.back() == "SetAttrsA" && passed_object == &object);
+    assert(f.call_at(Fixture::intuition, 654, { after, OUT }, { 0x1234 }) == 1 && !f.stopped());
+    assert(passed.back() == "GetAttr" && passed_object == &object);
+    assert(f.call_at(Fixture::intuition, 660, { after, 0, 0, Fixture::tags }) == 0x55 && !f.stopped());
+    assert(passed.back() == "SetGadgetAttrsA" && passed_object == &object);
+    assert(f.call_at(Fixture::intuition, 810, { after, 0, 0, Fixture::tags }) == 0x66 && !f.stopped());
+    assert(passed.back() == "DoGadgetMethodA" && passed_object == &object);
+    assert(passed.size() == 4 && system_queries == 25);
+    Kaffeine_ShadowForget(&f.ctx, after, FILLER);
+
+    /* OnGadget() and OffGadget() stop for the copies too, with or without a
+       window of the program, before the Flags of a gadget on no window
+       change in guest memory: a live room, with Flags that either call
+       would change, and a retired one, all 0; also for a Gadget that
+       starts before the room and reaches into it, whose Flags at +12 would
+       be the room's first word */
+    static int native_window;
+    const ULONG win = 0x3BC0;
+    assert(Kaffeine_ShadowAdd(&f.ctx, win, &native_window, KAFFEINE_SHADOW_WINDOW));
+    changed.clear();
+    for (bool retired : { false, true })
+    {
+        for (ULONG i = 0; i < SYSTEM_ROOM_SIZE; ++i)
+            f.memory[SYSTEM_ROOM + i] = retired ? 0 : (UBYTE)i;
+        if (!retired)
+        {
+            m68k_write16(&f.ctx, SYSTEM_ROOM + GD_FLAGS, 0);                   // OffGadget() would set
+            m68k_write16(&f.ctx, SYSTEM_ROOM + 56 + GD_FLAGS, GFLG_DISABLED);  // OnGadget() would clear
+            m68k_write16(&f.ctx, SYSTEM_ROOM, 0x8000);                         // the Flags of room - 12
+        }
+        for (ULONG a : { SYSTEM_ROOM, SYSTEM_ROOM + 56, SYSTEM_ROOM + 76, SYSTEM_ROOM + SYSTEM_ROOM_SIZE - 1,
+                         SYSTEM_ROOM - 12, SYSTEM_ROOM - 43 })
+            for (ULONG window : { 0u, win })
+                for (ULONG lvo : { 174u, 186u })
+                {
+                    const auto memory = f.memory;
+                    system_queries = 0;
+                    assert(f.call_at(Fixture::intuition, lvo, { a, window, 0 }) == 20 && f.stopped());
+                    assert(f.memory == memory && system_queries == 1);
+                    assert(native_calls == calls + 5 && changed.empty() && passed.size() == 4);
+                }
+    }
+    /* the program's own gadget just before the copies, its 44 bytes ending
+       short of them, on no window, still changes as Intuition changes it */
+    const ULONG own = SYSTEM_ROOM - 0x40;
+    std::fill_n(f.memory.begin() + own, 44, 0);
+    m68k_write16(&f.ctx, own + GD_FLAGS, GFLG_GADGHNONE);
+    assert(f.call_at(Fixture::intuition, 174, { own, 0, 0 }) == 0 && !f.stopped());
+    assert(f.word(own + GD_FLAGS) == (GFLG_GADGHNONE | GFLG_DISABLED));
+    assert(f.call_at(Fixture::intuition, 186, { own, 0, 0 }) == 0 && !f.stopped());
+    assert(f.word(own + GD_FLAGS) == GFLG_GADGHNONE);
+    assert(native_calls == calls + 5 && changed.empty());
+    Kaffeine_ShadowForget(&f.ctx, win, KAFFEINE_SHADOW_WINDOW);
+    f.ctx.screen_system_mirror = nullptr;
+}
+
 /* ── Changing attributes ─────────────────────────────────────────── */
 
 /* GT_SetGadgetAttrsA() through -42, with the tags at Fixture::more */
@@ -7147,7 +7253,7 @@ static void test_classic_renders_and_labels()
     own_image(f, IMAGE, IMAGE + 20);
     own_image(f, IMAGE + 20);
     for (UWORD kind : { (UWORD)0, (UWORD)GFLG_GADGIMAGE })
-        for (UWORD highlight : { (UWORD)GFLG_GADGHCOMP, (UWORD)GFLG_GADGHBOX,
+        for (UWORD highlight : { (UWORD)GFLG_GADGHNONE, (UWORD)GFLG_GADGHBOX,
                                 (UWORD)GFLG_GADGHIMAGE, (UWORD)GFLG_GADGHNONE })
         {
             own_gadget(f, OWN, 0, kind | highlight);
@@ -11162,6 +11268,84 @@ static void test_classic_modify_prop_gadtools_foreign_window()
             }
 }
 
+/* The program's own gadgets never write a system gadget of a screen
+   through kaffeine_classic.c or kaffeine_copy.c. ModifyProp() and
+   NewModifyProp() stop for a Gadget in the room or reaching into it; for
+   the program's proportional gadget on no window whose PropInfo meets the
+   room they change nothing, while one whose PropInfo ends just short of it
+   takes the values. AddGList() stops before any copy, native call or write
+   for a Gadget that reaches into the room, and for a PropInfo, a knob or a
+   string Buffer in it. */
+static void test_screen_system_classic()
+{
+    for (ULONG lvo : { 156u, 468u })
+    {
+        Fixture f;
+        Window window{};
+        const ULONG win = 0x3B00;
+        assert(Kaffeine_ShadowAdd(&f.ctx, win, &window, KAFFEINE_SHADOW_WINDOW));
+        f.ctx.screen_system_mirror = system_room_hook;
+        for (ULONG i = 0; i < SYSTEM_ROOM_SIZE; ++i)
+            f.memory[SYSTEM_ROOM + i] = (UBYTE)(i * 7);
+        const unsigned calls = native_calls;
+        for (ULONG gadget : { SYSTEM_ROOM, SYSTEM_ROOM + 56, SYSTEM_ROOM - 12 })
+        {
+            const auto memory = f.memory;
+            assert(modify_call(f, lvo, gadget, win) == 20 && f.stopped());
+            assert(f.memory == memory && native_calls == calls);
+        }
+        own_gadget(f);
+        own_prop(f);
+        for (ULONG info : { SYSTEM_ROOM + 8, SYSTEM_ROOM - 10 })
+        {
+            m68k_write32(&f.ctx, OWN + GD_SPECIALINFO, info);
+            const auto memory = f.memory;
+            assert(modify_call(f, lvo, OWN, win) == 0 && !f.stopped());
+            assert(f.memory == memory && native_calls == calls);
+        }
+        const ULONG info = SYSTEM_ROOM - PROPINFO_SIZE;
+        m68k_write32(&f.ctx, OWN + GD_SPECIALINFO, info);
+        const std::vector<UBYTE> room(f.memory.begin() + SYSTEM_ROOM,
+                                      f.memory.begin() + SYSTEM_ROOM + SYSTEM_ROOM_SIZE);
+        assert(modify_call(f, lvo, OWN, win) == 0 && !f.stopped());
+        for (unsigned i = 0; i < MODIFIED.size(); ++i)
+            assert(f.word(info + 2 * i) == MODIFIED[i]);
+        assert(std::equal(room.begin(), room.end(), f.memory.begin() + SYSTEM_ROOM) && native_calls == calls);
+        Kaffeine_ShadowForget(&f.ctx, win, KAFFEINE_SHADOW_WINDOW);
+        f.ctx.screen_system_mirror = nullptr;
+    }
+
+    Fixture f;
+    Window window{};
+    const ULONG win = 0x3B00;
+    Kaffeine_GadgetsSetup(&f.ctx);
+    assert(Kaffeine_ShadowAdd(&f.ctx, win, &window, KAFFEINE_SHADOW_WINDOW));
+    f.ctx.screen_system_mirror = system_room_hook;
+    const unsigned calls = native_calls, allocations = native_allocations;
+    const UWORD shadows = f.ctx.num_shadows;
+    auto add_refused = [&](ULONG head) {
+        const auto memory = f.memory;
+        assert(f.call_at(Fixture::intuition, 438, { win, head, 0 }, { 0xFFFF, 0xFFFF }) == 20 && f.stopped());
+        assert(native_calls == calls && native_allocations == allocations && f.ctx.num_shadows == shadows &&
+               !f.ctx.classic && !window.FirstGadget && f.memory == memory);
+    };
+    own_gadget(f, SYSTEM_ROOM - 12);
+    add_refused(SYSTEM_ROOM - 12);
+    own_gadget(f);
+    const OwnProp p = own_prop(f);
+    m68k_write32(&f.ctx, OWN + GD_SPECIALINFO, SYSTEM_ROOM + 8);
+    add_refused(OWN);
+    m68k_write32(&f.ctx, OWN + GD_SPECIALINFO, p.info);
+    m68k_write32(&f.ctx, OWN + GD_GADGETRENDER, SYSTEM_ROOM + 56);
+    add_refused(OWN);
+    own_gadget(f);
+    const OwnString s = own_string(f);
+    m68k_write32(&f.ctx, s.info + SI_BUFFER, SYSTEM_ROOM + 4);
+    add_refused(OWN);
+    Kaffeine_ShadowForget(&f.ctx, win, KAFFEINE_SHADOW_WINDOW);
+    f.ctx.screen_system_mirror = nullptr;
+}
+
 int main(int argc, char **argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -11204,6 +11388,8 @@ int main(int argc, char **argv)
         { "GT_GetGadgetAttrsA(): memory, foreign pointers and gadgets that are gone", test_get_lifetime },
         { "GT_GetGadgetAttrsA() brings the mirrors up to date", test_get_settles },
         { "Intuition calls that would reach a GadTools gadget", test_intuition_guards },
+        { "Intuition calls that would reach or change a system gadget of a screen, or its Image, stop", test_screen_system_guards },
+        { "ModifyProp and AddGList never write a system gadget of a screen through the program's gadgets", test_screen_system_classic },
         { "GT_SetGadgetAttrsA(): every attribute of every kind", test_set_kinds },
         { "ShowSelected: Selected, Labels, detach, tag order and immediate string mirrors", test_listview_showsel_set },
         { "ShowSelected: refused frees reset doomed, listview-only and joint frees succeed", test_listview_showsel_free },

@@ -64,7 +64,12 @@ struct Window
     struct Window *NextWindow;   /* read by the IBase snapshot */
 };
 #define WFLG_BACKDROP 0x00000100
+#define WFLG_REPORTMOUSE 0x00000200
 #define WFLG_GIMMEZEROZERO 0x00000400
+#define WFLG_BORDERLESS 0x00000800
+#define WFLG_WINDOWACTIVE 0x00002000
+#define WFLG_RMBTRAP 0x00010000
+#define WFLG_NOCAREREFRESH 0x00020000
 #define WFLG_WINDOWREFRESH 0x01000000
 #ifndef __typedef_RAWARG
 #define __typedef_RAWARG
@@ -227,6 +232,7 @@ struct PropInfo
 #define GFLG_GADGHIMAGE    0x0002
 #define GFLG_GADGHNONE     0x0003
 #define GFLG_GADGIMAGE     0x0004
+#define GFLG_RELRIGHT      0x0010
 #define GFLG_SELECTED      0x0080
 #define GFLG_DISABLED      0x0100
 #define GFLG_STRINGEXTEND  0x0400

@@ -123,8 +123,19 @@ enum
     G_SCR_MOUSEY = 16, G_SCR_MOUSEX = 18, G_SCR_BARHEIGHT = 30, G_SCR_BARVBORDER = 31,
     G_SCR_BARHBORDER = 32, G_SCR_MENUVBORDER = 33, G_SCR_MENUHBORDER = 34,
     G_SCR_WBORTOP = 35, G_SCR_WBORLEFT = 36, G_SCR_WBORRIGHT = 37, G_SCR_WBORBOTTOM = 38,
-    G_SCR_FONT = 40, G_SCR_DETAILPEN = 330, G_SCR_BLOCKPEN = 331,
+    G_SCR_FONT = 40, G_SCR_FIRSTGADGET = 326, G_SCR_DETAILPEN = 330, G_SCR_BLOCKPEN = 331,
     G_SCR_SAVECOLOR0 = 332,
+    /* the 68k ExtGadget and Image of a system gadget of a screen: a
+       Gadget, then the fields that GFLG_EXTENDED announces */
+    G_GD_NEXTGADGET = 0, G_GD_LEFTEDGE = 4, G_GD_TOPEDGE = 6, G_GD_WIDTH = 8,
+    G_GD_HEIGHT = 10, G_GD_FLAGS = 12, G_GD_ACTIVATION = 14, G_GD_GADGETTYPE = 16,
+    G_GD_GADGETRENDER = 18, G_GD_SELECTRENDER = 22, G_GD_GADGETID = 38, G_GD_MOREFLAGS = 44,
+    G_GD_BOUNDSLEFTEDGE = 48, G_GD_BOUNDSTOPEDGE = 50, G_GD_BOUNDSWIDTH = 52,
+    G_GD_BOUNDSHEIGHT = 54, G_EXTGADGET_SIZE = 56,
+    G_IM_LEFTEDGE = 0, G_IM_TOPEDGE = 2, G_IM_WIDTH = 4, G_IM_HEIGHT = 6, G_IM_DEPTH = 8,
+    G_IM_PLANEPICK = 14, G_IM_PLANEONOFF = 15, G_IMAGE_SIZE = 20,
+    /* the Depth of an Image of a BOOPSI class, intuition/imageclass.h */
+    G_CUSTOMIMAGEDEPTH = -1,
     G_VP_DWIDTH = 24, G_VP_DHEIGHT = 26, G_VP_DXOFFSET = 28, G_VP_DYOFFSET = 30,
     G_VP_MODES = 32, G_VP_SPRITEPRIORITIES = 34, G_VP_EXTENDEDMODES = 35,
     G_BM_BYTESPERROW = 0, G_BM_ROWS = 2, G_BM_FLAGS = 4, G_BM_DEPTH = 5, G_RP_FONT = 52,
@@ -158,6 +169,15 @@ enum
 #define MAX_PENS 64
 /* The most user tags of one OpenScreenTagList() */
 #define MAX_SCREEN_TAGS 256
+/* A system gadget of a screen as the program reads it: the 68k ExtGadget,
+   then the Images of its GadgetRender and SelectRender. Every block of a
+   68k Screen that the bridge makes ends with room for
+   KAFFEINE_SCREEN_SYSTEM_GADGETS of them, at a long-aligned offset. */
+#define SYSTEM_GADGET (G_EXTGADGET_SIZE + 2 * G_IMAGE_SIZE)
+#define SYSTEM_GADGETS (KAFFEINE_SCREEN_SYSTEM_GADGETS * SYSTEM_GADGET)
+/* The MoreFlags bits that mean the same in the NDK; AROS's
+   GMORE_BOOPSIGADGET is another bit there (kaffeine_gadgets.c) */
+#define SYSTEM_MOREFLAGS (GMORE_BOUNDS | GMORE_GADGETHELP | GMORE_SCROLLRASTER)
 /* Gets of one DrawInfo that the program holds; Intuition counts none, the
    bridge gives an excess one back. */
 #define MAX_DRAWINFO_GETS 0x7FFF
@@ -365,6 +385,288 @@ static void screen_fill(struct KaffeineContext *ctx, ULONG guest, ULONG font, UL
     m68k_write16(ctx, guest + G_SCR_SAVECOLOR0, scr->SaveColor0);
 }
 
+/* ── System gadgets ──────────────────────────────────────────────── */
+
+/* What the bridge takes of an Image of a system gadget: its scalars */
+struct SystemImage
+{
+    WORD left, top, width, height, depth;
+    UBYTE pick, onoff;
+};
+
+/* What it takes of a system gadget of a screen */
+struct SystemGadget
+{
+    const struct Gadget *native;
+    WORD left, top, width, height;
+    UWORD flags, activation, type, id;
+    ULONG more;
+    WORD bounds_left, bounds_top, bounds_width, bounds_height;
+    BOOL render, select, select_render;
+    struct SystemImage r, s;
+};
+
+/* Whether im, an Image behind a system gadget, is one that the bridge
+   shows whole: one of a BOOPSI class, Depth CUSTOMIMAGEDEPTH, without
+   planes of its own and without a next Image, as the image of the depth
+   gadget of OpenScreen() is (imageclass.c) */
+static BOOL system_image_whole(const struct Image *im)
+{
+    return im->Depth == G_CUSTOMIMAGEDEPTH && !im->ImageData && !im->NextImage;
+}
+
+static void system_image(struct SystemImage *out, const struct Image *im)
+{
+    out->left = im->LeftEdge;
+    out->top = im->TopEdge;
+    out->width = im->Width;
+    out->height = im->Height;
+    out->depth = im->Depth;
+    out->pick = im->PlanePick;
+    out->onoff = im->PlaneOnOff;
+}
+
+/* The system gadgets of a screen, taken whole under Forbid() without
+   allocating or calling anything: their number, or -1 for a list that the
+   bridge cannot show whole. AROS sets the list once, at OpenScreen()
+   (openscreen.c), and leaves it while the screen is held; Forbid() keeps
+   the snapshot whole all the same. Only gadgets of Intuition for the
+   screen come, GTYP_SYSGADGET with GTYP_SCRGADGET as the depth gadget of
+   OpenScreen() is, without a label or SpecialInfo, with a whole Image
+   (system_image_whole()) or none behind GadgetRender and SelectRender,
+   at most KAFFEINE_SCREEN_SYSTEM_GADGETS of them and none twice. Anything
+   else in the list, such as a gadget that a program added, a classic
+   Image, a Border or an Image with planes or a next one, gives -1 for all
+   of it. */
+static int system_gadgets(struct Screen *scr, struct SystemGadget *out)
+{
+    const struct Gadget *g;
+    const struct ExtGadget *eg;
+    const struct Image *r, *s;
+    int n = 0, k;
+
+    Forbid();
+    for (g = scr->FirstGadget; g; g = g->NextGadget)
+    {
+        for (k = 0; k < n && out[k].native != g; k++)
+            ;
+        r = g->GadgetRender;
+        s = g->SelectRender;
+        if (k < n || n == KAFFEINE_SCREEN_SYSTEM_GADGETS ||
+            (g->GadgetType & (GTYP_SYSGADGET | GTYP_SCRGADGET)) != (GTYP_SYSGADGET | GTYP_SCRGADGET) ||
+            g->GadgetText || g->SpecialInfo ||
+            ((r || s) && !(g->Flags & GFLG_GADGIMAGE)) ||
+            (r && !system_image_whole(r)) || (s && !system_image_whole(s)))
+        {
+            n = -1;
+            break;
+        }
+        eg = (g->Flags & GFLG_EXTENDED) ? (const struct ExtGadget *)g : NULL;
+        out[n].native = g;
+        out[n].left = g->LeftEdge;
+        out[n].top = g->TopEdge;
+        out[n].width = g->Width;
+        out[n].height = g->Height;
+        out[n].flags = g->Flags;
+        out[n].activation = g->Activation;
+        out[n].type = g->GadgetType;
+        out[n].id = g->GadgetID;
+        out[n].more = eg ? eg->MoreFlags & SYSTEM_MOREFLAGS : 0;
+        out[n].bounds_left = eg ? eg->BoundsLeftEdge : 0;
+        out[n].bounds_top = eg ? eg->BoundsTopEdge : 0;
+        out[n].bounds_width = eg ? eg->BoundsWidth : 0;
+        out[n].bounds_height = eg ? eg->BoundsHeight : 0;
+        out[n].render = r != NULL;
+        out[n].select = s != NULL;
+        out[n].select_render = s && s == r;
+        if (r)
+            system_image(&out[n].r, r);
+        if (s && s != r)
+            system_image(&out[n].s, s);
+        n++;
+    }
+    Permit();
+    return n;
+}
+
+/* The scalars of such an Image, at at; its ImageData and NextImage, NULL
+   in the native one, stay 0 */
+static void system_image_out(struct KaffeineContext *ctx, ULONG at, const struct SystemImage *im)
+{
+    m68k_write16(ctx, at + G_IM_LEFTEDGE, (UWORD)im->left);
+    m68k_write16(ctx, at + G_IM_TOPEDGE, (UWORD)im->top);
+    m68k_write16(ctx, at + G_IM_WIDTH, (UWORD)im->width);
+    m68k_write16(ctx, at + G_IM_HEIGHT, (UWORD)im->height);
+    m68k_write16(ctx, at + G_IM_DEPTH, (UWORD)im->depth);
+    ctx->mem[at + G_IM_PLANEPICK] = im->pick;
+    ctx->mem[at + G_IM_PLANEONOFF] = im->onoff;
+}
+
+/* The room for the system gadgets at the end of the block of a 68k Screen
+   that the bridge made, of size bytes at guest, or 0 for a block without
+   it */
+static ULONG system_room(ULONG guest, ULONG size)
+{
+    return guest && size >= SYSTEM_GADGETS ? guest + size - SYSTEM_GADGETS : 0;
+}
+
+/* The rooms of the blocks of 68k Screens that the bridge made
+   (ctx->screen_rooms). A block that a program has seen never goes back to
+   the guest heap while the context lives (kaffeine_screen_book.h), also
+   once the book has dropped it to make way for a newer one, so its room
+   stays here; only a fresh block that failed before the program saw it
+   leaves. There are never more rooms than such blocks fit in the guest
+   heap. Kaffeine_ScreensCleanup() frees the record once the program has
+   ended. */
+
+/* The index of the first room above address */
+static ULONG rooms_above(struct KaffeineContext *ctx, ULONG address)
+{
+    ULONG low = 0, high = ctx->screen_room_count, middle;
+
+    while (low < high)
+    {
+        middle = low + (high - low) / 2;
+        if (ctx->screen_rooms[middle] <= address)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    return low;
+}
+
+/* ctx->screen_system_mirror: whether the size bytes at address meet the
+   room for the system gadgets of a 68k Screen that the bridge made, one in
+   the table or one that went, whose block stays allocated and 0. Rooms
+   never overlap, so only the last one that starts at or below the last of
+   those bytes can meet them, when it ends after the first. */
+static BOOL screen_system_mirror(struct KaffeineContext *ctx, ULONG address, ULONG size)
+{
+    ULONG last = address + (size - 1), i;
+
+    if (!size)
+        return FALSE;
+    if (last < address)
+        last = ~(ULONG)0;
+    i = rooms_above(ctx, last);
+    return i && ctx->screen_rooms[i - 1] + SYSTEM_GADGETS > address;
+}
+
+/* Space for one more room, taken before a new block, so that recording
+   the block cannot fail: FALSE without memory */
+static BOOL rooms_reserve(struct KaffeineContext *ctx)
+{
+    ULONG max = ctx->screen_room_max ? 2 * ctx->screen_room_max : 16, *rooms;
+
+    if (ctx->screen_room_count < ctx->screen_room_max)
+        return TRUE;
+    if (max <= ctx->screen_room_max || max > (ULONG)~0UL / sizeof(*rooms) ||
+        !(rooms = AllocVec(max * sizeof(*rooms), MEMF_ANY)))
+        return FALSE;
+    if (ctx->screen_room_count)
+        memcpy(rooms, ctx->screen_rooms, ctx->screen_room_count * sizeof(*rooms));
+    FreeVec(ctx->screen_rooms);
+    ctx->screen_rooms = rooms;
+    ctx->screen_room_max = max;
+    return TRUE;
+}
+
+/* The room of a block that the bridge has just taken, in the space that
+   rooms_reserve() made; the guard knows it from now on */
+static void rooms_add(struct KaffeineContext *ctx, ULONG room)
+{
+    ULONG i = rooms_above(ctx, room);
+
+    if (i && ctx->screen_rooms[i - 1] == room)
+        return;
+    memmove(&ctx->screen_rooms[i + 1], &ctx->screen_rooms[i],
+            (ctx->screen_room_count - i) * sizeof(ctx->screen_rooms[0]));
+    ctx->screen_rooms[i] = room;
+    ctx->screen_room_count++;
+    ctx->screen_system_mirror = screen_system_mirror;
+}
+
+/* A fresh block goes back to the heap before the program saw it */
+static void rooms_remove(struct KaffeineContext *ctx, ULONG room)
+{
+    ULONG i = rooms_above(ctx, room);
+
+    if (!i || ctx->screen_rooms[i - 1] != room)
+        return;
+    memmove(&ctx->screen_rooms[i - 1], &ctx->screen_rooms[i],
+            (ctx->screen_room_count - i) * sizeof(ctx->screen_rooms[0]));
+    ctx->screen_room_count--;
+}
+
+/* Screen.FirstGadget of a 68k Screen that the bridge made, each time it
+   fills the screen in (screen_fill()): the system gadgets of the screen as
+   68k ExtGadgets and Images with their own scalars, a read-only copy in
+   the room that the block of the 68k Screen keeps for them (screen_create()),
+   with Depth as it is, -1 for an image of a BOOPSI class. GFLG_EXTENDED
+   stays as the native gadget has it, with its MoreFlags of the NDK and its
+   bounds behind it. No native pointer reaches the program: MutualExclude,
+   where gadgetclass keeps its dispatcher, and UserData stay 0, as GadgetText
+   and SpecialInfo, ImageData and NextImage, NULL in the native gadget and
+   images, do. Only a whole list is shown; one that the bridge cannot show
+   whole gives 0. Nothing draws, frees or changes them: DrawImage() refuses
+   an image of a BOOPSI class (kaffeine_copy.c), DrawImageState(),
+   EraseImage() and PointInImage() refuse every image, the calls that
+   would pass such an address to a native class refuse it
+   (screen_system_mirror()), as OnGadget(), OffGadget(), ModifyProp() and
+   NewModifyProp() do for a Gadget that reaches into it
+   (kaffeine_gadgets.c), and no structure of the program's that the bridge
+   or Intuition writes may lie in it (kaffeine_classic.c, kaffeine_copy.c).
+   The room goes with the 68k Screen, retired with it
+   (kaffeine_screen_book.h), and stays known as long as its block stays
+   allocated (rooms_add()). */
+static void screen_gadgets(struct KaffeineContext *ctx, int i, struct Screen *scr)
+{
+    struct SystemGadget nodes[KAFFEINE_SCREEN_SYSTEM_GADGETS];
+    ULONG guest = ctx->pubscreens[i].guest, room = system_room(guest, ctx->pubscreens[i].size), at;
+    int n, k;
+
+    if (!room)
+        return;     /* a 68k Screen that the bridge did not make */
+    memset(nodes, 0, sizeof(nodes));
+    n = system_gadgets(scr, nodes);
+    memset(ctx->mem + room, 0, SYSTEM_GADGETS);
+    m68k_write32(ctx, guest + G_SCR_FIRSTGADGET, 0);
+    if (n < 0)
+        bug("[kaffeine] screen %p: system gadgets that the bridge cannot show whole, none shown\n", scr);
+    for (k = 0; k < n; k++)
+    {
+        at = room + k * SYSTEM_GADGET;
+        m68k_write32(ctx, at + G_GD_NEXTGADGET, k + 1 < n ? at + SYSTEM_GADGET : 0);
+        m68k_write16(ctx, at + G_GD_LEFTEDGE, (UWORD)nodes[k].left);
+        m68k_write16(ctx, at + G_GD_TOPEDGE, (UWORD)nodes[k].top);
+        m68k_write16(ctx, at + G_GD_WIDTH, (UWORD)nodes[k].width);
+        m68k_write16(ctx, at + G_GD_HEIGHT, (UWORD)nodes[k].height);
+        m68k_write16(ctx, at + G_GD_FLAGS, nodes[k].flags);
+        m68k_write16(ctx, at + G_GD_ACTIVATION, nodes[k].activation);
+        m68k_write16(ctx, at + G_GD_GADGETTYPE, nodes[k].type);
+        m68k_write16(ctx, at + G_GD_GADGETID, nodes[k].id);
+        m68k_write32(ctx, at + G_GD_MOREFLAGS, nodes[k].more);
+        m68k_write16(ctx, at + G_GD_BOUNDSLEFTEDGE, (UWORD)nodes[k].bounds_left);
+        m68k_write16(ctx, at + G_GD_BOUNDSTOPEDGE, (UWORD)nodes[k].bounds_top);
+        m68k_write16(ctx, at + G_GD_BOUNDSWIDTH, (UWORD)nodes[k].bounds_width);
+        m68k_write16(ctx, at + G_GD_BOUNDSHEIGHT, (UWORD)nodes[k].bounds_height);
+        if (nodes[k].render)
+        {
+            system_image_out(ctx, at + G_EXTGADGET_SIZE, &nodes[k].r);
+            m68k_write32(ctx, at + G_GD_GADGETRENDER, at + G_EXTGADGET_SIZE);
+        }
+        if (nodes[k].select_render)
+            m68k_write32(ctx, at + G_GD_SELECTRENDER, at + G_EXTGADGET_SIZE);
+        else if (nodes[k].select)
+        {
+            system_image_out(ctx, at + G_EXTGADGET_SIZE + G_IMAGE_SIZE, &nodes[k].s);
+            m68k_write32(ctx, at + G_GD_SELECTRENDER, at + G_EXTGADGET_SIZE + G_IMAGE_SIZE);
+        }
+    }
+    if (n > 0)
+        m68k_write32(ctx, guest + G_SCR_FIRSTGADGET, room);
+}
+
 /* Hold the native font of the RastPort of a screen open for the rest of
    the program, as its 68k TextFont stays, once for each font: through
    OpenFont() of the attributes that AskFont() gives for that font, as
@@ -430,7 +732,9 @@ static void font_unhold(struct KaffeineContext *ctx, int taken)
    for a screen that the program opened, else KAFFEINE_SHADOW_PUBSCREEN.
    generation is the registry's for the screen, or 0; the 68k Screen that
    the program had of this very screen before comes back at its address.
-   *block is the size of the block. */
+   *block is the size of the block, which ends with the room for the system
+   gadgets of the screen (screen_gadgets()), the same for every block of
+   that screen. */
 static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULONG *font,
                            ULONG *colormap, UWORD type, ULONG generation, ULONG *block)
 {
@@ -450,6 +754,7 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
     cm_offset = (size + 1) & ~1UL;
     if (scr->ViewPort.ColorMap)
         size = cm_offset + 52;
+    size = ((size + 3) & ~3UL) + SYSTEM_GADGETS;
     if (ctx->num_shadows > KAFFEINE_MAX_SHADOWS - 3)
     {
         bug("[kaffeine] shadow table full, no 68k Screen for %p\n", scr);
@@ -460,11 +765,15 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
     if (!font_hold(ctx, scr->RastPort.Font, &held))
         return 0;
     revived = Kaffeine_ScreenRevive(ctx, KAFFEINE_BOOK_BRIDGE, scr, generation, size);
-    if (!(guest = revived ? revived : Kaffeine_MirrorAlloc(ctx, size)))
+    /* a revived block has its room known since it was new; a fresh one
+       has the space for it first */
+    if (!(guest = revived) && (!rooms_reserve(ctx) || !(guest = Kaffeine_MirrorAlloc(ctx, size))))
     {
         font_unhold(ctx, held);
         return 0;
     }
+    if (!revived)
+        rooms_add(ctx, system_room(guest, size));
     rp = guest + M68K_SCR_RASTPORT;
     if (!Kaffeine_ShadowAdd(ctx, guest, scr, type) ||
         !Kaffeine_ShadowAdd(ctx, guest + M68K_SCR_VIEWPORT, &scr->ViewPort, KAFFEINE_SHADOW_VIEWPORT) ||
@@ -479,7 +788,10 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
         if (revived)
             Kaffeine_ScreenRetire(ctx, KAFFEINE_BOOK_BRIDGE, scr, generation, guest, size);
         else
+        {
+            rooms_remove(ctx, system_room(guest, size));
             Kaffeine_MirrorRelease(ctx, guest);
+        }
         font_unhold(ctx, held);
         return 0;
     }
@@ -553,8 +865,9 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
         Kaffeine_RastPortDetach(ctx, guest + M68K_SCR_RASTPORT);
         Kaffeine_ShadowForget(ctx, guest + M68K_SCR_VIEWPORT, KAFFEINE_SHADOW_VIEWPORT);
         Kaffeine_ShadowForget(ctx, guest, type);
-        /* the program may still hold the address: it never names another
-           object (kaffeine_screen_book.h) */
+        /* the program may still hold the address, or that of one of its
+           system gadgets: it never names another object
+           (kaffeine_screen_book.h) */
         Kaffeine_ScreenRetire(ctx, KAFFEINE_BOOK_BRIDGE, ctx->pubscreens[i].native,
                               ctx->pubscreens[i].generation, guest, ctx->pubscreens[i].size);
     }
@@ -658,8 +971,11 @@ ULONG Kaffeine_ScreenFromWindow(struct KaffeineContext *ctx, struct Screen *scr)
     if (i < 0)
         return 0;
     if (screen_mirrored(ctx, i))
+    {
         screen_fill(ctx, ctx->pubscreens[i].guest, ctx->pubscreens[i].font,
                     ctx->pubscreens[i].colormap, scr);
+        screen_gadgets(ctx, i, scr);
+    }
     if (ctx->layer_ops)
         ctx->layer_ops->screen_mirrored(ctx, scr);
     return ctx->pubscreens[i].guest;
@@ -708,8 +1024,11 @@ IPTR Kaffeine_LockPubScreen(struct KaffeineContext *ctx, void *cpu)
     ctx->pubscreens[i].locks++;
     /* a 68k Screen that the bridge did not make stays as it is */
     if (screen_mirrored(ctx, i))
+    {
         screen_fill(ctx, ctx->pubscreens[i].guest, ctx->pubscreens[i].font,
                     ctx->pubscreens[i].colormap, scr);
+        screen_gadgets(ctx, i, scr);
+    }
     if (ctx->layer_ops)
         ctx->layer_ops->screen_mirrored(ctx, scr);
     return ctx->pubscreens[i].guest;
@@ -1309,6 +1628,7 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
     ctx->pubscreens[i].slot = slot;
     screen_pens_clear(ctx, i);
     ctx->screen_release = screen_release;
+    screen_gadgets(ctx, i, scr);
     if (ctx->layer_ops)
         ctx->layer_ops->screen_mirrored(ctx, scr);
     return guest;
@@ -1403,6 +1723,23 @@ IPTR Kaffeine_DrawImageState(struct KaffeineContext *ctx, void *cpu)
 {
     (void)cpu;
     return refuse(ctx, "DrawImageState(): unsupported Image/DrawInfo conversion");
+}
+
+/* The generated EraseImage() and PointInImage() would pass the 68k Image
+   itself to Intuition, which reads it as a native one and, for the Depth
+   of an image of a BOOPSI class, as a native object; the system gadgets of
+   a screen show such images (screen_gadgets()). They stop as
+   DrawImageState() does until Images have their own conversion. */
+IPTR Kaffeine_EraseImage(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return refuse(ctx, "EraseImage(): unsupported Image conversion");
+}
+
+IPTR Kaffeine_PointInImage(struct KaffeineContext *ctx, void *cpu)
+{
+    (void)cpu;
+    return refuse(ctx, "PointInImage(): unsupported Image conversion");
 }
 
 IPTR Kaffeine_GetDrawInfoAttr(struct KaffeineContext *ctx, void *cpu)
@@ -1725,4 +2062,9 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
             CloseFont(ctx->pubscreen_fonts[i]);
             ctx->pubscreen_fonts[i] = NULL;
         }
+    /* the program has ended, and no call of it asks the guard any more;
+       the rooms themselves stay allocated with their blocks */
+    FreeVec(ctx->screen_rooms);
+    ctx->screen_rooms = NULL;
+    ctx->screen_room_count = ctx->screen_room_max = 0;
 }

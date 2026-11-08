@@ -453,6 +453,9 @@ $(BUILD_DIR)/test_startup: $(TEST_DIR)/test_startup.cpp $(STARTUP_OBJS) | $(BUIL
 
 $(BUILD_DIR)/test_screens: $(TEST_DIR)/test_screens.cpp $(SCREEN_OBJS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(GFX_CPPFLAGS) $(CXXFLAGS) $(TEST_CXXFLAGS) -MMD -MP $(LDFLAGS) -o $@ $< $(SCREEN_OBJS) $(LDLIBS)
+# test_screens fails chosen AllocVec() calls of the screens object, and of
+# no other object; test_screens alone links it (screens_allocvec.h)
+$(BUILD_DIR)/gfx_thunk_screens.o: GFX_CPPFLAGS += -include $(TEST_DIR)/screens_allocvec.h
 
 $(BUILD_DIR)/ibase_intuibase.o: $(KAFFEINE_DIR)/kaffeine_intuibase.c | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(IBASE_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<

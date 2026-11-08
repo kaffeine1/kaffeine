@@ -17,6 +17,11 @@
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 
+/* Screen.FirstGadget of a 68k Screen that the bridge made shows at most this
+   many system gadgets of the screen, read-only copies (kaffeine_screens.c);
+   a longer list shows none. */
+#define KAFFEINE_SCREEN_SYSTEM_GADGETS 4
+
 /* The 68k BitMap embedded in a 68k Screen (intuition/screens.h), which
    Screen.RastPort.BitMap names: a snapshot of the scalars of the BitMap
    that the native screen draws into, without planes, and the typed handle
@@ -187,6 +192,8 @@ IPTR Kaffeine_FreeScreenDrawInfo(struct KaffeineContext *ctx, void *cpu);
 /* These consumers stop with 20 until Images and DrawInfo attributes have
    typed conversions; no classic structure reaches a native API. */
 IPTR Kaffeine_DrawImageState(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_EraseImage(struct KaffeineContext *ctx, void *cpu);
+IPTR Kaffeine_PointInImage(struct KaffeineContext *ctx, void *cpu);
 IPTR Kaffeine_GetDrawInfoAttr(struct KaffeineContext *ctx, void *cpu);
 
 /* One native visitor lock of the bridge on a screen that the program did
@@ -222,6 +229,8 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx);
     { 198, Kaffeine_OpenScreen }, \
     { 612, Kaffeine_OpenScreenTagList }, \
     { 618, Kaffeine_DrawImageState }, \
+    { 624, Kaffeine_PointInImage }, \
+    { 630, Kaffeine_EraseImage }, \
     { 690, Kaffeine_GetScreenDrawInfo }, \
     { 696, Kaffeine_FreeScreenDrawInfo }, \
     { 936, Kaffeine_GetDrawInfoAttr }
