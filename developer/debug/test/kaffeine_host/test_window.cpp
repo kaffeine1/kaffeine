@@ -2718,6 +2718,147 @@ static void test_window_layer_hooks()
     f.ctx.layer_ops = nullptr;
 }
 
+/* A program may set or clear WFLG_RMBTRAP in the Flags of its own window
+   directly, as AROS allows: Personal Paint clears it while the pointer is
+   over the title bar, where the right button then shows the menus, and
+   sets it again over the picture. Intuition reads the native window only.
+   Built with RMBTRAP_PUBLISHED=0 against a bridge that never publishes
+   the bit, the same cases show the old behaviour: the native bit never
+   follows, and WindowSync() puts Intuition's bit back into the program's
+   Flags. RMBTRAP_HOOK=0 leaves out the one case that needs
+   Kaffeine_WindowsPublish() and ctx->window_publish, so that the
+   expectations of the fix can also be built against such a bridge, where
+   they must fail at the first published bit. */
+#ifndef RMBTRAP_PUBLISHED
+#define RMBTRAP_PUBLISHED 1
+#endif
+#ifndef RMBTRAP_HOOK
+#define RMBTRAP_HOOK RMBTRAP_PUBLISHED
+#endif
+static void test_window_rmbtrap_publish()
+{
+    Fixture f;
+    const bool fixed = RMBTRAP_PUBLISHED;
+    RastPort paint_rp = {};
+    Window paint = {};
+    paint.Width = 640;
+    paint.Height = 480;
+    // as Personal Paint opens its picture window
+    paint.Flags = WFLG_RMBTRAP | WFLG_BACKDROP | WFLG_BORDERLESS | WFLG_REPORTMOUSE |
+                  WFLG_NOCAREREFRESH | WFLG_NW_EXTENDED | WFLG_WINDOWACTIVE;
+    paint.RPort = &paint_rp;
+    paint.UserPort = &ports[3];
+    const ULONG pw = Kaffeine_WindowCreate(&f.ctx, &paint);
+    assert(pw && f.lng(pw + M68K_WIN_FLAGS) == paint.Flags);
+    // every bit but WFLG_RMBTRAP stays Intuition's
+    const ULONG others = paint.Flags & ~(ULONG)WFLG_RMBTRAP;
+    auto program = [&](ULONG set, ULONG clear) {
+        m68k_write32(&f.ctx, pw + M68K_WIN_FLAGS, (f.lng(pw + M68K_WIN_FLAGS) | set) & ~clear);
+    };
+    auto native_trap = [&] { return (paint.Flags & WFLG_RMBTRAP) != 0; };
+    auto guest_trap = [&] { return (f.lng(pw + M68K_WIN_FLAGS) & WFLG_RMBTRAP) != 0; };
+    auto restore = [&] {
+        program(WFLG_RMBTRAP, 0);
+        Kaffeine_WindowSync(&f.ctx, pw, &paint);
+        assert(paint.Flags == (others | WFLG_RMBTRAP) && guest_trap());
+    };
+
+    // nothing written: nothing native changes
+    Kaffeine_WindowSync(&f.ctx, pw, &paint);
+    assert(paint.Flags == (others | WFLG_RMBTRAP) && guest_trap());
+
+    // over the title bar the program clears it: Intuition gets it, and the
+    // program keeps what it wrote
+    program(0, WFLG_RMBTRAP);
+    Kaffeine_WindowSync(&f.ctx, pw, &paint);
+    assert((paint.Flags & ~(ULONG)WFLG_RMBTRAP) == others);
+    assert(native_trap() == !fixed && guest_trap() == !fixed);
+    assert(f.lng(pw + M68K_WIN_FLAGS) == paint.Flags);
+    // over the picture it sets it again
+    restore();
+
+    // a change of Intuition's own, with the program's bit left alone, comes
+    // to the program and is not undone
+    paint.Flags &= ~(ULONG)WFLG_RMBTRAP;
+    Kaffeine_WindowSync(&f.ctx, pw, &paint);
+    assert(!native_trap() && !guest_trap());
+    // and the program's next write counts from there
+    program(WFLG_RMBTRAP, 0);
+    Kaffeine_WindowSync(&f.ctx, pw, &paint);
+    assert(native_trap() == fixed && guest_trap() == fixed);
+    paint.Flags |= WFLG_RMBTRAP;
+    Kaffeine_WindowSync(&f.ctx, pw, &paint);
+    assert(native_trap() && guest_trap());
+
+    // WFLG_BACKDROP and the other bits that the program writes never reach
+    // Intuition; without the layer bridge they come back as Intuition's
+    program(WFLG_SIZEGADGET, WFLG_BACKDROP | WFLG_RMBTRAP);
+    Kaffeine_WindowSync(&f.ctx, pw, &paint);
+    assert((paint.Flags & ~(ULONG)WFLG_RMBTRAP) == others && native_trap() == !fixed);
+    assert(f.lng(pw + M68K_WIN_FLAGS) == paint.Flags);
+    // with it, a pending backdrop of the program stays in its Flags only
+    f.ctx.layer_ops = &recording_layers;
+    program(WFLG_RMBTRAP, WFLG_BACKDROP);
+    Kaffeine_WindowSync(&f.ctx, pw, &paint);
+    assert(paint.Flags == (others | WFLG_RMBTRAP) && guest_trap());
+    assert(!(f.lng(pw + M68K_WIN_FLAGS) & WFLG_BACKDROP));
+    f.ctx.layer_ops = nullptr;
+    restore();
+
+    // before the program takes a message or waits, also at a port of
+    // another window: GetMsg() of an empty port
+    program(0, WFLG_RMBTRAP);
+    assert(f.getmsg(f.port()) == 0 && !f.stopped());
+    assert(native_trap() == !fixed);
+    restore();
+    // WaitPort() with a message of the other window
+    program(0, WFLG_RMBTRAP);
+    f.send(message(&f.native_window, IDCMP_INTUITICKS));
+    const ULONG shown = f.waitport(f.port());
+    assert(shown && native_trap() == !fixed);
+    assert(f.getmsg(f.port()) == shown);
+    f.reply(shown);
+    restore();
+    // GT_GetIMsg() of an empty port
+    program(0, WFLG_RMBTRAP);
+    assert(f.gt_getimsg(f.port()) == 0 && !f.stopped());
+    assert(native_trap() == !fixed);
+    restore();
+#if RMBTRAP_HOOK
+    // Wait() calls the hook that the first window set (kaffeine_thunks.c,
+    // not linked here)
+    assert(f.ctx.window_publish == Kaffeine_WindowsPublish);
+    program(0, WFLG_RMBTRAP);
+    f.ctx.window_publish(&f.ctx);
+    assert(!native_trap() && !guest_trap());
+    restore();
+#endif
+
+    // a native window behind no Window shadow is no window of the program,
+    // whatever guest memory that stands for it says, and a shadow of
+    // another kind does not make it one
+    Window foreign = {};
+    foreign.Flags = WFLG_RMBTRAP | WFLG_BACKDROP;
+    const ULONG view = Kaffeine_HeapAlloc(&f.ctx, M68K_SIZEOF_WINDOW, MEMF_PUBLIC | MEMF_CLEAR);
+    assert(view && Kaffeine_ShadowAdd(&f.ctx, view, &foreign, KAFFEINE_SHADOW_RASTPORT));
+    Kaffeine_WindowSync(&f.ctx, view, &foreign);
+    m68k_write32(&f.ctx, view + M68K_WIN_FLAGS, WFLG_BACKDROP);
+    Kaffeine_WindowSync(&f.ctx, view, &foreign);
+    m68k_write32(&f.ctx, view + M68K_WIN_FLAGS, WFLG_BACKDROP);
+    assert(f.getmsg(f.port()) == 0 && foreign.Flags == (WFLG_RMBTRAP | WFLG_BACKDROP));
+    Kaffeine_ShadowForget(&f.ctx, view, KAFFEINE_SHADOW_RASTPORT);
+
+    // a Window shadow that WindowSync() has not published to yet has no
+    // bit of the program's: its cleared 68k Window says nothing
+    Window late = {};
+    late.Flags = WFLG_RMBTRAP;
+    m68k_write32(&f.ctx, view + M68K_WIN_FLAGS, 0);
+    assert(Kaffeine_ShadowAdd(&f.ctx, view, &late, KAFFEINE_SHADOW_WINDOW));
+    assert(f.getmsg(f.port()) == 0 && late.Flags == WFLG_RMBTRAP);
+    Kaffeine_ShadowForget(&f.ctx, view, KAFFEINE_SHADOW_WINDOW);
+    Kaffeine_HeapFree(&f.ctx, view, M68K_SIZEOF_WINDOW);
+}
+
 /* ── OpenWindowTagList() with a NewWindow ────────────────────────── */
 
 /* Where the NewWindow tests keep their guest structures, below the heap */
@@ -3519,6 +3660,7 @@ int main()
         { "WA_UserPort extensions never forward raw guest pointers to native Intuition", test_userport_tag_never_native },
         { "A shared lifecycle refusal survives actual FreeMem returning zero through RunCPU", test_shared_lifecycle_stop_is_authoritative },
         { "Layer bridge notifications: whole-or-nothing open, pending backdrop flags, close order", test_window_layer_hooks },
+        { "WFLG_RMBTRAP that the program writes reaches Intuition, no other bit, no foreign window", test_window_rmbtrap_publish },
         { "Exec, Intuition and GadTools tables use their ABI slots", test_registration },
         { "InitRequester clears exactly 112 guest bytes and checks boundaries", test_init_requester },
         { "Classic Request and EndRequest own native copies and preserve guest storage", test_classic_request_lifetime },

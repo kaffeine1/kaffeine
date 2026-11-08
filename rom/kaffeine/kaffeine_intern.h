@@ -393,6 +393,9 @@ struct KaffeineContext
     #define KAFFEINE_MAX_SHADOWS 1024
     struct { ULONG m68k_addr; void *native_ptr; UWORD type;
              ULONG idcmp_window; /* immutable owner of an IDCMP mirror, else 0 */
+             /* a Window shadow: the WFLG_RMBTRAP that Kaffeine_WindowSync()
+                last wrote to the 68k Window (kaffeine_window.c), else 0 */
+             UWORD window_pub;
     } shadow_map[KAFFEINE_MAX_SHADOWS];
     UWORD num_shadows;
 
@@ -510,6 +513,10 @@ struct KaffeineContext
     /* Resolve WScreen while a typed live Window shadow keeps it open. */
     ULONG (*screen_window)(struct KaffeineContext *ctx, struct Screen *screen);
     void (*screen_release)(struct KaffeineContext *ctx, struct Screen *screen);
+    /* Set with the first 68k Window (kaffeine_window.c): Wait() gives each
+       window of the program the WFLG_RMBTRAP that it wrote, before it
+       waits. NULL without a window. */
+    void (*window_publish)(struct KaffeineContext *ctx);
     /* VisualInfo keeps DrawInfo/Screen alive. Borrowed screens also hold
        a native visitor lock until their VisualInfo references are freed. */
     #define KAFFEINE_MAX_VISUALINFOS 32

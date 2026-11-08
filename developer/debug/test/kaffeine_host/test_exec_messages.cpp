@@ -89,8 +89,8 @@ static void invalid()
             case 10:f.ctx.mem[f.port+14]=0;f.ctx.mem[f.port+15]=2;f.w(f.port+16,f.task);break;
             case 11:f.ctx.mem[f.port+14]=0;f.ctx.guest_signals=4;f.ctx.mem[f.port+15]=2;f.w(f.port+16,f.task+2);break;
             case 12:f.w(f.port+16,f.task+2);break;
-            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.msg+30,reinterpret_cast<void *>(1),8, 0 };break;
-            case 14:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.port+2,reinterpret_cast<void *>(1),4, 0 };break;
+            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.msg+30,reinterpret_cast<void *>(1),8, 0, 0 };break;
+            case 14:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.port+2,reinterpret_cast<void *>(1),4, 0, 0 };break;
             case 15:f.w(f.port+20,f.port+24+2);break;
         }
         if(which==8){f.message(f.ctx.mem_size-32,0,20);m68k_write16(&f.ctx,f.ctx.mem_size-14,68);f.rejected(f.port,f.ctx.mem_size-32);}

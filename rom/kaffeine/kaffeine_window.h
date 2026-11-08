@@ -40,8 +40,15 @@ struct TagItem *Kaffeine_WindowTags(struct KaffeineContext *ctx, ULONG list, ULO
 
 /* Copy the fields of a native window that change while it is open to its
    68k Window: place, size, mouse, limits, flags, borders, IDCMP flags, pens
-   and the GZZ fields. */
+   and the GZZ fields. A WFLG_RMBTRAP that the program wrote to its 68k
+   Window since the last copy goes to the native window first. */
 void Kaffeine_WindowSync(struct KaffeineContext *ctx, ULONG guest, struct Window *w);
+
+/* Every window of the program gets the WFLG_RMBTRAP that the program wrote
+   to its 68k Window since the last Kaffeine_WindowSync(); no other bit, and
+   no window of another program. GetMsg(), WaitPort(), GT_GetIMsg() and,
+   through ctx->window_publish, Wait() call it first. */
+void Kaffeine_WindowsPublish(struct KaffeineContext *ctx);
 
 /* A cleared 68k Window for a native one: its fields, its RastPort as a 68k
    RastPort, its IDCMP port as a 68k MsgPort, its title when it lies in guest

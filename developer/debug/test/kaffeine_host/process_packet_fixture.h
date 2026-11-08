@@ -251,7 +251,7 @@ static void process_packet_refusals()
         if(mode==1)p.f.w(msg+48,0x80000000);           // negative read
         if(mode==2)p.f.w(msg+44,p.f.reply);           // reply-queue alias
         if(mode==3)p.f.ctx.mem[port+14]=PA_SIGNAL;    // forged private handler
-        if(mode==4){p.f.ctx.num_shadows=1;p.f.ctx.shadow_map[0]={msg,&native_task,KAFFEINE_SHADOW_WAITMESSAGE,0};}
+        if(mode==4){p.f.ctx.num_shadows=1;p.f.ctx.shadow_map[0]={msg,&native_task,KAFFEINE_SHADOW_WAITMESSAGE,0, 0};}
         if(mode==5)p.f.ctx.callback_depth=1;
         if(mode==6)p.f.ctx.layer_ops=&locked;
         if(mode==7)p.f.w(p.f.exec_base+276,Fixture::task);

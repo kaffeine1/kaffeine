@@ -120,7 +120,7 @@ static void packet_failures()
             case 27:f.w(token*4+36,0);break;
             case 28:f.w(f.exec_base+276,f.task+4);break;
             case 29:f.w(f.msg+44,f.ctx.mem_size-4);break;
-            case 30:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.buffer+2,reinterpret_cast<void *>(1),8, 0 };break;
+            case 30:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={f.buffer+2,reinterpret_cast<void *>(1),8, 0, 0 };break;
         }
         f.rejected(handler);
     }
@@ -547,7 +547,7 @@ static void packet_disk_info()
             case 5:addr=handler;break;
             case 6:f.dos(306,token);addr=f.r(token*4+12)*4;break;
             case 7:f.message(f.msg+0x100);f.exec(366,f.reply,f.msg+0x100);addr=f.msg+0x100;break;
-            case 8:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={out,reinterpret_cast<void *>(1),8, 0 };break;
+            case 8:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={out,reinterpret_cast<void *>(1),8, 0, 0 };break;
             case 9:f.ctx.io_requests[0].guest=out;f.ctx.io_requests[0].capacity=48;break;
             case 10:f.ctx.app_ports[0].guest=out;f.ctx.app_ports[0].native=reinterpret_cast<MsgPort *>(1);break;
         }
@@ -669,7 +669,7 @@ static void cleared_packet_failures()
                 break;
             case 11:f.manual_port(msg+48);f.w(msg+24,msg+48);break;
             case 12:f.ctx.io_requests[0].guest=msg;f.ctx.io_requests[0].capacity=68;break;
-            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={msg+2,reinterpret_cast<void *>(1),8, 0 };break;
+            case 13:f.ctx.num_shadows=1;f.ctx.shadow_map[0]={msg+2,reinterpret_cast<void *>(1),8, 0, 0 };break;
             case 14:f.ctx.mem[f.reply+14]=1;break;
             case 15:f.ctx.mem[f.reply+14]=0;f.ctx.mem[f.reply+15]=4;f.w(f.reply+16,f.task);break;
             case 16:f.w(f.reply+20,f.reply+20);break;

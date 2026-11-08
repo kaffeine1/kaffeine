@@ -88,6 +88,7 @@ BOOL Kaffeine_ShadowAdd(struct KaffeineContext *ctx, ULONG guest, void *native, 
     ctx->shadow_map[ctx->num_shadows].m68k_addr = guest;
     ctx->shadow_map[ctx->num_shadows].native_ptr = native;
     ctx->shadow_map[ctx->num_shadows].type = type;
+    ctx->shadow_map[ctx->num_shadows].window_pub = 0;
     ctx->shadow_map[ctx->num_shadows].idcmp_window = 0;
     ctx->num_shadows++;
     return TRUE;
