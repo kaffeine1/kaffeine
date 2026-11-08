@@ -517,6 +517,20 @@ struct KaffeineContext
        window of the program the WFLG_RMBTRAP that it wrote, before it
        waits. NULL without a window. */
     void (*window_publish)(struct KaffeineContext *ctx);
+    /* Set with the first 68k Screen that the bridge makes
+       (kaffeine_screens.c): whether the size bytes at address meet the
+       system gadgets that such a Screen shows, or showed before it went,
+       which the program may only read, so that no call passes them to a
+       native class or writes them as a structure of the program's. NULL
+       before. */
+    BOOL (*screen_system_mirror)(struct KaffeineContext *ctx, ULONG address, ULONG size);
+    /* The rooms for those system gadgets, in ascending order: one for each
+       block of a 68k Screen that the bridge made and the guest heap still
+       holds, live or retired, also one that the screen book has dropped.
+       screen_room_max is the space of the array, which grows before a new
+       block is taken; freed by Kaffeine_ScreensCleanup(). */
+    ULONG *screen_rooms;
+    ULONG screen_room_count, screen_room_max;
     /* VisualInfo keeps DrawInfo/Screen alive. Borrowed screens also hold
        a native visitor lock until their VisualInfo references are freed. */
     #define KAFFEINE_MAX_VISUALINFOS 32

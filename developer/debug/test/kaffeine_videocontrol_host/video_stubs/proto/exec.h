@@ -3,6 +3,9 @@
 #pragma once
 #include "../../../kaffeine_host/memory_stubs/proto/exec.h"
 #define SIGB_DOS 8
+/* one task on the host, as in kaffeine_host/stubs/proto/exec.h */
+#define Forbid() ((void)0)
+#define Permit() ((void)0)
 struct Task;
 #ifdef __cplusplus
 extern "C" {

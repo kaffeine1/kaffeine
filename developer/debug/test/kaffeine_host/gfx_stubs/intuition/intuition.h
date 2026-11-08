@@ -232,6 +232,7 @@ struct PropInfo
 #define GFLG_GADGHIMAGE    0x0002
 #define GFLG_GADGHNONE     0x0003
 #define GFLG_GADGIMAGE     0x0004
+#define GFLG_RELRIGHT      0x0010
 #define GFLG_SELECTED      0x0080
 #define GFLG_DISABLED      0x0100
 #define GFLG_STRINGEXTEND  0x0400

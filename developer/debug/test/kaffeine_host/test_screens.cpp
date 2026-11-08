@@ -19,6 +19,7 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -124,6 +125,9 @@ struct NativeIntuition
     /* OpenScreenTagList() and CloseScreen() */
     std::deque<Opened> opened;
     TextFont *screen_font = nullptr;
+    /* Screen.FirstGadget of a screen that OpenScreenTagList() opens, as
+       openscreen.c puts its depth gadget there */
+    Gadget *open_gadgets = nullptr;
     bool open_fail = false, close_refuse = false;
     ULONG open_error = 0;
     Screen *default_screen = nullptr, *workbench = nullptr;
@@ -439,6 +443,7 @@ extern "C" struct Screen *OpenScreenTagList(struct NewScreen *ns, struct TagItem
     std::memset(s.BitMap_OBSOLETE.Planes, 0x77, sizeof(s.BitMap_OBSOLETE.Planes));
     for (auto &p : n.drawn.Planes) p = reinterpret_cast<PLANEPTR>(&n.drawn);
     s.NextScreen = &s; s.ExtData = s.UserData = reinterpret_cast<UBYTE *>(&s);
+    s.FirstGadget = native->open_gadgets;
     if (!o.pubname.empty())
     {
         assert(o.pubname.size() <= MAXPUBSCREENNAME);
@@ -549,8 +554,8 @@ static IPTR poison(KaffeineContext *, void *) { ++generated_calls; return 0xBAD0
 static const M68KThunkEntry manual[] = { KAFFEINE_INTUITION_PUBSCREEN_THUNKS, KAFFEINE_INTUITION_SCREEN_THUNKS };
 static const M68KThunkEntry generated[] =
     { { 510, poison }, { 516, poison }, { 522, poison }, { 528, poison }, { 534, poison }, { 582, poison },
-      { 66, poison }, { 198, poison }, { 612, poison }, { 618, poison }, { 690, poison },
-      { 696, poison }, { 936, poison } };
+      { 66, poison }, { 198, poison }, { 612, poison }, { 618, poison }, { 624, poison },
+      { 630, poison }, { 690, poison }, { 696, poison }, { 936, poison } };
 
 /* Literal NDK offsets, independent of the bridge's private enums. */
 enum
@@ -559,8 +564,23 @@ enum
     RP_FONT = 52, LH_HEAD = 0, LH_TAIL = 4, LH_TAILPRED = 8, LH_TYPE = 12,
     LIST_ROOM = 16, NODE_SIZE = 30, LN_SUCC = 0, LN_PRED = 4, LN_TYPE = 8,
     LN_PRI = 9, LN_NAME = 10, PSN_SCREEN = 14, PSN_FLAGS = 18, PSN_SIZE = 20,
-    PSN_VISITORS = 22, PSN_TASK = 24, PSN_SIGBIT = 28
+    PSN_VISITORS = 22, PSN_TASK = 24, PSN_SIGBIT = 28,
+    // Screen.FirstGadget, a 68k ExtGadget and Image (intuition/intuition.h)
+    SCR_FIRSTGADGET = 326, GD_NEXT = 0, GD_LEFT = 4, GD_TOP = 6, GD_WIDTH = 8,
+    GD_HEIGHT = 10, GD_FLAGS = 12, GD_ACTIVATION = 14, GD_TYPE = 16, GD_RENDER = 18,
+    GD_SELECT = 22, GD_TEXT = 26, GD_MUTEX = 30, GD_SPECIAL = 34, GD_ID = 38,
+    GD_USERDATA = 40, GD_MOREFLAGS = 44, GD_BOUNDS = 48, EXTGADGET_SIZE = 56,
+    IM_LEFT = 0, IM_TOP = 2, IM_WIDTH = 4, IM_HEIGHT = 6, IM_DEPTH = 8, IM_DATA = 10,
+    IM_PICK = 14, IM_ONOFF = 15, IM_NEXT = 16, IMAGE_SIZE = 20,
+    // one system gadget with its two Images, four of them at the end of
+    // every block of a 68k Screen that the bridge makes
+    SYSTEM_GADGET = EXTGADGET_SIZE + 2 * IMAGE_SIZE, SYSTEM_GADGETS = 4 * SYSTEM_GADGET
 };
+static_assert(SYSTEM_GADGETS == 384 && KAFFEINE_SCREEN_SYSTEM_GADGETS == 4);
+/* The block of a 68k Screen that the bridge makes, for bytes of Screen,
+   TextAttr, name and ColorMap: the room for the system gadgets follows at
+   a long-aligned offset. */
+static constexpr ULONG screen_block(ULONG bytes) { return ((bytes + 3) & ~3UL) + SYSTEM_GADGETS; }
 static const UWORD FILLER = 99;
 
 struct Fixture
@@ -840,12 +860,12 @@ static void screen_image(Fixture &f, ULONG g, Screen &s, ULONG ta, ULONG tf, ULO
 static void test_registrations()
 {
     static_assert(KAFFEINE_SHADOW_SCREEN == 5 && KAFFEINE_SHADOW_PUBSCREEN == 13);
-    const ULONG slots[] = { 510, 516, 522, 528, 534, 582, 66, 198, 612, 618, 690, 696, 936 };
+    const ULONG slots[] = { 510, 516, 522, 528, 534, 582, 66, 198, 612, 618, 624, 630, 690, 696, 936 };
     IPTR (*const functions[])(KaffeineContext *, void *) = { Kaffeine_LockPubScreen, Kaffeine_UnlockPubScreen,
         Kaffeine_LockPubScreenList, Kaffeine_UnlockPubScreenList, Kaffeine_NextPubScreen,
         Kaffeine_GetDefaultPubScreen, Kaffeine_CloseScreen, Kaffeine_OpenScreen, Kaffeine_OpenScreenTagList,
-        Kaffeine_DrawImageState, Kaffeine_GetScreenDrawInfo, Kaffeine_FreeScreenDrawInfo,
-        Kaffeine_GetDrawInfoAttr };
+        Kaffeine_DrawImageState, Kaffeine_PointInImage, Kaffeine_EraseImage, Kaffeine_GetScreenDrawInfo,
+        Kaffeine_FreeScreenDrawInfo, Kaffeine_GetDrawInfoAttr };
     assert(std::size(manual) == std::size(slots));
     for (size_t i = 0; i < std::size(slots); ++i)
     { assert(manual[i].lvo == slots[i] && manual[i].thunk == functions[i]); }
@@ -995,12 +1015,13 @@ static void test_textattr_names()
         if (!shared_name) f.attr.ta_Name = separate_name.data();
         const ULONG g = f.lock(); assert(g);
         const ULONG ta = f.lng(g + 40), tf = f.lng(g + RP + RP_FONT);
-        const ULONG size = SCREEN_SIZE + TA_SIZE + (shared_name ? 0 : 12);
+        const ULONG size = screen_block(SCREEN_SIZE + TA_SIZE + (shared_name ? 0 : 12));
         assert(ta == g + SCREEN_SIZE && f.lng(tf + 10) == tf + 52);
         assert(f.lng(ta) == (shared_name ? tf + 52 : ta + TA_SIZE));
         assert(f.string(f.lng(ta)) == "screen.font");
         // Compare allocation cost with exactly a Screen/TextAttr and TextFont,
-        // including an inline name only for the distinct-pointer case.
+        // including an inline name only for the distinct-pointer case, and
+        // the room for the system gadgets.
         {
             Fixture reference;
             assert(Kaffeine_MirrorAlloc(&reference.ctx, size));
@@ -1222,12 +1243,12 @@ static void test_missing_guest_font()
         {
             // Size the heap so the Screen/TextAttr fits, with no room left
             // for its TextFont. Probe the real allocator rather than its headers.
-            const ULONG probe = Kaffeine_MirrorAlloc(&f.ctx, SCREEN_SIZE + TA_SIZE); assert(probe);
+            const ULONG probe = Kaffeine_MirrorAlloc(&f.ctx, screen_block(SCREEN_SIZE + TA_SIZE)); assert(probe);
             const ULONG cost = f.initial_heap - f.avail();
             Kaffeine_MirrorRelease(&f.ctx, probe);
             f.ctx.heap_end = f.ctx.heap_start + cost;
             assert(Kaffeine_HeapInit(&f.ctx));
-            const ULONG fits = Kaffeine_MirrorAlloc(&f.ctx, SCREEN_SIZE + TA_SIZE);
+            const ULONG fits = Kaffeine_MirrorAlloc(&f.ctx, screen_block(SCREEN_SIZE + TA_SIZE));
             assert(fits && f.avail() == 0);
             Kaffeine_MirrorRelease(&f.ctx, fits);
         }
@@ -1236,6 +1257,8 @@ static void test_missing_guest_font()
         f.native_unlocks(&n.screen, 1);
         assert(n.node.psn_VisitorCount == 0 && f.avail() == heap && f.ctx.num_shadows == 0 && !f.entries());
         assert(!f.ctx.screen_release && !Kaffeine_FontFind(&f.ctx, &f.font) && !f.held_fonts());
+        // the fresh block went back before the program saw it, and its room with it
+        assert(f.ctx.screen_room_count == 0);
         // held before the 68k TextFont, and given back
         assert(native->count(FONT_OPEN) == 1 && native->count(FONT_CLOSE) == 1);
         assert(f.font.tf_Accessors == 3 && native->font_opens.empty());
@@ -1267,7 +1290,7 @@ static void test_release_and_recreate()
     const ULONG baseline = f.avail(); // font remains pinned after the first lock/unlock
     assert(baseline < f.initial_heap && f.ctx.num_shadows == 0);
     // Occupy the old block, proving the next lock creates a fresh allocation.
-    const ULONG blocker = Kaffeine_HeapAlloc(&f.ctx, SCREEN_SIZE + TA_SIZE + 12, MEMF_ANY);
+    const ULONG blocker = Kaffeine_HeapAlloc(&f.ctx, screen_block(SCREEN_SIZE + TA_SIZE) + 12, MEMF_ANY);
     assert(blocker);
     const ULONG occupied = f.avail();
     g = f.lock(); assert(g && g != blocker && f.avail() < occupied);
@@ -1276,7 +1299,7 @@ static void test_release_and_recreate()
     f.unlock(g); assert(f.ctx.num_shadows == 3);
     f.unlock(g); f.absent(g, &n.screen);
     assert(f.avail() == occupied && f.ctx.num_shadows == 0 && f.entries() == 0);
-    Kaffeine_HeapFree(&f.ctx, blocker, SCREEN_SIZE + TA_SIZE + 12);
+    Kaffeine_HeapFree(&f.ctx, blocker, screen_block(SCREEN_SIZE + TA_SIZE) + 12);
     assert(f.avail() == baseline && n.node.psn_VisitorCount == 0);
     f.native_unlocks(&n.screen, 3);
 }
@@ -1508,7 +1531,8 @@ static void test_lock_failures()
         assert(f.lock() == 0 && !f.stopped() && s.node.psn_VisitorCount == 0);
         assert(f.entries() == 0 && f.ctx.num_shadows == shadows && f.avail() == heap && f.memory == before);
         f.native_unlocks(&s.screen, 1);
-        assert(!f.ctx.screen_release && !f.held_fonts() && native->font_opens.empty());
+        assert(!f.ctx.screen_release && !f.ctx.screen_system_mirror && !f.held_fonts() &&
+               native->font_opens.empty());
         // the shadow entries before the font, the font before the memory
         assert(native->count(FONT_OPEN) == (with_font && free < 0 ? 1u : 0u));
         assert(native->count(FONT_CLOSE) == native->count(FONT_OPEN) && f.font.tf_Accessors == 3);
@@ -3202,13 +3226,476 @@ static void test_drawinfo_consumer_refusals()
     const ULONG dri = f.get_dri(screen); assert(dri);
     const auto calls = native->calls.size();
     for (ULONG pointer : { 0U, dri, 0xFFFFFFF0U })
-        for (ULONG lvo : { 618U, 936U })
+        for (ULONG lvo : { 618U, 624U, 630U, 936U })
         {
             const auto memory = f.memory;
             assert(f.call(lvo, { pointer, pointer, pointer }) == 20 && f.stopped());
             assert(native->calls.size() == calls && memory == f.memory && f.drawinfos() == 1);
         }
     assert(f.free_dri(screen, dri) == 0 && f.close(screen) == 1);
+}
+
+/* ── System gadgets ──────────────────────────────────────────────── */
+
+/* A depth gadget of a screen as AROS makes one (openscreen.c): an
+   ExtGadget of windowsysiclass, where gadgetclass.c sets GFLG_EXTENDED,
+   GMORE_BOOPSIGADGET and its dispatcher in MutualExclude, GTYP_SCRGADGET,
+   GFLG_RELRIGHT at 1 - width, and Images of sysiclass with Depth
+   CUSTOMIMAGEDEPTH, no planes and no next Image (imageclass.c). Every
+   field has a value of its own, so that a copy shows where each came from;
+   UserData too, which the bridge withholds. */
+struct SystemDepth
+{
+    static constexpr UWORD SDEPTH = 0x0050;  // GTYP_SDEPTH of the NDK
+    static constexpr WORD CUSTOM_DEPTH = -1; // CUSTOMIMAGEDEPTH
+    ExtGadget gadget{};
+    Image render{}, select{};
+    int dispatcher = 0, user = 0;
+    SystemDepth()
+    {
+        gadget.LeftEdge = -24; gadget.TopEdge = 1; gadget.Width = 25; gadget.Height = 18;
+        gadget.Flags = GFLG_EXTENDED | GFLG_RELRIGHT | GFLG_GADGIMAGE | GFLG_GADGHIMAGE;
+        gadget.Activation = GACT_RELVERIFY;
+        gadget.GadgetType = GTYP_SYSGADGET | GTYP_SCRGADGET | SDEPTH;
+        gadget.GadgetRender = &render; gadget.SelectRender = &select;
+        gadget.MutualExclude = reinterpret_cast<IPTR>(&dispatcher);
+        gadget.GadgetID = 0x77; gadget.UserData = &user;
+        gadget.MoreFlags = GMORE_BOOPSIGADGET | GMORE_BOUNDS | GMORE_SCROLLRASTER;
+        gadget.BoundsLeftEdge = -30; gadget.BoundsTopEdge = -2;
+        gadget.BoundsWidth = 31; gadget.BoundsHeight = 21;
+        render.LeftEdge = -1; render.TopEdge = 2; render.Width = 23; render.Height = 17;
+        render.Depth = CUSTOM_DEPTH; render.PlanePick = 0xA5; render.PlaneOnOff = 0x5A;
+        select.LeftEdge = 3; select.TopEdge = -4; select.Width = 21; select.Height = 15;
+        select.Depth = CUSTOM_DEPTH; select.PlanePick = 0x3C; select.PlaneOnOff = 0xC3;
+    }
+    SystemDepth(const SystemDepth &) = delete;
+    SystemDepth &operator=(const SystemDepth &) = delete;
+    Gadget *first() { return reinterpret_cast<Gadget *>(&gadget); }
+    void link(SystemDepth *next) { gadget.NextGadget = next ? &next->gadget : nullptr; }
+    /* Every byte of the native gadget and its Images, which nothing writes */
+    std::vector<UBYTE> bytes() const
+    {
+        std::vector<UBYTE> b(sizeof(gadget) + 2 * sizeof(Image));
+        std::memcpy(b.data(), &gadget, sizeof(gadget));
+        std::memcpy(b.data() + sizeof(gadget), &render, sizeof(Image));
+        std::memcpy(b.data() + sizeof(gadget) + sizeof(Image), &select, sizeof(Image));
+        return b;
+    }
+};
+
+static bool all_zero(const Fixture &f, ULONG at, ULONG count)
+{
+    return std::all_of(f.memory.begin() + at, f.memory.begin() + at + count, [](UBYTE b) { return b == 0; });
+}
+
+/* The room for the system gadgets at the end of the block of a 68k Screen
+   that the bridge made, after a check of the size of that block */
+static ULONG system_room(const Fixture &f, ULONG g, ULONG block)
+{
+    const int i = f.entry(g);
+    assert(i >= 0 && f.ctx.pubscreens[i].size == block);
+    return g + block - SYSTEM_GADGETS;
+}
+
+/* Whether size bytes at address meet a room, by the bridge's own hook */
+static bool system_mirror(Fixture &f, ULONG address, ULONG size = 1)
+{
+    return f.ctx.screen_system_mirror && f.ctx.screen_system_mirror(&f.ctx, address, size);
+}
+
+/* Compare one system gadget of the room, at at, against a zero-based wire
+   image of the native one built at literal NDK offsets: its scalars, the
+   NDK bits of MoreFlags and the bounds only behind GFLG_EXTENDED, each
+   Image in its own place or the one Image twice, and every pointer that
+   the bridge withholds, GadgetText, MutualExclude, SpecialInfo, UserData,
+   ImageData and NextImage, 0. */
+static void system_node(Fixture &f, ULONG at, ULONG next, const ExtGadget &n)
+{
+    std::array<UBYTE, SYSTEM_GADGET> want{};
+    auto w = [&](unsigned o, UWORD v) { want[o] = v >> 8; want[o + 1] = v; };
+    auto l = [&](unsigned o, ULONG v) { w(o, v >> 16); w(o + 2, v); };
+    auto image = [&](unsigned o, const Image &im) {
+        w(o + IM_LEFT, im.LeftEdge); w(o + IM_TOP, im.TopEdge); w(o + IM_WIDTH, im.Width);
+        w(o + IM_HEIGHT, im.Height); w(o + IM_DEPTH, im.Depth);
+        want[o + IM_PICK] = im.PlanePick; want[o + IM_ONOFF] = im.PlaneOnOff;
+    };
+    l(GD_NEXT, next);
+    w(GD_LEFT, n.LeftEdge); w(GD_TOP, n.TopEdge); w(GD_WIDTH, n.Width); w(GD_HEIGHT, n.Height);
+    w(GD_FLAGS, n.Flags); w(GD_ACTIVATION, n.Activation); w(GD_TYPE, n.GadgetType);
+    w(GD_ID, n.GadgetID);
+    if (n.Flags & GFLG_EXTENDED)
+    {
+        l(GD_MOREFLAGS, n.MoreFlags & (GMORE_BOUNDS | GMORE_GADGETHELP | GMORE_SCROLLRASTER));
+        w(GD_BOUNDS, n.BoundsLeftEdge); w(GD_BOUNDS + 2, n.BoundsTopEdge);
+        w(GD_BOUNDS + 4, n.BoundsWidth); w(GD_BOUNDS + 6, n.BoundsHeight);
+    }
+    const auto *r = static_cast<const Image *>(n.GadgetRender);
+    const auto *s = static_cast<const Image *>(n.SelectRender);
+    if (r) { l(GD_RENDER, at + EXTGADGET_SIZE); image(EXTGADGET_SIZE, *r); }
+    if (s && s == r) l(GD_SELECT, at + EXTGADGET_SIZE);
+    else if (s) { l(GD_SELECT, at + EXTGADGET_SIZE + IMAGE_SIZE); image(EXTGADGET_SIZE + IMAGE_SIZE, *s); }
+    assert(std::equal(want.begin(), want.end(), f.memory.begin() + at));
+    const unsigned withheld[] = { GD_TEXT, GD_MUTEX, GD_SPECIAL, GD_USERDATA, EXTGADGET_SIZE + IM_DATA,
+                                  EXTGADGET_SIZE + IM_NEXT, EXTGADGET_SIZE + IMAGE_SIZE + IM_DATA,
+                                  EXTGADGET_SIZE + IMAGE_SIZE + IM_NEXT };
+    for (unsigned o : withheld) assert(f.lng(at + o) == 0);
+}
+
+/* LockPubScreen(): Screen.FirstGadget names a read-only copy of the depth
+   gadget in the room at the end of the 68k Screen's own block; each refresh
+   rewrites it from the native gadget at the same address, also over what
+   the program wrote; no list gives 0; the last unlock retires the room with
+   the Screen and the very screen gets both back. */
+static void test_system_gadget_mirror()
+{
+    SystemDepth d;
+    Fixture f;
+    auto &n = f.add();
+    n.screen.FirstGadget = d.first();
+    assert(!f.ctx.screen_system_mirror);
+    const ULONG g = f.lock(); assert(g && !f.stopped());
+    const ULONG block = screen_block(SCREEN_SIZE), room = system_room(f, g, block);
+    assert(room == g + 348);
+    assert(f.lng(g + SCR_FIRSTGADGET) == room);
+    system_node(f, room, 0, d.gadget);
+    assert(all_zero(f, room + SYSTEM_GADGET, SYSTEM_GADGETS - SYSTEM_GADGET));
+    // no native object: the hook knows every byte of the room and nothing else
+    for (ULONG a : { room, room + GD_RENDER, room + EXTGADGET_SIZE, room + EXTGADGET_SIZE + IMAGE_SIZE,
+                     room + SYSTEM_GADGET, room + SYSTEM_GADGETS - 1 })
+        assert(system_mirror(f, a));
+    for (ULONG a : { 0U, g, g + SCR_FIRSTGADGET, g + VP, room - 1, room + SYSTEM_GADGETS, 0xFFFFFFFFU })
+        assert(!system_mirror(f, a));
+    // spans: a Gadget that reaches into the room meets it, one that ends
+    // short of it or starts after it does not; nothing for no bytes, and a
+    // span past the end of the address space does not wrap to its start
+    assert(system_mirror(f, room - 12, 44) && system_mirror(f, room - 43, 44) &&
+           system_mirror(f, room + SYSTEM_GADGETS - 1, 44) && system_mirror(f, 0, 0xFFFFFFFFU));
+    assert(!system_mirror(f, room - 44, 44) && !system_mirror(f, room + SYSTEM_GADGETS, 44) &&
+           !system_mirror(f, room, 0) && !system_mirror(f, g, SCREEN_SIZE) &&
+           !system_mirror(f, 0xFFFFFF00U, 0x200));
+    // a refresh takes the native scalars again, in the same place, over the
+    // program's own bytes there
+    d.gadget.LeftEdge = -26; d.gadget.Width = 27; d.gadget.Flags |= GFLG_SELECTED;
+    d.gadget.BoundsWidth = 33; d.render.Width = 25; d.select.PlanePick = 0x0F;
+    const auto before = d.bytes(); // nothing below writes the native objects
+    std::fill_n(f.memory.begin() + room, SYSTEM_GADGETS, 0xC7);
+    m68k_write32(&f.ctx, g + SCR_FIRSTGADGET, room + 4);
+    assert(f.lock() == g && !f.stopped() && f.lng(g + SCR_FIRSTGADGET) == room);
+    system_node(f, room, 0, d.gadget);
+    assert(all_zero(f, room + SYSTEM_GADGET, SYSTEM_GADGETS - SYSTEM_GADGET));
+    // without a list, FirstGadget is 0 and so is the room, which stays the screen's
+    n.screen.FirstGadget = nullptr;
+    assert(f.lock() == g && f.lng(g + SCR_FIRSTGADGET) == 0 && all_zero(f, room, SYSTEM_GADGETS));
+    assert(system_mirror(f, room));
+    n.screen.FirstGadget = d.first();
+    assert(f.lock() == g && f.lng(g + SCR_FIRSTGADGET) == room);
+    system_node(f, room, 0, d.gadget);
+    assert(d.bytes() == before);
+    // the last unlock retires the whole block, room and all, which the hook
+    // still knows; the same screen of the same generation gets it back
+    for (int i = 0; i < 4; ++i) f.unlock(g);
+    f.absent(g, &n.screen);
+    assert(f.ctx.screen_book_count == 1 && f.ctx.screen_book[0].guest == g);
+    assert(f.ctx.screen_book[0].size == block && all_zero(f, g, block));
+    assert(system_mirror(f, room) && system_mirror(f, room + SYSTEM_GADGETS - 1) && !system_mirror(f, room - 1));
+    const ULONG again = f.lock(); assert(again == g && f.ctx.screen_book_count == 0);
+    assert(f.lng(g + SCR_FIRSTGADGET) == room);
+    system_node(f, room, 0, d.gadget);
+    f.unlock(g);
+    f.native_unlocks(&n.screen, 5);
+    assert(d.bytes() == before);
+}
+
+/* Only a whole list of system gadgets of the screen is shown. A gadget of
+   another kind anywhere in it, a classic Image, an Image with planes or a
+   next one, a Border, a label or SpecialInfo, a cycle or a fifth gadget
+   gives 0 for the whole list, with the room 0 and no stop; the next
+   refresh with a list that the bridge can show shows it. */
+static void test_system_gadget_shapes()
+{
+    struct Shape
+    {
+        const char *what;
+        int shown; // the gadgets that the copy has, 0 for none
+        std::function<void(std::array<SystemDepth, 5> &)> make;
+    };
+    static UWORD plane[4];
+    static IntuiText label{};
+    static int special;
+    static Image classic{};
+    const Shape shapes[] =
+    {
+        { "the depth gadget", 1, [](auto &) {} },
+        { "a gadget of the program after it", 0, [](auto &d) {
+              d[1].gadget.GadgetType = GTYP_CUSTOMGADGET; d[1].gadget.Flags &= ~GFLG_EXTENDED; d[0].link(&d[1]); } },
+        { "a gadget of the program before it", 0, [](auto &d) {
+              d[0].gadget.GadgetType = GTYP_CUSTOMGADGET | GTYP_SCRGADGET; d[0].link(&d[1]); } },
+        { "a system gadget of a window", 0, [](auto &d) { d[0].gadget.GadgetType &= ~GTYP_SCRGADGET; } },
+        { "a classic Image", 0, [](auto &d) { classic = d[0].render; classic.Depth = 2;
+              d[0].gadget.GadgetRender = &classic; } },
+        { "a classic SelectRender", 0, [](auto &d) { d[0].select.Depth = 1; } },
+        { "planes behind a BOOPSI Image", 0, [](auto &d) { d[0].render.ImageData = plane; } },
+        { "a next Image behind SelectRender", 0, [](auto &d) { d[0].select.NextImage = &d[1].render; } },
+        { "a Border, without GFLG_GADGIMAGE", 0, [](auto &d) { d[0].gadget.Flags &= ~GFLG_GADGIMAGE; } },
+        { "a label", 0, [](auto &d) { d[0].gadget.GadgetText = &label; } },
+        { "SpecialInfo", 0, [](auto &d) { d[0].gadget.SpecialInfo = &special; } },
+        { "itself next", 0, [](auto &d) { d[0].link(&d[0]); } },
+        { "a cycle of two", 0, [](auto &d) { d[0].link(&d[1]); d[1].link(&d[0]); } },
+        { "five gadgets", 0, [](auto &d) { for (int i = 0; i < 4; ++i) d[i].link(&d[i + 1]); } },
+        { "four gadgets", 4, [](auto &d) { for (int i = 0; i < 3; ++i) d[i].link(&d[i + 1]);
+              for (int i = 0; i < 4; ++i) { d[i].gadget.GadgetID = 0x40 + i; d[i].gadget.LeftEdge = -24 * (i + 1); } } },
+        { "one Image for both renders", 1, [](auto &d) { d[0].gadget.SelectRender = &d[0].render; } },
+        { "no Images", 1, [](auto &d) { d[0].gadget.GadgetRender = d[0].gadget.SelectRender = nullptr;
+              d[0].gadget.Flags &= ~(GFLG_GADGIMAGE | GFLG_GADGHIMAGE); } },
+        { "a Gadget without the extension", 1, [](auto &d) { d[0].gadget.Flags &= ~GFLG_EXTENDED; } },
+        { "only AROS's MoreFlags bit", 1, [](auto &d) { d[0].gadget.MoreFlags = GMORE_BOOPSIGADGET; } },
+    };
+    SystemDepth base;
+    Fixture f;
+    auto &n = f.add();
+    n.screen.FirstGadget = base.first();
+    const ULONG g = f.lock(); assert(g); // held through every refresh below
+    const ULONG room = system_room(f, g, screen_block(SCREEN_SIZE));
+    unsigned locks = 1;
+    for (const auto &shape : shapes)
+    {
+        std::array<SystemDepth, 5> d;
+        shape.make(d);
+        const auto before = std::vector<std::vector<UBYTE>>{ d[0].bytes(), d[1].bytes(), d[2].bytes(),
+                                                             d[3].bytes(), d[4].bytes() };
+        n.screen.FirstGadget = d[0].first();
+        std::fill_n(f.memory.begin() + room, SYSTEM_GADGETS, 0xC7);
+        assert(f.lock() == g && !f.stopped()); ++locks;
+        if (!shape.shown)
+        {
+            std::printf("  %s: none shown\n", shape.what);
+            assert(f.lng(g + SCR_FIRSTGADGET) == 0 && all_zero(f, room, SYSTEM_GADGETS));
+        }
+        else
+        {
+            std::printf("  %s: %d shown\n", shape.what, shape.shown);
+            assert(f.lng(g + SCR_FIRSTGADGET) == room);
+            for (int k = 0; k < shape.shown; ++k)
+                system_node(f, room + k * SYSTEM_GADGET, k + 1 < shape.shown ? room + (k + 1) * SYSTEM_GADGET : 0,
+                            d[k].gadget);
+            assert(all_zero(f, room + shape.shown * SYSTEM_GADGET, SYSTEM_GADGETS - shape.shown * SYSTEM_GADGET));
+        }
+        for (int k = 0; k < 5; ++k) assert(d[k].bytes() == before[k]);
+        // the list that the bridge can show comes back at the next refresh
+        n.screen.FirstGadget = base.first();
+        assert(f.lock() == g && f.lng(g + SCR_FIRSTGADGET) == room); ++locks;
+        system_node(f, room, 0, base.gadget);
+        n.screen.FirstGadget = nullptr;
+    }
+    for (unsigned i = 0; i < locks; ++i) f.unlock(g);
+    f.native_unlocks(&n.screen, locks);
+}
+
+/* OpenScreenTagList(): the screen that the program opens shows the depth
+   gadget of Intuition the same way, in the room after its ColorMap;
+   EraseImage() and PointInImage() stop before Intuition for those Images
+   and any other; CloseScreen() retires the room with the Screen. */
+static void test_system_gadget_opened()
+{
+    SystemDepth d;
+    Fixture f;
+    native->open_gadgets = d.first();
+    const ULONG g = f.open(0, 0); assert(g && f.owned() == 1 && !f.stopped());
+    const ULONG block = screen_block(SCREEN_SIZE + 52), room = system_room(f, g, block);
+    assert(f.lng(g + VP + 4) == g + SCREEN_SIZE && room == g + 400);
+    assert(f.lng(g + SCR_FIRSTGADGET) == room);
+    system_node(f, room, 0, d.gadget);
+    const auto before = d.bytes();
+    const auto calls = native->calls.size();
+    for (ULONG image : { room + EXTGADGET_SIZE, room + EXTGADGET_SIZE + IMAGE_SIZE, room, 0U })
+    {
+        const auto memory = f.memory;
+        assert(f.call(624, { image }) == 20 && f.stopped());
+        assert(f.call(630, { g + RP, image }) == 20 && f.stopped());
+        assert(native->calls.size() == calls && memory == f.memory);
+    }
+    assert(d.bytes() == before && f.close(g) == 1);
+    assert(all_zero(f, g, block) && system_mirror(f, room) && !system_mirror(f, room + SYSTEM_GADGETS));
+}
+
+/* The room comes with the block of the 68k Screen, all or none: memory
+   for a Screen without it makes no 68k Screen, no entry, no known room and
+   no hook, and leaves guest memory as it was, after the space to record
+   the room was made first; with memory, the next lock shows the list. */
+static void test_system_gadget_memory()
+{
+    SystemDepth d;
+    Fixture f;
+    auto &n = f.add();
+    n.screen.FirstGadget = d.first();
+    const ULONG probe = Kaffeine_MirrorAlloc(&f.ctx, SCREEN_SIZE); assert(probe);
+    const ULONG cost = f.initial_heap - f.avail();
+    Kaffeine_MirrorRelease(&f.ctx, probe);
+    f.ctx.heap_end = f.ctx.heap_start + cost;
+    assert(Kaffeine_HeapInit(&f.ctx));
+    const auto before = f.memory;
+    assert(!f.lock() && !f.stopped());
+    f.native_unlocks(&n.screen, 1);
+    assert(!f.entries() && f.ctx.num_shadows == 0 && !f.ctx.screen_release && !f.ctx.screen_system_mirror);
+    assert(f.memory == before && f.ctx.screen_room_count == 0 && f.ctx.screen_room_max > 0);
+    f.ctx.heap_end = 0xF000; assert(Kaffeine_HeapInit(&f.ctx));
+    const ULONG g = f.lock(); assert(g);
+    const ULONG room = system_room(f, g, screen_block(SCREEN_SIZE));
+    assert(f.lng(g + SCR_FIRSTGADGET) == room && f.ctx.screen_room_count == 1 && f.ctx.screen_rooms[0] == room);
+    system_node(f, room, 0, d.gadget);
+    f.unlock(g);
+}
+
+/* Every room that the bridge showed stays known while the program runs,
+   also after the 32-entry screen book has dropped its block, which stays
+   allocated and 0: 34 screens retired, the first two blocks dropped from
+   the book. The first screen locked again gets a new block, as its old one
+   can no longer come back, and the old room stays known beside the new
+   one. The end of the program frees the record, not the blocks. */
+static void test_system_gadget_rooms_outlive_book()
+{
+    SystemDepth d;
+    Fixture f;
+    const ULONG block = screen_block(SCREEN_SIZE);
+    std::vector<ULONG> guests;
+    std::vector<NativeScreen *> screens;
+    for (unsigned i = 0; i < KAFFEINE_SCREEN_BOOK + 2; ++i)
+    {
+        auto &n = f.add("Screen" + std::to_string(i));
+        n.screen.FirstGadget = d.first();
+        screens.push_back(&n);
+        const ULONG g = f.lock(f.name(n.name.data())); assert(g && !f.stopped());
+        assert(std::find(guests.begin(), guests.end(), g) == guests.end());
+        assert(f.lng(g + SCR_FIRSTGADGET) == system_room(f, g, block));
+        f.unlock(g);
+        f.absent(g, &n.screen);
+        guests.push_back(g);
+    }
+    assert(f.ctx.screen_book_count == KAFFEINE_SCREEN_BOOK && f.ctx.screen_room_count == guests.size());
+    for (unsigned i = 0; i < 2; ++i)
+        for (UWORD k = 0; k < f.ctx.screen_book_count; ++k)
+            assert(f.ctx.screen_book[k].guest != guests[i]);
+    for (ULONG g : guests)
+    {
+        const ULONG room = g + block - SYSTEM_GADGETS;
+        assert(all_zero(f, g, block));
+        assert(system_mirror(f, room) && system_mirror(f, room + EXTGADGET_SIZE) &&
+               system_mirror(f, room + SYSTEM_GADGETS - 1));
+        assert(!system_mirror(f, room - 1) && !system_mirror(f, g));
+    }
+    const ULONG again = f.lock(f.name(screens[0]->name.data()));
+    assert(again && std::find(guests.begin(), guests.end(), again) == guests.end());
+    const ULONG room = system_room(f, again, block);
+    assert(f.lng(again + SCR_FIRSTGADGET) == room && f.ctx.screen_room_count == guests.size() + 1);
+    system_node(f, room, 0, d.gadget);
+    assert(system_mirror(f, room) && system_mirror(f, guests[0] + block - SYSTEM_GADGETS));
+    f.unlock(again);
+    // the book drops the next one; its room stays known too
+    assert(f.ctx.screen_book_count == KAFFEINE_SCREEN_BOOK && system_mirror(f, guests[2] + block - SYSTEM_GADGETS));
+    Kaffeine_ScreensCleanup(&f.ctx);
+    assert(!f.ctx.screen_rooms && !f.ctx.screen_room_count && !f.ctx.screen_room_max);
+    assert(!system_mirror(f, room) && all_zero(f, guests[0], block));
+}
+
+/* AllocVec() of the screens object alone (screens_allocvec.h, which the
+   Makefile forces into it): calloc() as the stubs, with every request
+   recorded. screens_fail_in counts the requests that still succeed; the
+   one at 0 fails, and the countdown stops. */
+static std::vector<ULONG> screens_requests;
+static int screens_fail_in = -1;
+extern "C" APTR Kaffeine_TestScreensAllocVec(ULONG size, ULONG flags)
+{
+    (void)flags;
+    screens_requests.push_back(size);
+    if (screens_fail_in >= 0 && screens_fail_in-- == 0)
+        return nullptr;
+    return std::calloc(1, size);
+}
+
+/* No host memory for the record of rooms makes no 68k Screen, for the
+   first record of 16 rooms (64 bytes) and for its growth to 32 (128): the
+   request reaches rooms_reserve() with that size, before the guest block,
+   and no block, entry, shadow, hook, book change or guest write follows;
+   the native visitor lock and the font go back; the rooms recorded before
+   stay recorded and refused; the next lock takes the record, the block and
+   the copy. */
+static void test_system_gadget_record_oom()
+{
+    {
+        SystemDepth d;
+        Fixture f;
+        auto &n = f.add("Workbench", true);
+        n.screen.FirstGadget = d.first();
+        screens_requests.clear();
+        screens_fail_in = 0;
+        const auto before = f.memory;
+        const ULONG heap = Kaffeine_HeapAvail(&f.ctx, 0);
+        assert(!f.lock() && !f.stopped() && screens_fail_in == -1);
+        assert(screens_requests == std::vector<ULONG>{ 16 * sizeof(ULONG) });
+        f.native_unlocks(&n.screen, 1);
+        assert(n.node.psn_VisitorCount == 0 && native->count(LOCK) == 1);
+        assert(native->count(FONT_OPEN) == 1 && native->count(FONT_CLOSE) == 1 && native->font_opens.empty());
+        assert(!f.held_fonts() && !Kaffeine_FontFind(&f.ctx, &f.font) && f.font.tf_Accessors == 3);
+        assert(!f.entries() && f.ctx.num_shadows == 0 && !f.ctx.screen_release && !f.ctx.screen_system_mirror);
+        assert(!f.ctx.screen_rooms && !f.ctx.screen_room_count && !f.ctx.screen_room_max);
+        assert(f.memory == before && Kaffeine_HeapAvail(&f.ctx, 0) == heap && !f.ctx.screen_book_count);
+        assert(!native->count(OPEN) && !native->count(DRI_GET) && !native->count(PEN_GET));
+        const ULONG g = f.lock(); assert(g && !f.stopped());
+        assert(screens_requests == (std::vector<ULONG>{ 64, 64 }));
+        assert(f.ctx.screen_room_max == 16 && f.ctx.screen_room_count == 1);
+        const ULONG room = system_room(f, g, screen_block(SCREEN_SIZE + TA_SIZE));
+        assert(f.ctx.screen_rooms[0] == room && f.lng(g + SCR_FIRSTGADGET) == room);
+        system_node(f, room, 0, d.gadget);
+        f.unlock(g);
+    }
+    {
+        SystemDepth d;
+        Fixture f;
+        const ULONG block = screen_block(SCREEN_SIZE);
+        std::vector<ULONG> rooms;
+        screens_requests.clear();
+        screens_fail_in = -1;
+        for (unsigned i = 0; i < 16; ++i)
+        {
+            auto &n = f.add("Screen" + std::to_string(i));
+            n.screen.FirstGadget = d.first();
+            const ULONG g = f.lock(f.name(n.name.data())); assert(g && !f.stopped());
+            rooms.push_back(system_room(f, g, block));
+            f.unlock(g);
+        }
+        std::sort(rooms.begin(), rooms.end());
+        assert(screens_requests == std::vector<ULONG>{ 64 });
+        assert(f.ctx.screen_room_count == 16 && f.ctx.screen_room_max == 16);
+        const ULONG *record = f.ctx.screen_rooms;
+        auto &n = f.add("Screen16");
+        n.screen.FirstGadget = d.first();
+        const ULONG name = f.name(n.name.data());
+        const auto before = f.memory;
+        const ULONG heap = Kaffeine_HeapAvail(&f.ctx, 0);
+        const UWORD book = f.ctx.screen_book_count;
+        screens_fail_in = 0;
+        assert(!f.lock(name) && !f.stopped() && screens_fail_in == -1);
+        assert(screens_requests == (std::vector<ULONG>{ 64, 32 * sizeof(ULONG) }));
+        f.native_unlocks(&n.screen, 1);
+        assert(n.node.psn_VisitorCount == 0);
+        assert(f.ctx.screen_rooms == record && f.ctx.screen_room_count == 16 && f.ctx.screen_room_max == 16);
+        assert(std::equal(rooms.begin(), rooms.end(), f.ctx.screen_rooms));
+        for (ULONG room : rooms)
+            assert(system_mirror(f, room) && system_mirror(f, room + SYSTEM_GADGETS - 1));
+        assert(!f.entries() && f.ctx.num_shadows == 0 && f.ctx.screen_book_count == book);
+        assert(f.memory == before && Kaffeine_HeapAvail(&f.ctx, 0) == heap);
+        const ULONG g = f.lock(name); assert(g && !f.stopped());
+        assert(screens_requests == (std::vector<ULONG>{ 64, 128, 128 }));
+        assert(f.ctx.screen_room_max == 32 && f.ctx.screen_room_count == 17);
+        assert(std::is_sorted(f.ctx.screen_rooms, f.ctx.screen_rooms + 17));
+        const ULONG room = system_room(f, g, block);
+        assert(f.lng(g + SCR_FIRSTGADGET) == room && system_mirror(f, room));
+        system_node(f, room, 0, d.gadget);
+        for (ULONG r : rooms)
+            assert(system_mirror(f, r));
+        f.unlock(g);
+    }
+    screens_fail_in = -1;
 }
 
 /* ── Pens ────────────────────────────────────────────────────────── */
@@ -4000,7 +4487,7 @@ int main()
         { "Screen-owned ColorMap identity, BE palette streams and RGB output, atomic bounds and lifetime guards", test_screen_palette },
         { "Layer snapshots follow 68k Screens and end before CloseScreen, forget and cleanup unlocks", test_layer_notifications },
         { "Native bitmap friends keep owned screens alive until the dependent palette lease is released", test_bitmap_friend_screen_lifetime },
-        { "Thirteen ABI registrations override poisoned generated fallbacks", test_registrations },
+        { "Fifteen ABI registrations override poisoned generated fallbacks", test_registrations },
         { "Screen.RastPort.BitMap is a typed handle of the drawn BitMap, resolved only for opened screens", test_screen_bitmap_handle },
         { "NULL and named locks expose the NDK fields, font and three shadows; relocks refill in place", test_screen_fields_and_relock },
         { "The last unlock returns the mirror and shadows; the font stays pinned; a later lock allocates anew", test_release_and_recreate },
@@ -4047,7 +4534,13 @@ int main()
         { "A copy keeps a locked screen after its locks, windows and VisualInfos; unholdable screens get none", test_drawinfo_borrowed_lifetime },
         { "CloseScreen refuses an opened screen while a get of its copy is left", test_drawinfo_owned_lifetime },
         { "Cleanup frees every left get before unlocks, closes and fonts, once", test_drawinfo_cleanup },
-        { "DrawImageState and GetDrawInfoAttr stop before generated consumers or native pointer reads", test_drawinfo_consumer_refusals },
+        { "DrawImageState, PointInImage, EraseImage and GetDrawInfoAttr stop before generated consumers or native pointer reads", test_drawinfo_consumer_refusals },
+        { "Screen.FirstGadget names a read-only ExtGadget copy of the depth gadget in the Screen block; refresh, no list, retire and revive", test_system_gadget_mirror },
+        { "Mixed, classic, planar, chained, labelled, cyclic or over-long gadget lists show none; four whole ones show linked", test_system_gadget_shapes },
+        { "An opened screen shows the depth gadget after its ColorMap; EraseImage and PointInImage stop; CloseScreen retires it", test_system_gadget_opened },
+        { "No memory for the room makes no 68k Screen, entry or hook; the next lock shows the list", test_system_gadget_memory },
+        { "Rooms of 34 retired screens stay refused after the 32-entry book drops their blocks; a relock gets a new block", test_system_gadget_rooms_outlive_book },
+        { "No host memory for the room record, first or growing, makes no 68k Screen and keeps the rooms recorded before", test_system_gadget_record_oom },
         { "ObtainBestPenA -840 and ReleasePen -948 override poisoned fallbacks with every fd register", test_pen_registrations },
         { "OBP_ tags flattened, first of each wins, PRECISION_EXACT sign-extended, other scalars 32-bit", test_pen_tags },
         { "Unknown, forged or stale ColorMaps and bad tag lists stop before graphics; unleased releases reach nothing", test_pen_refusals },

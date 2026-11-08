@@ -438,6 +438,8 @@ CASES = (
     ("intuition", "getscreendrawinfo.c", "GetScreenDrawInfo", "Kaffeine_GetScreenDrawInfo"),
     ("intuition", "freescreendrawinfo.c", "FreeScreenDrawInfo", "Kaffeine_FreeScreenDrawInfo"),
     ("intuition", "drawimagestate.c", "DrawImageState", "Kaffeine_DrawImageState"),
+    ("intuition", "pointinimage.c", "PointInImage", "Kaffeine_PointInImage"),
+    ("intuition", "eraseimage.c", "EraseImage", "Kaffeine_EraseImage"),
     ("intuition", "getdrawinfoattr.c", "GetDrawInfoAttr", "Kaffeine_GetDrawInfoAttr"),
     ("exec", "addtask.c", "AddTask", "Kaffeine_AddTask"),
     ("exec", "remtask.c", "RemTask", "Kaffeine_RemTask"),
@@ -587,6 +589,14 @@ ALLOWED_IGNORED_REGS = {
     "Kaffeine_DrawImageState": (
         frozenset({"A0", "A1", "A2", "D0", "D1", "D2"}),
         "DrawImageState() stops with rc 20 until Image/DrawInfo inputs have typed conversions",
+    ),
+    "Kaffeine_PointInImage": (
+        frozenset({"D0", "A0"}),
+        "PointInImage() stops with rc 20 until Images have a typed conversion",
+    ),
+    "Kaffeine_EraseImage": (
+        frozenset({"A0", "A1", "D0", "D1"}),
+        "EraseImage() stops with rc 20 until Images have a typed conversion",
     ),
     "Kaffeine_GetDrawInfoAttr": (
         frozenset({"A0", "D0", "A1"}),
