@@ -28,6 +28,14 @@ IPTR Kaffeine_IBaseVPMode(struct KaffeineContext *, void *);
    public visitor lease. Drop always balances a successful hold. */
 BOOL Kaffeine_IBaseScreenHold(struct KaffeineContext *, ULONG, struct Screen **);
 void Kaffeine_IBaseScreenDrop(struct Screen *);
+/* The screen of an IEPointerPixel, for one synchronous IND_WRITEEVENT only:
+   the registry gate of a screen that a program of this library opened, of
+   the generation that the program captured, else a public visitor lock;
+   ScreenToFront() keeps the pair above. Drop balances a successful hold on
+   the same task, right after the DoIO(). */
+struct KaffeineScreenHold { struct Screen *screen; LONG slot; BOOL visitor; };
+BOOL Kaffeine_IBaseInputScreenHold(struct KaffeineContext *, ULONG, struct KaffeineScreenHold *);
+void Kaffeine_IBaseInputScreenDrop(struct KaffeineContext *, struct KaffeineScreenHold *);
 IPTR Kaffeine_GetCyberMapAttr(struct KaffeineContext *, void *);
 IPTR Kaffeine_ReadPixelArray(struct KaffeineContext *, void *);
 #ifdef __cplusplus

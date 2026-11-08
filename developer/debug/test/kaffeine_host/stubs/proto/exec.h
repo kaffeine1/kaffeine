@@ -35,6 +35,7 @@ struct SignalSemaphore;
 void InitSemaphore(struct SignalSemaphore *);
 void ObtainSemaphore(struct SignalSemaphore *);
 void ReleaseSemaphore(struct SignalSemaphore *);
+unsigned int AttemptSemaphoreShared(struct SignalSemaphore *);
 #ifdef __cplusplus
 }
 #endif

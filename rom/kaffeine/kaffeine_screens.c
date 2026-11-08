@@ -57,6 +57,16 @@
     the program leaves open close at its end, unless a window of the program
     is still on them.
 
+    Each screen that the program opens has a slot in the library's registry
+    (kaffeine_owned_screens.c), reserved before Intuition is called, so that
+    a full registry gives OSERR_NOMEM, and bound to the native screen as
+    soon as Intuition returns it. An input event of any program that names
+    the screen holds the slot's gate; CloseScreen() and the end of the
+    program make the slot CLOSING and wait for those events before Intuition
+    frees the screen. A screen left open at the end keeps its slot, CLOSING,
+    for as long as it may be open. A 68k Screen that goes is retired, not
+    freed: its address never names another object (kaffeine_screen_book.h).
+
     GetScreenDrawInfo() of a 68k Screen of the program gives a 68k copy of
     the DrawInfo that Intuition keeps in the screen, one for each native
     DrawInfo, which nested gets hand out again and the last free retires.
@@ -86,6 +96,7 @@
 #include "kaffeine_palette.h"
 #include "kaffeine_rastport.h"
 #include "kaffeine_screens.h"
+#include "kaffeine_screen_book.h"
 #include "kaffeine_taglist.h"
 
 #include <aros/debug.h>
@@ -244,6 +255,39 @@ static int screen_index(struct KaffeineContext *ctx, const struct Screen *native
     return -1;
 }
 
+/* The registry generation of a screen that a program of this library
+   opened, else 0; the native is compared, never dereferenced */
+static ULONG screen_generation(struct KaffeineContext *ctx, const struct Screen *scr)
+{
+    return ctx->owned_screen_ops ? ctx->owned_screen_ops->generation(ctx->emuBase, scr) : 0;
+}
+
+/* The slot of a screen that the program opened goes CLOSING, so that no
+   input event of any program takes it any more (kaffeine_owned_screens.c).
+   FALSE for a screen without a slot, which no event can name. */
+static BOOL screen_gate_closing(struct KaffeineContext *ctx, int i)
+{
+    const struct KaffeineOwnedScreenOps *ops = ctx->owned_screen_ops;
+
+    return ops && ctx->pubscreens[i].generation &&
+           ops->closing(ctx->emuBase, ctx->pubscreens[i].slot, ctx->pubscreens[i].generation);
+}
+
+/* Before Intuition frees a screen whose slot is CLOSING: with no lock of
+   the bridge held, the events that held it before are waited for. */
+static void screen_drain(struct KaffeineContext *ctx, int i)
+{
+    ctx->owned_screen_ops->drain(ctx->emuBase, ctx->pubscreens[i].slot);
+}
+
+/* After the native CloseScreen() of a drained screen: closed leaves the
+   slot free, reopen admits input again to a screen that stayed open, else
+   it stays CLOSING */
+static void screen_undrain(struct KaffeineContext *ctx, int i, BOOL closed, BOOL reopen)
+{
+    ctx->owned_screen_ops->finish(ctx->emuBase, ctx->pubscreens[i].slot, closed, reopen);
+}
+
 /* The fields that the program reads, from the native screen */
 static void screen_fill(struct KaffeineContext *ctx, ULONG guest, ULONG font, ULONG colormap,
                         struct Screen *scr)
@@ -383,20 +427,24 @@ static void font_unhold(struct KaffeineContext *ctx, int taken)
    TextFont of the RastPort, and its native font held; 0 without memory or
    room in the shadow table or the font tables, and when the font cannot be
    held. type is the shadow type of the 68k Screen: KAFFEINE_SHADOW_SCREEN
-   for a screen that the program opened, else KAFFEINE_SHADOW_PUBSCREEN. */
+   for a screen that the program opened, else KAFFEINE_SHADOW_PUBSCREEN.
+   generation is the registry's for the screen, or 0; the 68k Screen that
+   the program had of this very screen before comes back at its address.
+   *block is the size of the block. */
 static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULONG *font,
-                           ULONG *colormap, UWORD type)
+                           ULONG *colormap, UWORD type, ULONG generation, ULONG *block)
 {
     const char *name = scr->Font ? (const char *)scr->Font->ta_Name : NULL;
     /* AskFont() points the name into the TextFont of the RastPort */
     BOOL own_name = name && !(scr->RastPort.Font &&
                               name == scr->RastPort.Font->tf_Message.mn_Node.ln_Name);
     ULONG length = own_name ? name_length(name, MAX_FONT_NAME) : 0;
-    ULONG size = M68K_SIZEOF_SCREEN, guest, rp, cm_offset;
+    ULONG size = M68K_SIZEOF_SCREEN, guest, rp, cm_offset, revived;
     int held;
 
     *font = 0;
     *colormap = 0;
+    *block = 0;
     if (scr->Font)
         size += M68K_SIZEOF_TEXTATTR + (own_name ? length + 1 : 0);
     cm_offset = (size + 1) & ~1UL;
@@ -411,7 +459,8 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
        bridge does not hold */
     if (!font_hold(ctx, scr->RastPort.Font, &held))
         return 0;
-    if (!(guest = Kaffeine_MirrorAlloc(ctx, size)))
+    revived = Kaffeine_ScreenRevive(ctx, KAFFEINE_BOOK_BRIDGE, scr, generation, size);
+    if (!(guest = revived ? revived : Kaffeine_MirrorAlloc(ctx, size)))
     {
         font_unhold(ctx, held);
         return 0;
@@ -426,7 +475,11 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
         Kaffeine_RastPortDetach(ctx, rp);
         Kaffeine_ShadowForget(ctx, guest + M68K_SCR_VIEWPORT, KAFFEINE_SHADOW_VIEWPORT);
         Kaffeine_ShadowForget(ctx, guest, type);
-        Kaffeine_MirrorRelease(ctx, guest);
+        /* a fresh block was never seen by the program; a revived one was */
+        if (revived)
+            Kaffeine_ScreenRetire(ctx, KAFFEINE_BOOK_BRIDGE, scr, generation, guest, size);
+        else
+            Kaffeine_MirrorRelease(ctx, guest);
         font_unhold(ctx, held);
         return 0;
     }
@@ -449,6 +502,7 @@ static ULONG screen_create(struct KaffeineContext *ctx, struct Screen *scr, ULON
     /* IntuitionBase roots now name this 68k Screen for its native one */
     if (ctx->ibase_identity)
         ctx->ibase_identity(ctx, guest, FALSE);
+    *block = size;
     return guest;
 }
 
@@ -499,7 +553,10 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
         Kaffeine_RastPortDetach(ctx, guest + M68K_SCR_RASTPORT);
         Kaffeine_ShadowForget(ctx, guest + M68K_SCR_VIEWPORT, KAFFEINE_SHADOW_VIEWPORT);
         Kaffeine_ShadowForget(ctx, guest, type);
-        Kaffeine_MirrorRelease(ctx, guest);
+        /* the program may still hold the address: it never names another
+           object (kaffeine_screen_book.h) */
+        Kaffeine_ScreenRetire(ctx, KAFFEINE_BOOK_BRIDGE, ctx->pubscreens[i].native,
+                              ctx->pubscreens[i].generation, guest, ctx->pubscreens[i].size);
     }
     ctx->pubscreens[i].native = NULL;
     ctx->pubscreens[i].guest = 0;
@@ -508,6 +565,9 @@ static void screen_forget(struct KaffeineContext *ctx, int i)
     ctx->pubscreens[i].locks = 0;
     ctx->pubscreens[i].owned = FALSE;
     ctx->pubscreens[i].keep = NULL;
+    ctx->pubscreens[i].generation = 0;
+    ctx->pubscreens[i].size = 0;
+    ctx->pubscreens[i].slot = 0;
     if (ctx->pubscreens[i].pens)
     {
         bug("[kaffeine] screen %d forgotten with %u pen leases\n", i, (unsigned)ctx->pubscreens[i].pens);
@@ -555,7 +615,7 @@ static int screen_free_entry(struct KaffeineContext *ctx)
 static int screen_entry(struct KaffeineContext *ctx, struct Screen *scr)
 {
     int i = screen_index(ctx, scr, 0);
-    ULONG guest, font = 0, colormap = 0;
+    ULONG guest, font = 0, colormap = 0, generation, size = 0;
 
     if (i >= 0)
         return i;
@@ -565,7 +625,11 @@ static int screen_entry(struct KaffeineContext *ctx, struct Screen *scr)
         return -1;
     }
     guest = Kaffeine_ShadowGuest(ctx, scr, KAFFEINE_SHADOW_SCREEN);
-    if (!guest && !(guest = screen_create(ctx, scr, &font, &colormap, KAFFEINE_SHADOW_PUBSCREEN)))
+    /* a screen that another program of this library opened has its
+       generation while it is open, which a lock or a window keeps */
+    generation = screen_generation(ctx, scr);
+    if (!guest && !(guest = screen_create(ctx, scr, &font, &colormap, KAFFEINE_SHADOW_PUBSCREEN,
+                                          generation, &size)))
         return -1;
     ctx->pubscreens[i].native = scr;
     ctx->pubscreens[i].guest = guest;
@@ -574,6 +638,9 @@ static int screen_entry(struct KaffeineContext *ctx, struct Screen *scr)
     ctx->pubscreens[i].locks = 0;
     ctx->pubscreens[i].owned = FALSE;
     ctx->pubscreens[i].keep = NULL;
+    ctx->pubscreens[i].generation = generation;
+    ctx->pubscreens[i].size = size;
+    ctx->pubscreens[i].slot = 0;
     screen_pens_clear(ctx, i);
     ctx->screen_release = screen_release;
     return i;
@@ -1117,9 +1184,11 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
     struct KaffeineScreenKeep *keep;
     struct TagItem *tags = NULL;
     struct Screen *scr;
+    const struct KaffeineOwnedScreenOps *ops = ctx->owned_screen_ops;
     const char *why;
     UWORD type = 0;
-    ULONG guest, font, colormap;
+    ULONG guest, font, colormap, generation = 0, size;
+    LONG slot = -1;
     int i;
 
     memset(&o, 0, sizeof(o));
@@ -1151,6 +1220,12 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
         bug("[kaffeine] %s: screen or shadow table full\n", call);
         return open_failed(ctx, &o, OSERR_NOMEM);
     }
+    /* and a registry slot, without which no input event could hold it */
+    if (ops && (slot = ops->reserve(ctx->emuBase, &generation)) < 0)
+    {
+        bug("[kaffeine] %s: every registry slot of a screen is in use\n", call);
+        return open_failed(ctx, &o, OSERR_NOMEM);
+    }
     keep = AllocVec(sizeof(*keep), MEMF_ANY | MEMF_CLEAR);
     if (keep && o.items)
         tags = AllocVec((o.items + 1) * sizeof(*tags), MEMF_ANY | MEMF_CLEAR);
@@ -1158,6 +1233,8 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
     {
         FreeVec(tags);
         FreeVec(keep);
+        if (slot >= 0)
+            ops->unreserve(ctx->emuBase, slot);
         return open_failed(ctx, &o, OSERR_NOMEM);
     }
     open_keep(ctx, &o, keep);
@@ -1184,16 +1261,35 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
     if (!scr)
     {
         FreeVec(keep);
+        if (slot >= 0)
+            ops->unreserve(ctx->emuBase, slot);
         /* the error of Intuition, or what the program had there */
         return open_failed(ctx, &o, o.error_value);
     }
-    if (!(guest = screen_create(ctx, scr, &font, &colormap, KAFFEINE_SHADOW_SCREEN)))
+    /* Intuition has published it: from now on other programs may capture
+       it, with this generation */
+    if (slot >= 0)
+        ops->bind(ctx->emuBase, slot, scr);
+    if (!(guest = screen_create(ctx, scr, &font, &colormap, KAFFEINE_SHADOW_SCREEN, generation, &size)))
     {
+        /* an input event of another program may hold it already */
+        BOOL drained = slot >= 0 && ops->closing(ctx->emuBase, slot, generation);
+
         bug("[kaffeine] %s: no 68k Screen for %p, closed again\n", call, scr);
+        if (drained)
+            ops->drain(ctx->emuBase, slot);
         if (CloseScreen(scr))
+        {
+            if (drained)
+                ops->finish(ctx->emuBase, slot, TRUE, FALSE);
             FreeVec(keep);
+        }
         else
+        {
+            if (drained)
+                ops->finish(ctx->emuBase, slot, FALSE, FALSE);
             bug("[kaffeine] %s: Intuition did not close %p again\n", call, scr);
+        }
         return open_failed(ctx, &o, OSERR_NOMEM);
     }
     screen_fill(ctx, guest, font, colormap, scr);
@@ -1208,6 +1304,9 @@ static IPTR screen_open(struct KaffeineContext *ctx, ULONG ns, ULONG list, const
     ctx->pubscreens[i].locks = 0;
     ctx->pubscreens[i].owned = TRUE;
     ctx->pubscreens[i].keep = keep;
+    ctx->pubscreens[i].generation = generation;
+    ctx->pubscreens[i].size = size;
+    ctx->pubscreens[i].slot = slot;
     screen_pens_clear(ctx, i);
     ctx->screen_release = screen_release;
     if (ctx->layer_ops)
@@ -1243,10 +1342,16 @@ IPTR Kaffeine_OpenScreenTagList(struct KaffeineContext *ctx, void *cpu)
    and of which it holds no VisualInfo, DrawInfo copy or pen of its
    ColorMap; anything else gives FALSE, changing nothing, so the program
    releases its pens first. While a BltBitMap() of the program runs, which
-   may have the BitMap of the screen, the program stops instead. */
+   may have the BitMap of the screen, the program stops instead, as it does
+   when it holds a layer lock, which Intuition's input handler may wait for
+   while the program waits (layers.doc, LockLayer), as at CloseWindow().
+   Input events of other programs that name the screen are waited for
+   before Intuition frees it, never refused with FALSE: AmigaOS refuses
+   only for windows and visitor locks, and a screen without windows closes. */
 IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
 {
     ULONG screen = THUNK_A(0);
+    BOOL gated;
     int i;
 
     if (!screen)
@@ -1267,16 +1372,24 @@ IPTR Kaffeine_CloseScreen(struct KaffeineContext *ctx, void *cpu)
         (ctx->layer_ops && ctx->layer_ops->bitmap_screen_held &&
          ctx->layer_ops->bitmap_screen_held(ctx, ctx->pubscreens[i].native)))
         return FALSE;
+    if (ctx->layer_ops && ctx->layer_ops->has_locks && ctx->layer_ops->has_locks(ctx))
+        return refuse(ctx, "CloseScreen(): a layer of the program is locked");
+    if ((gated = screen_gate_closing(ctx, i)))
+        screen_drain(ctx, i);
     /* no 68k Layer may stand for a layer of a screen that closes; when
        Intuition refuses, the next snapshot is taken afresh */
     if (ctx->layer_ops)
         ctx->layer_ops->screen_closing(ctx, ctx->pubscreens[i].native);
     if (!CloseScreen(ctx->pubscreens[i].native))
     {
+        if (gated)
+            screen_undrain(ctx, i, FALSE, TRUE);
         if (ctx->layer_ops)
             ctx->layer_ops->screen_mirrored(ctx, ctx->pubscreens[i].native);
         return FALSE;
     }
+    if (gated)
+        screen_undrain(ctx, i, TRUE, FALSE);
     screen_closed(ctx, i);
     return TRUE;
 }
@@ -1537,8 +1650,17 @@ IPTR Kaffeine_FreeScreenDrawInfo(struct KaffeineContext *ctx, void *cpu)
 
 void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
 {
+    BOOL gated[KAFFEINE_MAX_PUBSCREENS];
     ULONG left = 0;
     int i;
+
+    /* First, before anything here that waits: every screen that the program
+       opened stops taking input events of any program, also one that stays
+       open. Its slot keeps the generation, CLOSING, for as long as the
+       screen may be open, and is never freed while it may be; a second pass
+       finds it CLOSING already and changes nothing. */
+    for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
+        gated[i] = ctx->pubscreens[i].owned && screen_gate_closing(ctx, i);
 
     /* End read-only VPE borrows before any final native screen hold goes. */
     if (ctx->video_screen_retire)
@@ -1566,23 +1688,36 @@ void Kaffeine_ScreensCleanup(struct KaffeineContext *ctx)
     for (; ctx->pubscreen_list_locks; ctx->pubscreen_list_locks--)
         UnlockPubScreenList();
     /* after the locks, which make the program a visitor; a screen with a
-       window of the program stays open, as the window does */
+       window of the program stays open, as the window does. The window
+       bridge has given back the program's layer locks before (WindowsCleanup)
+       and IBase went first, so no drain here waits with one of them. */
     for (i = 0; i < KAFFEINE_MAX_PUBSCREENS; i++)
         if (ctx->pubscreens[i].owned)
         {
             if (Kaffeine_ScreenWindows(ctx, ctx->pubscreens[i].native) ||
                 (ctx->layer_ops && ctx->layer_ops->bitmap_screen_held &&
                  ctx->layer_ops->bitmap_screen_held(ctx, ctx->pubscreens[i].native)))
+            {
                 bug("[kaffeine] screen %p that the program left has its windows, left open\n",
                     ctx->pubscreens[i].native);
-            else if (CloseScreen(ctx->pubscreens[i].native))
+                continue;
+            }
+            if (gated[i])
+                screen_drain(ctx, i);
+            if (CloseScreen(ctx->pubscreens[i].native))
             {
                 bug("[kaffeine] screen %p that the program left, closed\n", ctx->pubscreens[i].native);
+                if (gated[i])
+                    screen_undrain(ctx, i, TRUE, FALSE);
                 screen_closed(ctx, i);
             }
             else
+            {
+                if (gated[i])
+                    screen_undrain(ctx, i, FALSE, FALSE);
                 bug("[kaffeine] screen %p that the program left, Intuition did not close it\n",
                     ctx->pubscreens[i].native);
+            }
         }
     for (i = 0; i < KAFFEINE_MAX_FONTS; i++)
         if (ctx->pubscreen_fonts[i])

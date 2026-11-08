@@ -84,3 +84,35 @@ and dos.library. Run it on the same system as the 68k fixture
 `exec_library_metadata` of `kaffeine_target`: for every library present in
 both outputs, the two `info <name> <version>.<revision>` lines must be the
 same, as every base carries the version of its native library.
+
+## Registry of owned screens
+
+`make owned-screens-gate` builds the optional native `owned_screens_gate`
+executable. It links the production `kaffeine_owned_screens.c` unchanged
+and runs it with real Exec tasks and semaphores; it is not a client of the
+library. A holder task takes the gate of an OPEN screen shared, as an input
+event does across its `DoIO()`. A drainer task makes the slot CLOSING and
+calls the production drain, as `CloseScreen()` does.
+
+The probe observes the wait instead of timing it: under `Forbid()` it finds
+the drainer's own exclusive `SemaphoreRequest` in the gate's `ss_WaitQueue`,
+with the drainer in `TS_WAIT` on `SIGF_SINGLE`, which is what
+`ObtainSemaphore()` and `Wait()` leave. While the drainer waits, the
+registry refuses a new hold of the CLOSING slot, although Exec alone would
+still grant `AttemptSemaphoreShared()`. The holder drops on its own task;
+the drainer returns owning the gate exclusively; only then does it finish
+the slot as closed. The old generation is refused, a new screen at the same
+slot and native address is held, and a refused close opens the slot again
+with its generation. Each task signals its end under `Forbid()`, and shared
+memory is freed only after both have ended. If a task does not end, the
+probe detaches its notifications under `Forbid()`, prints and flushes a
+failure, then retains the coordinator, shared memory and executable segment
+without returning. Otherwise DOS could unload code that the task may still
+execute. The isolated VM's outer deadline stops that failed boot; a timeout
+is never a success result. Run this probe only in an isolated UP VM.
+
+The observation needs a uniprocessor Exec, so the probe does not build for
+an SMP Exec. It covers the registry alone: the library, `IND_WRITEEVENT` and
+`CloseScreen()` integration is a separate probe, and neither shows one
+`DoIO()` racing one `CloseScreen()`. A successful run prints
+`owned_screens_gate: <n> checks, 0 failed` and returns 0.

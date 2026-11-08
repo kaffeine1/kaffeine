@@ -26,6 +26,7 @@
 #include "kaffeine_dispatch.h"
 #include "kaffeine_exec_io.h"
 #include "kaffeine_intern.h"
+#include "kaffeine_intuibase.h"
 #include "kaffeine_keymap.h"
 #include "kaffeine_messages.h"
 #include "kaffeine_thunks_console.h"
@@ -66,12 +67,13 @@ extern "C" ULONG Kaffeine_OpenLibrary(KaffeineContext *, const char *)
     return 0;
 }
 /* No input event is written here. */
-extern "C" BOOL Kaffeine_IBaseScreenHold(KaffeineContext *, ULONG, struct Screen **)
+extern "C" BOOL Kaffeine_IBaseInputScreenHold(KaffeineContext *, ULONG, KaffeineScreenHold *)
 {
     require(false, "no screen is held for input events");
     return FALSE;
 }
-extern "C" void Kaffeine_IBaseScreenDrop(struct Screen *) { require(false, "no screen is dropped"); }
+extern "C" void Kaffeine_IBaseInputScreenDrop(KaffeineContext *, KaffeineScreenHold *)
+{ require(false, "no screen is dropped"); }
 
 extern "C" APTR AllocMem(ULONG size, ULONG flags)
 {

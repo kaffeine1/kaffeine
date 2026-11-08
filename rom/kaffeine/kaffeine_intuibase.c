@@ -5,7 +5,11 @@
    stay private; no guest field is a native capability. A Window or Screen
    of the program is its own 68k object in a snapshot, never a mirror, and
    the roots that a program may read without LockIBase follow Intuition
-   between snapshots. */
+   between snapshots. A screen that a program of this library opened is
+   known by its native and its registry generation (kaffeine_owned_screens.c)
+   in views and roots alike, so that another screen that opens at the same
+   native address is another object; and the address of a Screen view that
+   goes is retired, never reused for another object (kaffeine_screen_book.h). */
 #include <exec/memory.h>
 #include <aros/debug.h>
 #include <intuition/intuitionbase.h>
@@ -25,6 +29,7 @@
 #include "kaffeine_sched.h"
 #include "kaffeine_cpu.h"
 #include "kaffeine_callback.h"
+#include "kaffeine_screen_book.h"
 /* One snapshot reaches at most CURRENT views (a Personal Paint screen with
    its menus takes about 1100). The table has room for the views of the
    last snapshot that fitted and as many new ones: a view keeps its guest
@@ -33,8 +38,9 @@
 #define CURRENT 2048
 #define SLOTS (2 * CURRENT)
 #define MAX_DEPTH 128
+/* gen: the registry generation of a Screen view, else 0 */
 struct IBaseView { const struct M68KStructLayout *layout; void *native;
-                   ULONG guest, size, epoch; BOOL string; };
+                   ULONG guest, size, epoch, gen; BOOL string; };
 /* ActiveWindow, ActiveScreen and FirstScreen, at base+52, +56 and +60 */
 #define ROOTS 3
 struct KaffeineIBase { struct IBaseView views[SLOTS]; ULONG count, reached, epoch, depth, owner, key, base; BOOL failed;
@@ -45,26 +51,65 @@ struct KaffeineIBase { struct IBaseView views[SLOTS]; ULONG count, reached, epoc
                           another program unwritten (pending); those of a refresh snapshot that
                           did not fit (refusal), tried again after backoff refresh calls */
                        void *root[ROOTS], *seen[ROOTS], *refused[ROOTS]; BOOL rooted[ROOTS], pending, refusal;
-                       ULONG backoff, waited; };
+                       ULONG backoff, waited;
+                       /* the generations that go with those natives, and those of the current
+                          natives, kept while the natives and the registry's epoch stay */
+                       ULONG root_gen[ROOTS], seen_gen[ROOTS], refused_gen[ROOTS];
+                       void *gen_native[ROOTS]; ULONG gens[ROOTS], gen_epoch; BOOL gens_valid; };
 static IPTR refuse(struct KaffeineContext *ctx, const char *why)
 { bug("[kaffeine] IBase: %s, stopping (20)\n",why); Kaffeine_StopGuest(ctx,ctx->cpu,20); return 20; }
 static ULONG caller(struct KaffeineContext *ctx)
 { return ctx->sched && ctx->task_ops ? ctx->task_ops->caller_task(ctx,ctx->cpu) : ctx->guest_exec_task; }
 BOOL Kaffeine_IBaseLocked(struct KaffeineContext *ctx)
 { return ctx->ibase && ctx->ibase->depth; }
-static struct IBaseView *view(struct KaffeineContext *ctx, void *native, const char *name)
+/* The registry generation of a screen that a program of this library
+   opened, OPEN or CLOSING, else 0. The native is compared, never
+   dereferenced; the registry lock comes after IBase. */
+static ULONG screen_gen(struct KaffeineContext *ctx, const void *native)
+{
+    const struct KaffeineOwnedScreenOps *o=ctx->owned_screen_ops;
+    return o && native ? o->generation(ctx->emuBase,(const struct Screen *)native) : 0;
+}
+static BOOL screen_view(const struct IBaseView *v)
+{ return v->layout && !strcmp(v->layout->name,"Screen"); }
+/* The generation of a native Screen in the snapshot being taken: that of
+   the Screen view of it that this snapshot has reached already, so that a
+   bind that lands while the snapshot is taken cannot make one native two
+   objects in it, else the registry's now. Views of an earlier snapshot
+   carry an older epoch. */
+static ULONG take_gen(struct KaffeineContext *ctx, struct KaffeineIBase *s, void *native)
+{
+    ULONG i;
+    if(!native)return 0;
+    for(i=0;i<s->count;++i)
+        if(s->views[i].native==native && s->views[i].epoch==s->epoch && screen_view(&s->views[i]))
+            return s->views[i].gen;
+    return screen_gen(ctx,native);
+}
+/* A view goes: a Screen address may still be in the program's hands, so
+   it is retired, every other mirror goes back */
+static void view_release(struct KaffeineContext *ctx, const struct IBaseView *v)
+{
+    if(screen_view(v))Kaffeine_ScreenRetire(ctx,KAFFEINE_BOOK_VIEW,v->native,v->gen,v->guest,v->size);
+    else Kaffeine_MirrorRelease(ctx,v->guest);
+}
+static struct IBaseView *view(struct KaffeineContext *ctx, void *native, const char *name, ULONG gen)
 {
     struct KaffeineIBase *s=ctx->ibase; const struct M68KStructLayout *layout=name?shadow_find_layout(name):NULL;
     ULONG i, size=name?(layout?layout->m68k_size:0):256; struct IBaseView *v;
     if (!native || !size) return NULL;
     for (i=0;i<s->count;++i)
-        if (s->views[i].native==native && s->views[i].layout==layout && s->views[i].string==!name) return &s->views[i];
+        if (s->views[i].native==native && s->views[i].layout==layout && s->views[i].string==!name &&
+            s->views[i].gen==gen) return &s->views[i];
     if (s->count==SLOTS) { s->failed=TRUE; return NULL; }
-    v=&s->views[s->count]; v->guest=Kaffeine_MirrorAlloc(ctx,size);
+    v=&s->views[s->count];
+    /* the address that this very screen had in a view before */
+    v->guest=layout && !strcmp(layout->name,"Screen") ? Kaffeine_ScreenRevive(ctx,KAFFEINE_BOOK_VIEW,native,gen,size) : 0;
+    if (!v->guest) v->guest=Kaffeine_MirrorAlloc(ctx,size);
     if (!v->guest) { s->failed=TRUE; return NULL; }
     /* A slot that prune() or drop() freed still holds an old view: a new
        mirror takes epoch 0, which is never current, and is copied now. */
-    v->size=size;v->native=native;v->layout=layout;v->string=!name;v->epoch=0;++s->count;return v;
+    v->size=size;v->native=native;v->layout=layout;v->string=!name;v->epoch=0;v->gen=gen;++s->count;return v;
 }
 /* Only classic offsets are fixed. Native members are always C field
    accesses: native Library/Layer_Info layouts differ across AROS builds. */
@@ -103,7 +148,7 @@ static ULONG snapshot(struct KaffeineContext *ctx, const char *name, void *nativ
     if (depth>MAX_DEPTH) { s->failed=TRUE;return 0; }
     if (name && (!strcmp(name,"Window") || !strcmp(name,"Screen")))
     { int k=owned(ctx,native,*name=='W');if(k>=0)return token(ctx,k,name,native,depth); }
-    v=view(ctx,native,name);if(!v)return 0;g=v->guest;
+    v=view(ctx,native,name,name && !strcmp(name,"Screen") ? take_gen(ctx,s,native) : 0);if(!v)return 0;g=v->guest;
     if(v->epoch==s->epoch)return g;
     if(++s->reached>CURRENT) { s->failed=TRUE;return 0; }
     v->epoch=s->epoch;memset(ctx->mem+g,0,v->size);
@@ -214,22 +259,24 @@ static void unlink_owned(struct KaffeineContext *ctx, struct KaffeineIBase *s, B
 #undef W
 #undef L
 /* After a snapshot that fitted: the mirrors of what it did not reach, the
-   windows, menus, gadgets and strings gone since the last one, go back.
-   The views that it reached keep their guest addresses. */
+   windows, menus, gadgets and strings gone since the last one, go back,
+   and the screens' addresses are retired. The views that it reached keep
+   their guest addresses. */
 static void prune(struct KaffeineContext *ctx, struct KaffeineIBase *s)
 {
     ULONG i, kept=0;
     for(i=0;i<s->count;++i)
         if(s->views[i].epoch==s->epoch) s->views[kept++]=s->views[i];
-        else Kaffeine_MirrorRelease(ctx,s->views[i].guest);
+        else view_release(ctx,&s->views[i]);
     s->count=kept;
 }
-/* After one that did not: every mirror goes back, so that no guest token
-   of it or of an older snapshot outlives the refusal. */
+/* After one that did not: every view goes, so that no guest token of it or
+   of an older snapshot names a live object after the refusal; a screen's
+   address names one again only for that very screen. */
 static void drop(struct KaffeineContext *ctx, struct KaffeineIBase *s)
 {
     ULONG i;
-    for(i=0;i<s->count;++i)Kaffeine_MirrorRelease(ctx,s->views[i].guest);
+    for(i=0;i<s->count;++i)view_release(ctx,&s->views[i]);
     s->count=0;
 }
 static const char *const root_kind[ROOTS]={"Window","Screen","Screen"};
@@ -242,8 +289,22 @@ static void scalars(struct KaffeineContext *ctx, ULONG base)
     m68k_write16(ctx,base+68,IntuitionBase->MouseY);m68k_write16(ctx,base+70,IntuitionBase->MouseX);
     m68k_write32(ctx,base+72,IntuitionBase->Seconds);m68k_write32(ctx,base+76,IntuitionBase->Micros);
 }
-static BOOL same(void *const *a, void *const *b)
-{ return a[0]==b[0] && a[1]==b[1] && a[2]==b[2]; }
+/* The same natives, and for the screens the same generations */
+static BOOL same(void *const *a, const ULONG *ag, void *const *b, const ULONG *bg)
+{ return a[0]==b[0] && a[1]==b[1] && a[2]==b[2] && ag[1]==bg[1] && ag[2]==bg[2]; }
+/* The generations of the current roots, looked up again only when a native
+   or the registry's epoch has changed since: three comparisons otherwise */
+static void root_gens(struct KaffeineContext *ctx, struct KaffeineIBase *s, void *const *n, ULONG *g)
+{
+    const struct KaffeineOwnedScreenOps *o=ctx->owned_screen_ops;
+    ULONG e=o?o->epoch(ctx->emuBase):0;int i;
+    if(!s->gens_valid || e!=s->gen_epoch || n[0]!=s->gen_native[0] || n[1]!=s->gen_native[1] || n[2]!=s->gen_native[2])
+    {
+        s->gen_epoch=e;s->gens_valid=TRUE;
+        for(i=0;i<ROOTS;++i) { s->gen_native[i]=n[i];s->gens[i]=i?screen_gen(ctx,n[i]):0; }
+    }
+    for(i=0;i<ROOTS;++i)g[i]=s->gens[i];
+}
 /* Private storage, and the collaborators that it answers, for the program */
 static struct KaffeineIBase *storage(struct KaffeineContext *ctx)
 {
@@ -258,7 +319,7 @@ static struct KaffeineIBase *storage(struct KaffeineContext *ctx)
    the roots and the program's links are 0 before every view goes back. */
 static BOOL take(struct KaffeineContext *ctx, struct KaffeineIBase *s, ULONG base)
 {
-    ULONG g[ROOTS];void *n[ROOTS];int i;
+    ULONG g[ROOTS],gen[ROOTS];void *n[ROOTS];int i;
     s->failed=FALSE;s->reached=0;
     /* Epoch 0 is never current: after the wrap no view and no object of the
        program counts as reached until this snapshot reaches it again. */
@@ -269,6 +330,10 @@ static BOOL take(struct KaffeineContext *ctx, struct KaffeineIBase *s, ULONG bas
         for(k=0;k<KAFFEINE_MAX_SHADOWS;++k)s->visit[k]=0;
     }
     for(i=0;i<ROOTS;++i) { n[i]=root_native(i);g[i]=snapshot(ctx,root_kind[i],n[i],0); }
+    /* the roots carry the generations that the walk chose for their views;
+       a root that is the program's own screen, or that the walk did not
+       reach, the registry's, once for the same native */
+    for(i=0;i<ROOTS;++i)gen[i]=!i?0:i==2 && n[2]==n[1]?gen[1]:take_gen(ctx,s,n[i]);
     scalars(ctx,base);
     if(s->failed)
     {
@@ -276,11 +341,11 @@ static BOOL take(struct KaffeineContext *ctx, struct KaffeineIBase *s, ULONG bas
            twice as many each time, up to 2^20: capacity or mirrors may come
            back while the roots stay the same, but no math loop may take a
            failing snapshot on every call. */
-        s->backoff=s->refusal && same(n,s->refused) && s->backoff ? (s->backoff<(1UL<<20)?2*s->backoff:s->backoff) : 64;
-        for(i=0;i<ROOTS;++i) { m68k_write32(ctx,base+52+4*i,0);s->rooted[i]=FALSE;s->refused[i]=n[i]; }
+        s->backoff=s->refusal && same(n,gen,s->refused,s->refused_gen) && s->backoff ? (s->backoff<(1UL<<20)?2*s->backoff:s->backoff) : 64;
+        for(i=0;i<ROOTS;++i) { m68k_write32(ctx,base+52+4*i,0);s->rooted[i]=FALSE;s->refused[i]=n[i];s->refused_gen[i]=gen[i]; }
         s->refusal=TRUE;s->waited=0;unlink_owned(ctx,s,TRUE);drop(ctx,s);return FALSE;
     }
-    for(i=0;i<ROOTS;++i) { m68k_write32(ctx,base+52+4*i,g[i]);s->root[i]=n[i];s->rooted[i]=TRUE; }
+    for(i=0;i<ROOTS;++i) { m68k_write32(ctx,base+52+4*i,g[i]);s->root[i]=n[i];s->root_gen[i]=gen[i];s->rooted[i]=TRUE; }
     s->pending=s->refusal=FALSE;unlink_owned(ctx,s,FALSE);prune(ctx,s);
     return TRUE;
 }
@@ -315,15 +380,16 @@ static BOOL admitted(struct KaffeineContext *ctx)
 /* The roots that need no lock: NULL, and the program's own objects, found
    by pointer comparison alone. A root of another program keeps its value,
    a view that stays until the next snapshot rewrites the roots. TRUE when
-   such a root waits for a snapshot of exactly these natives. */
-static BOOL settle(struct KaffeineContext *ctx, struct KaffeineIBase *s, void *const *n)
+   such a root waits for a snapshot of exactly these natives, with these
+   generations. */
+static BOOL settle(struct KaffeineContext *ctx, struct KaffeineIBase *s, void *const *n, const ULONG *g)
 {
     int i;BOOL foreign=FALSE;
-    for(i=0;i<ROOTS;++i) { s->seen[i]=n[i];if(!s->rooted[i] || n[i]!=s->root[i])
+    for(i=0;i<ROOTS;++i) { s->seen[i]=n[i];s->seen_gen[i]=g[i];if(!s->rooted[i] || n[i]!=s->root[i] || g[i]!=s->root_gen[i])
     {
         int k=n[i]?owned(ctx,n[i],!i):-1;
         if(n[i] && k<0) { foreign=TRUE;continue; }
-        m68k_write32(ctx,s->base+52+4*i,k<0?0:ctx->shadow_map[k].m68k_addr);s->root[i]=n[i];s->rooted[i]=TRUE;
+        m68k_write32(ctx,s->base+52+4*i,k<0?0:ctx->shadow_map[k].m68k_addr);s->root[i]=n[i];s->root_gen[i]=g[i];s->rooted[i]=TRUE;
     } }
     return s->pending=foreign;
 }
@@ -333,10 +399,12 @@ static BOOL settle(struct KaffeineContext *ctx, struct KaffeineIBase *s, void *c
    fast path compares three native pointers. A root of another program
    needs a snapshot, taken under the native lock where that is admitted,
    else on a later call for the same natives; one that did not fit is
-   taken again for the same natives only after its backoff. */
+   taken again for the same natives only after its backoff. A screen of
+   another generation at the same native counts as another root; finding
+   that out costs one more comparison while the registry stays the same. */
 void Kaffeine_IBaseRefresh(struct KaffeineContext *ctx)
 {
-    struct KaffeineIBase *s=ctx->ibase;void *n[ROOTS];int i;ULONG key;BOOL fitted;
+    struct KaffeineIBase *s=ctx->ibase;void *n[ROOTS];ULONG g[ROOTS];int i;ULONG key;BOOL fitted;
     if(s && s->depth)return;
     if(!s || !s->base)
     {
@@ -346,12 +414,13 @@ void Kaffeine_IBaseRefresh(struct KaffeineContext *ctx)
     }
     scalars(ctx,s->base);
     for(i=0;i<ROOTS;++i)n[i]=root_native(i);
-    if(!s->pending || !same(n,s->seen))
+    root_gens(ctx,s,n,g);
+    if(!s->pending || !same(n,g,s->seen,s->seen_gen))
     {
-        if(s->rooted[0] && s->rooted[1] && s->rooted[2] && same(n,s->root))return;
-        if(!settle(ctx,s,n))return;
+        if(s->rooted[0] && s->rooted[1] && s->rooted[2] && same(n,g,s->root,s->root_gen))return;
+        if(!settle(ctx,s,n,g))return;
     }
-    if(s->refusal && same(n,s->refused) && ++s->waited<s->backoff)return;
+    if(s->refusal && same(n,g,s->refused,s->refused_gen) && ++s->waited<s->backoff)return;
     if(!admitted(ctx))return;
     key=LockIBase(0);fitted=take(ctx,s,s->base);UnlockIBase(key);
     if(fitted)return;
@@ -360,7 +429,8 @@ void Kaffeine_IBaseRefresh(struct KaffeineContext *ctx)
        read after the unlock: not those of before the lock, which may have
        gone in between. The others stay 0. */
     for(i=0;i<ROOTS;++i)n[i]=root_native(i);
-    settle(ctx,s,n);
+    root_gens(ctx,s,n,g);
+    settle(ctx,s,n,g);
 }
 /* ctx->ibase_identity: a Window or Screen of the program has come or goes.
    A root that names one that goes is 0 at once, as are the links of the
@@ -397,7 +467,7 @@ void Kaffeine_IBaseCleanup(struct KaffeineContext *ctx)
     if(s->depth)UnlockIBase(s->key);
     /* no root names a mirror that goes back */
     if(s->base)for(i=0;i<ROOTS;++i)m68k_write32(ctx,s->base+52+4*i,0);
-    for(i=0;i<s->count;++i)Kaffeine_MirrorRelease(ctx,s->views[i].guest);
+    for(i=0;i<s->count;++i)view_release(ctx,&s->views[i]);
     FreeVec(s);ctx->ibase=NULL;ctx->ibase_locked=NULL;ctx->ibase_cleanup=NULL;ctx->ibase_task_removed=NULL;
     /* ibase_refresh stays: it was set with the intuition.library base, which
        outlives this storage, and allocates it again if the program goes on */
@@ -452,6 +522,45 @@ BOOL Kaffeine_IBaseScreenHold(struct KaffeineContext *ctx, ULONG guest, struct S
 }
 void Kaffeine_IBaseScreenDrop(struct Screen *screen)
 { if(screen)UnlockPubScreen(NULL,screen); }
+
+/* The screen that an IEPointerPixel of the program names, held for one
+   synchronous IND_WRITEEVENT, as kaffeine_exec_io.c holds it from before
+   its DoIO() until right after. The guest address is a Screen view, with
+   the native and generation that the snapshot captured, or the program's
+   own 68k Screen. A screen that a program of this library opened is held
+   by the gate of its registry slot, and only while it is OPEN with that
+   very generation: never by a public visitor lock instead. Any other
+   screen needs a real public visitor lock, taken first, which keeps it
+   open; then, with the public list unlocked, the registry must still know
+   it as no program's screen, and must not be binding a screen just opened,
+   which could be this one. No lock is held across the DoIO(). */
+BOOL Kaffeine_IBaseInputScreenHold(struct KaffeineContext *ctx, ULONG guest, struct KaffeineScreenHold *hold)
+{
+    struct KaffeineIBase *s=ctx->ibase;const struct KaffeineOwnedScreenOps *o=ctx->owned_screen_ops;
+    struct Screen *native=NULL;ULONG gen=0,i;BOOL known=FALSE;LONG slot;
+    hold->screen=NULL;hold->slot=-1;hold->visitor=FALSE;
+    if(!guest || Kaffeine_IBaseLocked(ctx))return FALSE;
+    if(s)for(i=0;i<s->count;++i)if(s->views[i].guest==guest && screen_view(&s->views[i]))
+    { native=s->views[i].native;gen=s->views[i].gen;known=TRUE; }
+    for(i=0;!known && i<KAFFEINE_MAX_PUBSCREENS;++i)if(guest==ctx->pubscreens[i].guest && ctx->pubscreens[i].native)
+    { native=ctx->pubscreens[i].native;gen=ctx->pubscreens[i].generation;known=TRUE; }
+    if(!known && (native=Kaffeine_ScreenNative(ctx,guest)))gen=screen_gen(ctx,native);
+    if(!native)return FALSE;
+    if(gen)
+    {
+        if(!o || !o->hold(ctx->emuBase,native,gen,&slot))return FALSE;
+        hold->screen=native;hold->slot=slot;return TRUE;
+    }
+    if(!Kaffeine_ScreenPublicHold(native))return FALSE;
+    if(o && !o->foreign(ctx->emuBase,native)) { UnlockPubScreen(NULL,native);return FALSE; }
+    hold->screen=native;hold->visitor=TRUE;return TRUE;
+}
+void Kaffeine_IBaseInputScreenDrop(struct KaffeineContext *ctx, struct KaffeineScreenHold *hold)
+{
+    if(hold->visitor)UnlockPubScreen(NULL,hold->screen);
+    else if(hold->screen && hold->slot>=0 && ctx->owned_screen_ops)ctx->owned_screen_ops->drop(ctx->emuBase,hold->slot);
+    hold->screen=NULL;hold->slot=-1;hold->visitor=FALSE;
+}
 
 /* A validated read-only screen token is not a generic mutable shadow.
    Revalidate by a real public visitor lease before queuing screen depth.

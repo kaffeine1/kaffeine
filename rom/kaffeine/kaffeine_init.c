@@ -9,6 +9,7 @@
 #include <proto/exec.h>
 
 #include "kaffeine_intern.h"
+#include "kaffeine_owned_screens.h"
 #include "kaffeine_segments.h"
 
 static int Kaffeine_Init(struct KaffeineLibBase *base)
@@ -16,6 +17,7 @@ static int Kaffeine_Init(struct KaffeineLibBase *base)
     base->sysBase = (struct ExecBase *)SysBase;
     base->dosBase = NULL;
     Kaffeine_SegmentsInit(base);
+    Kaffeine_OwnedScreensInit(base);
     return TRUE;
 }
 

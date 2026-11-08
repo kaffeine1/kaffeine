@@ -11,6 +11,8 @@
 #include <exec/semaphores.h>
 #include <dos/bptr.h>
 
+#include "kaffeine_owned_screens.h"
+
 struct KaffeineLibBase
 {
     struct Library          lib;
@@ -18,6 +20,9 @@ struct KaffeineLibBase
     struct DosLibrary      *dosBase;
     struct SignalSemaphore segment_ids_lock;
     ULONG segment_next_token;
+    /* The screens that 68k programs of this library opened, for every
+       context (kaffeine_owned_screens.c) */
+    struct KaffeineOwnedScreens owned_screens;
 };
 
 #define KAFFEINE_MEM_SIZE        (32 * 1024 * 1024)
@@ -478,11 +483,29 @@ struct KaffeineContext
     #define KAFFEINE_MAX_PUBSCREENS 16
     #define KAFFEINE_MAX_SCREEN_PENS 256
     #define KAFFEINE_MAX_PEN_LEASES 4096
+    /* generation is that of the registry for the screen (0 when it has
+       none), slot its registry slot for a screen that the program opened
+       with a generation, and size that of the block of a 68k Screen that
+       the bridge made, 0 for one that it did not. */
     struct {
         struct Screen *native; ULONG guest; ULONG font; ULONG colormap; UWORD locks;
         BOOL owned; struct KaffeineScreenKeep *keep;
         UWORD pen_refs[KAFFEINE_MAX_SCREEN_PENS]; UWORD pens; BOOL pen_lock;
+        ULONG generation, size; LONG slot;
     } pubscreens[KAFFEINE_MAX_PUBSCREENS];
+    /* The registry of the screens that programs of this library opened,
+       set with a real library base (kaffeine_run.c); NULL without one. */
+    const struct KaffeineOwnedScreenOps *owned_screen_ops;
+    /* 68k Screen addresses that the program may still hold, out of use: a
+       retired one stays allocated, its bytes 0, until the context ends, so
+       that it never names another object. The last KAFFEINE_SCREEN_BOOK of
+       them, with the screen and generation they stood for, may come back
+       for that very screen (kaffeine_screen_book.h). */
+    #define KAFFEINE_SCREEN_BOOK 32
+    struct {
+        const void *native; ULONG guest, size, generation; UBYTE kind;
+    } screen_book[KAFFEINE_SCREEN_BOOK];
+    UWORD screen_book_count;
     UWORD pen_leases;
     /* Resolve WScreen while a typed live Window shadow keeps it open. */
     ULONG (*screen_window)(struct KaffeineContext *ctx, struct Screen *screen);

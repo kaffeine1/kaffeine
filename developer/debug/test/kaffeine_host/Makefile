@@ -138,6 +138,7 @@ TESTS += test_m68klib
 TESTS += test_hosted_jit
 TESTS += test_blitter
 TESTS += test_ibase_snapshot
+TESTS += test_owned_screens
 TESTS += test_process_tags
 TESTS += test_guest_tasks
 TESTS += test_socket_codec
@@ -168,6 +169,15 @@ $(EXEC_LISTS_OBJ): $(KAFFEINE_DIR)/kaffeine_lists.c | $(BUILD_DIR)
 
 $(BUILD_DIR)/test_exec_lists: $(EXEC_LISTS_OBJ)
 $(BUILD_DIR)/test_exec_lists: EXTRA_OBJS = $(EXEC_LISTS_OBJ)
+
+# The registry of the screens that programs opened, compiled from its
+# source, over a model of shared and exclusive Exec semaphores.
+OWNED_SCREENS_OBJ := $(BUILD_DIR)/owned_screens.o
+$(OWNED_SCREENS_OBJ): $(KAFFEINE_DIR)/kaffeine_owned_screens.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/test_owned_screens: $(OWNED_SCREENS_OBJ)
+$(BUILD_DIR)/test_owned_screens: EXTRA_OBJS = $(OWNED_SCREENS_OBJ)
 
 # Compile the production DOS thunks and dispatcher as C, then link the C++ test.
 PROCESS_TAG_OBJS := $(addprefix $(BUILD_DIR)/process_tags_,cpu.o dispatch.o taglist.o process_tags.o)
