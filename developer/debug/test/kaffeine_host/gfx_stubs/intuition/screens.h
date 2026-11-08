@@ -94,6 +94,7 @@ struct NewScreen
 #endif
 #define SCREENTYPE   0x000F
 #define SHOWTITLE    (1<<4)
+#define BEEPING      (1<<5)
 #define CUSTOMBITMAP (1<<6)
 #define SCREENBEHIND (1<<7)
 #define SCREENQUIET  (1<<8)

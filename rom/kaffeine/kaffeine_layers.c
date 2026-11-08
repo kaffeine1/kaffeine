@@ -22,10 +22,13 @@
     offsets, Width and Height, and guest pointers to other 68k Layers, to
     the 68k Layer_Info, to the 68k Window and RastPort of the program that
     a layer belongs to, and BackFill as LAYERS_BACKFILL (0),
-    LAYERS_NOBACKFILL (1) or an opaque 68k handle of a native hook. No
-    native pointer, native semaphore, native hook or ClipRect reaches guest
-    memory; the Lock of a 68k Layer is a guest SignalSemaphore that
-    protects nothing native. The 68k Layers are never entries of the
+    LAYERS_NOBACKFILL (1) or an opaque 68k handle of a native hook. A 68k
+    Screen gets its BarLayer, the Layer of its RastPort and the bits of its
+    Flags that Intuition changes while the screen is open
+    (SCREEN_FLAGS_MUTABLE), all from the same snapshot. No native pointer,
+    native semaphore, native hook or ClipRect reaches guest memory; the
+    Lock of a 68k Layer is a guest SignalSemaphore that protects nothing
+    native. The 68k Layers are never entries of the
     generic shadow map, so that no generated thunk can resolve one to a
     native layer, before or after it is gone.
 
@@ -392,6 +395,17 @@ struct WindowRefresh
     ULONG guest, task;
 };
 
+/* The bits of Screen.Flags that Intuition changes while a screen is open:
+   SHOWTITLE, which ShowTitle() changes together with the place of the bar
+   layer under the LayerInfo lock (showtitle.c, and openwindow.c for a
+   backdrop window), and BEEPING, which DisplayBeep() sets and the input
+   handler clears (displaybeep.c, inputhandler.c). A snapshot takes them
+   with the layers, and the 68k Screen gets them as its BarLayer comes:
+   a program that tests SHOWTITLE before drawing its own bar sees the same
+   state as the layers that it reads. Every other bit of the 68k Flags
+   stays as the screen bridge or the program left it. */
+#define SCREEN_FLAGS_MUTABLE (SHOWTITLE | BEEPING)
+
 struct KaffeineLayers
 {
     struct KaffeinePaintHooks *paint_hooks;
@@ -409,6 +423,7 @@ struct KaffeineLayers
     struct Layer *snap_bar, *snap_screen_layer;
     ULONG snap_bar_rp;
     BOOL snap_bar_rp_new;
+    UWORD snap_screen_flags;   /* Screen.Flags as the snapshot took it */
     /* the program's native layer locks, of all layers */
     ULONG locks;               /* only window/screen layer locks */
     ULONG private_locks;       /* private infos cannot block Intuition */
@@ -867,6 +882,8 @@ static BOOL layers_snapshot(struct KaffeineContext *ctx, struct KaffeineLayers *
     }
     st->snap_bar = scr->BarLayer;
     st->snap_screen_layer = scr->RastPort.Layer;
+    /* under the same lock, as ShowTitle() changes it with the bar */
+    st->snap_screen_flags = scr->Flags;
     /* A custom screen's bar has its own internal RastPort, distinct from
        Screen.RastPort. Only the program that opened the screen may draw
        through it. Read and attach it under LayerInfo, while the layer and
@@ -1036,9 +1053,13 @@ static BOOL layers_graph_publish(struct KaffeineContext *ctx, struct KaffeineLay
     m68k_write32(ctx, info + M68K_LI_TOP_LAYER, top);
     if (gr->screen_guest)
     {
+        UWORD flags = m68k_read16(ctx, gr->screen_guest + M68K_SCR_FLAGS);
+
         m68k_write32(ctx, gr->screen_guest + M68K_SCR_BARLAYER, layers_snap_guest(st, st->snap_bar));
         m68k_write32(ctx, gr->screen_guest + M68K_SCR_RASTPORT + M68K_RP_LAYER,
                      layers_snap_guest(st, st->snap_screen_layer));
+        m68k_write16(ctx, gr->screen_guest + M68K_SCR_FLAGS,
+                     (UWORD)((flags & ~SCREEN_FLAGS_MUTABLE) | (st->snap_screen_flags & SCREEN_FLAGS_MUTABLE)));
     }
     gr->info = info;
     return TRUE;

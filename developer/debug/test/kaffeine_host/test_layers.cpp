@@ -1515,6 +1515,121 @@ static void test_bar_rastport()
     assert(f.avail() == f.heap_initial);
 }
 
+/* Screen.Flags of a 68k Screen follows the bits that Intuition changes
+   while the screen is open, SHOWTITLE and BEEPING, at each published
+   snapshot, the one of the outer-loop poll too, before the program takes
+   any message or waits: there is no 68k Window here, so no
+   Kaffeine_WindowsPublish() at all. Every other bit of Flags, DetailPen,
+   BlockPen and what the program wrote there stay. A busy LayerInfo, a
+   list too deep for a snapshot and no memory for a new 68k Layer publish
+   nothing, so the 68k Screen keeps what it had until a whole snapshot
+   comes. A screen the program opened and a public screen it locked alike. */
+static void test_screen_flags()
+{
+    enum { SCR_DETAILPEN = 330, SCR_BLOCKPEN = 331 };
+    /* the 68k Screen of PPaint as the screen bridge filled it at open:
+       CUSTOMSCREEN, SCREENBEHIND, SCREENHIRES and AUTOSCROLL, no SHOWTITLE */
+    const UWORD created = 0x428F;
+    static Layer deep[KAFFEINE_LAYER_MAX_DEPTH], extra;
+    for (bool owned : { true, false })
+    {
+        Fixture f;
+        const ULONG sg = Kaffeine_MirrorAlloc(&f.ctx, M68K_SIZEOF_SCREEN);
+        assert(sg);
+        Kaffeine_LayerSemaphoreInit(&f.ctx, sg + M68K_SCR_LAYERINFO + M68K_LI_LOCK);
+        assert(Kaffeine_ShadowAdd(&f.ctx, sg, &scr, owned ? KAFFEINE_SHADOW_SCREEN : KAFFEINE_SHADOW_PUBSCREEN));
+        f.ctx.pubscreens[0].native = &scr;
+        f.ctx.pubscreens[0].guest = sg;
+        f.ctx.pubscreens[0].owned = owned;
+        f.ctx.pubscreens[0].locks = owned ? 0 : 1;
+        scr.Flags = created;
+        scr.DetailPen = 1;
+        scr.BlockPen = 2;
+        m68k_write16(&f.ctx, sg + M68K_SCR_FLAGS, created);
+        /* the program's own pens in its 68k Screen, unlike the native ones */
+        f.memory[sg + SCR_DETAILPEN] = 7;
+        f.memory[sg + SCR_BLOCKPEN] = 182;
+        auto pens_kept = [&] { return f.memory[sg + SCR_DETAILPEN] == 7 && f.memory[sg + SCR_BLOCKPEN] == 182; };
+        f.ctx.layer_ops->screen_mirrored(&f.ctx, &scr);
+        const ULONG gbar = f.L(sg + M68K_SCR_BARLAYER);
+        assert(gbar && f.W(sg + M68K_SCR_FLAGS) == created && pens_kept());
+        assert(!f.ctx.window_publish);
+
+        /* ShowTitle(TRUE), as showtitle.c: the bar up front and SHOWTITLE
+           set under the LayerInfo lock; the outer-loop poll publishes it */
+        scr.Flags = created | SHOWTITLE;
+        unsigned calls = info_calls;
+        f.run(KAFFEINE_GUI_POLL_SLICES + 1);
+        assert(info_calls == calls + 1 && f.W(sg + M68K_SCR_FLAGS) == (created | SHOWTITLE));
+        assert(f.L(sg + M68K_SCR_BARLAYER) == gbar && pens_kept() && !f.ctx.window_publish);
+        /* BEEPING set, then both cleared, each with the next snapshot */
+        scr.Flags = created | SHOWTITLE | BEEPING;
+        Kaffeine_LayersRefresh(&f.ctx);
+        assert(f.W(sg + M68K_SCR_FLAGS) == (created | SHOWTITLE | BEEPING) && pens_kept());
+        scr.Flags = created;
+        Kaffeine_LayersRefresh(&f.ctx);
+        assert(f.W(sg + M68K_SCR_FLAGS) == created && pens_kept());
+        /* a bit that the program changed in its 68k Flags stays; only the
+           two of Intuition follow */
+        m68k_write16(&f.ctx, sg + M68K_SCR_FLAGS, created ^ SCREENQUIET);
+        scr.Flags = created | SHOWTITLE;
+        Kaffeine_LayersRefresh(&f.ctx);
+        assert(f.W(sg + M68K_SCR_FLAGS) == ((created ^ SCREENQUIET) | SHOWTITLE) && pens_kept());
+        m68k_write16(&f.ctx, sg + M68K_SCR_FLAGS, created | SHOWTITLE);
+
+        /* no whole snapshot, nothing published: a busy LayerInfo */
+        scr.Flags = created;
+        auto before = f.heap();
+        info_busy = true;
+        calls = info_calls;
+        f.run(KAFFEINE_GUI_POLL_SLICES + 1);
+        assert(info_calls == calls && f.heap_is(before) && f.W(sg + M68K_SCR_FLAGS) == (created | SHOWTITLE));
+        info_busy = false;
+        Kaffeine_LayersRefresh(&f.ctx);
+        assert(f.W(sg + M68K_SCR_FLAGS) == created && pens_kept());
+        /* a list deeper than a snapshot takes */
+        std::vector<Layer *> list = { &bar };
+        for (auto &l : deep)
+        {
+            make_layer(l, 0, 20, 10, 10, LAYERSIMPLE);
+            list.push_back(&l);
+        }
+        order(scr, list);
+        scr.Flags = created | BEEPING;
+        before = f.heap();
+        Kaffeine_LayersRefresh(&f.ctx);
+        assert(f.heap_is(before) && f.W(sg + M68K_SCR_FLAGS) == created);
+        order(scr, { &bar, &foreign });
+        Kaffeine_LayersRefresh(&f.ctx);
+        assert(f.W(sg + M68K_SCR_FLAGS) == (created | BEEPING) && f.L(sg + M68K_SCR_BARLAYER) == gbar);
+        /* no guest memory for the 68k Layer of a new layer in the list */
+        std::vector<std::pair<ULONG, ULONG>> taken;
+        for (ULONG size; (size = Kaffeine_HeapAvail(&f.ctx, MEMF_LARGEST)) != 0;)
+        {
+            const ULONG block = Kaffeine_HeapAlloc(&f.ctx, size, MEMF_ANY);
+            if (!block)
+                break;
+            taken.push_back({ block, size });
+        }
+        make_layer(extra, 100, 100, 20, 20, LAYERSIMPLE);
+        order(scr, { &bar, &extra, &foreign });
+        scr.Flags = created | SHOWTITLE;
+        before = f.heap();
+        Kaffeine_LayersRefresh(&f.ctx);
+        assert(f.heap_is(before) && f.W(sg + M68K_SCR_FLAGS) == (created | BEEPING));
+        for (const auto &[block, size] : taken)
+            Kaffeine_HeapFree(&f.ctx, block, size);
+        Kaffeine_LayersRefresh(&f.ctx);
+        assert(f.W(sg + M68K_SCR_FLAGS) == (created | SHOWTITLE) && pens_kept());
+
+        f.ctx.layer_ops->screen_closing(&f.ctx, &scr);
+        f.ctx.pubscreens[0] = {};
+        Kaffeine_ShadowForget(&f.ctx, sg, owned ? KAFFEINE_SHADOW_SCREEN : KAFFEINE_SHADOW_PUBSCREEN);
+        Kaffeine_MirrorRelease(&f.ctx, sg);
+        assert(f.avail() == f.heap_initial);
+    }
+}
+
 static void test_bounds_and_memory()
 {
     static Screen s1, s2, s3;
@@ -2385,6 +2500,7 @@ int main()
         { "Borrowed layers come and go; a GZZ border is readable but never changed", test_borrowed },
         { "BarLayer and LayerInfo of a 68k Screen; snapshots end before the screen may close", test_screen_fields },
         { "Only an owned screen exposes its bar RastPort; stable identity, failure rollback and retirement", test_bar_rastport },
+        { "Screen.Flags follows SHOWTITLE and BEEPING at each published snapshot; other bits, pens and failures keep it", test_screen_flags },
         { "Full tables, missing memory and deep lists keep whole snapshots", test_bounds_and_memory },
         { "NewLayerInfo() pairs: classic stable mirror, no shadow, exact ownership, stale refused", test_layer_info },
         { "NewLayerInfo() without native or guest memory or room gives 0 with full rollback", test_layer_info_memory },
