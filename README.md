@@ -126,6 +126,35 @@ captured canvases were checked after shutdown.
 **[Watch the JIT video (MP4, 2:20)](docs/kaffeine/media/amipixelshop-jit-2026-11-02/amipixelshop-68k-kaffeine-jit-aros-arm64.mp4)**
 or see the [launch method, same-session JIT counters and saved-project checks](docs/kaffeine/media/amipixelshop-jit-2026-11-02/README.md).
 
+## IBrowse and Amigram checks, 14 November 2026
+
+Two separate sets of QEMU checks on two different libraries. Neither uses
+a network, and each was made with a build that differs from the published
+code as stated below.
+
+[![Original IBrowse 68k showing a second local test page reached by a typed address and Return, on a local development build of kaffeine.library with the Kaffeine JIT](docs/kaffeine/media/ibrowse-local-2026-11-14/second-page.png)](docs/kaffeine/media/ibrowse-local-2026-11-14/README.md)
+
+The original 68k IBrowse 3.0a with the original 68k MUI 3.8 opens a local
+page, takes a typed address, loads a second local file on Return and, in a
+separate execution, quits normally with return code 0. These executions
+used a local development build of `kaffeine.library` with guest task
+scheduling changes that are not published here. There is no network
+access, web site, `Run` start or physical hardware in this check. See the
+[frames, setup and limits](docs/kaffeine/media/ibrowse-local-2026-11-14/README.md).
+
+[![Amigram 0.1 showing its built-in sample screen, fixed sample chats and not a session, on AROS ARM64 with a locally patched AROS m68kemu.library](docs/kaffeine/media/amigram-m68kemu-2026-11-14/amigram-run.png)](docs/kaffeine/media/amigram-m68kemu-2026-11-14/README.md)
+
+[Amigram](https://github.com/kaffeine1/telegram-amiga) 0.1, started with
+`--gui-test`, shows its built-in sample screen and exits normally from the
+Shell and from `Run`. Every chat, name and message in the picture, the
+`Connected - DC4` line and the sentence about a 68030 are fixed sample text
+compiled into the program: no account, login, network or message was
+involved, and it is not a performance result. This check ran on a locally
+patched AROS `m68kemu.library` with Moira: AROS master plus five changes of
+mine that are not submitted upstream yet. It did not use
+`kaffeine.library`. See the
+[frames, setup and limits](docs/kaffeine/media/amigram-m68kemu-2026-11-14/README.md).
+
 ## Documentation and tests
 
 - [Community preview download, portable launcher and local test reports](tools/kaffeine-preview/README.md).
@@ -133,6 +162,8 @@ or see the [launch method, same-session JIT counters and saved-project checks](d
 - [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
 - [TurboText 68k demonstration with the Kaffeine JIT](docs/kaffeine/turbotext-jit-demo.md).
 - [AmiPixelShop 68k demonstration with the Kaffeine JIT](docs/kaffeine/media/amipixelshop-jit-2026-11-02/README.md).
+- [IBrowse 68k local pages and normal Quit on a local development build](docs/kaffeine/media/ibrowse-local-2026-11-14/README.md).
+- [Amigram 0.1 sample screen on a locally patched AROS m68kemu.library](docs/kaffeine/media/amigram-m68kemu-2026-11-14/README.md).
 - [Current behavior, architecture and verified limits](README.KAFFEINE.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
 - [Bounded native backfill hooks](docs/kaffeine/native-backfill.md).
