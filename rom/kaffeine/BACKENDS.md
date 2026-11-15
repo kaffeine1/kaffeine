@@ -6,6 +6,32 @@ AArch64 JIT selected with `KAFFEINE_CPU=jit`. The public `RunFile` and
 experiment; no Emu68 code is imported. See the
 [library JIT contract and target results](../../docs/kaffeine/jit-backend.md).
 
+## Long-term 68k compatibility target
+
+The Motorola 68040 is Kaffeine's long-term reference CPU model. This is a
+development requirement; current support must still be described by the
+implemented and verified contracts of each backend.
+
+Prioritize application compatibility: complete the integer instruction
+semantics and the floating-point behavior required by Amiga software.
+This includes floating-point operations and cases that a 68040 Amiga normally
+completes through its 68040 software support. Compatibility work must account
+for that software-assisted behavior as well as the instructions implemented
+directly by the physical 68040.
+
+The MMU is a subsequent goal. Implement it as a virtual component of the
+guest domain, with guest-owned translation, protection and fault state.
+It must preserve the memory boundaries of the guest domain and must not
+control or alter the native AROS system's address space, mappings or memory
+protection.
+
+CPU/FPU/MMU models, feature flags and capability-query responses exposed to
+software must match behavior actually implemented and verified for the
+selected backend and configuration. Keep unimplemented or unverified
+capabilities distinct from supported ones. Record the scope of validation
+when changing a capability declaration; a roadmap target alone does not
+establish support.
+
 ## Responsibilities
 
 | Component | Responsibility |
