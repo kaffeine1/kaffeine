@@ -1,5 +1,7 @@
 # Personal Paint 68k on AROS ARM64
 
+> **Historical record.** Made with the legacy library, `kaffeine.library` built from `rom/kaffeine`, with the sources, backend and date given on this page, and kept as it was made. Where this page says Kaffeine for more than the JIT engine, it means that library. It is not a result of AROS's `m68kemu.library`, and its instructions reproduce the legacy setup. See the [transition status](TRANSITION.md).
+
 **Recorded 28 October 2026.** The original Motorola 68k Personal Paint
 7.2.1.0 opens from an icon on the native AROS desktop, draws an image,
 saves it as IFF/ILBM and returns to the desktop. `kaffeine.library` bridges

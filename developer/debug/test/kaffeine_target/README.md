@@ -1,5 +1,7 @@
 # kaffeine target test on AROS AArch64
 
+> **Status, 15 November 2026.** This page describes the legacy library, `kaffeine.library` built from `rom/kaffeine`: its names, commands and results are those of that tree. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+
 These files run real 68k HUNK programs through `kaffeine.library` on AROS
 AArch64 in QEMU (`raspi3b`), along the transparent path: the Shell loads
 the program with `LoadSeg()`, `RunCommand()` hands the seglist to

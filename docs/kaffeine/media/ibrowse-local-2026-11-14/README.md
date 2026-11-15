@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # IBrowse 68k: local pages and normal Quit on a local development build
 
+> **Historical record.** Made with the legacy library, `kaffeine.library` built from `rom/kaffeine`, with the sources, backend and date given on this page, and kept as it was made. Where this page says Kaffeine for more than the JIT engine, it means that library. It is not a result of AROS's `m68kemu.library`, and its instructions reproduce the legacy setup. See the [transition status](../../TRANSITION.md).
+
 On 2026-11-14 the original 68k IBrowse 3.0a (version string 30.8) with the
 original 68k MUI 3.8 (`muimaster.library` 19) opened a local page, took a
 typed address, loaded a second local file on Return and, in a separate

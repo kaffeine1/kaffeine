@@ -1,5 +1,7 @@
 # Licenses and provenance of kaffeine
 
+> **Status, 15 November 2026.** This page describes the legacy library, `kaffeine.library` built from `rom/kaffeine`: its names, commands and results are those of that tree. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](TRANSITION.md).
+
 This guide summarises the audit of the M0 base and suggests precautions
 for the rest of the project. The license texts and the notices of the
 individual files are authoritative; the guide grants no additional rights
@@ -12,7 +14,7 @@ The AROS base of M0 is commit
 
 | Component | License and scope | Status in the project |
 |---|---|---|
-| AROS code of `kaffeine.library` and the project's changes | [AROS Public License 1.1](../../LICENSE), APL | Base, the M0 changes to the CPU interface and the dispatcher, and later changes such as the seglist relocation record in `dos.library`. APL is distinct from MPL. |
+| AROS code of the legacy `kaffeine.library` and the project's changes | [AROS Public License 1.1](../../LICENSE), APL | Base, the M0 changes to the CPU interface and the dispatcher, and later changes such as the seglist relocation record in `dos.library`. APL is distinct from MPL. |
 | Moira CPU core | [MIT, text at the reviewed commit](https://github.com/dirkwhoffmann/Moira/blob/1efd69467ca13b27b2fb40febd5cb31dbecdea5f/Moira/LICENSE) | Only CPU backend of M0; revision `1efd69467ca13b27b2fb40febd5cb31dbecdea5f`. The MIT qualification covers the core, not every tool in the Moira repository. |
 | Emu68 | [Mozilla Public License 2.0, text at the reviewed commit](https://github.com/michalsc/Emu68/blob/2fb0e320f30cf9c47fa250cd84d2bcfff97d40fc/LICENSE) | Sources reviewed at revision `2fb0e320f30cf9c47fa250cd84d2bcfff97d40fc` as the reference for the kaffeine JIT, the translator, which is written for this project; no Emu68 code is in the repository. |
 | Other components and dependencies | Their own licenses and notices | The AROS [LEGAL](../../LEGAL) file lists exceptions, including GPL and LGPL; the individual subcomponents actually distributed must be checked as well. |

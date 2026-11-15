@@ -1,5 +1,7 @@
 # kaffeine.library: Motorola 680x0 Emulation for AROS
 
+> **Status, 15 November 2026.** This page describes the legacy library, `kaffeine.library` built from `rom/kaffeine`: its names, commands and results are those of that tree. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../docs/kaffeine/TRANSITION.md).
+
 **Author of `m68kemu.library`, from which this library comes:** Fabian
 Schmieder ([metaneutrons](https://github.com/metaneutrons)). The changes I
 made for the kaffeine project are described in

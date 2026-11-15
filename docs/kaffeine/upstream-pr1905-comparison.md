@@ -1,5 +1,7 @@
 # Upstream m68kemu PR #1905 and Kaffeine
 
+> **Historical record.** Made with the legacy library, `kaffeine.library` built from `rom/kaffeine`, with the sources, backend and date given on this page, and kept as it was made. Where this page says Kaffeine for more than the JIT engine, it means that library. It is not a result of AROS's `m68kemu.library`, and its instructions reproduce the legacy setup. See the [transition status](TRANSITION.md).
+
 Comparison recorded **28 October 2026**. Kaffeine derives from Fabian
 Schmieder's `m68kemu.library`; the upstream continuation by `terminills`
 addresses much of the same compatibility work. The useful next step is

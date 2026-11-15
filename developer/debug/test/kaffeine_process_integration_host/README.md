@@ -1,5 +1,7 @@
 # Process startup and Signal integration regression
 
+> **Status, 15 November 2026.** This page describes the legacy library, `kaffeine.library` built from `rom/kaffeine`: its names, commands and results are those of that tree. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+
 The runner extracts the complete production `Kaffeine_Signal`, `cleanup_owned`, `execute_owned`, `start_owned`, `dispose_context`, and `setup_and_execute` functions into a native host collaborator fixture. Run it from the repository root:
 
 ```sh

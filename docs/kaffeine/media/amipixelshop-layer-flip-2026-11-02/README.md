@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # AmiPixelShop 68k horizontal layer flip on AROS ARM64
 
+> **Historical record.** Made with the legacy library, `kaffeine.library` built from `rom/kaffeine`, with the sources, backend and date given on this page, and kept as it was made. Where this page says Kaffeine for more than the JIT engine, it means that library. It is not a result of AROS's `m68kemu.library`, and its instructions reproduce the legacy setup. See the [transition status](../../TRANSITION.md).
+
 On 2026-11-02 UTC, AmiPixelShop 0.6.1 built for a 68020 without an FPU
 completed a horizontal layer flip with the Kaffeine JIT on AROS ARM64 in
 QEMU's Raspberry Pi 3 model. A fresh Shell execution and a fresh actual

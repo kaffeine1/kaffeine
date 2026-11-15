@@ -1,5 +1,7 @@
 # Remote desktop OS bridge
 
+> **Status, 15 November 2026.** This page describes the legacy library, `kaffeine.library` built from `rom/kaffeine`: its names, commands and results are those of that tree. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](TRANSITION.md).
+
 Copyright (C) 2026, The AROS Development Team. All rights reserved.
 Author: Michele Dipace (@kaffeine1)
 

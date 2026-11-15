@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # TurboText 68k save and reopen on AROS ARM64
 
+> **Historical record.** Made with the legacy library, `kaffeine.library` built from `rom/kaffeine`, with the sources, backend and date given on this page, and kept as it was made. Where this page says Kaffeine for more than the JIT engine, it means that library. It is not a result of AROS's `m68kemu.library`, and its instructions reproduce the legacy setup. See the [transition status](../../TRANSITION.md).
+
 ## JIT demonstration video
 
 **[Watch or download the video (MP4, 2:18)](turbotext-68k-kaffeine-jit-aros-arm64.mp4)**

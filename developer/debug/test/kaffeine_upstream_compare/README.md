@@ -1,5 +1,7 @@
 # Offline PR #1905 comparison probes
 
+> **Historical record.** Made with the legacy library, `kaffeine.library` built from `rom/kaffeine`, with the sources, backend and date given on this page, and kept as it was made. Where this page says Kaffeine for more than the JIT engine, it means that library. It is not a result of AROS's `m68kemu.library`, and its instructions reproduce the legacy setup. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+
 This tool reproduces the source-function observations in the
 [upstream comparison report](../../../../docs/kaffeine/upstream-pr1905-comparison.md).
 It compares the original upstream PR revision with Kaffeine's checked

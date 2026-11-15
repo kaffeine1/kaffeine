@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # Building the QEMU preview components
 
+> **Status, 15 November 2026.** Community preview 001 carries the legacy library, `kaffeine.library` built from `rom/kaffeine`. These instructions reproduce that preview as it was published. They are not instructions for installing AROS's `m68kemu.library` or the Kaffeine JIT on an AROS system; no such installation is qualified. See the [transition status](../../docs/kaffeine/TRANSITION.md).
+
 The experimental framebuffer profile builds a separate
 `aros-aarch64-qemu-bsp.rom`. It keeps the common Raspberry Pi system modules
 and `fbgfx`, and excludes `vcgfx` and its Gallium build dependency. The normal

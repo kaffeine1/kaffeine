@@ -1,6 +1,8 @@
 # CPU backend boundary
 
-`kaffeine.library` uses Moira by default and offers an experimental
+> **Status, 15 November 2026.** This page describes the legacy library, `kaffeine.library` built from `rom/kaffeine`: its names, commands and results are those of that tree. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../docs/kaffeine/TRANSITION.md).
+
+The legacy `kaffeine.library` uses Moira by default and offers an experimental
 AArch64 JIT selected with `KAFFEINE_CPU=jit`. The public `RunFile` and
 `RunHunk` API is unchanged. The JIT grows from the hosted translation
 experiment; no Emu68 code is imported. See the
@@ -8,7 +10,7 @@ experiment; no Emu68 code is imported. See the
 
 ## Long-term 68k compatibility target
 
-The Motorola 68040 is Kaffeine's long-term reference CPU model. This is a
+The Motorola 68040 is the long-term reference CPU model of this work. This is a
 development requirement; current support must still be described by the
 implemented and verified contracts of each backend.
 

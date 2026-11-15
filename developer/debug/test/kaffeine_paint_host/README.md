@@ -1,5 +1,7 @@
 # Bounded classic paint-Hook compiler prototype
 
+> **Status, 15 November 2026.** This page describes the legacy library, `kaffeine.library` built from `rom/kaffeine`: its names, commands and results are those of that tree. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+
 This pure-C module compiles a restricted, finite classic 68000 Hook into an
 immutable integer-expression plan. A foreign native paint callback evaluates
 that plan and replays typed native drawing operations. It never executes a

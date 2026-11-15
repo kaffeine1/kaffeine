@@ -1,5 +1,7 @@
 # Classic Intuition Remember ownership
 
+> **Status, 15 November 2026.** This page describes the legacy library, `kaffeine.library` built from `rom/kaffeine`: its names, commands and results are those of that tree. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+
 This fixture compiles the complete production `kaffeine_remember.c`, allocator,
 message/guest-memory guards, and CPU register accessors. Only native allocation,
 IoErr, and native-lock protection collaborators are substituted. No extraction,
