@@ -44,7 +44,7 @@ a result.
 | Locally patched `m68kemu.library` | AROS master `83449051` plus five changes of mine that are not submitted upstream yet; the build reports version 1.5; Moira | One recorded check: Amigram 0.1 from the Shell and from `Run` in QEMU, 14 November 2026. It did not use `kaffeine.library`. It is not the series now being prepared, and it qualifies nothing of that series. |
 | Tests without an emulator library | Host tests compile sources of this repository with simulated native APIs; the standalone probes run the JIT translator alone on AROS AArch64; the reference runs are on native AmigaOS | Their results describe those environments. They load neither `kaffeine.library` nor `m68kemu.library`. |
 | Community preview 001 | Release `preview-arm64-001`: a matched AROS ARM64 system for QEMU that carries the legacy library | Reproducible as published, with the commands of its own guide. It is not an installer, and it says nothing about `m68kemu.library` of AROS mainline. |
-| Corrections to `m68kemu.library` | Changes to `rom/m68kemu` on AROS mainline `8fdbf649ea4d2bc87d6b73c2da45148b1ed61dbe` | Being prepared, locally. Nothing of this series has been proposed to AROS. One compile-only check of the layout change has been made, described under point 1 below. No module of this series has been built, linked or run. |
+| Corrections to `m68kemu.library` | Changes to `rom/m68kemu` on AROS mainline `8fdbf649ea4d2bc87d6b73c2da45148b1ed61dbe` | Being prepared, locally. Nothing of this series has been proposed to AROS. Two checks have been made: one compile-only check of the layout change, described under point 1 below, and one host regression of the loader of 68k disk libraries, described under point 2. No module of this series has been built, linked or run. |
 | `kaffeine-jit68.library`, the 68k JIT as a separate optional library | None yet | Not written. No interface between it and `m68kemu.library` is defined, and nothing loads it. The only library the JIT is compiled into is the legacy library. Apart from that it is tested on the host and in standalone probes, which load no emulator library. |
 
 ## What moves, in this order
@@ -72,13 +72,34 @@ a result.
    build or a link of the module, any run, a multiprocessor configuration,
    x86_64 and riscv64.
 2. **Loading of HUNK files.** `m68kemu.library` already reads the record of
-   relocations that the DOS of AROS mainline keeps. The current source has
-   been read for a few cases: a seglist for which no record is answered,
+   relocations that the DOS of AROS mainline keeps. I read the current
+   source for a few cases: a seglist for which no record is answered,
    relocations that do not fit their hunk, sizes and bounds in the reader of
-   a file image and in the loader of 68k disk libraries. What was found are
-   readings of the source, not failures reproduced by a test yet. Corrections
-   with their tests are being prepared, the loader of 68k disk libraries
-   first.
+   a file image and in the loader of 68k disk libraries. Three corrections
+   follow from that reading, each with its own test.
+
+   The first, for the loader of 68k disk libraries, is written as three
+   local commits on AROS `8fdbf649` that are not published (head
+   `23a8ef23`): what a library file says is checked before it is used, and
+   a refused library gives back what it took. One host regression has been
+   run on it, once, on 15 November 2026. The loader's functions are taken
+   verbatim from the source and compiled as C++20 with Apple clang 21 on
+   macOS, against a fixture that stands in for the emulated memory and its
+   heap. With the corrected source all 27 cases pass, with and without the
+   address and undefined-behavior sanitizers. With the source of `8fdbf649`
+   the same fixture passes 6 cases and fails 21, the split I had written
+   down from the reading before the run. The existing regression of
+   loaded-library versions, which runs the Moira CPU core at `1efd6946`,
+   still passes. This is a host check of functions cut out of the module.
+   It does not show the module compiled as C by the AROS build, linked,
+   loaded or run, a 68k library loaded on AROS, or a multiprocessor system.
+
+   The second, for the reader of a hunk file image, is written as two
+   further local commits (head `0695b548`) with a regression of 33 cases.
+   Nothing of it has been compiled or run; what it says about the old
+   reader is still a reading of the source.
+
+   The third, for the copy of a seglist, is not written.
 3. **Multiprocessor systems.** Not qualified, and not started for
    `m68kemu.library`. The legacy library refuses native backfill hooks on a
    multiprocessor kernel; I have verified no such guard in `m68kemu.library`
