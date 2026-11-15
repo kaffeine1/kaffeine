@@ -23,8 +23,9 @@ systems be abandoned. It is to reduce fragmentation for users: choosing a
 program for what it enables them to do, rather than for the CPU or branch
 of the ecosystem for which it was written.
 
-ARM64 is the first host, not the boundary of the project. The 68k is the
-first compatible environment, not necessarily the last.
+ARM64 is the first host, not the boundary of this work. The 68k is its
+guest environment. Other guest environments would be separate work for AROS,
+as section 6 says.
 
 This is a long-term direction, not a claim of compatibility already achieved.
 Before making a change, check the current repository and test evidence;
@@ -171,7 +172,7 @@ verifiable criteria.
 | Kaffeine JIT acceleration | The same binaries work with the JIT or a verified hybrid mode, with measured benefits and no regressions against the interpreted baseline. |
 | Consolidation on real hardware | Interaction, stability, memory use and performance are verified on supported machines, beyond QEMU. |
 | Portability to other hosts | The common base builds and passes tests on a second host, with RISC-V as a candidate, starting with the interpreter before any dedicated JIT. |
-| Further guest environments | A PPC engine and an initial bounded compatibility environment run real software while reusing the common infrastructure. |
+| Further guest environments | Separate future work for AROS, outside `m68kemu.library` and outside Kaffeine: a PPC engine and an initial bounded compatibility environment run real software, reusing the common infrastructure where it fits. |
 
 The order of individual pull requests should follow actual application
 blockers and architectural risks still requiring verification, rather than
@@ -234,7 +235,8 @@ the library's CPU interface. The interpreter and the behavior AROS has today
 remain the default and stay available.
 
 The long-term CPU reference is the Motorola 68040, including the
-floating-point behavior Amiga software relies on. A capability is declared
+floating-point behavior Amiga software relies on, with the cases that a
+68040 Amiga completes through its software support. A capability is declared
 to software only when it is implemented and verified for the selected
 backend. An MMU, if it comes, is a virtual component of the guest: it must
 never control the memory of the native system.

@@ -61,8 +61,9 @@ that is the legacy library, `kaffeine.library` from `rom/kaffeine`. The
 IBrowse check used a local development build of it that is not published,
 and the Amigram check a locally patched AROS `m68kemu.library`.
 
-An [experimental Kaffeine JIT backend](docs/kaffeine/jit-backend.md) is now
-selectable on standalone AROS AArch64 with `Set KAFFEINE_CPU jit`.
+In the legacy library, an [experimental Kaffeine JIT backend](docs/kaffeine/jit-backend.md)
+is selectable on standalone AROS AArch64 with `Set KAFFEINE_CPU jit`.
+`m68kemu.library` of AROS mainline does not read that variable.
 
 The current bridge runs 68k HUNK programs inside AROS AArch64 using Moira by default
 as the CPU interpreter. Supported library calls reach native AROS services;

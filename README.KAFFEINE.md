@@ -280,8 +280,9 @@ uses observable application outcomes:
 3. Validate interaction, stability, memory and performance on real hardware.
 4. Validate a second host, with RISC-V as a candidate, starting with the
    interpreter before any dedicated JIT.
-5. Explore a PPC engine and a bounded guest environment such as WarpOS;
-   assess PowerUP separately. MorphOS and AmigaOS 4 application compatibility
+5. As separate future work for AROS, outside `m68kemu.library` and outside
+   Kaffeine: explore a PPC engine and a bounded guest environment such as
+   WarpOS; assess PowerUP separately. MorphOS and AmigaOS 4 application compatibility
    would require further ABI and service work.
 
 These future directions do not start parallel implementation work by

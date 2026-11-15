@@ -12,7 +12,7 @@ L’obiettivo più ampio, applicazioni provenienti da architetture e ambienti di
 
 L’obiettivo non è creare un’altra fazione dell’Amiga né imporre l’abbandono dei sistemi esistenti. È ridurre la frammentazione dal punto di vista dell’utente: scegliere un programma per ciò che permette di fare, non in funzione della CPU o del ramo dell’ecosistema per cui è stato scritto.
 
-ARM64 è il primo host, non il confine del progetto. Il 68k è il primo ambiente compatibile, non necessariamente l’ultimo.
+ARM64 è il primo host, non il confine di questo lavoro. Il 68k è il suo ambiente guest. Altri ambienti guest sarebbero lavoro separato per AROS, come dice la sezione 6.
 
 Questa è una direzione di lungo periodo, non una dichiarazione di compatibilità già raggiunta. Prima di ogni intervento, verificare lo stato corrente del repository e delle prove, senza considerare automaticamente implementati gli obiettivi descritti qui.
 
@@ -99,7 +99,7 @@ Le fasi possono sovrapporsi quando esistono attività indipendenti, ma ogni avan
 | Accelerazione con il JIT Kaffeine | Gli stessi binari funzionano con il JIT o con una modalità ibrida verificata, con benefici misurati e senza regressioni rispetto alla base interpretata. |
 | Consolidamento su hardware reale | Interazione, stabilità, memoria e prestazioni sono verificate sulle macchine supportate, non soltanto in QEMU. |
 | Portabilità verso altri host | La base comune viene compilata e collaudata su un secondo host, con RISC-V come candidato, iniziando dall’interprete prima dell’eventuale JIT dedicato. |
-| Ulteriori ambienti guest | Un motore PPC e un primo ambiente di compatibilità circoscritto eseguono software reale, riutilizzando l’infrastruttura comune. |
+| Ulteriori ambienti guest | Lavoro futuro e separato per AROS, fuori dalla m68kemu.library e fuori da Kaffeine: un motore PPC e un primo ambiente di compatibilità circoscritto eseguono software reale, riutilizzando l’infrastruttura comune dove è adatta. |
 
 
 L’ordine delle singole PR deve seguire i blocchi reali osservati nelle applicazioni e i rischi architetturali ancora da verificare, non soltanto il numero di funzioni implementabili.
@@ -132,7 +132,7 @@ Le correzioni che servono a chiunque usi la libreria vanno proposte ad AROS come
 
 Il JIT Kaffeine è una serie di modifiche distinta: un backend opzionale dietro l’interfaccia CPU della libreria. L’interprete e il comportamento che AROS ha oggi restano il default e rimangono disponibili.
 
-Il riferimento CPU di lungo periodo è il Motorola 68040, compreso il comportamento in virgola mobile su cui il software Amiga fa affidamento. Una capacità va dichiarata al software solo quando è implementata e verificata per il backend selezionato. Una MMU, se arriverà, sarà un componente virtuale del guest: non deve mai controllare la memoria del sistema nativo.
+Il riferimento CPU di lungo periodo è il Motorola 68040, compreso il comportamento in virgola mobile su cui il software Amiga fa affidamento, con i casi che un Amiga 68040 completa attraverso il proprio supporto software. Una capacità va dichiarata al software solo quando è implementata e verificata per il backend selezionato. Una MMU, se arriverà, sarà un componente virtuale del guest: non deve mai controllare la memoria del sistema nativo.
 
 Non sono obiettivi: un fork che sostituisca componenti di AROS; una seconda libreria di emulazione con un altro nome; un installer che scambi in silenzio la libreria di un sistema; una dichiarazione di supporto per un sistema o una macchina su cui il lavoro non è stato eseguito.
 

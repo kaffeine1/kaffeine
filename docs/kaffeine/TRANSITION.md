@@ -1,3 +1,8 @@
+<!--
+Copyright (C) 2026, The AROS Development Team. All rights reserved.
+Author: Michele Dipace (@kaffeine1)
+-->
+
 # From `kaffeine.library` to `m68kemu.library`: status of the transition
 
 [Manifesto](MANIFESTO.md) | [Current implementation](../../README.KAFFEINE.md)
