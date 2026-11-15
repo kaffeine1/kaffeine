@@ -1,6 +1,6 @@
 # Native AROS AArch64 JIT probe
 
-> **Status, 15 November 2026.** Kaffeine is the JIT engine. This page describes it as it exists today, inside the legacy library `kaffeine.library` built from `rom/kaffeine`. It has not been offered yet as a backend of AROS's `m68kemu.library`, whose interpreter stays the default. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+> **Status, 15 November 2026.** Kaffeine is the JIT engine. This page describes it as it exists today in the legacy tree, `rom/kaffeine`: inside the library built from it, `kaffeine.library`, and in the probes that run the translator without any emulator library. It has not been offered yet as a backend of AROS's `m68kemu.library`, whose interpreter stays the default. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
 
 `jit_probe` runs the existing Kaffeine block translator inside standalone
 AROS AArch64. It links the production CPU loop, dispatcher and guest-call

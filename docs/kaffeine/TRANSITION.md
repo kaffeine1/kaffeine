@@ -18,7 +18,8 @@ a result.
   backend for that library.
 - What every user of the library needs, with or without a JIT, goes to AROS
   as small, separate contributions. Whether and how they are accepted is for
-  the AROS maintainers to decide. None has been proposed yet.
+  the AROS maintainers to decide. The change sets this page describes have
+  not been proposed yet.
 - No component of an AROS system is replaced. There is no second emulator
   library.
 
@@ -26,9 +27,11 @@ a result.
 
 | What | Identity | State |
 | --- | --- | --- |
-| Legacy library | `kaffeine.library` 1.1, built from `rom/kaffeine` of this repository; derives from AROS's `m68kemu.library` at AROS `ae45f4644f80de542fb6af320c5d5fb5a1bc9925` | Every published result, video, capture and the community preview were made with it. It stays in the repository as it is, so that they can be reproduced. It is not developed further as a library of its own. |
+| Legacy library | `kaffeine.library` 1.1, built from `rom/kaffeine` of this repository; derives from AROS's `m68kemu.library` at AROS `ae45f4644f80de542fb6af320c5d5fb5a1bc9925` | The community preview and most published results, videos and captures of programs running inside AROS were made with it; each page names the build it used. The IBrowse check of 14 November 2026 used a local development build that is not published. The library stays in the repository as it is, so that the published results can be reproduced. It is not developed further as a library of its own. |
+| Locally patched `m68kemu.library` | AROS master `83449051` plus five changes of mine that are not submitted upstream yet; the build reports version 1.5; Moira | One recorded check: Amigram 0.1 from the Shell and from `Run` in QEMU, 14 November 2026. It did not use `kaffeine.library`. It is not the series now being prepared, and it qualifies nothing of that series. |
+| Tests without an emulator library | Host tests compile sources of this repository with simulated native APIs; the standalone probes run the JIT translator alone on AROS AArch64; the reference runs are on native AmigaOS | Their results describe those environments. They load neither `kaffeine.library` nor `m68kemu.library`. |
 | Community preview 001 | Release `preview-arm64-001`: a matched AROS ARM64 system for QEMU that carries the legacy library | Reproducible as published, with the commands of its own guide. It is not an installer, and it says nothing about `m68kemu.library` of AROS mainline. |
-| Corrections to `m68kemu.library` | Changes to `rom/m68kemu` on AROS mainline `8fdbf649ea4d2bc87d6b73c2da45148b1ed61dbe` | Being prepared, locally. Nothing has been proposed to AROS, nothing of it has been built, nothing of it has run. |
+| Corrections to `m68kemu.library` | Changes to `rom/m68kemu` on AROS mainline `8fdbf649ea4d2bc87d6b73c2da45148b1ed61dbe` | Being prepared, locally. Of this series nothing has been proposed to AROS, built or run yet. |
 | Kaffeine JIT as a backend of `m68kemu.library` | None yet | Not started as a change set for AROS mainline. The JIT exists, and is tested, inside the legacy library only. |
 
 ## What moves, in this order
@@ -48,9 +51,12 @@ a result.
    checked against the current source before anything is proposed: a seglist
    for which no record is answered, relocations that do not fit their hunk,
    bounds in the reader of a file image. No finding is claimed yet.
-3. **Multiprocessor systems.** Not started. Callbacks that touch guest state
-   stay closed on a multiprocessor kernel until ownership and lifetime are
-   established.
+3. **Multiprocessor systems.** Not qualified, and not started for
+   `m68kemu.library`. The legacy library refuses native backfill hooks on a
+   multiprocessor kernel; I have verified no such guard in `m68kemu.library`
+   of AROS mainline. Before use on a multiprocessor system is claimed, the
+   ownership, the locking and the lifetime of what callbacks touch have to
+   be established and checked.
 4. **The JIT as an optional backend.** After the common corrections.
 5. **Installation on an existing AROS system.** Not qualified on any system.
    An installer has to show which build of `m68kemu.library` is loaded and
@@ -63,7 +69,8 @@ a result.
 
 - Documents, captions, videos, logs and commands that say `kaffeine.library`
   describe the legacy library. They are left as they were made. Where a page
-  gives instructions, it says that they are for the legacy tree.
+  gives instructions, it says that they are for the legacy tree. A record
+  made with something else, as the Amigram check was, says with what.
 - A result obtained with the legacy library is evidence for that library,
   that backend and those sources. It becomes evidence for `m68kemu.library`
   when it has been repeated there, and not before.

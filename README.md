@@ -11,10 +11,12 @@ desktop, without a separately managed emulator or virtual machine.
 environments are long-term directions for AROS, with their own CPU, ABI and
 platform requirements. They are not promised here.
 
-The work is moving back onto `m68kemu.library` of AROS mainline. Everything
-published so far, the preview and the demonstrations below included, was made
-with an earlier renamed copy of that library, `kaffeine.library`. The
-[transition status](docs/kaffeine/TRANSITION.md) says where things stand.
+The work is moving back onto `m68kemu.library` of AROS mainline. The preview
+and most of the demonstrations below were made with an earlier renamed copy
+of that library, `kaffeine.library`; one ran on a locally patched
+`m68kemu.library`. Each names the library, the backend and the sources it
+used. The [transition status](docs/kaffeine/TRANSITION.md) says where things
+stand.
 
 Read the [project manifesto](docs/kaffeine/MANIFESTO.md)
 ([original Italian](docs/kaffeine/MANIFESTO.it.md)) for the vision,
@@ -54,8 +56,10 @@ If you prefer a one-time contribution, you can [support my work on Ko-fi](https:
 
 ## Current implementation
 
-Everything in this section was made with the legacy library,
-`kaffeine.library` from `rom/kaffeine`, unless its caption says otherwise.
+Each entry in this section names what it ran on. Unless it says otherwise,
+that is the legacy library, `kaffeine.library` from `rom/kaffeine`. The
+IBrowse check used a local development build of it that is not published,
+and the Amigram check a locally patched AROS `m68kemu.library`.
 
 An [experimental Kaffeine JIT backend](docs/kaffeine/jit-backend.md) is now
 selectable on standalone AROS AArch64 with `Set KAFFEINE_CPU jit`.
@@ -184,10 +188,10 @@ mine that are not submitted upstream yet. It did not use
 - [Legacy library implementation](rom/kaffeine/README.md), [internals reference](rom/kaffeine/INTERNALS.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).
 - [Licenses and provenance](docs/kaffeine/LICENSING.md).
 
-The project builds on AROS and its `m68kemu.library`. The published results
+The project builds on AROS and its `m68kemu.library`. Most published results
 were made with an earlier renamed copy of that library, `kaffeine.library` in
-`rom/kaffeine`; the work is moving back onto `m68kemu.library` itself
-([status](docs/kaffeine/TRANSITION.md)). Emu68 remains a design reference;
+`rom/kaffeine`, each as its own page says; the work is moving back onto
+`m68kemu.library` itself ([status](docs/kaffeine/TRANSITION.md)). Emu68 remains a design reference;
 its code is not included. Application software retains its own licenses.
 
 ## Upstream AROS documentation

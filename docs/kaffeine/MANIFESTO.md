@@ -1,4 +1,4 @@
-# Kaffeine: vision and long-term goal
+# AROS 68k compatibility and Kaffeine JIT: manifesto
 
 [Original Italian version](MANIFESTO.it.md) | [Current implementation](../../README.KAFFEINE.md)
 

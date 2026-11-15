@@ -1,4 +1,4 @@
-# Kaffeine: current implementation and technical direction
+# Kaffeine JIT and AROS m68kemu.library: implementation and direction
 
 The [manifesto](docs/kaffeine/MANIFESTO.md)
 ([Italian original](docs/kaffeine/MANIFESTO.it.md)) describes an open source
@@ -12,16 +12,21 @@ interpreter it already has. I am moving this work back onto the library of
 AROS mainline, as small corrections to `rom/m68kemu` and the JIT as a
 separate backend, instead of maintaining a renamed copy of the whole library.
 
-That move is in progress, and this page says so wherever it matters. Every
-result below was obtained with the earlier form of the work: a library named
-`kaffeine.library`, built from `rom/kaffeine` of this repository, which
-derives from AROS's `m68kemu.library` at AROS
+That move is in progress, and this page says so wherever it matters. The
+results below were obtained with the earlier form of the work, and each
+keeps the identity it has. The programs that ran inside AROS ran through a
+library named `kaffeine.library`, built from `rom/kaffeine` of this
+repository, which derives from AROS's `m68kemu.library` at AROS
 `ae45f4644f80de542fb6af320c5d5fb5a1bc9925`. I call it the legacy library
-here. Its results keep that identity: they are not results of
-`m68kemu.library` of AROS mainline, and nothing here has been accepted by
-AROS. The [transition status](docs/kaffeine/TRANSITION.md) says what has
-moved and what has not. The long-term roadmap is a direction, separate from
-the verified behavior below.
+here. Host tests compile sources of that tree with simulated native APIs and
+load no emulator library; the standalone JIT probes run the translator
+without one; the native AmigaOS reference runs use no emulator at all. None
+of them is a result of `m68kemu.library` of current AROS mainline. The
+change sets now being prepared for `rom/m68kemu`, and the JIT as a backend
+there, have not been proposed to AROS yet. The
+[transition status](docs/kaffeine/TRANSITION.md) says what has moved and
+what has not. The long-term roadmap is a direction, separate from the
+verified behavior below.
 
 
 ## How it works
@@ -182,8 +187,11 @@ point of the provenance of the NDK data.
 
 ## Verified scope
 
-The current test and target baseline, all of it with the legacy library and
-the sources of this repository, includes:
+The current test and target baseline. Each row names its environment. The
+host rows compile sources of this repository with simulated native APIs and
+load no emulator library; the standalone probe rows run the JIT without one;
+the rows inside AROS use the legacy library; the native AmigaOS row uses no
+emulator.
 
 | Environment | Result |
 | --- | --- |

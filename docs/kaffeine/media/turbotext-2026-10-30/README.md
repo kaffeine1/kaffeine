@@ -1,6 +1,6 @@
 # TurboText 2.0 on AROS ARM64
 
-> **Historical record.** Made with the legacy library, `kaffeine.library` built from `rom/kaffeine`, with the sources, backend and date given on this page, and kept as it was made. Where this page says Kaffeine for more than the JIT engine, it means that library. It is not a result of AROS's `m68kemu.library`, and its instructions reproduce the legacy setup. See the [transition status](../../TRANSITION.md).
+> **Historical record.** Made with the library, the backend, the sources and at the date that this page itself gives, and kept as it was made. Unless the page says otherwise, that library is a build of the legacy `kaffeine.library` from `rom/kaffeine`; where the page says Kaffeine for more than the JIT engine, it means that library. Nothing here is a result of `m68kemu.library` of current AROS mainline, and the instructions reproduce the setup of the record. See the [transition status](../../TRANSITION.md).
 
 These are complete guest framebuffer captures from the unmodified 68k
 TurboText 2.0 distribution running through `kaffeine.library` with the primary

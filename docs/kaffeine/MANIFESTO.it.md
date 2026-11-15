@@ -1,4 +1,4 @@
-# Kaffeine: visione e obiettivo a lungo termine
+# Compatibilità 68k AROS e JIT Kaffeine: manifesto
 
 [English version](MANIFESTO.md) | [Implementazione attuale](../../README.KAFFEINE.md)
 

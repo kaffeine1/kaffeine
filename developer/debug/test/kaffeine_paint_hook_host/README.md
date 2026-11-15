@@ -1,6 +1,6 @@
 # Native backfill recipe host tests
 
-> **Status, 15 November 2026.** This page describes the legacy library, `kaffeine.library` built from `rom/kaffeine`: its names, commands and results are those of that tree. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+> **Status, 15 November 2026.** This page belongs to the legacy tree: `rom/kaffeine` and the library built from it, `kaffeine.library`. Its names and commands are those of that tree, and each result on it was obtained with what the page itself names: that library, a backend of it, or a host fixture that loads no emulator library. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
 
 This suite compiles the complete production backfill compiler and native bridge,
 heap allocator, Exec message boundary, signal/port adapters and disk-library
