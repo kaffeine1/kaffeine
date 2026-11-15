@@ -6,14 +6,27 @@ home for software from the Amiga ecosystem. AROS is the native operating
 system. The compatibility bridge should preserve verified API behavior,
 objects and formats as CPU engines and host hardware evolve.
 
-The current implementation starts with 68k software on AROS AArch64.
-It builds on AROS's original `m68kemu.library`, now `kaffeine.library` in
-`rom/kaffeine`; its upstream base is AROS
-`ae45f4644f80de542fb6af320c5d5fb5a1bc9925`.
-The long-term roadmap is a direction, separate from the verified behavior below.
+The 68k compatibility library is AROS's `m68kemu.library`. Kaffeine is the
+name of the JIT engine: an optional CPU backend for that library, beside the
+interpreter it already has. I am moving this work back onto the library of
+AROS mainline, as small corrections to `rom/m68kemu` and the JIT as a
+separate backend, instead of maintaining a renamed copy of the whole library.
+
+That move is in progress, and this page says so wherever it matters. Every
+result below was obtained with the earlier form of the work: a library named
+`kaffeine.library`, built from `rom/kaffeine` of this repository, which
+derives from AROS's `m68kemu.library` at AROS
+`ae45f4644f80de542fb6af320c5d5fb5a1bc9925`. I call it the legacy library
+here. Its results keep that identity: they are not results of
+`m68kemu.library` of AROS mainline, and nothing here has been accepted by
+AROS. The [transition status](docs/kaffeine/TRANSITION.md) says what has
+moved and what has not. The long-term roadmap is a direction, separate from
+the verified behavior below.
 
 
 ## How it works
+
+This is the legacy library as it is in this repository today.
 
 - A 68k HUNK program loads through `LoadSeg()` as a native one does. On a
   host that is no 68k, DOS records the relocations that it applies, and
@@ -41,6 +54,8 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   runs as 68k code, made as Exec makes it.
 
 ## What runs today
+
+With the legacy library, `kaffeine.library` from `rom/kaffeine`:
 
 - 68k HUNK programs run from the Shell and through `Run` on AROS AArch64
   in QEMU. The six bzip2 1.0.8 self-test cases and the seven IJG JPEG
@@ -105,9 +120,12 @@ unsupported within the current contracts.
 
 ## The CPU: Moira and the experimental Kaffeine JIT
 
-`kaffeine.library` uses `struct KaffeineCPUOps`
+The legacy library selects its CPU through `struct KaffeineCPUOps`
 ([BACKENDS.md](rom/kaffeine/BACKENDS.md)). Moira is the operational 68k
-interpreter and the reference for extending the execution engine.
+interpreter and the reference for extending the execution engine. In
+`m68kemu.library` of AROS mainline Moira is the interpreter and stays the
+default; the JIT is to be offered there as an optional backend, in a change
+set of its own that does not exist yet.
 
 The [experimental library backend](docs/kaffeine/jit-backend.md) is
 selected with `Set KAFFEINE_CPU jit`. It uses independent guest-task CPUs,
@@ -164,7 +182,8 @@ point of the provenance of the NDK data.
 
 ## Verified scope
 
-The current test and target baseline includes:
+The current test and target baseline, all of it with the legacy library and
+the sources of this repository, includes:
 
 | Environment | Result |
 | --- | --- |
@@ -209,17 +228,20 @@ of a mouse double-click or a claim about every application's startup.
 Community preview 001 and the published application videos retain their
 previously qualified launch paths.
 
-Native Workbench startup uses the paired `workbench.library` 45.7 and
-`kaffeine.library` 1.1 changes. Workbench selects an explicit native entry
+In the legacy tree, native Workbench startup uses the paired
+`workbench.library` 45.7 and `kaffeine.library` 1.1 changes. Workbench selects an explicit native entry
 for 68k TOOLs. That entry takes the startup message before any DOS call and
 transfers it to `RunWorkbenchHunk` (native vector 7). The generic `RunHunk`
 and `RunCommand` routes receive no implicit startup: a non-CLI caller may
 already have consumed its own message, or may have none. Borrowed startup
 locks retire before the native reply; guest storage stays quarantined for
-the lifetime of the arena.
+the lifetime of the arena. `m68kemu.library` of AROS mainline has `RunHunk`
+and `RunFile` only. Whether and how a Workbench entry is proposed there is
+not decided.
 
 ## Building and testing
 
+These are the commands of the legacy tree, under the names it has today.
 Initialize the pinned CPU submodule before building:
 
 ```sh
@@ -238,6 +260,9 @@ and the [target suite](developer/debug/test/kaffeine_target/README.md).
 The full [roadmap](docs/kaffeine/MANIFESTO.md#7-a-roadmap-based-on-observable-results)
 uses observable application outcomes:
 
+0. Move the work onto `m68kemu.library` of AROS mainline: the common
+   corrections first, each as a focused contribution, then the JIT as an
+   optional backend. See the [transition status](docs/kaffeine/TRANSITION.md).
 1. Complete useful 68k application operations on AROS ARM64, prioritizing
    Personal Paint's editor, tools, load/save, cleanup and desktop use.
    CLI loading of tested 1024×768 IFF and palette PNG files now passes in
@@ -260,9 +285,10 @@ the agreed scope.
 - [Upstream PR #1905 comparison, reuse candidates and reproducing probes](docs/kaffeine/upstream-pr1905-comparison.md).
 - [Personal Paint demonstration, screenshots and saved output](docs/kaffeine/personal-paint-demo.md).
 - [Project manifesto](docs/kaffeine/MANIFESTO.md) and [Italian original](docs/kaffeine/MANIFESTO.it.md).
+- [Status of the transition to `m68kemu.library`](docs/kaffeine/TRANSITION.md).
 - [Licenses and component provenance](docs/kaffeine/LICENSING.md).
 - [CPU backend contract](rom/kaffeine/BACKENDS.md).
 - [Hosted AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md) and [standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).
-- [Library overview](rom/kaffeine/README.md) and [internals reference](rom/kaffeine/INTERNALS.md).
+- [Legacy library overview](rom/kaffeine/README.md) and [internals reference](rom/kaffeine/INTERNALS.md).
 - [Host tests](developer/debug/test/kaffeine_host/README.md).
 - [Target programs and QEMU runner](developer/debug/test/kaffeine_target/README.md).

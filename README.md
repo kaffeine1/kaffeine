@@ -1,13 +1,20 @@
-# Kaffeine: an open source home for the Amiga ecosystem
+# Kaffeine: a 68k JIT engine for AROS
 
-Kaffeine aims to preserve Amiga software across platforms and hardware
-generations. AROS is the native operating system; `kaffeine.library` is the
-compatibility infrastructure intended to let supported applications share
-the same desktop, without a separately managed emulator or virtual machine.
+Kaffeine is a JIT engine for 68k Amiga software on AROS: an optional CPU
+backend for AROS's own `m68kemu.library`, beside the interpreter that library
+already has. This repository holds that work, and the corrections the
+library needs for 68k software on AROS ARM64. The aim behind it is to keep
+Amiga software usable across platforms and hardware generations on the AROS
+desktop, without a separately managed emulator or virtual machine.
 
-**ARM64 is the first host. The 68k is the first guest environment.**
-Other hosts and guest environments are long-term directions, with their
-own CPU, ABI and platform requirements.
+**ARM64 is the first host. The 68k is the guest.** Other hosts and guest
+environments are long-term directions for AROS, with their own CPU, ABI and
+platform requirements. They are not promised here.
+
+The work is moving back onto `m68kemu.library` of AROS mainline. Everything
+published so far, the preview and the demonstrations below included, was made
+with an earlier renamed copy of that library, `kaffeine.library`. The
+[transition status](docs/kaffeine/TRANSITION.md) says where things stand.
 
 Read the [project manifesto](docs/kaffeine/MANIFESTO.md)
 ([original Italian](docs/kaffeine/MANIFESTO.it.md)) for the vision,
@@ -27,7 +34,8 @@ their guest boots and physical Raspberry Pi hardware need separate testing.
 See the [launch, application import and local report guide](tools/kaffeine-preview/README.md)
 and submit findings through the [community test form](https://github.com/kaffeine1/kaffeine/issues/new/choose).
 The goal remains AROS mainline integration; this is a matched preview,
-not a native installer for arbitrary AROS systems.
+not a native installer for arbitrary AROS systems. It carries the legacy
+`kaffeine.library`, not `m68kemu.library` of AROS mainline.
 
 <!-- patreon-support:start -->
 ## Support development
@@ -45,6 +53,9 @@ If you prefer a one-time contribution, you can [support my work on Ko-fi](https:
 <!-- patreon-support:end -->
 
 ## Current implementation
+
+Everything in this section was made with the legacy library,
+`kaffeine.library` from `rom/kaffeine`, unless its caption says otherwise.
 
 An [experimental Kaffeine JIT backend](docs/kaffeine/jit-backend.md) is now
 selectable on standalone AROS AArch64 with `Set KAFFEINE_CPU jit`.
@@ -164,17 +175,19 @@ mine that are not submitted upstream yet. It did not use
 - [AmiPixelShop 68k demonstration with the Kaffeine JIT](docs/kaffeine/media/amipixelshop-jit-2026-11-02/README.md).
 - [IBrowse 68k local pages and normal Quit on a local development build](docs/kaffeine/media/ibrowse-local-2026-11-14/README.md).
 - [Amigram 0.1 sample screen on a locally patched AROS m68kemu.library](docs/kaffeine/media/amigram-m68kemu-2026-11-14/README.md).
-- [Current behavior, architecture and verified limits](README.KAFFEINE.md).
+- [Current behavior, architecture and verified limits](README.KAFFEINE.md) and the [status of the transition to `m68kemu.library`](docs/kaffeine/TRANSITION.md).
 - [Host regression tests](developer/debug/test/kaffeine_host/README.md).
 - [Bounded native backfill hooks](docs/kaffeine/native-backfill.md).
 - [Tracked window refresh](docs/kaffeine/window-refresh.md) and [typed keyboard mapping](docs/kaffeine/keymap.md).
 - [Standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).
 - [AROS target programs and QEMU runner](developer/debug/test/kaffeine_target/README.md).
-- [Library implementation](rom/kaffeine/README.md), [internals reference](rom/kaffeine/INTERNALS.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).
+- [Legacy library implementation](rom/kaffeine/README.md), [internals reference](rom/kaffeine/INTERNALS.md) and [CPU backend contract](rom/kaffeine/BACKENDS.md).
 - [Licenses and provenance](docs/kaffeine/LICENSING.md).
 
-The project builds on AROS and its original `m68kemu.library`. The bridge is
-now `kaffeine.library` in `rom/kaffeine`. Emu68 remains a design reference;
+The project builds on AROS and its `m68kemu.library`. The published results
+were made with an earlier renamed copy of that library, `kaffeine.library` in
+`rom/kaffeine`; the work is moving back onto `m68kemu.library` itself
+([status](docs/kaffeine/TRANSITION.md)). Emu68 remains a design reference;
 its code is not included. Application software retains its own licenses.
 
 ## Upstream AROS documentation

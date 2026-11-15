@@ -6,7 +6,9 @@
 
 Costruire una casa open source comune per il software dell’ecosistema Amiga, capace di evolvere con l’hardware senza perdere il patrimonio delle sue diverse piattaforme.
 
-AROS è il sistema operativo nativo. kaffeine.library è l’infrastruttura di compatibilità che deve permettere alle applicazioni provenienti da architetture e ambienti differenti di convivere nello stesso desktop.
+AROS è il sistema operativo nativo. Per il software 68k il suo livello di compatibilità è la m68kemu.library, una libreria che AROS ha già. Kaffeine è il nome di un motore JIT per quella libreria: un backend CPU opzionale accanto al suo interprete, non una libreria a sé e non il sostituto di una libreria.
+
+L’obiettivo più ampio, applicazioni provenienti da architetture e ambienti differenti nello stesso desktop, appartiene ad AROS nel suo insieme. Richiederebbe motori e contratti propri. Non è una promessa che riguarda la m68kemu.library, che è la libreria di compatibilità 68k, né Kaffeine, che è un motore JIT 68k.
 
 L’obiettivo non è creare un’altra fazione dell’Amiga né imporre l’abbandono dei sistemi esistenti. È ridurre la frammentazione dal punto di vista dell’utente: scegliere un programma per ciò che permette di fare, non in funzione della CPU o del ramo dell’ecosistema per cui è stato scritto.
 
@@ -20,7 +22,7 @@ L’utente deve poter avviare un’applicazione supportata dal desktop o dalla S
 
 La compatibilità deve comprendere progressivamente il ciclo d’uso completo: avvio, interazione, accesso ai file, caricamento delle dipendenze, salvataggio, chiusura e rilascio delle risorse. Dove possibile, deve estendersi a integrazioni come appunti, trascinamento, icone, requester e comunicazione fra applicazioni.
 
-Il risultato desiderato è eseguire i binari originali supportati senza richiederne la ricompilazione o modifiche specifiche per kaffeine. Programmi ricompilati e fixture dedicate rimangono strumenti preziosi di sviluppo, ma non sostituiscono la verifica con software preesistente.
+Il risultato desiderato è eseguire i binari originali supportati senza richiederne la ricompilazione o modifiche specifiche per il livello di compatibilità. Programmi ricompilati e fixture dedicate rimangono strumenti preziosi di sviluppo, ma non sostituiscono la verifica con software preesistente.
 
 Personal Paint è il primo grande traguardo grafico concreto: avviarlo, arrivare all’editor, usare gli strumenti, caricare e salvare immagini, chiuderlo correttamente e infine verificarne l’avvio dal desktop e la fluidità.
 
@@ -61,7 +63,7 @@ Cambiare ciò che dipende dall’host, preservando ciò che abbiamo imparato e v
 
 ## 5. Strategia CPU: prima correttezza, poi accelerazione misurata
 
-Moira deve rimanere un riferimento operativo e una base di confronto per lo sviluppo del kaffeine JIT. Il confronto con l’interprete va affiancato a test con risultati attesi indipendenti e, quando necessario, a verifiche sul sistema di riferimento.
+Moira deve rimanere un riferimento operativo e una base di confronto per lo sviluppo del JIT Kaffeine. Il confronto con l’interprete va affiancato a test con risultati attesi indipendenti e, quando necessario, a verifiche sul sistema di riferimento.
 
 Il JIT deve accelerare l’esecuzione senza ridurre silenziosamente la compatibilità. Registri, flag, memoria, callback e risultati osservabili devono rispettare il modello CPU e i contratti dichiarati.
 
@@ -75,7 +77,7 @@ L’obiettivo è rendere più veloci le applicazioni mantenendone corretto il co
 
 ## 6. Espansione futura: PPC e altri ambienti Amiga
 
-A lungo termine, kaffeine deve poter ospitare più motori CPU e più ambienti di compatibilità.
+A lungo termine, AROS potrebbe ospitare altri motori CPU e altri ambienti di compatibilità accanto a quello 68k. Sarebbe lavoro nuovo, con interfacce proprie: non un’estensione promessa per la m68kemu.library e non un ruolo più ampio per Kaffeine.
 
 Una possibile evoluzione è il supporto al codice PowerPC, partendo da un perimetro circoscritto come WarpOS e valutando separatamente PowerUP. L’eventuale compatibilità con applicazioni MorphOS o AmigaOS 4 deve essere trattata come un ulteriore progetto, con proprie dipendenze, ABI e servizi.
 
@@ -94,7 +96,7 @@ Le fasi possono sovrapporsi quando esistono attività indipendenti, ma ogni avan
 | Fase | Risultato atteso |
 | --- | --- |
 | Compatibilità 68k su AROS ARM64 | Applicazioni CLI e grafiche reali completano operazioni utili e rilasciano correttamente le risorse. Personal Paint è il riferimento grafico prioritario. |
-| Accelerazione con kaffeine JIT | Gli stessi binari funzionano con il JIT o con una modalità ibrida verificata, con benefici misurati e senza regressioni rispetto alla base interpretata. |
+| Accelerazione con il JIT Kaffeine | Gli stessi binari funzionano con il JIT o con una modalità ibrida verificata, con benefici misurati e senza regressioni rispetto alla base interpretata. |
 | Consolidamento su hardware reale | Interazione, stabilità, memoria e prestazioni sono verificate sulle macchine supportate, non soltanto in QEMU. |
 | Portabilità verso altri host | La base comune viene compilata e collaudata su un secondo host, con RISC-V come candidato, iniziando dall’interprete prima dell’eventuale JIT dedicato. |
 | Ulteriori ambienti guest | Un motore PPC e un primo ambiente di compatibilità circoscritto eseguono software reale, riutilizzando l’infrastruttura comune. |
@@ -122,8 +124,24 @@ L’ambizione di accogliere tutto l’ecosistema non deve trasformarsi nella pro
 
 Il fine non è cancellare le differenze fra le piattaforme Amiga, ma impedire che quelle differenze rendano inutilizzabile il loro software nel futuro.
 
+## 10. Lavorare dentro AROS
+
+La libreria di compatibilità 68k è la m68kemu.library di AROS, in rom/m68kemu. Questo lavoro la corregge e la estende dove si trova. Non la sostituisce con un’altra, non la rinomina e non affianca una seconda interfaccia pubblica a quella che AROS ha.
+
+Le correzioni che servono a chiunque usi la libreria vanno proposte ad AROS come contributi piccoli e separati: layout delle strutture native ricavati per ogni target, caricamento dei file HUNK, comportamento sicuro sui sistemi multiprocessore. Non dipendono dal JIT. Se e come accettarle lo decidono i maintainer di AROS.
+
+Il JIT Kaffeine è una serie di modifiche distinta: un backend opzionale dietro l’interfaccia CPU della libreria. L’interprete e il comportamento che AROS ha oggi restano il default e rimangono disponibili.
+
+Il riferimento CPU di lungo periodo è il Motorola 68040, compreso il comportamento in virgola mobile su cui il software Amiga fa affidamento. Una capacità va dichiarata al software solo quando è implementata e verificata per il backend selezionato. Una MMU, se arriverà, sarà un componente virtuale del guest: non deve mai controllare la memoria del sistema nativo.
+
+Non sono obiettivi: un fork che sostituisca componenti di AROS; una seconda libreria di emulazione con un altro nome; un installer che scambi in silenzio la libreria di un sistema; una dichiarazione di supporto per un sistema o una macchina su cui il lavoro non è stato eseguito.
+
+## 11. A che punto è il lavoro
+
+Questo documento descrive una direzione. Che cosa è implementato, con quale libreria, backend e sorgenti è stato ottenuto ogni risultato, e che cosa è ancora in corso di trasferimento sulla m68kemu.library, è registrato nell’[implementazione attuale](../../README.KAFFEINE.md) e nello [stato della transizione](TRANSITION.md).
+
 ## Principio guida per ogni decisione
 
 Costruire oggi ciò che serve a far funzionare davvero le applicazioni, senza legare la compatibilità di domani a una sola CPU, a un solo motore o a una sola persona.
 
-**Kaffeine: una casa open source per tutte le anime dell’Amiga.**
+**AROS: una casa open source per tutte le anime dell’Amiga. Kaffeine: un motore JIT al suo servizio.**

@@ -8,9 +8,15 @@ Build a shared open source home for software from the Amiga ecosystem,
 able to evolve with hardware while preserving the heritage of its different
 platforms.
 
-AROS is the native operating system. `kaffeine.library` is the compatibility
-infrastructure intended to let applications from different architectures and
-environments coexist on the same desktop.
+AROS is the native operating system. For 68k software its compatibility
+layer is `m68kemu.library`, a library that AROS already has. Kaffeine is the
+name of a JIT engine for that library: an optional CPU backend beside its
+interpreter, not a library of its own and not a replacement for one.
+
+The wider aim, applications from different architectures and environments
+on the same desktop, belongs to AROS as a whole. It would need engines and
+contracts of their own. It is not a promise about `m68kemu.library`, which is
+the 68k compatibility library, nor about Kaffeine, which is a 68k JIT engine.
 
 The goal is not to create another Amiga faction or demand that existing
 systems be abandoned. It is to reduce fragmentation for users: choosing a
@@ -37,7 +43,7 @@ clipboard, drag and drop, icons, requesters and communication between
 applications.
 
 The desired result is to run supported original binaries without requiring
-recompilation or changes specific to Kaffeine. Recompiled programs and
+recompilation or changes specific to the compatibility layer. Recompiled programs and
 dedicated fixtures remain valuable development tools, but do not replace
 verification with existing software.
 
@@ -127,8 +133,10 @@ not to maximize an isolated benchmark.
 
 ## 6. Future expansion: PPC and other Amiga environments
 
-In the long term, Kaffeine should be able to host multiple CPU engines
-and compatibility environments.
+In the long term, AROS could host further CPU engines and compatibility
+environments beside the 68k one. That would be new work with interfaces of
+its own: not an extension promised for `m68kemu.library`, and not a wider
+role for Kaffeine.
 
 One possible evolution is PowerPC code support, starting with a bounded
 scope such as WarpOS and evaluating PowerUP separately. Compatibility
@@ -208,9 +216,45 @@ needed.
 The purpose is not to erase differences between Amiga platforms, but to
 prevent those differences from making their software unusable in the future.
 
+## 10. Working inside AROS
+
+The 68k compatibility library is AROS's own `m68kemu.library`, in
+`rom/m68kemu`. This work corrects and extends that library where it is. It
+does not replace it with another, rename it, or put a second public
+interface beside the one AROS has.
+
+Corrections that every user of the library needs go to AROS as small,
+separate contributions: native structure layouts made for each target, the
+loading of HUNK files, safe behavior on multiprocessor systems. They do not
+depend on the JIT. Whether and how they are accepted is for the AROS
+maintainers to decide.
+
+The Kaffeine JIT is a separate series of changes: an optional backend behind
+the library's CPU interface. The interpreter and the behavior AROS has today
+remain the default and stay available.
+
+The long-term CPU reference is the Motorola 68040, including the
+floating-point behavior Amiga software relies on. A capability is declared
+to software only when it is implemented and verified for the selected
+backend. An MMU, if it comes, is a virtual component of the guest: it must
+never control the memory of the native system.
+
+These are not goals: a fork that replaces AROS components; a second emulator
+library under another name; an installer that silently swaps the library of
+a system; a claim of support for a system or a machine on which the work has
+not been run.
+
+## 11. Where the work stands
+
+This document describes a direction. What is implemented, with which
+library, backend and sources each result was obtained, and what is still
+being moved onto `m68kemu.library`, is recorded in the
+[current implementation](../../README.KAFFEINE.md) and in the
+[transition status](TRANSITION.md).
+
 ## The guiding principle for every decision
 
 Build what is needed today to make applications work, without tying
 tomorrow's compatibility to one CPU, one engine or one person.
 
-**Kaffeine: an open source home for every part of the Amiga ecosystem.**
+**AROS: an open source home for every part of the Amiga ecosystem. Kaffeine: a JIT engine in its service.**
