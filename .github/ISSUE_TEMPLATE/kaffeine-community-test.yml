@@ -1,7 +1,7 @@
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
 # Author: Michele Dipace (@kaffeine1)
 name: Kaffeine community test
-description: Report a successful or unsuccessful Kaffeine preview test
+description: Report a successful or unsuccessful test of the community preview or of another build, naming the library that was loaded
 title: "[Kaffeine test] "
 body:
   - type: markdown
@@ -9,11 +9,13 @@ body:
       value: |
         Please report one application/workflow per issue. Review attachments for private content.
         QEMU exit status, runtime backend evidence and application results are separate observations.
+        Say which emulator library was actually loaded: AROS's m68kemu.library, or the legacy kaffeine.library
+        that community preview 001 carries. The CPU backend, Moira or the Kaffeine JIT, is a separate observation.
   - type: input
     id: build
     attributes:
-      label: Preview build ID and source commit
-      description: From report.json or the preview manifest; say custom build if applicable.
+      label: Build ID, source commit and emulator library actually loaded
+      description: From report.json or the preview manifest; say custom build if applicable. Name the library that was loaded, m68kemu.library or the legacy kaffeine.library, with its version or hash when known; say unknown if you cannot tell. Preview 001 carries the legacy kaffeine.library.
     validations:
       required: true
   - type: input

@@ -37,7 +37,7 @@ a result.
 | Tests without an emulator library | Host tests compile sources of this repository with simulated native APIs; the standalone probes run the JIT translator alone on AROS AArch64; the reference runs are on native AmigaOS | Their results describe those environments. They load neither `kaffeine.library` nor `m68kemu.library`. |
 | Community preview 001 | Release `preview-arm64-001`: a matched AROS ARM64 system for QEMU that carries the legacy library | Reproducible as published, with the commands of its own guide. It is not an installer, and it says nothing about `m68kemu.library` of AROS mainline. |
 | Corrections to `m68kemu.library` | Changes to `rom/m68kemu` on AROS mainline `8fdbf649ea4d2bc87d6b73c2da45148b1ed61dbe` | Being prepared, locally. Of this series nothing has been proposed to AROS, built or run yet. |
-| Kaffeine JIT as a backend of `m68kemu.library` | None yet | Not started as a change set for AROS mainline. The JIT exists, and is tested, inside the legacy library only. |
+| Kaffeine JIT as a backend of `m68kemu.library` | None yet | Not started as a change set for AROS mainline. The only library the JIT is integrated in is the legacy library. Apart from that it is tested on the host and in standalone probes, which load no emulator library. |
 
 ## What moves, in this order
 

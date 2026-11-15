@@ -988,12 +988,12 @@ functions live in `kaffeine_thunks_dos.c`. Their ranges use starting-address
 checks and remaining-byte subtraction; block I/O checks multiplication
 before forming a byte count. Invalid addresses, unterminated strings,
 negative lengths and unsafe overlaps fail before native DOS, with
-`ERROR_BAD_NUMBER`. The buffer policy and native quirks are documented in
-the [host tests](../../developer/debug/test/kaffeine_host/README.md#dos-guest-buffers-and-strings).
+`ERROR_BAD_NUMBER`. The host tests that cover the buffer policy and the native quirks are
+listed in the DOS row of their [coverage table](../../developer/debug/test/kaffeine_host/README.md#coverage).
 
 The second DOS batch adds 27 manual vectors, from `Info()` through
-`SetOwner()`. Its [host policy and regression table](../../developer/debug/test/kaffeine_host/README.md#dos-second-string-and-structure-batch)
-describes every refusal and the native edge cases retained by the bridge.
+`SetOwner()`. The host tests of its refusals and of the native edge cases retained by the
+bridge are listed in the DOS row of their [coverage table](../../developer/debug/test/kaffeine_host/README.md#coverage).
 
 Fifteen base calls, from `Open()` to `VPrintf()`, used to pass unchecked
 guest pointers from `kaffeine_thunks.c`. They live in
@@ -1001,18 +1001,16 @@ guest pointers from `kaffeine_thunks.c`. They live in
 unterminated strings, negative lengths and buffers that leave guest memory
 fail before native DOS, with `ERROR_BAD_NUMBER`. `VFPrintf()` and
 `VPrintf()` render their text with the checked RawDoFmt formatter instead
-of the generic format-stream converter. FileHandles and FileLocks use separate typed associations; seglists retain their existing convention. The
-[host policy](../../developer/debug/test/kaffeine_host/README.md#dos-base-calls)
-lists every refusal.
+of the generic format-stream converter. FileHandles and FileLocks use separate typed associations; seglists retain their existing convention. The host tests of the refusals are listed in the DOS row of their
+[coverage table](../../developer/debug/test/kaffeine_host/README.md#coverage).
 
 `MatchFirst()`, `MatchNext()` and `MatchEnd()` keep a native AnchorPath
 for each guest one, at most 16 per program, and copy the public fields
 both ways around every call. `ap_Base` and `ap_Last` point to
 bridge-owned guest copies of the first and the current AChain, whose
 `an_Lock` works with `CurrentDir()` and `NameFromLock()`. The context
-cleanup ends the matches a program left open. The
-[host policy](../../developer/debug/test/kaffeine_host/README.md#dos-matchfirst-and-anchorpath)
-has the details and the refusals.
+cleanup ends the matches a program left open. The host tests of the details and the refusals are listed in the DOS row of
+their [coverage table](../../developer/debug/test/kaffeine_host/README.md#coverage).
 `InfoData` is 36 bytes, `DateStamp` 12, `DateTime` 26 (string APTRs at
 14/18/22) and `CSource` 12. `dos_strings.c` checks all those sizes and field
 offsets against the actual 68k headers at compile time. Native structures
