@@ -44,7 +44,7 @@ a result.
 | Locally patched `m68kemu.library` | AROS master `83449051` plus five changes of mine that are not submitted upstream yet; the build reports version 1.5; Moira | One recorded check: Amigram 0.1 from the Shell and from `Run` in QEMU, 14 November 2026. It did not use `kaffeine.library`. It is not the series now being prepared, and it qualifies nothing of that series. |
 | Tests without an emulator library | Host tests compile sources of this repository with simulated native APIs; the standalone probes run the JIT translator alone on AROS AArch64; the reference runs are on native AmigaOS | Their results describe those environments. They load neither `kaffeine.library` nor `m68kemu.library`. |
 | Community preview 001 | Release `preview-arm64-001`: a matched AROS ARM64 system for QEMU that carries the legacy library | Reproducible as published, with the commands of its own guide. It is not an installer, and it says nothing about `m68kemu.library` of AROS mainline. |
-| Corrections to `m68kemu.library` | Changes to `rom/m68kemu` on AROS mainline `8fdbf649ea4d2bc87d6b73c2da45148b1ed61dbe` | Being prepared, locally. Nothing of this series has been proposed to AROS. Two checks have been made: one compile-only check of the layout change, described under point 1 below, and one host regression of the loader of 68k disk libraries, described under point 2. No module of this series has been built, linked or run. |
+| Corrections to `m68kemu.library` | Changes to `rom/m68kemu` on AROS mainline `8fdbf649ea4d2bc87d6b73c2da45148b1ed61dbe` | Being prepared, locally. Nothing of this series has been proposed to AROS. Three checks have been made: one compile-only check of the layout change, described under point 1 below, and two host regressions of the HUNK loading corrections, described under point 2. No module of this series has been built, linked or run. AROS mainline has since moved on by three commits, to `65764162`. By the list of the paths they change, none touches `rom/m68kemu` or a file these corrections and their tests read; the series has not been moved onto it. |
 | `kaffeine-jit68.library`, the 68k JIT as a separate optional library | None yet | Not written. No interface between it and `m68kemu.library` is defined, and nothing loads it. The only library the JIT is compiled into is the legacy library. Apart from that it is tested on the host and in standalone probes, which load no emulator library. |
 
 ## What moves, in this order
@@ -71,6 +71,12 @@ a result.
    x86_64 table. Not measured: the rules under the AROS build system, a
    build or a link of the module, any run, a multiprocessor configuration,
    x86_64 and riscv64.
+
+   One more local commit (head `c42dc0af`) changes only the rules that make
+   the table: which compiler flags the probe gets, which files it depends
+   on, and what happens when its output is missing or empty. It has been
+   reviewed as source. No make has run on these rules, and the direct
+   compiler check above did not use them.
 2. **Loading of HUNK files.** `m68kemu.library` already reads the record of
    relocations that the DOS of AROS mainline keeps. I read the current
    source for a few cases: a seglist for which no record is answered,
@@ -96,10 +102,19 @@ a result.
 
    The second, for the reader of a hunk file image, is written as two
    further local commits (head `0695b548`) with a regression of 33 cases.
-   Nothing of it has been compiled or run; what it says about the old
-   reader is still a reading of the source.
+   One host regression has been run on it, once, on 15 November 2026, in
+   the same way and with the same compiler. With the corrected source all
+   33 cases pass, with and without the sanitizers. With the source of
+   `8fdbf649` the same fixture passes 15 cases and fails 18, the split I
+   had written down from the reading before the run. The limits are those
+   of the first: a host check of functions cut out of the module, not the
+   module compiled as C by the AROS build, linked, loaded or run, not a
+   hunk file loaded on AROS, not a multiprocessor system.
 
-   The third, for the copy of a seglist, is not written.
+   The third, for the copy of a seglist, is written as two further local
+   commits (head `9df4263b`) with a regression of 22 cases. Nothing of it
+   has been compiled or run; what it says about the old code is still a
+   reading of the source.
 3. **Multiprocessor systems.** Not qualified, and not started for
    `m68kemu.library`. The legacy library refuses native backfill hooks on a
    multiprocessor kernel; I have verified no such guard in `m68kemu.library`
