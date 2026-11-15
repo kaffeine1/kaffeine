@@ -10,13 +10,17 @@ platforms.
 
 AROS is the native operating system. For 68k software its compatibility
 layer is `m68kemu.library`, a library that AROS already has. Kaffeine is the
-name of a JIT engine for that library: an optional CPU backend beside its
-interpreter, not a library of its own and not a replacement for one.
+name of a JIT engine. For 68k code it is to be an optional library of its
+own, `kaffeine-jit68.library`, which `m68kemu.library` can use beside its
+interpreter: an engine, not a compatibility library and not a replacement
+for one.
 
 The wider aim, applications from different architectures and environments
 on the same desktop, belongs to AROS as a whole. It would need engines and
 contracts of their own. It is not a promise about `m68kemu.library`, which is
-the 68k compatibility library, nor about Kaffeine, which is a 68k JIT engine.
+the 68k compatibility library, nor about the 68k engine of Kaffeine. A JIT
+for PowerPC code, `kaffeine-ppc.library`, is a separate future goal that
+depends on whether it proves feasible.
 
 The goal is not to create another Amiga faction or demand that existing
 systems be abandoned. It is to reduce fragmentation for users: choosing a
@@ -136,13 +140,22 @@ not to maximize an isolated benchmark.
 
 In the long term, AROS could host further CPU engines and compatibility
 environments beside the 68k one. That would be new work with interfaces of
-its own: not an extension promised for `m68kemu.library`, and not a wider
-role for Kaffeine.
+its own: not an extension promised for `m68kemu.library`. For Kaffeine it
+would be a second engine in a library of its own, `kaffeine-ppc.library`: a
+goal to take up only if it proves feasible, and no part of the 68k work.
 
 One possible evolution is PowerPC code support, starting with a bounded
 scope such as WarpOS and evaluating PowerUP separately. Compatibility
 with MorphOS or AmigaOS 4 applications would be a further project with
 its own dependencies, ABIs and services.
+
+Before any design for PowerPC starts, look at what already exists: whether a
+project is active, what its sources are and under which license. Where an
+open source project is no longer active, use it as a reference and reuse the
+parts that fit. Where a project is active, work with it and agree on
+complementary parts instead of duplicating it. What is still missing goes to
+AROS mainline. The CPU engine is one part of such work; the loader, the ABI
+and the system services are others, and each is assessed on its own.
 
 Emulating a CPU does not implement the operating system a program expects.
 Do not claim compatibility with an application family solely because its
@@ -169,10 +182,10 @@ verifiable criteria.
 | Phase | Expected result |
 | --- | --- |
 | 68k compatibility on AROS ARM64 | Real CLI and graphical applications complete useful operations and release resources correctly. Personal Paint is the priority graphical reference. |
-| Kaffeine JIT acceleration | The same binaries work with the JIT or a verified hybrid mode, with measured benefits and no regressions against the interpreted baseline. |
+| Kaffeine JIT acceleration | The same binaries work with the JIT, delivered as the optional `kaffeine-jit68.library`, or a verified hybrid mode, with measured benefits and no regressions against the interpreted baseline. |
 | Consolidation on real hardware | Interaction, stability, memory use and performance are verified on supported machines, beyond QEMU. |
 | Portability to other hosts | The common base builds and passes tests on a second host, with RISC-V as a candidate, starting with the interpreter before any dedicated JIT. |
-| Further guest environments | Separate future work for AROS, outside `m68kemu.library` and outside Kaffeine: a PPC engine and an initial bounded compatibility environment run real software, reusing the common infrastructure where it fits. |
+| Further guest environments | Separate future work, outside `m68kemu.library` and outside the 68k engine: a PPC engine, for Kaffeine the possible `kaffeine-ppc.library`, and an initial bounded compatibility environment run real software, reusing the common infrastructure where it fits. |
 
 The order of individual pull requests should follow actual application
 blockers and architectural risks still requiring verification, rather than
@@ -221,7 +234,7 @@ prevent those differences from making their software unusable in the future.
 
 The 68k compatibility library is AROS's own `m68kemu.library`, in
 `rom/m68kemu`. This work corrects and extends that library where it is. It
-does not replace it with another, rename it, or put a second public
+does not replace it with another, rename it, or put a second compatibility
 interface beside the one AROS has.
 
 Corrections that every user of the library needs go to AROS as small,
@@ -230,9 +243,13 @@ loading of HUNK files, safe behavior on multiprocessor systems. They do not
 depend on the JIT. Whether and how they are accepted is for the AROS
 maintainers to decide.
 
-The Kaffeine JIT is a separate series of changes: an optional backend behind
-the library's CPU interface. The interpreter and the behavior AROS has today
-remain the default and stay available.
+The Kaffeine JIT is separate work: an optional engine in a library of its
+own, `kaffeine-jit68.library`, which `m68kemu.library` is to use behind its
+CPU interface when it is present and selected. `kaffeine-jit68.library` is
+not written yet, and how the two fit together is not designed; the JIT that
+exists today is compiled into the legacy `kaffeine.library`. The interpreter
+and the behavior AROS has today remain the default and stay available
+without it.
 
 The long-term CPU reference is the Motorola 68040, including the
 floating-point behavior Amiga software relies on, with the cases that a
@@ -241,8 +258,9 @@ to software only when it is implemented and verified for the selected
 backend. An MMU, if it comes, is a virtual component of the guest: it must
 never control the memory of the native system.
 
-These are not goals: a fork that replaces AROS components; a second emulator
-library under another name; an installer that silently swaps the library of
+These are not goals: a fork that replaces AROS components; a second
+compatibility library under another name; an installer that silently swaps
+the library of
 a system; a claim of support for a system or a machine on which the work has
 not been run.
 

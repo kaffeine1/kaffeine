@@ -1,17 +1,24 @@
 # Kaffeine: a 68k JIT engine for AROS
 
-Kaffeine is a JIT engine for 68k Amiga software on AROS: an optional CPU
-backend for AROS's own `m68kemu.library`, beside the interpreter that library
-already has. This repository holds that work, and the corrections the
-library needs for 68k software on AROS ARM64. The aim behind it is to keep
+Kaffeine is a JIT engine for 68k Amiga software on AROS. The 68k
+compatibility library is AROS's own `m68kemu.library`, with the interpreter
+it already has. The JIT is meant to become a separate optional library
+beside it, `kaffeine-jit68.library`, which `m68kemu.library` can use as its
+CPU backend. That library does not exist yet: today the JIT is compiled into
+the legacy `kaffeine.library` and into standalone probes. This repository
+holds that work, and the corrections `m68kemu.library` needs for 68k
+software on AROS ARM64. The aim behind it is to keep
 Amiga software usable across platforms and hardware generations on the AROS
 desktop, without a separately managed emulator or virtual machine.
 
 **ARM64 is the first host. The 68k is the guest.** Other hosts and guest
 environments are long-term directions for AROS, with their own CPU, ABI and
-platform requirements. They are not promised here.
+platform requirements. They are not promised here. A JIT for PowerPC code,
+`kaffeine-ppc.library`, is a separate future goal that depends on whether it
+proves feasible; nothing of it exists.
 
-The work is moving back onto `m68kemu.library` of AROS mainline. The preview
+The corrections are moving back onto `m68kemu.library` of AROS mainline, and
+the JIT is to follow beside it as its own library. The preview
 and most of the demonstrations below were made with an earlier renamed copy
 of that library, `kaffeine.library`; one ran on a locally patched
 `m68kemu.library`. Each names the library, the backend and the sources it
@@ -191,8 +198,9 @@ mine that are not submitted upstream yet. It did not use
 
 The project builds on AROS and its `m68kemu.library`. Most published results
 were made with an earlier renamed copy of that library, `kaffeine.library` in
-`rom/kaffeine`, each as its own page says; the work is moving back onto
-`m68kemu.library` itself ([status](docs/kaffeine/TRANSITION.md)). Emu68 remains a design reference;
+`rom/kaffeine`, each as its own page says; the corrections are moving back
+onto `m68kemu.library` itself, with the JIT to follow as a separate optional
+library ([status](docs/kaffeine/TRANSITION.md)). Emu68 remains a design reference;
 its code is not included. Application software retains its own licenses.
 
 ## Upstream AROS documentation

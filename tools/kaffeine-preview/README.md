@@ -18,7 +18,9 @@ they do not qualify guest boots on Linux/Windows or physical hardware.
 Use the release payload and its included README. The source tree and
 demonstration disks are not replacement payloads. A native installer for
 arbitrary AROS installations is deferred: the legacy library also depends on changes
-in native DOS and boot components. Mainline integration remains the goal.
+in native DOS and boot components. The goal remains AROS mainline:
+corrections to its `m68kemu.library`, and the JIT as a separate optional
+library.
 
 ## Tester workflow
 
@@ -139,8 +141,11 @@ Include the QEMU version from `qemu-system-aarch64 --version` in the form.
 ## Maintainer staging and assembly
 
 The initial release lane is a clean, matched ARM64 preview image. Native
-installation can follow for specifically identified compatible AROS builds;
-library version `1.0` alone is not a sufficient compatibility identifier.
+installation is a later, separately qualified step, and no installer exists.
+It would have to identify the `m68kemu.library` that is actually resident
+and, where there is one, the optional `kaffeine-jit68.library`, by version
+and hash; library version `1.0` alone is not a sufficient compatibility
+identifier.
 
 In a new staging directory place only the intended kernel, BSP, DTB, raw
 disk, matching source archive and applicable license notices. Use portable
