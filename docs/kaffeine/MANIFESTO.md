@@ -246,9 +246,10 @@ maintainers to decide.
 The Kaffeine JIT is separate work: an optional engine in a library of its
 own, `kaffeine-jit68.library`, which `m68kemu.library` is to use behind its
 CPU interface when it is present and selected. The interface between the
-two and the engine source are written and reviewed as source, but have not
-been compiled or run yet; the JIT that has run so far is compiled into the
-legacy `kaffeine.library`. The interpreter
+two and the engine source are written and published, and the engine has
+passed its checks on a development host; it has not run on AROS yet, and
+the JIT that has run inside AROS so far is compiled into the legacy
+`kaffeine.library`. The interpreter
 and the behavior AROS has today remain the default and stay available
 without it.
 

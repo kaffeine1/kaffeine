@@ -12,8 +12,10 @@ Last updated: 16 November 2026.
 This page records the 68k JIT in the form it is meant to have: an optional
 engine library beside AROS's `m68kemu.library`. It says what is written,
 what has been reviewed, what has run and what has not. A review of source
-is not a run. As of the date above, nothing of this engine has been
-compiled or run, and its source is not in this repository yet.
+is not a run. The source is in
+[`experimental/kaffeine-jit68`](../../experimental/kaffeine-jit68/README.md).
+As of the date above, its host checks have run once and passed; nothing of
+it has run on AROS.
 
 ## Two libraries
 
@@ -32,8 +34,11 @@ compiled or run, and its source is not in this repository yet.
 
 ## The interface, version 1
 
-The interface is a C header and a written specification. What matters for
-its behavior:
+The interface is a
+[C header](../../experimental/kaffeine-jit68/include/kaffeine-jit68-abi-v1.h)
+and a
+[written specification](../../experimental/kaffeine-jit68/include/kaffeine-jit68-abi-v1.md).
+What matters for its behavior:
 
 - **Discovery.** `m68kemu.library` opens `kaffeine-jit68.library` and asks
   its one function for an engine of interface version 1. Each versioned
@@ -124,36 +129,46 @@ division itself reads the same address again. For a page where a read has a
 side effect, those are reads too many. This limit is not qualified, and
 nothing here qualifies the engine for such pages.
 
-## Host checks: prepared, not run
+## Host checks: one run
 
 A test program drives the engine only through the interface, on an AArch64
-host (macOS or Linux), with and without the address and undefined-behavior
-sanitizers. It has 25 groups of checks in 13 categories: discovery; sizes
-and versions; allocation failures; lifecycle and leaks; registers; A-line
+host (macOS or Linux). It has 25 groups of checks in 13 categories:
+discovery; sizes and versions; allocation failures; lifecycle and leaks;
+registers; A-line
 opcodes; fetch and the host's return addresses, with the map change; the
 routing of memory accesses, byte order and the custom chip page; the budget
 and block limits; output buffers and counters; invalidation, changed code
 and resets of code memory; exceptions, unsupported instructions, the zero
 divisor and faults; and the encoder, with programs and cases reused from the
-legacy tests. A runner for it, with limits on time and output, has been
-written and reviewed as source.
+legacy tests.
 
-None of this has run. No group is claimed to pass until it has; the result
-of the first run will be published here with its exact scope. A pass will
-show that the engine compiles without warnings with the compiler used, and
-that it passes the cases of those 25 groups, in the configurations run, with
-and without the sanitizers, on that host. It will not show that the engine
-follows the interface in every case, nor anything about a divisor the host
-reads itself, nor anything on AROS or with an AROS compiler, the host side
-in `m68kemu.library`, a native run, an application or a speed.
+On 16 November 2026 the checks ran once, on an AArch64 Mac with macOS, with
+the clang of the Command Line Tools and the macOS 27.2 SDK, in two
+configurations: `-O1` with the address and undefined-behavior sanitizers,
+and `-O2` without them. Both compiled with `-Werror` and with the test seams
+of the engine. Ten programs ran in all: in each configuration three
+compiles, a link and the test program. All ten ended by themselves with
+status 0 and wrote nothing on their error output. In each configuration all
+25 groups passed, 38519 checks with 0 failures, and the two runs printed the
+same output.
+
+That shows that the engine compiles without warnings with that compiler,
+and that it passes the cases of those 25 groups in those two configurations
+on that Mac. It does not show that the engine follows the interface in every
+case, nor anything about a divisor the host reads itself, a build without
+the test seams, Linux or another compiler, anything on AROS or with an AROS
+compiler, the host side in `m68kemu.library`, a native run, an application
+or a speed. The
+[README of the source](../../experimental/kaffeine-jit68/README.md) gives
+the compiler options of the run.
 
 ## State
 
 | Step | State |
 | --- | --- |
 | Interface version 1 | Written; reviewed as source |
-| Engine and translator | Written; reviewed as source; not compiled |
-| Host checks of the engine | Written with their runner; reviewed as source; not run |
+| Engine and translator | Written; reviewed as source; published in `experimental/kaffeine-jit68`; compiled for the host checks only |
+| Host checks of the engine | Ran once on 16 November 2026 on an AArch64 Mac: 25 groups, 38519 checks, 0 failures, at `-O1` with sanitizers and at `-O2` |
 | Review of the behavior outside the JIT | In progress; its results are published once they are checked |
 | Host side in `m68kemu.library`: selection, A-line completion, fallback | Not written |
 | Build for AROS AArch64; Shell and `Run` in QEMU | Not done |
@@ -163,21 +178,22 @@ in `m68kemu.library`, a native run, an application or a speed.
 
 ## Next steps
 
-1. Run the host checks once and publish what they show.
-2. Finish the review of what the legacy library does outside the JIT,
+1. Finish the review of what the legacy library does outside the JIT,
    compared with `m68kemu.library`. What it finds decides what has to move
    before the engine is connected.
-3. Write the host side in `m68kemu.library`, with the interpreter as the
+2. Write the host side in `m68kemu.library`, with the interpreter as the
    default.
-4. Build both libraries for AROS AArch64 and run programs from the Shell
+3. Build both libraries for AROS AArch64 and run programs from the Shell
    and with `Run` in QEMU, with the interpreter and with the engine.
-5. Repeat with applications, starting from IBrowse and Amigram, the two
+4. Repeat with applications, starting from IBrowse and Amigram, the two
    programs of the checks of 14 November 2026.
 
 ## Where the source is
 
-The interface header, the engine, the generator of its translator and the
-host checks are not in this repository yet. Before they come here, the
-specification they refer to has to be published with them, and they need
-build instructions that work outside my own machine. They will be published
-when that is done, and the result of each run will be added to this page.
+The interface header, its specification, the engine, the generator of its
+translator and the host checks are in
+[`experimental/kaffeine-jit68`](../../experimental/kaffeine-jit68/README.md),
+with a Makefile for the host checks and the steps to regenerate the
+translator. The Makefile and the regeneration steps are written for this
+publication and have not been run in that form; the README says which
+files differ from the ones that ran, and how.
