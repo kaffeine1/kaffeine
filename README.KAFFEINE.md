@@ -12,8 +12,10 @@ library, `kaffeine-jit68.library`, which `m68kemu.library` can use as its CPU
 backend beside the interpreter it already has. I am moving this work back
 onto the library of AROS mainline, as small corrections to `rom/m68kemu` and
 the JIT as that separate engine library, instead of maintaining a renamed
-copy of the whole library. `kaffeine-jit68.library` is not written yet, and
-the interface between the two libraries is not defined.
+copy of the whole library. Version 1 of the interface between the two
+libraries and the source of `kaffeine-jit68.library` are written and have
+been reviewed as source; they have not been compiled or run yet. The
+[engine page](docs/kaffeine/jit68-engine.md) describes them.
 
 That move is in progress, and this page says so wherever it matters. The
 results below were obtained with the earlier form of the work, and each
@@ -26,7 +28,7 @@ load no emulator library; the standalone JIT probes run the translator
 without one; the native AmigaOS reference runs use no emulator at all. None
 of them is a result of `m68kemu.library` of current AROS mainline. The
 change sets now being prepared for `rom/m68kemu` have not been proposed to
-AROS yet, and the only JIT that exists is the one compiled into the legacy
+AROS yet, and the only JIT that has run is the one compiled into the legacy
 library and into the standalone probes. The
 [transition status](docs/kaffeine/TRANSITION.md) says what has moved and
 what has not. The long-term roadmap is a direction, separate from the
@@ -135,7 +137,8 @@ The legacy library selects its CPU through `struct KaffeineCPUOps`
 interpreter and the reference for extending the execution engine. In
 `m68kemu.library` of AROS mainline Moira is the interpreter and stays the
 default; the JIT is to be offered to it as a separate optional library,
-`kaffeine-jit68.library`, which does not exist yet.
+`kaffeine-jit68.library`, whose interface and engine source are written but
+have not been compiled or run yet ([engine page](docs/kaffeine/jit68-engine.md)).
 
 In the legacy library, the [experimental JIT backend](docs/kaffeine/jit-backend.md)
 is selected with `Set KAFFEINE_CPU jit`. It uses independent guest-task CPUs,
@@ -304,6 +307,7 @@ the agreed scope.
 - [Personal Paint demonstration, screenshots and saved output](docs/kaffeine/personal-paint-demo.md).
 - [Project manifesto](docs/kaffeine/MANIFESTO.md) and [Italian original](docs/kaffeine/MANIFESTO.it.md).
 - [Status of the transition to `m68kemu.library`](docs/kaffeine/TRANSITION.md).
+- [The 68k JIT as a separate engine, `kaffeine-jit68.library`](docs/kaffeine/jit68-engine.md).
 - [Licenses and component provenance](docs/kaffeine/LICENSING.md).
 - [CPU backend contract of the legacy library](rom/kaffeine/BACKENDS.md).
 - [Hosted AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md) and [standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).

@@ -1,6 +1,6 @@
 # A hosted AArch64 translation probe
 
-> **Status, 15 November 2026.** Kaffeine is the JIT engine. This page describes it as it exists today in the legacy tree, `rom/kaffeine`: inside the library built from it, `kaffeine.library`, and in the probes that run the translator without any emulator library. Its intended form is a separate optional library, `kaffeine-jit68.library`, for AROS's `m68kemu.library`, whose interpreter stays the default. `kaffeine-jit68.library` does not exist yet. See the [transition status](TRANSITION.md).
+> **Status, 16 November 2026.** Kaffeine is the JIT engine. This page describes it as it exists today in the legacy tree, `rom/kaffeine`: inside the library built from it, `kaffeine.library`, and in the probes that run the translator without any emulator library. Its intended form is a separate optional library, `kaffeine-jit68.library`, for AROS's `m68kemu.library`, whose interpreter stays the default. The interface and the engine source of `kaffeine-jit68.library` are written and reviewed as source, but have not been compiled or run yet. See the [engine page](jit68-engine.md) and the [transition status](TRANSITION.md).
 
 This note records the original hosted experiment. Its translator now lives
 in `rom/kaffeine/kaffeine_jit.c` and also powers the opt-in

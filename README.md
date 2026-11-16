@@ -4,8 +4,10 @@ Kaffeine is a JIT engine for 68k Amiga software on AROS. The 68k
 compatibility library is AROS's own `m68kemu.library`, with the interpreter
 it already has. The JIT is meant to become a separate optional library
 beside it, `kaffeine-jit68.library`, which `m68kemu.library` can use as its
-CPU backend. That library does not exist yet: today the JIT is compiled into
-the legacy `kaffeine.library` and into standalone probes. This repository
+CPU backend. Its interface and engine source are written and reviewed as
+source, but have not been compiled or run yet
+([engine status](docs/kaffeine/jit68-engine.md)). The JIT that has run is
+in the legacy `kaffeine.library` and in standalone probes. This repository
 holds that work, and the corrections `m68kemu.library` needs for 68k
 software on AROS ARM64. The aim behind it is to keep
 Amiga software usable across platforms and hardware generations on the AROS

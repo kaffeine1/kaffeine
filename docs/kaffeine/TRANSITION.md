@@ -7,7 +7,7 @@ Author: Michele Dipace (@kaffeine1)
 
 [Manifesto](MANIFESTO.md) | [Current implementation](../../README.KAFFEINE.md)
 
-Last updated: 15 November 2026.
+Last updated: 16 November 2026.
 
 This page records where the work stands while it moves from a renamed copy
 of the 68k compatibility library onto the library of AROS mainline. It is
@@ -21,13 +21,19 @@ a result.
   `RunFile`, its interpreter and its default behavior stay as AROS has them.
 - Kaffeine is the name of the JIT engine and of nothing else. The 68k JIT is
   to be a separate optional library, `kaffeine-jit68.library`, which
-  `m68kemu.library` can use as its CPU backend. It is not written yet, and
-  the interface between the two is not defined. The JIT that exists is
+  `m68kemu.library` can use as its CPU backend. Version 1 of the interface
+  between the two and the source of the engine are written and have been
+  reviewed as source; nothing of them has been compiled or run yet. The
+  [engine page](jit68-engine.md) describes them. The JIT that has run is
   compiled into the legacy `kaffeine.library` and into standalone probes.
 - What every user of the library needs, with or without a JIT, goes to AROS
   as small, separate contributions. Whether and how they are accepted is for
-  the AROS maintainers to decide. The change sets this page describes have
-  not been proposed yet.
+  the AROS maintainers to decide.
+  [Pull request #2273](https://github.com/aros-development-team/AROS/pull/2273),
+  `m68kemu.library` 1.1 (the root stack, the process streams, the arguments
+  and the result of `AllocBitMap`), was merged into AROS mainline on
+  16 November 2026. The corrections of points 1 and 2 below have not been
+  proposed yet.
 - No component of an AROS system is replaced. There is no second
   compatibility library: `kaffeine-jit68.library` is to hold the optional
   engine only, and `m68kemu.library` works without it.
@@ -41,11 +47,12 @@ a result.
 | What | Identity | State |
 | --- | --- | --- |
 | Legacy library | `kaffeine.library` 1.1, built from `rom/kaffeine` of this repository; derives from AROS's `m68kemu.library` at AROS `ae45f4644f80de542fb6af320c5d5fb5a1bc9925` | The community preview and most published results, videos and captures of programs running inside AROS were made with it; each page names the build it used. The IBrowse check of 14 November 2026 used a local development build that is not published. The library stays in the repository as it is, so that the published results can be reproduced. It is not developed further as a library of its own. |
-| Locally patched `m68kemu.library` | AROS master `83449051` plus five changes of mine that are not submitted upstream yet; the build reports version 1.5; Moira | One recorded check: Amigram 0.1 from the Shell and from `Run` in QEMU, 14 November 2026. It did not use `kaffeine.library`. It is not the series now being prepared, and it qualifies nothing of that series. |
+| Locally patched `m68kemu.library` | AROS master `83449051` plus five local changes of mine, as they stood on 14 November 2026; the build reports version 1.5; Moira | One recorded check: Amigram 0.1 from the Shell and from `Run` in QEMU, 14 November 2026. It did not use `kaffeine.library`. It is not the series now being prepared, and it qualifies nothing of that series. |
 | Tests without an emulator library | Host tests compile sources of this repository with simulated native APIs; the standalone probes run the JIT translator alone on AROS AArch64; the reference runs are on native AmigaOS | Their results describe those environments. They load neither `kaffeine.library` nor `m68kemu.library`. |
 | Community preview 001 | Release `preview-arm64-001`: a matched AROS ARM64 system for QEMU that carries the legacy library | Reproducible as published, with the commands of its own guide. It is not an installer, and it says nothing about `m68kemu.library` of AROS mainline. |
-| Corrections to `m68kemu.library` | Changes to `rom/m68kemu` on AROS mainline `8fdbf649ea4d2bc87d6b73c2da45148b1ed61dbe` | Being prepared, locally. Nothing of this series has been proposed to AROS. Four checks have been made: one compile-only check of the layout change, described under point 1 below, and three host regressions of the HUNK loading corrections, described under point 2. No module of this series has been built, linked or run. AROS mainline has since moved on by three commits, to `65764162`. By the list of the paths they change, none touches `rom/m68kemu` or a file these corrections and their tests read; the series has not been moved onto it. |
-| `kaffeine-jit68.library`, the 68k JIT as a separate optional library | None yet | Not written. No interface between it and `m68kemu.library` is defined, and nothing loads it. The only library the JIT is compiled into is the legacy library. Apart from that it is tested on the host and in standalone probes, which load no emulator library. |
+| Corrections to `m68kemu.library` | Changes to `rom/m68kemu` on AROS mainline `8fdbf649ea4d2bc87d6b73c2da45148b1ed61dbe` | Being prepared, locally. Nothing of this series has been proposed to AROS. Four checks have been made: one compile-only check of the layout change, described under point 1 below, and three host regressions of the HUNK loading corrections, described under point 2. No module of this series has been built, linked or run. AROS mainline has since moved on: it now holds `m68kemu.library` 1.1 (pull request #2273, merge `2e3de55a`), which changes eleven files of `rom/m68kemu`. The series has not been moved onto it yet, and that move is work of its own, not a formality. |
+| Module build with the layout correction | `m68kemu.library` 1.0, built with Make from AROS mainline `656d2825` with a version of the layout correction prepared for that tree; Moira | Built and qualified as a build on 16 November 2026, after a first record that was not a pass; described under point 1. Not loaded or run. It is neither the series above nor current mainline 1.1. |
+| `kaffeine-jit68.library`, the 68k JIT as a separate optional library | Interface version 1 and engine source, local and not yet published | Written and reviewed as source: the interface, an engine whose translator is generated from the legacy one, and host checks in 25 groups with a bounded runner for them. Nothing of it has been compiled or run, and nothing loads it: the side of `m68kemu.library` that would select it is not written. See the [engine page](jit68-engine.md). The JIT that has run is the one compiled into the legacy library and into the standalone probes, which load no emulator library. |
 
 ## What moves, in this order
 
@@ -68,15 +75,33 @@ a result.
    independent compile; and a table with one offset deliberately made wrong
    is refused by the compiler, which names the field. On that target 386 of
    the 3171 native offsets and the size of 33 structures differ from the
-   x86_64 table. Not measured: the rules under the AROS build system, a
-   build or a link of the module, any run, a multiprocessor configuration,
-   x86_64 and riscv64.
+   x86_64 table. Not measured by that check: the rules under the AROS build
+   system, a build or a link of the module, any run, a multiprocessor
+   configuration, x86_64 and riscv64.
 
    One more local commit (head `c42dc0af`) changes only the rules that make
    the table: which compiler flags the probe gets, which files it depends
    on, and what happens when its output is missing or empty. It has been
-   reviewed as source. No make has run on these rules, and the direct
-   compiler check above did not use them.
+   reviewed as source. No make has run on these rules as they are committed
+   there, and the direct compiler check above did not use them.
+
+   A separate build has been made and qualified since, on 16 November 2026:
+   `m68kemu.library` 1.0, built with Make from AROS mainline `656d2825` with
+   a version of this layout correction prepared for that tree, its build
+   rules included. The single module build ended with exit status 0 and
+   produced the module, with 47 compiler warnings, none of them from the
+   layout probe or its check. The first record of that build was not a pass:
+   it did not show how the probe had been invoked, and three planned
+   inspections had not run. A supplementary check then ran them once: the
+   module is a 64-bit little-endian AArch64 ELF object, the layout check
+   defines no symbols and has empty code and data sections, so all of its
+   checks happen at compile time, and the probe, run again with the known
+   flags, gives assembly byte for byte identical to the one kept from the
+   build. That build and its layout are qualified as a build. Not shown:
+   loading the module on AROS, its relocations as a whole, QEMU,
+   applications such as IBrowse or Amigram, a multiprocessor system,
+   physical hardware, and anything about `m68kemu.library` 1.1 of current
+   mainline, which has not been built with these corrections.
 2. **Loading of HUNK files.** `m68kemu.library` already reads the record of
    relocations that the DOS of AROS mainline keeps. I read the current
    source for a few cases: a seglist for which no record is answered,
@@ -134,9 +159,15 @@ a result.
    ownership, the locking and the lifetime of what callbacks touch have to
    be established and checked.
 4. **The JIT as a separate optional library, `kaffeine-jit68.library`.**
-   After the common corrections. How `m68kemu.library` finds it, the
-   interface between the two, and what happens when it is absent or does not
-   fit are not designed yet.
+   Version 1 of the interface is designed: how `m68kemu.library` finds the
+   engine and checks its version and sizes, which memory accesses the engine
+   makes itself and which it leaves to the host, why and where it returns,
+   and what happens when it is absent or does not fit, with the interpreter
+   as the default. The engine source is written and has been reviewed as
+   source; its host checks are prepared and have not run. Connecting it to
+   `m68kemu.library` comes after the common corrections, after those checks,
+   and after the review of the behavior outside the JIT, which is in
+   progress. The [engine page](jit68-engine.md) gives the state of each step.
 5. **Installation on an existing AROS system.** Not qualified on any system,
    and no installer exists. One has to show which `m68kemu.library` is
    actually resident and whether an optional `kaffeine-jit68.library` is
@@ -157,7 +188,8 @@ a result.
   that backend and those sources. It becomes evidence for `m68kemu.library`
   when it has been repeated there, and not before. A result obtained with
   the JIT compiled into the legacy library is no evidence for
-  `kaffeine-jit68.library`, which does not exist.
+  `kaffeine-jit68.library`, even though the engine's translator derives from
+  the legacy one.
 - The names `rom/kaffeine`, `kaffeine.library`, `KAFFEINE_CPU` and the
   `kaffeine_*` test directories are the names of the legacy tree. They stay
   until the code they name has moved. The repository keeps its name.
