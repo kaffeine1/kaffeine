@@ -203,14 +203,14 @@ A-line opcodes always end the run with `STOP_ALINE`, inside or outside the
 host's library tables.
 
 Implementation note, not part of the contract. The engine in `../engine`
-does not yet meet "nothing done" in one known case: a division whose
-divisor lies in a `KJ68_RANGE_READ_HOST` range and is zero. Its registers
-and flags are left as before the instruction, but the host reads of the
-divisor (one for a word divisor, two for a long one) have already been made
-when `STOP_EXCEPTION` is reported, and whatever they did on the host side
-is not undone. This case is not qualified; the
-[engine page](../../../docs/kaffeine/jit68-engine.md) describes it. The
-contract above is unchanged.
+answers a division whose divisor would be read through the host (a divisor
+in a `KJ68_RANGE_READ_HOST` range, in whole or in part, or outside guest
+memory) with `STOP_UNSUPPORTED` and the text "divisor read through the
+host", before any host call: PC at the division, nothing of it done,
+whatever the divisor's value. The host has to execute such a division
+itself; the host side that would do so (section 10) is not written. The
+[engine page](../../../docs/kaffeine/jit68-engine.md) lists the forms the
+host checks cover. The contract above is unchanged.
 
 ## 7. Calls, ownership and concurrency
 

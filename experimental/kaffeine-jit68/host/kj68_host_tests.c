@@ -19,6 +19,10 @@
     invalidate: no CPU of the domain runs code decoded under the old fetch
     rules) and zero-divisor-state (DIV.W/DIV.L through (A0)+ and -(A0):
     a zero divisor leaves every register and SR as before the division).
+
+    Revision 3 adds div-host-read: a division whose divisor read would
+    reach the host is declined before any host call (STOP_UNSUPPORTED,
+    nothing done, an empty host log); direct divisors still divide.
 */
 
 #include <stddef.h>
@@ -1967,6 +1971,234 @@ static void group(const char *name, void (*fn)(void))
     printf("%s: %s\n", name, failures == before ? "PASS" : "FAIL");
 }
 
+/* ---- 26. a divisor that the host would read (revision 3) ------------------- */
+
+/* A division whose divisor read would reach the host (a READ_HOST range,
+   either word of a longword, or outside guest memory) is declined before
+   any host call: STOP_UNSUPPORTED at the division, nothing of it done, the
+   host log empty, whatever the divisor's value. Divisors read directly
+   still divide: next to the range, on its page, across a page boundary,
+   under a range that only sends writes to the host. */
+#define DH_LO 0x9000u
+#define DH_HI 0x9010u
+#define DH_FIRST_DIRECT 16      /* the cases before it are declined */
+
+struct DivHostCase
+{
+    UWORD op[3];
+    unsigned n;          /* words of the division */
+    ULONG a0, a1;        /* address registers before */
+    ULONG target;        /* where the divisor is */
+    int wide, quad;      /* DIV.L, and its 64-bit form (D2:D1) */
+    int host;            /* 1: declined */
+    ULONG a0_after;      /* A0 after an executed division */
+};
+
+static const struct DivHostCase div_host_cases[] = {
+    /* declined: the divisor read would reach the host */
+    { { 0x80D0 }, 1, DH_LO, 0xA0000001u, DH_LO, 0, 0, 1, 0 },                       /* DIVU.W (A0),D0 */
+    { { 0x81D0 }, 1, DH_LO + 4, 0xA0000001u, DH_LO + 4, 0, 0, 1, 0 },               /* DIVS.W (A0),D0 */
+    { { 0x80D8 }, 1, DH_LO + 2, 0xA0000001u, DH_LO + 2, 0, 0, 1, 0 },               /* DIVU.W (A0)+,D0 */
+    { { 0x81E0 }, 1, DH_LO + 6, 0xA0000001u, DH_LO + 4, 0, 0, 1, 0 },               /* DIVS.W -(A0),D0 */
+    { { 0x80E8, 0x0008 }, 2, DH_LO - 8, 0xA0000001u, DH_LO, 0, 0, 1, 0 },           /* DIVU.W 8(A0),D0 */
+    { { 0x80F0, 0x9002 }, 2, DH_LO, 4, DH_LO + 6, 0, 0, 1, 0 },                     /* DIVU.W 2(A0,A1.W),D0 */
+    { { 0x80F9, 0x0000, 0x9000 }, 3, 0, 0xA0000001u, DH_LO, 0, 0, 1, 0 },           /* DIVU.W $9000.L,D0 */
+    { { 0x80FA, 0x7FFC }, 2, 0, 0xA0000001u, DH_LO, 0, 0, 1, 0 },                   /* DIVU.W $9000(PC),D0 */
+    { { 0x80D0 }, 1, DH_LO - 1, 0xA0000001u, DH_LO - 1, 0, 0, 1, 0 },               /* word ending in the range */
+    { { 0x80D0 }, 1, MIB - 1, 0xA0000001u, MIB - 1, 0, 0, 1, 0 },                   /* word past the end */
+    { { 0x4C50, 0x1001 }, 2, DH_LO - 2, 0xA0000001u, DH_LO - 2, 1, 0, 1, 0 },       /* DIVU.L (A0),D1: second word */
+    { { 0x4C58, 0x1801 }, 2, DH_LO + 12, 0xA0000001u, DH_LO + 12, 1, 0, 1, 0 },     /* DIVS.L (A0)+,D1 */
+    { { 0x4C60, 0x1402 }, 2, DH_HI, 0xA0000001u, DH_HI - 4, 1, 1, 1, 0 },           /* DIVU.L -(A0),D2:D1 */
+    { { 0x4C60, 0x1C02 }, 2, DH_LO + 4, 0xA0000001u, DH_LO, 1, 1, 1, 0 },           /* DIVS.L -(A0),D2:D1 */
+    { { 0x4C50, 0x1001 }, 2, MIB - 2, 0xA0000001u, MIB - 2, 1, 0, 1, 0 },           /* DIVU.L, second word past the end */
+    { { 0x4C50, 0x1001 }, 2, 0xFFFFFFFEu, 0xA0000001u, 0, 1, 0, 1, 0 },             /* DIVU.L at the top: wraps */
+    /* executed: the divisor is read directly */
+    { { 0x80D0 }, 1, DH_LO - 2, 0xA0000001u, DH_LO - 2, 0, 0, 0, DH_LO - 2 },       /* just below the range */
+    { { 0x80D0 }, 1, DH_HI, 0xA0000001u, DH_HI, 0, 0, 0, DH_HI },                   /* just past it */
+    { { 0x81D0 }, 1, DH_LO + 0x100, 0xA0000001u, DH_LO + 0x100, 0, 0, 0, DH_LO + 0x100 },  /* its page, outside it */
+    { { 0x4C50, 0x1001 }, 2, DH_LO - 4, 0xA0000001u, DH_LO - 4, 1, 0, 0, DH_LO - 4 },      /* DIVU.L below it */
+    { { 0x80D8 }, 1, 0x10FFFu, 0xA0000001u, 0x10FFFu, 0, 0, 0, 0x11001u },          /* across a page, (A0)+ */
+    { { 0x4C60, 0x1C02 }, 2, 0x11002u, 0xA0000001u, 0x10FFEu, 1, 1, 0, 0x10FFEu },  /* across a page, -(A0), 64-bit */
+    { { 0x80F8, 0x0004 }, 2, 0xA0000000u, 0xA0000001u, 4, 0, 0, 0, 0xA0000000u }    /* $4.W: a write-only range */
+};
+
+static struct KJ68Exit div_host_one(struct M *m, const struct DivHostCase *c, ULONG divisor)
+{
+    UWORD code[4];
+    ULONG r;
+
+    code[0] = 0x7EFD;                       /* MOVEQ #-3,D7 */
+    memcpy(code + 1, c->op, c->n * sizeof(UWORD));
+    if ((uint64_t)c->target + (c->wide ? 4u : 2u) <= MIB)   /* none past the end */
+    {
+        if (c->wide)
+            put32(m, c->target, divisor);
+        else
+            put16(m, c->target, divisor);
+    }
+    for (r = 0; r < 7; r++)
+        set(m->c, R_D(r), 0xD0000000u + r);
+    for (r = 2; r < 7; r++)
+        set(m->c, R_A(r), 0xA0000000u + r);
+    set(m->c, R_D(c->wide ? 1 : 0), 100);
+    if (c->quad)
+        set(m->c, R_D(2), 0);
+    set(m->c, R_A(0), c->a0);
+    set(m->c, R_A(1), c->a1);
+    set(m->c, R_A(7), L_STACK);
+    set(m->c, KJ68_REG_SR, 0x2710);         /* X set */
+    return one(m, code, c->n + 1, 64);
+}
+
+/* What every declined division leaves: the exit, the registers, the memory,
+   the empty host log. */
+static void div_host_declined(struct M *m, const struct DivHostCase *c, const struct KJ68Exit *x, ULONG divisor)
+{
+    unsigned dst = c->wide ? 1 : 0;
+    ULONG r;
+
+    CHECK(x->reason == KJ68_STOP_UNSUPPORTED && x->pc == L_ENTRY + 2 && x->retired == 1 && x->opcode == c->op[0] &&
+          strcmp(x->text, "divisor read through the host") == 0);
+    CHECK(m->h.nlog == 0);
+    CHECK(reg(m->c, KJ68_REG_PC) == L_ENTRY + 2 && reg(m->c, KJ68_REG_SR) == 0x2718);
+    CHECK(reg(m->c, R_D(7)) == 0xFFFFFFFDu && reg(m->c, R_D(dst)) == 100);
+    for (r = 0; r < 7; r++)
+        if (r != dst && !(c->quad && r == 2))
+            CHECK(reg(m->c, R_D(r)) == 0xD0000000u + r);
+    if (c->quad)
+        CHECK(reg(m->c, R_D(2)) == 0);
+    CHECK(reg(m->c, R_A(0)) == c->a0 && reg(m->c, R_A(1)) == c->a1);
+    for (r = 2; r < 7; r++)
+        CHECK(reg(m->c, R_A(r)) == 0xA0000000u + r);
+    CHECK(reg(m->c, R_A(7)) == L_STACK);
+    if ((uint64_t)c->target + (c->wide ? 4u : 2u) <= MIB)
+        CHECK((c->wide ? get32(m, c->target) : get16(m, c->target)) == divisor);
+}
+
+static void t_div_host_read(void)
+{
+    static const UWORD indirect[] = { 0x7EFD, 0x80F0, 0x0111 };   /* DIVU.W ([A0,D0.W]),D0: memory indirect */
+    static const UWORD ill[] = { 0x7EFD, 0x4AFC };                /* ILLEGAL */
+    static const UWORD load[] = { 0x3210 };                       /* MOVE.W (A0),D1 */
+    const unsigned ncases = sizeof(div_host_cases) / sizeof(div_host_cases[0]);
+    const struct DivHostCase *host = &div_host_cases[0], *direct = &div_host_cases[DH_FIRST_DIRECT];
+    struct KJ68CPU *other = NULL;
+    struct KJ68Exit x;
+    struct M m;
+    unsigned i, value;
+
+    CHECK(m_open(&m, MIB, 0, 0));
+    add_range(&m.h, 0, 8, KJ68_RANGE_WRITE_HOST);
+    add_range(&m.h, DH_LO, DH_HI, KJ68_RANGE_READ_HOST);
+    m.h.map.generation++;
+
+    /* each case with a zero divisor and with 7 */
+    for (i = 0; i < ncases; i++)
+        for (value = 0; value < 2; value++)
+        {
+            const struct DivHostCase *c = &div_host_cases[i];
+            const ULONG divisor = value ? 7 : 0;
+
+            x = div_host_one(&m, c, divisor);
+            if (c->host)
+                div_host_declined(&m, c, &x, divisor);
+            else if (!divisor)
+            {
+                CHECK(x.reason == KJ68_STOP_EXCEPTION && x.vector == 5 && x.pc == L_ENTRY + 2 && x.retired == 1 && m.h.nlog == 0);
+                CHECK(reg(m.c, R_A(0)) == c->a0);
+            }
+            else
+            {
+                CHECK(x.reason == KJ68_STOP_ALINE && x.pc == L_ENTRY + 2 + 2 * c->n && x.retired == 2 && m.h.nlog == 0);
+                CHECK(reg(m.c, R_A(0)) == c->a0_after && reg(m.c, KJ68_REG_SR) == 0x2710);
+                CHECK(reg(m.c, R_D(c->wide ? 1 : 0)) == (c->wide ? 14u : 0x0002000Eu));
+                if (c->quad)
+                    CHECK(reg(m.c, R_D(2)) == 2);
+            }
+            if (c->host ? x.reason != KJ68_STOP_UNSUPPORTED : x.reason != (divisor ? KJ68_STOP_ALINE : KJ68_STOP_EXCEPTION))
+                printf("  case %u, divisor %lu: reason %lu, text \"%s\"\n", i, (unsigned long)divisor, (unsigned long)x.reason, x.text);
+        }
+
+    /* a memory indirect address is outside the subset: no pointer is read */
+    set(m.c, R_A(0), DH_LO);
+    set(m.c, R_D(0), 0);
+    x = one(&m, indirect, 3, 64);
+    CHECK(x.reason == KJ68_STOP_UNSUPPORTED && x.pc == L_ENTRY + 2 && strcmp(x.text, "DIV.W mode") == 0 && m.h.nlog == 0);
+
+    /* nothing is left over: a later fault is classified as before, ordinary
+       reads through the host still reach it */
+    x = div_host_one(&m, host, 7);
+    div_host_declined(&m, host, &x, 7);
+    x = one(&m, ill, 2, 64);
+    CHECK(x.reason == KJ68_STOP_EXCEPTION && x.vector == 4 && strcmp(x.text, "ILLEGAL") == 0);
+    x = div_host_one(&m, direct, 0);
+    CHECK(x.reason == KJ68_STOP_EXCEPTION && x.vector == 5 && strcmp(x.text, "divide by zero") == 0);
+    put16(&m, DH_LO, 0x0123);
+    set(m.c, R_A(0), DH_LO);
+    set(m.c, R_D(1), 0x77777777u);
+    x = one(&m, load, 1, 64);
+    CHECK(x.reason == KJ68_STOP_ALINE && m.h.nlog == 1 && logged(&m.h, 0, 0, DH_LO, 2) && reg(m.c, R_D(1)) == 0x77770123u);
+
+    /* the probe is made at run time: the same translation, kept from the
+       declined run (no invalidate), divides or declines by the address */
+    x = div_host_one(&m, host, 7);
+    div_host_declined(&m, host, &x, 7);
+    m.h.nlog = 0;
+    set(m.c, R_A(0), DH_LO + 0x100);
+    put16(&m, DH_LO + 0x100, 7);
+    set(m.c, R_D(0), 100);
+    x = run_at(m.c, L_ENTRY);
+    CHECK(x.reason == KJ68_STOP_ALINE && x.pc == L_ENTRY + 4 && x.retired == 2 && m.h.nlog == 0 && reg(m.c, R_D(0)) == 0x0002000Eu);
+    set(m.c, R_A(0), DH_LO);
+    set(m.c, R_D(0), 100);
+    x = run_at(m.c, L_ENTRY);
+    CHECK(x.reason == KJ68_STOP_UNSUPPORTED && x.pc == L_ENTRY + 2 && x.retired == 1 && m.h.nlog == 0 && reg(m.c, R_D(0)) == 100);
+
+    /* after a decline the host can execute the division itself and go on */
+    set(m.c, R_D(0), 0x0002000Eu);
+    x = run_at(m.c, L_ENTRY + 4);
+    CHECK(x.reason == KJ68_STOP_ALINE && x.pc == L_ENTRY + 4 && x.retired == 0 && m.h.nlog == 0);
+
+    /* another CPU of the domain: its own decline, no state from the first */
+    CHECK(ops->cpu_create(m.d, NULL, &other) == KJ68_OK);
+    if (other)
+    {
+        m.h.nlog = 0;
+        set(other, R_A(0), DH_LO);
+        set(other, R_D(0), 100);
+        set(other, R_A(7), L_STACK);
+        set(other, KJ68_REG_SR, 0x2700);
+        x = run_at(other, L_ENTRY + 2);
+        CHECK(x.reason == KJ68_STOP_UNSUPPORTED && x.pc == L_ENTRY + 2 && m.h.nlog == 0 && reg(other, R_D(0)) == 100);
+        set(m.c, R_A(0), DH_LO + 0x100);
+        set(m.c, R_D(0), 100);
+        x = run_at(m.c, L_ENTRY + 2);
+        CHECK(x.reason == KJ68_STOP_ALINE && reg(m.c, R_D(0)) == 0x0002000Eu);
+        set(other, R_A(0), DH_LO + 0x100);
+        x = run_at(other, L_ENTRY + 2);
+        CHECK(x.reason == KJ68_STOP_ALINE && m.h.nlog == 0 && reg(other, R_D(0)) == 0x0002000Eu);
+        CHECK(ops->cpu_destroy(other) == KJ68_OK);
+    }
+
+    /* a new map generation: without the range the division reads directly,
+       with it again it is declined */
+    m.h.map.num_ranges = 0;
+    m.h.map.generation++;
+    m.h.nlog = 0;
+    put16(&m, DH_LO, 7);
+    set(m.c, R_A(0), DH_LO);
+    set(m.c, R_D(0), 100);
+    x = run_at(m.c, L_ENTRY + 2);
+    CHECK(x.reason == KJ68_STOP_ALINE && m.h.nlog == 0 && reg(m.c, R_D(0)) == 0x0002000Eu);
+    add_range(&m.h, DH_LO, DH_HI, KJ68_RANGE_READ_HOST);
+    m.h.map.generation++;
+    set(m.c, R_A(0), DH_LO);
+    set(m.c, R_D(0), 100);
+    x = run_at(m.c, L_ENTRY + 2);
+    CHECK(x.reason == KJ68_STOP_UNSUPPORTED && m.h.nlog == 0 && reg(m.c, R_D(0)) == 100);
+    m_close(&m);
+}
+
 int main(void)
 {
     ops = KJ68_GetEngineTable(KJ68_ABI_MAJOR);
@@ -2005,6 +2237,7 @@ int main(void)
     group("dbcc-targets", t_dbcc_targets);           /* 13, legacy */
     group("word-division", t_word_division);         /* 13, legacy */
     group("full-index", t_full_index);               /* 13, legacy */
+    group("div-host-read", t_div_host_read);         /* 12, revision 3 */
     printf("kaffeine-jit68 host checks (%s): %u checks, %u failed\n", kj_tr_exec_memory_kind(), checks, failures);
     return failures ? 1 : 0;
 }

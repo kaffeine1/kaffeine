@@ -432,8 +432,9 @@ _Static_assert(offsetof(struct HJState, slow) == ST_SLOW, "state layout");
 _Static_assert(offsetof(struct HJState, pages) == ST_PAGES, "state layout");
 #endif
 
-/* Accesses through the C slow path. */
-enum { SLOW_R8, SLOW_R16, SLOW_R32, SLOW_W8, SLOW_W16, SLOW_W32, SLOW_KINDS };
+/* Accesses through the C slow path, and the probes of a division's
+   divisor: no access, only whether the read would reach the host. */
+enum { SLOW_R8, SLOW_R16, SLOW_R32, SLOW_W8, SLOW_W16, SLOW_W32, SLOW_P16, SLOW_P32, SLOW_KINDS };
 
 #define HJ_FAST_BITS 12
 #define HJ_FAST_SIZE (1u << HJ_FAST_BITS)
@@ -527,6 +528,7 @@ struct HJCpu
     struct HJBackend *b;
     struct HJFast *fast;
     uint32_t fast_generation, pages_generation;
+    int declined;               /* a divisor probe found a host read */
 };
 
 /* ------------------------------------------------------------------
@@ -1868,6 +1870,59 @@ static void emit_undo_step(struct HJTrans *t, const struct HJEA *ea, int size)
         put(&t->e, a64_addsub_imm(0, 0, 0, an, an, (uint32_t)step_of(size, ea->reg), 0));
 }
 
+/* Before a division reads its divisor from memory: when that read would
+   reach the host (a READ_HOST range, or outside guest memory), the block
+   ends at the division with nothing of it done and no host call made, as
+   STOP_UNSUPPORTED, so that the host can execute the division itself,
+   once. The inline test is the one of emit_access(); what it cannot decide
+   goes to a probe in C, which applies the rule of the contract without an
+   access. No mode of the subset reads memory to form the address. */
+static void emit_div_probe(struct HJTrans *t, const struct HJInsn *in, int size)
+{
+    struct HJEmit *e = &t->e;
+    const struct HJEA *ea = &in->src;
+    struct HJStub *s;
+    unsigned br_direct;
+    int areg;
+
+    if (ea->mode == EA_DN || ea->mode == EA_AN || ea->mode == EA_IMM)
+        return;
+    if (ea->mode == EA_PRE)
+    {
+        put(e, a64_addsub_imm(0, 1, 0, R_ADDR, REG_A(ea->reg), (uint32_t)step_of(size, ea->reg), 0));
+        areg = R_ADDR;
+    }
+    else
+        areg = emit_address(t, ea, size);   /* no guest register changes in these modes */
+    if (t->nstub >= HJ_MAX_STUBS)
+    {
+        e->bad = 1;
+        return;
+    }
+    s = &t->stub[t->nstub++];
+    emit_mov32(e, R_VAL, 0);
+    put(e, a64_cmp(areg, R_LIMIT));
+    s->br1 = e->n;
+    put(e, a64_bcond(A64_HI, 0));
+    put(e, a64_logic_const(0, R_SCR, areg, 0xFFFu));
+    put(e, a64_addsub_imm(0, 1, 1, ZR, R_SCR, 0x1000u - (uint32_t)size, 0));
+    s->br3 = e->n;
+    put(e, a64_bcond(A64_HI, 0));
+    put(e, a64_lsr(R_SCR, areg, KJ68_PAGE_SHIFT));
+    put(e, a64_addsub_reg(1, 0, 0, R_SCR, R_STATE, R_SCR, 0, 0));
+    put(e, a64_ldst_uimm(0, 1, R_SCR, R_SCR, ST_PAGES));
+    s->br2 = e->n;
+    put(e, a64_tbz(1, R_SCR, 0, 0));
+    s->back = e->n;
+    s->kind = (uint8_t)(size == 2 ? SLOW_P16 : SLOW_P32);
+    s->areg = (uint8_t)areg;
+    s->pc = in->pc;
+    br_direct = e->n;
+    put(e, a64_cbz(0, 0, R_VAL, 0));
+    emit_exit_reason(t, in->pc, HJ_EXIT_FAULT);
+    patch(e, br_direct, e->n);
+}
+
 /* Dn / <ea>.W into remainder:quotient. Widen signed division so that
    INT32_MIN / -1 is checked as a guest quotient overflow. The manual
    specifies C clear even on overflow; the pinned Musashi-mimic reference
@@ -1876,8 +1931,11 @@ static void emit_divw(struct HJTrans *t, const struct HJInsn *in)
 {
     struct HJEmit *e = &t->e;
     int dn = REG_D(in->dst.reg), is_signed = in->op;
-    int v = emit_read(t, &in->src, 2);
     unsigned br_nz, br_ovf, br_done;
+    int v;
+
+    emit_div_probe(t, in, 2);
+    v = emit_read(t, &in->src, 2);
 
     put(e, is_signed ? a64_bitfield(1, 0, R_SRC, v, 0, 15) : a64_uxth(R_SRC, v));
     br_nz = e->n;
@@ -1921,8 +1979,11 @@ static void emit_divl(struct HJTrans *t, const struct HJInsn *in)
     struct HJEmit *e = &t->e;
     int dq = REG_D(in->dst.reg), dr = REG_D(in->count & 7);
     int quad = (in->count >> 3) & 1, is_signed = in->op;
-    int v = emit_read(t, &in->src, 4);
     unsigned br_nz, br_ovf, br_done;
+    int v;
+
+    emit_div_probe(t, in, 4);
+    v = emit_read(t, &in->src, 4);
 
     br_nz = e->n;
     put(e, a64_cbz(0, 1, v, 0));
@@ -3161,6 +3222,15 @@ static uint32_t slow_access(struct HJState *st, uint32_t addr, uint32_t value, u
     struct HJCpu *c = st->backend;
     uint32_t hi;
 
+    if (kind == SLOW_P16 || kind == SLOW_P32)
+    {
+        /* a divisor probe: no access and no host call */
+        const struct KJ68Domain *dom = c->owner->domain;
+
+        c->declined = !kj_direct(dom, addr, 2, KJ68_RANGE_READ_HOST) ||
+                      (kind == SLOW_P32 && !kj_direct(dom, addr + 2, 2, KJ68_RANGE_READ_HOST));
+        return (uint32_t)c->declined;
+    }
     c->b->stats.slow_accesses++;
     switch (kind)
     {
@@ -3785,6 +3855,7 @@ void kj_tr_run(struct KJ68CPU *owner, ULONG budget, struct KJ68Exit *x)
         c->pages_generation = dom->pages_generation;
     }
     st->abort = 0;
+    c->declined = 0;
 #if HJ_RUNS
     __asm__ __volatile__("isb" ::: "memory");
 #endif
@@ -3838,6 +3909,16 @@ void kj_tr_run(struct KJ68CPU *owner, ULONG budget, struct KJ68Exit *x)
         {
             kj_exit(x, KJ68_STOP_HOST, st->pc, retired);
             kj_text(x, "a host access asked to stop");
+            return;
+        }
+        if (c->declined)
+        {
+            /* a divisor probe ended the block at the division: nothing of
+               it done and no host call made (contract, section 6) */
+            c->declined = 0;
+            kj_exit(x, KJ68_STOP_UNSUPPORTED, st->pc, retired);
+            x->opcode = kj_opcode(dom, st->pc);
+            kj_text(x, "divisor read through the host");
             return;
         }
         kj_classify(dom, x, st->pc, retired);

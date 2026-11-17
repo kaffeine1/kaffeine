@@ -22,52 +22,56 @@ engine is for, and the state of each step, are on the
 | [`engine/kj68_engine.c`](engine/kj68_engine.c) | The nine operations of the interface, the memory map and the counters |
 | [`engine/kj68_translate.c`](engine/kj68_translate.c) | The AArch64 translator, generated from the translator of the legacy library (see below) |
 | [`engine/kj68_intern.h`](engine/kj68_intern.h) | The private interface between the two engine files, and the test seams |
-| [`host/kj68_host_tests.c`](host/kj68_host_tests.c) | The host checks: 25 groups, through the interface only |
+| [`host/kj68_host_tests.c`](host/kj68_host_tests.c) | The host checks: 26 groups, through the interface only |
 | [`host/include/exec/types.h`](host/include/exec/types.h) | The AROS exec types, for the host build only |
 | [`tools/make-translate.py`](tools/make-translate.py) | The generator of `engine/kj68_translate.c` |
 | [`Makefile`](Makefile) | A host build of the checks |
 
 ## The host checks that have run
 
-On 16 November 2026 the host checks ran once, on an AArch64 Mac with
-macOS. They used the clang of the Command Line Tools with the macOS 27.2
-SDK; the compiler's version was not queried. There were two configurations,
-both with `-std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -g` on the
-three compiles and with the test seams compiled in (`-DKJ68_TEST_SEAMS`):
+On 17 November 2026 the host checks of this source ran on an AArch64 Mac
+with macOS. They used the clang of the Command Line Tools with the macOS
+27.2 SDK; the compiler's version was not queried. There are two
+configurations, both with `-std=c99 -Wall -Wextra -Wno-unused-parameter
+-Werror -g` on the three compiles and with the test seams compiled in
+(`-DKJ68_TEST_SEAMS`):
 
 - `-O1 -fno-omit-frame-pointer` with the address and undefined-behavior
   sanitizers (`-fsanitize=address,undefined -fno-sanitize-recover=undefined`);
 - `-O2` without sanitizers.
 
-Each configuration compiled the three source files, linked them and ran the
-test program: ten programs in all. All ten ended by themselves with status
-0 and wrote nothing on their error output. In each configuration all 25
-groups passed, 38519 checks with 0 failures, and the two runs printed the
-same output.
+The two configurations ran separately, one after the other, on the same six
+source files. In each, the three compiles, the link and the test program
+ended by themselves with status 0 and wrote nothing on their error output,
+and all 26 groups passed: 40861 checks with 0 failures. The output of the
+`-O2` run is byte for byte the output of the sanitizer run.
+
+The count was first expected as 40860: counting the checks of the new group
+by hand, I had left out the leak check that ends every group. The sanitizer
+run was therefore recorded as not meeting its expectation, although none of
+its checks failed, and the `-O2` run was made afterwards against the
+corrected count. The six files the runs compiled are the ones in this
+directory, byte for byte: `include/kaffeine-jit68-abi-v1.h`,
+`engine/kj68_engine.c`, `engine/kj68_intern.h`, `engine/kj68_translate.c`,
+`host/kj68_host_tests.c` and `host/include/exec/types.h`.
 
 That shows that this source compiles without warnings with that compiler,
-and that it passes the cases of those 25 groups in those two configurations
-on that Mac. It does not show that the engine follows the interface in
-every case, nor anything about a divisor the host reads itself (the
-[engine page](../../docs/kaffeine/jit68-engine.md) gives that limit), a
-build without the test seams, Linux or another compiler, anything on AROS
-or with an AROS compiler, the host side in `m68kemu.library`, an
-application, a multiprocessor system or a speed.
+and that it passes the cases of those 26 groups in those two configurations
+on that Mac, among them `div-host-read`: a division whose divisor would be
+read through the host is declined before any host call (the
+[engine page](../../docs/kaffeine/jit68-engine.md) says how). It does not
+show that the engine follows the interface in every case, a build without
+the test seams, Linux or another compiler, anything on AROS or with an AROS
+compiler, the host side in `m68kemu.library`, which would have to execute a
+declined division itself and is not written, an application, a
+multiprocessor system or a speed.
 
-The files here are the ones that ran, byte for byte, with three exceptions,
-none of which changes code that was compiled:
-
-- `include/kaffeine-jit68-abi-v1.h`: four comment lines that described the
-  interface as a proposal not yet implemented, and named the specification
-  by a working file name, now give its state and the name of the
-  specification beside it;
-- `engine/kj68_engine.c`: one comment names the specification by that name;
-- `tools/make-translate.py`, which is not part of the checks: the
-  identification it writes into the reuse map beside the translator.
+An earlier version of this source, with 25 groups and without the change to
+divisions, ran on 16 November 2026 in the same two configurations: 38519
+checks with 0 failures in each.
 
 The engine reports itself as `kaffeine-jit68 0.1 (J1 source, AArch64
-translator)`. That text is unchanged from the run; "J1" names the first
-source milestone of the engine.
+translator)`; "J1" names the first source milestone of the engine.
 
 ## Building and running the checks
 
@@ -105,9 +109,13 @@ python3 -I -B tools/make-translate.py build/kaffeine_jit.c build/kaffeine_jit.h 
 cmp build/kj68_translate.c engine/kj68_translate.c
 ```
 
-The generator in this form, with only the identification in the reuse map
-changed, has not been run. The translator in `engine/` is the one it made
-before that change, and the one the host checks compiled.
+The generator in this form has not been run. It carries the same edits as
+the translator for the change to divisions (the probe of the divisor and
+the two division emitters that call it), written as checked line ranges
+like the others and compared with the translator by reading. The translator
+in `engine/` was edited with those same changes, and it is the one the host
+checks compiled. That the generator, run on the input above, writes it byte
+for byte is expected, not yet shown.
 
 ## License
 
