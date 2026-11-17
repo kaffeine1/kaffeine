@@ -1,5 +1,7 @@
 # Native AROS AArch64 JIT probe
 
+> **Status, 16 November 2026.** Kaffeine is the JIT engine. This page describes it as it exists today in the legacy tree, `rom/kaffeine`: inside the library built from it, `kaffeine.library`, and in the probes that run the translator without any emulator library. Its intended form is a separate optional library, `kaffeine-jit68.library`, for AROS's `m68kemu.library`, whose interpreter stays the default. The interface and the engine source of `kaffeine-jit68.library` are published in `experimental/kaffeine-jit68`, and the engine has passed its host checks; it has not run on AROS yet. See the [engine page](../../../../docs/kaffeine/jit68-engine.md) and the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+
 `jit_probe` runs the existing Kaffeine block translator inside standalone
 AROS AArch64. It links the production CPU loop, dispatcher and guest-call
 primitive. It is a native executable with its own small guest arena and
@@ -77,7 +79,7 @@ client above checks the installed `kaffeine.library` APIs.
 ## Native library versions
 
 `make library-versions` builds the optional native `library_versions`
-executable. It opens each native library for which Kaffeine gives 68k
+executable. It opens each native library for which the legacy library gives 68k
 programs a native-backed base, prints `info <name> <version>.<revision>`
 (or `info <name> absent`) and closes it again, then prints exec.library
 and dos.library. Run it on the same system as the 68k fixture

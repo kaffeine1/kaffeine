@@ -1,6 +1,8 @@
 # Experimental Kaffeine JIT backend
 
-`kaffeine.library` defaults to Moira. On standalone AROS AArch64 it can
+> **Status, 16 November 2026.** Kaffeine is the JIT engine. This page describes it as it exists today in the legacy tree, `rom/kaffeine`: inside the library built from it, `kaffeine.library`, and in the probes that run the translator without any emulator library. Its intended form is a separate optional library, `kaffeine-jit68.library`, for AROS's `m68kemu.library`, whose interpreter stays the default. The interface and the engine source of `kaffeine-jit68.library` are published in `experimental/kaffeine-jit68`, and the engine has passed its host checks; it has not run on AROS yet. See the [engine page](jit68-engine.md) and the [transition status](TRANSITION.md).
+
+The legacy `kaffeine.library` defaults to Moira. On standalone AROS AArch64 it can
 also execute 68k applications with the Kaffeine block translator:
 
 ```text

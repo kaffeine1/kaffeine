@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # TurboText 68k with the Kaffeine JIT on AROS ARM64
 
+> **Historical record.** Made with the library, the backend, the sources and at the date that this page itself gives, and kept as it was made. Unless the page says otherwise, that library is a build of the legacy `kaffeine.library` from `rom/kaffeine`; where the page says Kaffeine for more than the JIT engine, it means that library. Nothing here is a result of `m68kemu.library` of current AROS mainline, and the instructions reproduce the setup of the record. See the [transition status](TRANSITION.md).
+
 **Recorded 31 October 2026.** Original Motorola 68k TurboText 2.0 opens in
 native AROS ARM64, edits a document, saves it, closes, and reopens the saved
 text without further typing. The application and its three 68k support

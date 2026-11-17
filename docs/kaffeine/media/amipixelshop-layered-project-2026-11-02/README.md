@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # AmiPixelShop 68k layered project roundtrip on AROS ARM64
 
+> **Historical record.** Made with the library, the backend, the sources and at the date that this page itself gives, and kept as it was made. Unless the page says otherwise, that library is a build of the legacy `kaffeine.library` from `rom/kaffeine`; where the page says Kaffeine for more than the JIT engine, it means that library. Nothing here is a result of `m68kemu.library` of current AROS mainline, and the instructions reproduce the setup of the record. See the [transition status](../../TRANSITION.md).
+
 On 2026-11-02 UTC, AmiPixelShop 0.6.1 built for a 68020 without an FPU
 completed a layered APX1 save, reopen, edit and resave with the Kaffeine
 JIT on AROS ARM64 in QEMU's Raspberry Pi 3 model. The first execution ran

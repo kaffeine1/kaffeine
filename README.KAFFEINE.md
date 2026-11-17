@@ -1,4 +1,4 @@
-# Kaffeine: current implementation and technical direction
+# Kaffeine JIT and AROS m68kemu.library: implementation and direction
 
 The [manifesto](docs/kaffeine/MANIFESTO.md)
 ([Italian original](docs/kaffeine/MANIFESTO.it.md)) describes an open source
@@ -6,14 +6,40 @@ home for software from the Amiga ecosystem. AROS is the native operating
 system. The compatibility bridge should preserve verified API behavior,
 objects and formats as CPU engines and host hardware evolve.
 
-The current implementation starts with 68k software on AROS AArch64.
-It builds on AROS's original `m68kemu.library`, now `kaffeine.library` in
-`rom/kaffeine`; its upstream base is AROS
-`ae45f4644f80de542fb6af320c5d5fb5a1bc9925`.
-The long-term roadmap is a direction, separate from the verified behavior below.
+The 68k compatibility library is AROS's `m68kemu.library`. Kaffeine is the
+name of the JIT engine. The 68k JIT is meant to be a separate optional
+library, `kaffeine-jit68.library`, which `m68kemu.library` can use as its CPU
+backend beside the interpreter it already has. I am moving this work back
+onto the library of AROS mainline, as small corrections to `rom/m68kemu` and
+the JIT as that separate engine library, instead of maintaining a renamed
+copy of the whole library. Version 1 of the interface between the two
+libraries and the source of the engine are in
+[`experimental/kaffeine-jit68`](experimental/kaffeine-jit68/README.md); the
+engine has passed its host checks on an AArch64 Mac but has not run on AROS
+yet. The [engine page](docs/kaffeine/jit68-engine.md) describes them.
+
+That move is in progress, and this page says so wherever it matters. The
+results below were obtained with the earlier form of the work, and each
+keeps the identity it has. The programs that ran inside AROS ran through a
+library named `kaffeine.library`, built from `rom/kaffeine` of this
+repository, which derives from AROS's `m68kemu.library` at AROS
+`ae45f4644f80de542fb6af320c5d5fb5a1bc9925`. I call it the legacy library
+here. Host tests compile sources of that tree with simulated native APIs and
+load no emulator library; the standalone JIT probes run the translator
+without one; the native AmigaOS reference runs use no emulator at all. None
+of them is a result of `m68kemu.library` of current AROS mainline. The
+change sets now being prepared for `rom/m68kemu` have not been proposed to
+AROS yet, and apart from the host checks of the separate engine, the only
+JIT that has run is the one compiled into the legacy library and into the
+standalone probes. The
+[transition status](docs/kaffeine/TRANSITION.md) says what has moved and
+what has not. The long-term roadmap is a direction, separate from the
+verified behavior below.
 
 
 ## How it works
+
+This is the legacy library as it is in this repository today.
 
 - A 68k HUNK program loads through `LoadSeg()` as a native one does. On a
   host that is no 68k, DOS records the relocations that it applies, and
@@ -41,6 +67,8 @@ The long-term roadmap is a direction, separate from the verified behavior below.
   runs as 68k code, made as Exec makes it.
 
 ## What runs today
+
+With the legacy library, `kaffeine.library` from `rom/kaffeine`:
 
 - 68k HUNK programs run from the Shell and through `Run` on AROS AArch64
   in QEMU. The six bzip2 1.0.8 self-test cases and the seven IJG JPEG
@@ -96,8 +124,9 @@ Exec lists retain empty guest headers with valid sentinels and native
 identities for intercepted lookups. Public guest ports and semaphores have
 their own guest nodes.
 
-The default AROS path uses the Moira interpreter; standalone AArch64 can
-also select the experimental JIT. Guest DOS processes follow the typed
+With the legacy library, the default AROS path uses the Moira interpreter;
+standalone AArch64 can also select the experimental JIT. Guest DOS processes
+follow the typed
 contract above. Complete application operation, an FPU,
 general asynchronous device I/O, communication between
 separate guest contexts and physical hardware remain unverified or
@@ -105,17 +134,22 @@ unsupported within the current contracts.
 
 ## The CPU: Moira and the experimental Kaffeine JIT
 
-`kaffeine.library` uses `struct KaffeineCPUOps`
+The legacy library selects its CPU through `struct KaffeineCPUOps`
 ([BACKENDS.md](rom/kaffeine/BACKENDS.md)). Moira is the operational 68k
-interpreter and the reference for extending the execution engine.
+interpreter and the reference for extending the execution engine. In
+`m68kemu.library` of AROS mainline Moira is the interpreter and stays the
+default; the JIT is to be offered to it as a separate optional library,
+`kaffeine-jit68.library`, whose engine has passed its host checks but has
+not run on AROS yet ([engine page](docs/kaffeine/jit68-engine.md)).
 
-The [experimental library backend](docs/kaffeine/jit-backend.md) is
-selected with `Set KAFFEINE_CPU jit`. It uses independent guest-task CPUs,
+In the legacy library, the [experimental JIT backend](docs/kaffeine/jit-backend.md)
+is selected with `Set KAFFEINE_CPU jit`. It uses independent guest-task CPUs,
 bounded translated slices and shared-arena code invalidation. Unsupported
 operations stop explicitly, without switching interpreters.
 
 A [standalone AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md)
-executes a growing 68k instruction subset through the same interface and
+executes a growing 68k instruction subset through the same
+`struct KaffeineCPUOps` interface and
 compares results with Moira on the host. Native AROS AArch64 tests execute
 the JIT using `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` and `CacheClearE`;
 the instruction corpus carries expected results computed with Moira on
@@ -164,7 +198,11 @@ point of the provenance of the NDK data.
 
 ## Verified scope
 
-The current test and target baseline includes:
+The current test and target baseline. Each row names its environment. The
+host rows compile sources of this repository with simulated native APIs and
+load no emulator library; the standalone probe rows run the JIT without one;
+the rows inside AROS use the legacy library; the native AmigaOS row uses no
+emulator.
 
 | Environment | Result |
 | --- | --- |
@@ -209,17 +247,20 @@ of a mouse double-click or a claim about every application's startup.
 Community preview 001 and the published application videos retain their
 previously qualified launch paths.
 
-Native Workbench startup uses the paired `workbench.library` 45.7 and
-`kaffeine.library` 1.1 changes. Workbench selects an explicit native entry
+In the legacy tree, native Workbench startup uses the paired
+`workbench.library` 45.7 and `kaffeine.library` 1.1 changes. Workbench selects an explicit native entry
 for 68k TOOLs. That entry takes the startup message before any DOS call and
 transfers it to `RunWorkbenchHunk` (native vector 7). The generic `RunHunk`
 and `RunCommand` routes receive no implicit startup: a non-CLI caller may
 already have consumed its own message, or may have none. Borrowed startup
 locks retire before the native reply; guest storage stays quarantined for
-the lifetime of the arena.
+the lifetime of the arena. `m68kemu.library` of AROS mainline has `RunHunk`
+and `RunFile` only. Whether and how a Workbench entry is proposed there is
+not decided.
 
 ## Building and testing
 
+These are the commands of the legacy tree, under the names it has today.
 Initialize the pinned CPU submodule before building:
 
 ```sh
@@ -238,6 +279,10 @@ and the [target suite](developer/debug/test/kaffeine_target/README.md).
 The full [roadmap](docs/kaffeine/MANIFESTO.md#7-a-roadmap-based-on-observable-results)
 uses observable application outcomes:
 
+0. Move the work onto `m68kemu.library` of AROS mainline: the common
+   corrections first, each as a focused contribution, then the JIT as the
+   separate optional `kaffeine-jit68.library`. See the
+   [transition status](docs/kaffeine/TRANSITION.md).
 1. Complete useful 68k application operations on AROS ARM64, prioritizing
    Personal Paint's editor, tools, load/save, cleanup and desktop use.
    CLI loading of tested 1024×768 IFF and palette PNG files now passes in
@@ -247,9 +292,12 @@ uses observable application outcomes:
 3. Validate interaction, stability, memory and performance on real hardware.
 4. Validate a second host, with RISC-V as a candidate, starting with the
    interpreter before any dedicated JIT.
-5. Explore a PPC engine and a bounded guest environment such as WarpOS;
-   assess PowerUP separately. MorphOS and AmigaOS 4 application compatibility
-   would require further ABI and service work.
+5. As separate future work, outside `m68kemu.library` and outside the 68k
+   engine: explore a PPC engine, which for Kaffeine would be a library of its
+   own, `kaffeine-ppc.library`, if it proves feasible, and a bounded guest
+   environment such as WarpOS; assess PowerUP separately. MorphOS and
+   AmigaOS 4 application compatibility would require further ABI and service
+   work.
 
 These future directions do not start parallel implementation work by
 themselves. Immediate changes follow observed application blockers and
@@ -260,9 +308,12 @@ the agreed scope.
 - [Upstream PR #1905 comparison, reuse candidates and reproducing probes](docs/kaffeine/upstream-pr1905-comparison.md).
 - [Personal Paint demonstration, screenshots and saved output](docs/kaffeine/personal-paint-demo.md).
 - [Project manifesto](docs/kaffeine/MANIFESTO.md) and [Italian original](docs/kaffeine/MANIFESTO.it.md).
+- [Status of the transition to `m68kemu.library`](docs/kaffeine/TRANSITION.md).
+- [The 68k JIT as a separate engine, `kaffeine-jit68.library`](docs/kaffeine/jit68-engine.md).
+- [Source of the separate engine, its interface and its host checks](experimental/kaffeine-jit68/README.md).
 - [Licenses and component provenance](docs/kaffeine/LICENSING.md).
-- [CPU backend contract](rom/kaffeine/BACKENDS.md).
+- [CPU backend contract of the legacy library](rom/kaffeine/BACKENDS.md).
 - [Hosted AArch64 translation probe](docs/kaffeine/hosted-jit-probe.md) and [standalone AROS AArch64 JIT probe](developer/debug/test/kaffeine_native/README.md).
-- [Library overview](rom/kaffeine/README.md) and [internals reference](rom/kaffeine/INTERNALS.md).
+- [Legacy library overview](rom/kaffeine/README.md) and [internals reference](rom/kaffeine/INTERNALS.md).
 - [Host tests](developer/debug/test/kaffeine_host/README.md).
 - [Target programs and QEMU runner](developer/debug/test/kaffeine_target/README.md).

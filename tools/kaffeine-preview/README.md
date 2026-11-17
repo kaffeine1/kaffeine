@@ -1,5 +1,7 @@
 # Kaffeine community preview tools
 
+> **Status, 15 November 2026.** Community preview 001 carries the legacy library, `kaffeine.library` built from `rom/kaffeine`. These instructions reproduce that preview as it was published. They are not instructions for installing AROS's `m68kemu.library` or the Kaffeine JIT on an AROS system; no such installation is qualified. See the [transition status](../../docs/kaffeine/TRANSITION.md).
+
 The experimental **AROS ARM64 / QEMU raspi3b**
 [community preview 001](https://github.com/kaffeine1/kaffeine/releases/tag/preview-arm64-001)
 is available for a first pilot group. Download its ZIP, checksum and
@@ -15,8 +17,10 @@ they do not qualify guest boots on Linux/Windows or physical hardware.
 
 Use the release payload and its included README. The source tree and
 demonstration disks are not replacement payloads. A native installer for
-arbitrary AROS installations is deferred: Kaffeine also depends on changes
-in native DOS and boot components. Mainline integration remains the goal.
+arbitrary AROS installations is deferred: the legacy library also depends on changes
+in native DOS and boot components. The goal remains AROS mainline:
+corrections to its `m68kemu.library`, and the JIT as a separate optional
+library.
 
 ## Tester workflow
 
@@ -45,7 +49,7 @@ folders. No native AROS system files or startup scripts are installed.
 
 The launcher uses one TCG translation thread. The board exposes four
 virtual CPUs because that is the raspi3b hardware configuration; this is
-separate from Kaffeine's guest CPU backend. The default session limit is
+separate from the guest CPU backend of the library. The default session limit is
 15 minutes (`--minutes 1` through `--minutes 60` are available). Close the
 application and the QEMU window when finished. Ctrl-C in the launcher also
 stops its own QEMU process. A timeout or a log exceeding 32 MiB triggers a
@@ -137,8 +141,11 @@ Include the QEMU version from `qemu-system-aarch64 --version` in the form.
 ## Maintainer staging and assembly
 
 The initial release lane is a clean, matched ARM64 preview image. Native
-installation can follow for specifically identified compatible AROS builds;
-library version `1.0` alone is not a sufficient compatibility identifier.
+installation is a later, separately qualified step, and no installer exists.
+It would have to identify the `m68kemu.library` that is actually resident
+and, where there is one, the optional `kaffeine-jit68.library`, by version
+and hash; library version `1.0` alone is not a sufficient compatibility
+identifier.
 
 In a new staging directory place only the intended kernel, BSP, DTB, raw
 disk, matching source archive and applicable license notices. Use portable

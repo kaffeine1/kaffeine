@@ -1,5 +1,7 @@
 # A hosted AArch64 translation probe
 
+> **Status, 16 November 2026.** Kaffeine is the JIT engine. This page describes it as it exists today in the legacy tree, `rom/kaffeine`: inside the library built from it, `kaffeine.library`, and in the probes that run the translator without any emulator library. Its intended form is a separate optional library, `kaffeine-jit68.library`, for AROS's `m68kemu.library`, whose interpreter stays the default. The interface and the engine source of `kaffeine-jit68.library` are published in `experimental/kaffeine-jit68`, and the engine has passed its host checks; it has not run on AROS yet. See the [engine page](jit68-engine.md) and the [transition status](TRANSITION.md).
+
 This note records the original hosted experiment. Its translator now lives
 in `rom/kaffeine/kaffeine_jit.c` and also powers the opt-in
 [experimental library backend](jit-backend.md).
@@ -7,7 +9,7 @@ in `rom/kaffeine/kaffeine_jit.c` and also powers the opt-in
 This note records point 4 of the plan of 20 October 2026: a minimal
 experiment of a "hosted" Emu68, first on the Mac (macOS on AArch64) and
 only later inside AROS. I wanted to know whether the mechanics that a
-translating backend of `kaffeine.library` needs work in an ordinary host
+translating backend of the legacy `kaffeine.library` needs work in an ordinary host
 process, behind the backend interface that Moira uses today, before
 deciding how to bring Emu68 itself in.
 

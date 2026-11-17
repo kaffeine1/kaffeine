@@ -1,5 +1,7 @@
 # Typed graphics.library DefaultFont regression
 
+> **Status, 15 November 2026.** This page belongs to the legacy tree: `rom/kaffeine` and the library built from it, `kaffeine.library`. Its names and commands are those of that tree, and each result on it was obtained with what the page itself names: that library, a backend of it, or a host fixture that loads no emulator library. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+
 This fixture builds the complete production graphics-base setup, font bridge,
 heap, bounded guest-buffer checks and CPU interface. It extracts the complete
 `Kaffeine_OpenLibrary()` function from `kaffeine_thunks.c` unchanged, with

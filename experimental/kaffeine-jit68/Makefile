@@ -1,0 +1,47 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Author: Michele Dipace (@kaffeine1)
+#
+# Host build and checks of the kaffeine-jit68 engine, for an AArch64 host
+# (macOS or Linux). It gives the options of the host run described in
+# README.md; written for publication, it has not been run as it is.
+
+CC    ?= cc
+BUILD ?= build
+
+COMMON  = -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -g
+DEFS    = -DKJ68_TEST_SEAMS -I host/include -I include -I engine
+SAN     = -fsanitize=address,undefined -fno-sanitize-recover=undefined
+ASANFL  = $(COMMON) -O1 -fno-omit-frame-pointer $(SAN) $(DEFS)
+O2FL    = $(COMMON) -O2 $(DEFS)
+
+HEADERS = include/kaffeine-jit68-abi-v1.h engine/kj68_intern.h host/include/exec/types.h
+NAMES   = kj68_engine kj68_translate kj68_host_tests
+
+vpath %.c engine host
+
+.PHONY: all check clean
+
+all: $(BUILD)/asan/kj68_host_tests $(BUILD)/o2/kj68_host_tests
+
+$(BUILD)/asan/%.o: %.c $(HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(ASANFL) -c $< -o $@
+
+$(BUILD)/o2/%.o: %.c $(HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(O2FL) -c $< -o $@
+
+$(BUILD)/asan/kj68_host_tests: $(NAMES:%=$(BUILD)/asan/%.o)
+	$(CC) $(SAN) -o $@ $^
+
+$(BUILD)/o2/kj68_host_tests: $(NAMES:%=$(BUILD)/o2/%.o)
+	$(CC) -o $@ $^
+
+check: all
+	ASAN_OPTIONS=halt_on_error=1:abort_on_error=0:detect_leaks=0 \
+	UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+	$(BUILD)/asan/kj68_host_tests
+	$(BUILD)/o2/kj68_host_tests
+
+clean:
+	rm -rf $(BUILD)

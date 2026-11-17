@@ -24,6 +24,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ['3.9', '3.14']
+        # Python 3.9 is not built for the Ubuntu 26.04 image that
+        # ubuntu-latest now is; on Linux it runs on Ubuntu 24.04.
+        exclude:
+          - os: ubuntu-latest
+            python: '3.9'
+        include:
+          - os: ubuntu-24.04
+            python: '3.9'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:

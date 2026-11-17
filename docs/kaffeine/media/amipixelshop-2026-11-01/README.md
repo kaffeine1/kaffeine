@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # AmiPixelShop 68k save and reopen on AROS ARM64
 
+> **Historical record.** Made with the library, the backend, the sources and at the date that this page itself gives, and kept as it was made. Unless the page says otherwise, that library is a build of the legacy `kaffeine.library` from `rom/kaffeine`; where the page says Kaffeine for more than the JIT engine, it means that library. Nothing here is a result of `m68kemu.library` of current AROS mainline, and the instructions reproduce the setup of the record. See the [transition status](../../TRANSITION.md).
+
 On 2026-11-01 UTC, a 68020 source build of AmiPixelShop 0.6.1 without an FPU
 saved and reopened a layered document through the Kaffeine JIT in QEMU's
 Raspberry Pi 3 model, using one TCG worker. The confirmed Workbench mode was

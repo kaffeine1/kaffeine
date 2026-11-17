@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # Amigram 0.1 sample screen on a locally patched AROS m68kemu.library
 
+> **Historical record.** Made with a locally patched AROS `m68kemu.library`, as this page says: not with the legacy `kaffeine.library`, and not with a library that AROS has accepted. Kept as it was made. See the [transition status](../../TRANSITION.md).
+
 On 2026-11-14 the 68k release binary of
 [Amigram](https://github.com/kaffeine1/telegram-amiga) 0.1 opened its
 interface and exited normally on AROS ARM64 in QEMU, once from the Shell

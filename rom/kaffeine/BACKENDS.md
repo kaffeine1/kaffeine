@@ -1,10 +1,38 @@
 # CPU backend boundary
 
-`kaffeine.library` uses Moira by default and offers an experimental
+> **Status, 15 November 2026.** This page belongs to the legacy tree: `rom/kaffeine` and the library built from it, `kaffeine.library`. Its names and commands are those of that tree, and each result on it was obtained with what the page itself names: that library, a backend of it, or a host fixture that loads no emulator library. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../docs/kaffeine/TRANSITION.md).
+
+The legacy `kaffeine.library` uses Moira by default and offers an experimental
 AArch64 JIT selected with `KAFFEINE_CPU=jit`. The public `RunFile` and
 `RunHunk` API is unchanged. The JIT grows from the hosted translation
 experiment; no Emu68 code is imported. See the
 [library JIT contract and target results](../../docs/kaffeine/jit-backend.md).
+
+## Long-term 68k compatibility target
+
+The Motorola 68040 is the long-term reference CPU model of this work. This is a
+development requirement; current support must still be described by the
+implemented and verified contracts of each backend.
+
+Prioritize application compatibility: complete the integer instruction
+semantics and the floating-point behavior required by Amiga software.
+This includes floating-point operations and cases that a 68040 Amiga normally
+completes through its 68040 software support. Compatibility work must account
+for that software-assisted behavior as well as the instructions implemented
+directly by the physical 68040.
+
+The MMU is a subsequent goal. Implement it as a virtual component of the
+guest domain, with guest-owned translation, protection and fault state.
+It must preserve the memory boundaries of the guest domain and must not
+control or alter the native AROS system's address space, mappings or memory
+protection.
+
+CPU/FPU/MMU models, feature flags and capability-query responses exposed to
+software must match behavior actually implemented and verified for the
+selected backend and configuration. Keep unimplemented or unverified
+capabilities distinct from supported ones. Record the scope of validation
+when changing a capability declaration; a roadmap target alone does not
+establish support.
 
 ## Responsibilities
 

@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # Directory Opus clock display with the Kaffeine JIT
 
+> **Historical record.** Made with the library, the backend, the sources and at the date that this page itself gives, and kept as it was made. Unless the page says otherwise, that library is a build of the legacy `kaffeine.library` from `rom/kaffeine`; where the page says Kaffeine for more than the JIT engine, it means that library. Nothing here is a result of `m68kemu.library` of current AROS mainline, and the instructions reproduce the setup of the record. See the [transition status](../../TRANSITION.md).
+
 On 2026-11-02, the unchanged 68k Directory Opus 4.12 JR displayed the native
 AROS guest's date and time after the [CurrentTime fix (PR #92)](https://github.com/kaffeine1/kaffeine/pull/92).
 These are original 1024x768 guest frames from Shell and a fresh actual `Run`

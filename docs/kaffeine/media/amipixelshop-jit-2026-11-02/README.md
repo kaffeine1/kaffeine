@@ -5,6 +5,8 @@ Author: Michele Dipace (@kaffeine1)
 
 # AmiPixelShop 68k with the Kaffeine JIT on AROS ARM64
 
+> **Historical record.** Made with the library, the backend, the sources and at the date that this page itself gives, and kept as it was made. Unless the page says otherwise, that library is a build of the legacy `kaffeine.library` from `rom/kaffeine`; where the page says Kaffeine for more than the JIT engine, it means that library. Nothing here is a result of `m68kemu.library` of current AROS mainline, and the instructions reproduce the setup of the record. See the [transition status](../../TRANSITION.md).
+
 **[Watch or download the video (MP4, 2 min 20 s)](amipixelshop-68k-kaffeine-jit-aros-arm64.mp4)**
 
 [![AmiPixelShop 68k after reopening, moving and resaving its layer with the Kaffeine JIT on AROS ARM64](amipixelshop-jit-preview.png)](amipixelshop-68k-kaffeine-jit-aros-arm64.mp4)

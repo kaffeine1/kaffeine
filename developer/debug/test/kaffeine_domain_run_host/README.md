@@ -1,5 +1,7 @@
 # Asynchronous domain driver regression
 
+> **Status, 15 November 2026.** This page belongs to the legacy tree: `rom/kaffeine` and the library built from it, `kaffeine.library`. Its names and commands are those of that tree, and each result on it was obtained with what the page itself names: that library, a backend of it, or a host fixture that loads no emulator library. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](../../../../docs/kaffeine/TRANSITION.md).
+
 The fixture compiles the complete production `kaffeine_domain_run.c` as C99
 against threaded native collaborators. It models the native DOS caller and
 the independent ARM driver, not a guest CPU or the scheduler.
