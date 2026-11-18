@@ -186,6 +186,7 @@ mine that are not submitted upstream yet. It did not use
 
 - [Community preview download, portable launcher and local test reports](tools/kaffeine-preview/README.md).
 - [Upstream m68kemu comparison and contribution candidates](docs/kaffeine/upstream-pr1905-comparison.md).
+- [Patches for `m68kemu.library`: HUNK and 68k library loading, and the lifetime of a child's seglist copy, with host regression results](docs/kaffeine/hunk-host/README.md). Host tests only; not built on AROS or submitted upstream yet.
 - [Personal Paint demonstration and downloadable media](docs/kaffeine/personal-paint-demo.md).
 - [TurboText 68k demonstration with the Kaffeine JIT](docs/kaffeine/turbotext-jit-demo.md).
 - [AmiPixelShop 68k demonstration with the Kaffeine JIT](docs/kaffeine/media/amipixelshop-jit-2026-11-02/README.md).

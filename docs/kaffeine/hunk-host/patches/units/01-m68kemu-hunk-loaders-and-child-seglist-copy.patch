@@ -1,0 +1,1039 @@
+--- a/rom/m68kemu/m68kemu_intern.h
++++ b/rom/m68kemu/m68kemu_intern.h
+@@ -493,6 +493,9 @@
+ void   m68k_publish_base(struct M68KEmuContext *ctx, ULONG base, const char *name);
+ ULONG  M68KEmu_LoadHunks(struct M68KEmuContext *ctx, BPTR segList);
+ ULONG  M68KEmu_LoadHunksFromMemory(struct M68KEmuContext *ctx, UBYTE *data, LONG size);
++BOOL   M68KEmu_ImageHunk(struct M68KEmuContext *ctx, ULONG data, ULONG *size, ULONG *next);
++void   M68KEmu_FreeImage(struct M68KEmuContext *ctx, ULONG entry);
++void   M68KEmu_FreeHunks(struct M68KEmuContext *ctx, ULONG entry);
+ ULONG  M68KEmu_LoadM68KLibrary(struct M68KEmuContext *ctx, const char *name, ULONG version);
+ ULONG  M68KEmu_SetupLibBase(struct M68KEmuContext *ctx, UWORD lib_id,
+                              const char *name, UWORD num_vectors,
+--- a/rom/m68kemu/m68kemu_m68klib.c
++++ b/rom/m68kemu/m68kemu_m68klib.c
+@@ -30,40 +30,81 @@
+ /* exec InitStruct() on m68k memory: command byte ddssnnnn - dd 00 copy n+1
+    items here, 01 repeat one item n+1 times, 10 byte offset follows, 11
+    24-bit offset follows; ss 00 LONG, 01 WORD, 10 BYTE; WORD/LONG data is
+-   word aligned; a zero command ends the table. */
+-static void m68k_init_struct(struct M68KEmuContext *ctx, ULONG tab, ULONG mem)
++   word aligned; a zero command ends the table.
++   The table comes from the file and is not trusted. FALSE, with the
++   structure partly written, when a command or one of its items lies
++   outside containment, when the size code is 3, or when an item would be
++   written outside the size bytes of the structure at mem. */
++static BOOL m68k_init_struct(struct M68KEmuContext *ctx, ULONG tab, ULONG mem, ULONG size)
+ {
+-    ULONG dst = mem, p = tab;
++    ULONG off = 0, p = tab;     /* off: where the next item goes, from mem */
+     int guard = 0;
+ 
++    if (!m68k_in_mem(ctx, mem, size))
++        return FALSE;
++
+     while (guard++ < 4096)
+     {
+-        UBYTE cmd = ctx->mem[p++];
+-        UBYTE kind = cmd >> 6, size = (cmd >> 4) & 3;
+-        ULONG count = (cmd & 15) + 1, i, sz;
++        UBYTE cmd, kind, esize;
++        ULONG count, i, sz, bytes;
++
++        if (!m68k_in_mem(ctx, p, 1))
++            return FALSE;
++        cmd = ctx->mem[p++];
++        kind = cmd >> 6;
++        esize = (cmd >> 4) & 3;
++        count = (cmd & 15) + 1;
+ 
+         if (!cmd) break;
+-        if (size == 3) break;
+-        sz = size == 0 ? 4 : size == 1 ? 2 : 1;
++        if (esize == 3) return FALSE;
++        sz = esize == 0 ? 4 : esize == 1 ? 2 : 1;
+         if (kind == 2)
+-            dst = mem + ctx->mem[p++];
++        {
++            if (!m68k_in_mem(ctx, p, 1))
++                return FALSE;
++            off = ctx->mem[p++];
++        }
+         else if (kind == 3)
+         {
+-            dst = mem + ((ULONG)ctx->mem[p] << 16 | (ULONG)ctx->mem[p + 1] << 8 | ctx->mem[p + 2]);
++            if (!m68k_in_mem(ctx, p, 3))
++                return FALSE;
++            off = (ULONG)ctx->mem[p] << 16 | (ULONG)ctx->mem[p + 1] << 8 | ctx->mem[p + 2];
+             p += 3;
+         }
+         if (sz > 1 && (p & 1)) p++;
++
++        /* the items of this command, and the place they go to */
++        bytes = count * sz;
++        if (!m68k_in_mem(ctx, p, kind == 1 ? sz : bytes))
++            return FALSE;
++        if (off > size || bytes > size - off)
++            return FALSE;
+         for (i = 0; i < count; i++)
+         {
+             ULONG src = (kind == 1) ? p : p + i * sz;
++            ULONG dst = mem + off;
+             if (sz == 4) m68k_write32(ctx, dst, m68k_read32(ctx, src));
+             else if (sz == 2) m68k_write16(ctx, dst, m68k_read16(ctx, src));
+             else ctx->mem[dst] = ctx->mem[src];
+-            dst += sz;
+-        }
+-        p += (kind == 1) ? sz : count * sz;
++            off += sz;
++        }
++        p += (kind == 1) ? sz : bytes;
+         if (p & 1) p++;
+     }
++    return TRUE;
++}
++
++/* Nothing of an attempt that did not get as far as a usable library is
++   kept. What goes back is exactly what that attempt took from the heap: the
++   base with its jump table, when it was allocated already, and the hunks of
++   the image, through the chain the loader gave them. Nothing is derived
++   from a span of addresses, and nothing of the running program is touched. */
++static ULONG m68k_library_abandon(struct M68KEmuContext *ctx, ULONG entry, ULONG region, ULONG total)
++{
++    if (region)
++        M68KEmu_HeapFree(ctx, region, total);
++    M68KEmu_FreeImage(ctx, entry);
++    return 0;
+ }
+ 
+ ULONG M68KEmu_LoadM68KLibrary(struct M68KEmuContext *ctx, const char *name, ULONG version)
+@@ -72,7 +113,7 @@
+     BPTR fh;
+     LONG fileSize;
+     UBYTE *fileData;
+-    ULONG entry, base = 0;
++    ULONG entry, base = 0, region = 0, total = 0;
+     struct M68KTaskState *ts;
+     /* The internal API keeps its full-width version parameter. */
+     if (version > 0xFFFFu) return 0;
+@@ -125,9 +166,20 @@
+     { FreeMem(fileData, fileSize); Close(fh); return 0; }
+     Close(fh);
+ 
+-    /* Load hunks into containment */
++    /* Load hunks into containment. The loader describes the image it places
++       in the fields that describe the running program. They are the
++       program's again as soon as it returns, on every path out of here; the
++       image of the library is known from here on by its entry point and by
++       the chain of its hunks alone. */
++    ULONG own_entry = ctx->entry_point, own_seg = ctx->seg_start;
++    ULONG own_lo = ctx->load_lo, own_hi = ctx->load_hi;
++
+     entry = M68KEmu_LoadHunksFromMemory(ctx, fileData, fileSize);
+     FreeMem(fileData, fileSize);
++    ctx->entry_point = own_entry;
++    ctx->seg_start   = own_seg;
++    ctx->load_lo     = own_lo;
++    ctx->load_hi     = own_hi;
+ 
+     if (!entry)
+     {
+@@ -135,27 +187,40 @@
+         return 0;
+     }
+ 
+-    /* Scan containment for M68K_RTC_MATCHWORD (0x4AFC) */
++    /* Scan the hunks of the library for M68K_RTC_MATCHWORD (0x4AFC), in
++       their order: the Resident can live in its data hunk. The hunks are
++       taken from the image itself, as M68KEmu_LoadHunksFromMemory() chained
++       them (at most 100), not from the span between the lowest and the
++       highest one, which also holds whatever else lies between them. Only
++       a Resident that is whole inside one hunk counts: its fields are read
++       below. This is how LDInit() of rom/lddemon looks for the Resident of
++       a native library: segment by segment, the first one that fits. */
+     ULONG rt_addr = 0;
+-    /* Scan every hunk of the library: the Resident can live in its data hunk */
+-    for (ULONG addr = ctx->load_lo & ~1; addr + M68K_RT_MATCHTAG + 4 <= ctx->load_hi; addr += 2)
+-    {
+-        if (m68k_read16(ctx, addr) == M68K_RTC_MATCHWORD)
+-        {
+-            /* Verify rt_MatchTag points back to itself */
+-            ULONG mt = m68k_read32(ctx, addr + M68K_RT_MATCHTAG);
+-            if (mt == addr)
++    {
++        ULONG data = entry, size = 0, next = 0, hunks = 0;
++
++        while (data && !rt_addr && hunks++ < 100 && M68KEmu_ImageHunk(ctx, data, &size, &next))
++        {
++            for (ULONG addr = (data + 1) & ~1u;
++                 size >= M68K_SIZEOF_RESIDENT && addr - data <= size - M68K_SIZEOF_RESIDENT;
++                 addr += 2)
+             {
+-                rt_addr = addr;
+-                break;
++                /* Verify rt_MatchTag points back to itself */
++                if (m68k_read16(ctx, addr) == M68K_RTC_MATCHWORD &&
++                    m68k_read32(ctx, addr + M68K_RT_MATCHTAG) == addr)
++                {
++                    rt_addr = addr;
++                    break;
++                }
+             }
++            data = next;
+         }
+     }
+ 
+     if (!rt_addr)
+     {
+         m68k_log(ctx, "68k library %s has no Resident tag", name);
+-        return 0;
++        return m68k_library_abandon(ctx, entry, 0, 0);
+     }
+ 
+     /* Read Resident struct fields */
+@@ -171,11 +236,17 @@
+         /* Non-AUTOINIT: rt_Init is a function pointer.
+            For now, we'd need to call it. Skip for now. */
+         bug("[m68kemu] m68klib: %s is not M68K_RTF_AUTOINIT, not supported yet\n", name);
+-        return 0;
++        return m68k_library_abandon(ctx, entry, 0, 0);
+     }
+ 
+     /* M68K_RTF_AUTOINIT: rt_Init points to init table:
+-       ULONG dataSize, APTR funcTable, APTR dataInit, APTR initFunc */
++       ULONG dataSize, APTR funcTable, APTR dataInit, APTR initFunc.
++       Its four longwords have to lie in containment. */
++    if (!m68k_in_mem(ctx, rt_Init, 16))
++    {
++        m68k_log(ctx, "68k library %s: its init table is outside memory", name);
++        return m68k_library_abandon(ctx, entry, 0, 0);
++    }
+     ULONG dataSize  = m68k_read32(ctx, rt_Init + M68K_AUTOINIT_DATASIZE);
+     ULONG funcTable = m68k_read32(ctx, rt_Init + M68K_AUTOINIT_FUNCTABLE);
+     ULONG dataInit  = m68k_read32(ctx, rt_Init + M68K_AUTOINIT_DATAINIT);
+@@ -184,20 +255,30 @@
+     if (ctx->trace_calls) bug("[m68kemu] m68klib: dataSize=%lu funcTable=0x%lx dataInit=0x%lx initFunc=0x%lx\n",
+         (unsigned long)dataSize, (unsigned long)funcTable, (unsigned long)dataInit, (unsigned long)initFunc);
+ 
+-    if (!funcTable) return 0;
++    if (!funcTable) return m68k_library_abandon(ctx, entry, 0, 0);
+ 
+     /* Function table: absolute LONGs ending in -1, or - when it starts with
+-       the WORD -1 - WORD offsets from the table ending in -1 */
++       the WORD -1 - WORD offsets from the table ending in -1. Every entry
++       that counts has to lie in containment: a table that runs out of it
++       before its end is not one. */
++    if (!m68k_in_mem(ctx, funcTable, 2)) return m68k_library_abandon(ctx, entry, 0, 0);
+     BOOL rel = m68k_read16(ctx, funcTable) == 0xFFFF;
+     UWORD numFuncs = 0;
+-    if (rel)
+-        while (m68k_read16(ctx, funcTable + 2 + numFuncs * 2) != 0xFFFF && numFuncs < 1000)
+-            numFuncs++;
+-    else
+-        while (m68k_read32(ctx, funcTable + numFuncs * 4) != M68K_FUNCTABLE_END && numFuncs < 1000)
+-            numFuncs++;
+-
+-    if (numFuncs == 0) return 0;
++    while (numFuncs < 1000)
++    {
++        ULONG at = rel ? funcTable + 2 + numFuncs * 2 : funcTable + numFuncs * 4;
++
++        if (!m68k_in_mem(ctx, at, rel ? 2 : 4))
++        {
++            m68k_log(ctx, "68k library %s: its function table runs out of memory", name);
++            return m68k_library_abandon(ctx, entry, 0, 0);
++        }
++        if (rel ? m68k_read16(ctx, at) == 0xFFFF : m68k_read32(ctx, at) == M68K_FUNCTABLE_END)
++            break;
++        numFuncs++;
++    }
++
++    if (numFuncs == 0) return m68k_library_abandon(ctx, entry, 0, 0);
+ 
+     if (ctx->trace_calls) bug("[m68kemu] m68klib: %s has %d functions\n", name, numFuncs);
+ 
+@@ -207,9 +288,26 @@
+        Base itself: dataSize bytes for the library data. */
+     if (dataSize < M68K_SIZEOF_LIBRARY) dataSize = M68K_SIZEOF_LIBRARY;  /* minimum Library struct */
+     ULONG jt_size = (ULONG)numFuncs * M68K_JT_SLOT_SIZE;
+-    ULONG total = jt_size + dataSize;
+-    ULONG region = M68KEmu_HeapAlloc(ctx, total, 0);
+-    if (!region) return 0;
++    /* The size is the file's. A base that cannot lie in containment is
++       refused here, before the sum below can wrap and before anything is
++       cleared with that size. */
++    if (jt_size > ctx->mem_size || dataSize > ctx->mem_size - jt_size)
++    {
++        m68k_log(ctx, "68k library %s: a base of %lu bytes does not fit", name, (unsigned long)dataSize);
++        return m68k_library_abandon(ctx, entry, 0, 0);
++    }
++    total = jt_size + dataSize;
++    region = M68KEmu_HeapAlloc(ctx, total, 0);
++    if (!region) return m68k_library_abandon(ctx, entry, 0, 0);
++    /* The base is cleared and written below without the accessors. Where
++       the block lies is the heap's word, and the heap keeps its lists in
++       memory that a 68k program can write: what is not a span of
++       containment is not used, and not given back as if it were a block. */
++    if (!m68k_in_mem(ctx, region, total))
++    {
++        m68k_log(ctx, "68k library %s: the heap gave a base outside memory", name);
++        return m68k_library_abandon(ctx, entry, 0, 0);
++    }
+ 
+     base = region + jt_size;  /* base is after the jump table */
+ 
+@@ -237,8 +335,11 @@
+     m68k_write16(ctx, base + M68K_LIB_VERSION, rt_Version);
+     m68k_write32(ctx, base + 24, m68k_read32(ctx, rt_addr + 18));   /* lib_IdString = rt_IdString */
+ 
+-    if (dataInit)
+-        m68k_init_struct(ctx, dataInit, base);
++    if (dataInit && !m68k_init_struct(ctx, dataInit, base, dataSize))
++    {
++        m68k_log(ctx, "68k library %s: its init table is not usable", name);
++        return m68k_library_abandon(ctx, entry, region, total);
++    }
+ 
+     /* As exec does, the library's init function runs, then its Open
+        vector; both as 68k code when the program's OpenLibrary returns, and
+@@ -274,7 +375,7 @@
+         ULONG t = M68KEmu_HeapAlloc(ctx, sizeof(first) + sizeof(again), 0), r;
+ 
+         if (!t)
+-            return 0;
++            return m68k_library_abandon(ctx, entry, region, total);
+         r = t + sizeof(first);
+         for (ULONG i = 0; i < sizeof(first) / sizeof(first[0]); i++)
+             m68k_write16(ctx, t + 2 * i, first[i]);
+--- a/rom/m68kemu/m68kemu_memory.c
++++ b/rom/m68kemu/m68kemu_memory.c
+@@ -425,12 +425,20 @@
+ 
+ /* Copy a seglist LoadSeg() built from a hunk file into containment. dos
+    relocated the segments to their host addresses; the relocation list it
+-   kept (GSLI_68KRELOCS) is applied again for the containment addresses. */
++   kept (GSLI_68KRELOCS) is applied again for the containment addresses.
++
++   The seglist and that list are read to the end before anything is placed
++   in containment: a segment whose allocation cannot be what it says, a
++   list that is not answered or was lost, a group that names a segment the
++   seglist does not have, a kind that is none of the three or an offset
++   outside its segment refuses the seglist, and nothing has been allocated
++   or changed then. After that only a failed allocation can stop the copy;
++   the blocks placed so far are given back. The fields of the context are
++   set when the copy is whole. */
+ ULONG M68KEmu_LoadHunks(struct M68KEmuContext *ctx, BPTR segList)
+ {
+     BPTR seg;
+-    ULONG entry_point = 0;
+-    ULONG nseg = 0, i;
++    ULONG nseg = 0, i, g, k;
+     UBYTE **host;
+     ULONG *cont, *size;
+     struct HunkRelocTable *relocs = NULL;
+@@ -440,8 +448,17 @@
+         { TAG_DONE,       0             }
+     };
+ 
++    /* Every copy needs its two words in containment: a list of more
++       segments than fit cannot be copied, and one that does not end is not
++       followed for ever. */
+     for (seg = segList; seg; seg = *((BPTR *)BADDR(seg)))
+-        nseg++;
++    {
++        if (++nseg > ctx->mem_size / 8)
++        {
++            bug("[m68kemu] seglist %p has more segments than fit, cannot run it\n", BADDR(segList));
++            return 0;
++        }
++    }
+     if (!nseg)
+         return 0;
+ 
+@@ -451,99 +468,150 @@
+     cont = (ULONG *)(host + nseg);
+     size = cont + nseg;
+ 
+-    for (seg = segList, i = 0; seg; seg = *((BPTR *)BADDR(seg)), i++)
++    /* The segments as dos allocated them: ULONG size of the allocation,
++       BPTR next, data. */
++    for (seg = segList, i = 0; seg && i < nseg; seg = *((BPTR *)BADDR(seg)), i++)
+     {
+         ULONG *baddr     = (ULONG *)BADDR(seg);
+-        ULONG alloc_size = *(baddr - 1);              /* ULONG size + BPTR next + data */
+-        ULONG data_size  = alloc_size - sizeof(ULONG) - sizeof(BPTR);
+-        UBYTE *src       = (UBYTE *)baddr + sizeof(BPTR);
+-        ULONG m68k_addr;
+-
+-        /* as LoadSeg() lays it out: ULONG size, BPTR next, data - programs
+-           walk their own seglist through the link before their code */
+-        m68k_addr = M68KEmu_HeapAlloc(ctx, data_size + 8, MEMF_CLEAR);
+-        if (!m68k_addr)
+-        {
+-            FreeVec(host);
+-            return 0;
+-        }
+-        m68k_write32(ctx, m68k_addr, data_size + 8);
++        ULONG alloc_size = *(baddr - 1);
++
++        /* an allocation smaller than its own two words, or data that
++           cannot lie in containment behind the two words of the copy */
++        if (alloc_size < sizeof(ULONG) + sizeof(BPTR) ||
++            alloc_size - sizeof(ULONG) - sizeof(BPTR) > ctx->mem_size - 8)
++        {
++            bug("[m68kemu] segment %lu of seglist %p has an unusable size (%lu), cannot run it\n",
++                (unsigned long)i, BADDR(segList), (unsigned long)alloc_size);
++            goto refuse;
++        }
++        host[i] = (UBYTE *)baddr + sizeof(BPTR);
++        size[i] = alloc_size - sizeof(ULONG) - sizeof(BPTR);
++    }
++    if (seg || i != nseg)
++        goto refuse;
++
++    /* The relocations dos applied. Without them the copy would keep the
++       low 32 bits of host addresses in every relocated longword. */
++    if (!GetSegListInfo(segList, tags) || !relocs)
++    {
++        bug("[m68kemu] seglist %p has no relocation list, cannot run it\n", BADDR(segList));
++        goto refuse;
++    }
++    if (relocs->hrt_Groups == 0xFFFFFFFFUL)
++    {
++        bug("[m68kemu] relocation list of seglist %p was lost, cannot run it\n", BADDR(segList));
++        goto refuse;
++    }
++    if (relocs->hrt_Groups && !relocs->hrt_Group)
++    {
++        bug("[m68kemu] relocation list of seglist %p has no groups, cannot run it\n", BADDR(segList));
++        goto refuse;
++    }
++    for (g = 0; g < relocs->hrt_Groups; g++)
++    {
++        const struct HunkRelocGroup *grp = &relocs->hrt_Group[g];
++
++        if (grp->hrg_Hunk >= nseg || grp->hrg_Target >= nseg)
++        {
++            bug("[m68kemu] bad relocation group %lu (hunk %lu target %lu)\n",
++                (unsigned long)g, (unsigned long)grp->hrg_Hunk, (unsigned long)grp->hrg_Target);
++            goto refuse;
++        }
++        if (grp->hrg_Kind != HUNKRELOC_ABS && grp->hrg_Kind != HUNKRELOC_REL && grp->hrg_Kind != HUNKRELOC_BASE)
++        {
++            bug("[m68kemu] relocation group %lu has an unknown kind (%lu)\n",
++                (unsigned long)g, (unsigned long)grp->hrg_Kind);
++            goto refuse;
++        }
++        if (grp->hrg_Count && !grp->hrg_Offsets)
++        {
++            bug("[m68kemu] relocation group %lu has no offsets\n", (unsigned long)g);
++            goto refuse;
++        }
++        for (k = 0; k < grp->hrg_Count; k++)
++        {
++            ULONG off = grp->hrg_Offsets[k];
++
++            if (off >= size[grp->hrg_Hunk] || size[grp->hrg_Hunk] - off < 4)
++            {
++                bug("[m68kemu] bad relocation offset %lu in hunk %lu\n",
++                    (unsigned long)off, (unsigned long)grp->hrg_Hunk);
++                goto refuse;
++            }
++        }
++    }
++
++    /* Place the copies as LoadSeg() lays a segment out: ULONG size, BPTR
++       next, data - programs walk their own seglist through the link before
++       their code. */
++    for (i = 0; i < nseg; i++)
++    {
++        ULONG block = M68KEmu_HeapAlloc(ctx, size[i] + 8, MEMF_CLEAR);
++
++        /* filled below without the accessors: what the heap answers has to
++           be a span of containment */
++        if (!block || !m68k_in_mem(ctx, block, size[i] + 8))
++            goto fail;
++        m68k_write32(ctx, block, size[i] + 8);
+         if (i > 0)
+-            m68k_write32(ctx, cont[i - 1] - 4, (m68k_addr + 4) >> 2);
+-        m68k_addr += 8;
+-
+-        CopyMem(src, m68k_to_host(ctx, m68k_addr), data_size);
+-        host[i] = src;
+-        cont[i] = m68k_addr;
+-        size[i] = data_size;
+-
+-        if (!entry_point)
+-        {
+-            entry_point      = m68k_addr;
+-            ctx->entry_point = m68k_addr;
+-            ctx->seg_start   = m68k_addr;
+-        }
+-    }
+-
+-    GetSegListInfo(segList, tags);
+-    if (relocs)
+-    {
+-        ULONG g, k;
+-
+-        if (relocs->hrt_Groups == 0xFFFFFFFFUL)
+-        {
+-            bug("[m68kemu] relocation list of seglist %p was lost, cannot run it\n", BADDR(segList));
+-            FreeVec(host);
+-            return 0;
+-        }
+-        for (g = 0; g < relocs->hrt_Groups; g++)
+-        {
+-            const struct HunkRelocGroup *grp = &relocs->hrt_Group[g];
+-
+-            if (grp->hrg_Hunk >= nseg || grp->hrg_Target >= nseg)
++            m68k_write32(ctx, cont[i - 1] - 4, (block + 4) >> 2);
++        cont[i] = block + 8;
++        /* a segment without contents has nothing to copy, and at the very
++           end of containment no address a copy could be given */
++        if (size[i])
++            CopyMem(host[i], m68k_to_host(ctx, cont[i]), size[i]);
++    }
++
++    /* Apply the list. Every index, kind and offset in it was checked
++       above. A longword of 68k code need not lie on a multiple of four:
++       it is read and written through the accessors. */
++    for (g = 0; g < relocs->hrt_Groups; g++)
++    {
++        const struct HunkRelocGroup *grp = &relocs->hrt_Group[g];
++
++        for (k = 0; k < grp->hrg_Count; k++)
++        {
++            ULONG off = grp->hrg_Offsets[k];
++            ULONG addr = cont[grp->hrg_Hunk] + off;
++            ULONG val = m68k_read32(ctx, addr), original;
++
++            if (grp->hrg_Kind == HUNKRELOC_REL)
+             {
+-                bug("[m68kemu] bad relocation group %lu (hunk %lu target %lu)\n",
+-                    (unsigned long)g, (unsigned long)grp->hrg_Hunk, (unsigned long)grp->hrg_Target);
+-                FreeVec(host);
+-                return 0;
++                original = val + (ULONG)(IPTR)(host[grp->hrg_Hunk] + off) - (ULONG)(IPTR)host[grp->hrg_Target];
++                val = cont[grp->hrg_Target] + original - (cont[grp->hrg_Hunk] + off);
+             }
+-            for (k = 0; k < grp->hrg_Count; k++)
++            else if (grp->hrg_Kind == HUNKRELOC_BASE)
+             {
+-                ULONG off = grp->hrg_Offsets[k];
+-                UBYTE *p;
+-                ULONG val, original;
+-
+-                if (off >= size[grp->hrg_Hunk] || size[grp->hrg_Hunk] - off < 4)
+-                {
+-                    bug("[m68kemu] bad relocation offset %lu in hunk %lu\n",
+-                        (unsigned long)off, (unsigned long)grp->hrg_Hunk);
+-                    FreeVec(host);
+-                    return 0;
+-                }
+-                p   = ctx->mem + cont[grp->hrg_Hunk] + off;
+-                val = AROS_BE2LONG(*(ULONG *)p);
+-                if (grp->hrg_Kind == HUNKRELOC_REL)
+-                {
+-                    original = val + (ULONG)(IPTR)(host[grp->hrg_Hunk] + off) - (ULONG)(IPTR)host[grp->hrg_Target];
+-                    val = cont[grp->hrg_Target] + original - (cont[grp->hrg_Hunk] + off);
+-                }
+-                else if (grp->hrg_Kind == HUNKRELOC_BASE)
+-                {
+-                    original = val + (ULONG)(IPTR)host[grp->hrg_Hunk] - (ULONG)(IPTR)host[grp->hrg_Target];
+-                    val = cont[grp->hrg_Target] + original - cont[grp->hrg_Hunk];
+-                }
+-                else
+-                {
+-                    original = val - (ULONG)(IPTR)host[grp->hrg_Target];
+-                    val = cont[grp->hrg_Target] + original;
+-                }
+-                *(ULONG *)p = AROS_LONG2BE(val);
++                original = val + (ULONG)(IPTR)host[grp->hrg_Hunk] - (ULONG)(IPTR)host[grp->hrg_Target];
++                val = cont[grp->hrg_Target] + original - cont[grp->hrg_Hunk];
+             }
+-        }
+-    }
+-
++            else
++            {
++                original = val - (ULONG)(IPTR)host[grp->hrg_Target];
++                val = cont[grp->hrg_Target] + original;
++            }
++            m68k_write32(ctx, addr, val);
++        }
++    }
++
++    {
++        ULONG entry_point = cont[0];
++
++        ctx->entry_point = entry_point;
++        ctx->seg_start   = entry_point;
++        FreeVec(host);
++        return entry_point;
++    }
++
++fail:
++    for (i = 0; i < nseg; i++)
++    {
++        if (cont[i])
++            M68KEmu_HeapFree(ctx, cont[i] - 8, size[i] + 8);
++    }
++refuse:
+     FreeVec(host);
+-    return entry_point;
++    return 0;
+ }
+ 
+ ULONG M68KEmu_SetupLibBase(struct M68KEmuContext *ctx, UWORD lib_id,
+@@ -676,7 +744,7 @@
+ {
+     UBYTE *p = data;
+     UBYTE *end = data + size;
+-    ULONG magic, num_hunks, first, last;
++    ULONG magic, num_hunks, first, last, hunks;
+     ULONG *hunk_sizes = NULL;
+     ULONG *hunk_addrs = NULL;
+     ULONG *hunk_reqs = NULL;
+@@ -691,24 +759,34 @@
+     {
+         ULONG n = rd32(&p);
+         if (n == 0) break;
++        /* a name that does not lie in the file */
++        if (n > (ULONG)(end - p) / 4) return 0;
+         p += n * 4;
+     }
+ 
+     if (p + 12 > end) return 0;
+     num_hunks = rd32(&p);
+-    first     = rd32(&p);  /* unused but must be consumed */
+-    last      = rd32(&p);  /* unused but must be consumed */
+-    (void)first; (void)last;
++    first     = rd32(&p);
++    last      = rd32(&p);
+ 
+     if (num_hunks == 0 || num_hunks > 100) return 0;
+ 
++    /* The header gives the size of the hunk table, then the first and the
++       last hunk of it that this file loads: the size words that follow are
++       those of the hunks first..last, as InternalLoadSeg_AOS() of dos reads
++       them, and the hunk numbers in the relocation blocks are numbers of
++       that table. An ordinary load file has first 0 and last one below the
++       table size. A range that is no part of the table is not a header. */
++    if (first > last || last >= num_hunks) return 0;
++    hunks = last - first + 1;
++
+     /* Read hunk sizes (in longwords) */
+-    hunk_sizes = (ULONG *)AllocMem(num_hunks * sizeof(ULONG), MEMF_CLEAR);
+-    hunk_addrs = (ULONG *)AllocMem(num_hunks * sizeof(ULONG), MEMF_CLEAR);
+-    hunk_reqs  = (ULONG *)AllocMem(num_hunks * sizeof(ULONG), MEMF_CLEAR);
++    hunk_sizes = (ULONG *)AllocMem(hunks * sizeof(ULONG), MEMF_CLEAR);
++    hunk_addrs = (ULONG *)AllocMem(hunks * sizeof(ULONG), MEMF_CLEAR);
++    hunk_reqs  = (ULONG *)AllocMem(hunks * sizeof(ULONG), MEMF_CLEAR);
+     if (!hunk_sizes || !hunk_addrs || !hunk_reqs) goto fail;
+ 
+-    for (i = 0; i < num_hunks; i++)
++    for (i = 0; i < hunks; i++)
+     {
+         ULONG v, reqs;
+ 
+@@ -723,15 +801,22 @@
+         }
+         hunk_sizes[i] = (v & HUNK_TYPE_MASK) * 4;
+         hunk_reqs[i] = reqs;
++        /* A hunk that cannot lie in containment. Refusing it here also
++           keeps the size plus the two words before the data from wrapping
++           below, where the block is allocated, cleared and filled. */
++        if (hunk_sizes[i] > ctx->mem_size) goto fail;
+     }
+ 
+     /* Allocate space for each hunk in containment memory, cleared: BSS and
+        the part of a hunk its block does not fill read as zero */
+-    for (i = 0; i < num_hunks; i++)
++    for (i = 0; i < hunks; i++)
+     {
+         ULONG addr = M68KEmu_HeapAlloc(ctx, hunk_sizes[i] + 8, hunk_reqs[i]);
+         if (!addr && hunk_reqs[i]) addr = M68KEmu_HeapAlloc(ctx, hunk_sizes[i] + 8, 0);
+         if (!addr) goto fail;
++        /* cleared and filled below without the accessors: what the heap
++           answers has to be a span of containment */
++        if (!m68k_in_mem(ctx, addr, hunk_sizes[i] + 8)) goto fail;
+         memset(ctx->mem + addr, 0, hunk_sizes[i] + 8);
+         /* as LoadSeg() lays it out: ULONG size, BPTR next, data */
+         m68k_write32(ctx, addr, hunk_sizes[i] + 8);
+@@ -752,34 +837,52 @@
+             if (p + 4 > end) goto fail;
+             ULONG longs = rd32(&p) & HUNK_TYPE_MASK;
+             ULONG bytes = longs * 4;
+-            if (p + bytes > end || i >= num_hunks || bytes > hunk_sizes[i]) goto fail;
+-
+-            /* Copy data into containment space */
+-            memcpy(m68k_to_host(ctx, hunk_addrs[i]), p, bytes);
++            if (bytes > (ULONG)(end - p) || i >= hunks || bytes > hunk_sizes[i]) goto fail;
++
++            /* Copy data into containment space. A block without contents
++               has nothing to copy, and a hunk of no bytes at the very end
++               of containment has no address a copy could be given */
++            if (bytes)
++                memcpy(m68k_to_host(ctx, hunk_addrs[i]), p, bytes);
+             p += bytes;
+         }
+         else if (type == HUNK_BSS)
+         {
++            ULONG longs;
++
++            /* The block is its length alone, in longwords as for CODE and
++               DATA; the hunk is already zeroed. It has to be a hunk of
++               this file and no longer than the header says that hunk is */
+             if (p + 4 > end) goto fail;
+-            rd32(&p); /* skip size, already zeroed */
++            longs = rd32(&p) & HUNK_TYPE_MASK;
++            if (i >= hunks || longs > hunk_sizes[i] / 4) goto fail;
+         }
+         else if (type == HUNK_RELOC32)
+         {
+-            while (p + 4 <= end)
++            /* Groups of a count, a target hunk and that many offsets; a
++               zero count ends the block. A file that ends where the next
++               count belongs is cut inside this block and is refused, as
++               the 16-bit forms below refuse it. A file that ends between
++               two whole blocks is another matter and is not changed here */
++            for (;;)
+             {
++                if (p + 4 > end) goto fail;
+                 ULONG count = rd32(&p);
+                 if (count == 0) break;
+                 if (p + 4 > end) goto fail;
+                 ULONG ref_hunk = rd32(&p);
+-                if (ref_hunk >= num_hunks) goto fail;
+-
+-                ULONG ref_base = hunk_addrs[ref_hunk];
++                if (ref_hunk < first || ref_hunk > last) goto fail;
++
++                ULONG ref_base = hunk_addrs[ref_hunk - first];
+                 ULONG j;
+                 for (j = 0; j < count; j++)
+                 {
+                     if (p + 4 > end) goto fail;
+                     ULONG offset = rd32(&p);
+-                    if (i < num_hunks && offset < hunk_sizes[i] && hunk_sizes[i] - offset >= 4)
++                    /* a longword that does not lie in the hunk it is said
++                       to be in: the file is not relocated and not run */
++                    if (i >= hunks || offset >= hunk_sizes[i] || hunk_sizes[i] - offset < 4)
++                        goto fail;
+                     {
+                         ULONG addr = hunk_addrs[i] + offset;
+                         ULONG val = m68k_read32(ctx, addr);
+@@ -802,23 +905,25 @@
+                 if (count == 0) break;
+                 if (p + 2 > end) goto fail;
+                 ref_hunk = (p[0] << 8) | p[1]; p += 2;
+-                if (ref_hunk >= num_hunks || i >= num_hunks) goto fail;
++                if (ref_hunk < first || ref_hunk > last || i >= hunks) goto fail;
+                 for (j = 0; j < count; j++)
+                 {
+                     ULONG offset;
+ 
+                     if (p + 2 > end) goto fail;
+                     offset = (p[0] << 8) | p[1]; p += 2;
+-                    if (offset < hunk_sizes[i] && hunk_sizes[i] - offset >= 4)
++                    if (offset >= hunk_sizes[i] || hunk_sizes[i] - offset < 4)
++                        goto fail;
+                     {
+                         ULONG addr = hunk_addrs[i] + offset;
+-                        ULONG add = type == HUNK_RELRELOC32 ? hunk_addrs[ref_hunk] - hunk_addrs[i] : hunk_addrs[ref_hunk];
++                        ULONG add = type == HUNK_RELRELOC32 ? hunk_addrs[ref_hunk - first] - hunk_addrs[i]
++                                                            : hunk_addrs[ref_hunk - first];
+                         m68k_write32(ctx, addr, m68k_read32(ctx, addr) + add);
+                     }
+                 }
+             }
+             if ((p - start) & 2)
+-                p += 2;
++                p = end - p >= 2 ? p + 2 : end;
+         }
+         else if (type == HUNK_SYMBOL)
+         {
+@@ -829,7 +934,7 @@
+                 if (p + 4 > end) goto fail;
+                 n = rd32(&p) & 0x00FFFFFF;
+                 if (n == 0) break;
+-                if (p + 4 * (n + 1) > end) goto fail;
++                if (4 * (n + 1) > (ULONG)(end - p)) goto fail;
+                 p += 4 * (n + 1);
+             }
+         }
+@@ -839,7 +944,7 @@
+ 
+             if (p + 4 > end) goto fail;
+             n = rd32(&p);
+-            if (p + 4 * n > end) goto fail;
++            if (n > (ULONG)(end - p) / 4) goto fail;
+             p += 4 * n;
+         }
+         else if (type == HUNK_END)
+@@ -860,28 +965,90 @@
+        later hunk can sit below the first one */
+     ctx->load_lo = 0xFFFFFFFF;
+     ctx->load_hi = 0;
+-    for (i = 0; i < num_hunks; i++)
++    for (i = 0; i < hunks; i++)
+     {
+         if (hunk_addrs[i] < ctx->load_lo) ctx->load_lo = hunk_addrs[i];
+         if (hunk_addrs[i] + hunk_sizes[i] > ctx->load_hi) ctx->load_hi = hunk_addrs[i] + hunk_sizes[i];
+     }
+ 
+-    FreeMem(hunk_sizes, num_hunks * sizeof(ULONG));
+-    FreeMem(hunk_addrs, num_hunks * sizeof(ULONG));
+-    FreeMem(hunk_reqs, num_hunks * sizeof(ULONG));
++    FreeMem(hunk_sizes, hunks * sizeof(ULONG));
++    FreeMem(hunk_addrs, hunks * sizeof(ULONG));
++    FreeMem(hunk_reqs, hunks * sizeof(ULONG));
+     return entry_point;
+ 
+ fail:
+     if (hunk_addrs) {
+-        for (i = 0; i < num_hunks; i++) {
++        for (i = 0; i < hunks; i++) {
+             if (hunk_addrs[i])
+                 M68KEmu_HeapFree(ctx, hunk_addrs[i] - 8, hunk_sizes[i] + 8);
+         }
+-        FreeMem(hunk_addrs, num_hunks * sizeof(ULONG));
+-    }
+-    if (hunk_sizes) FreeMem(hunk_sizes, num_hunks * sizeof(ULONG));
+-    if (hunk_reqs) FreeMem(hunk_reqs, num_hunks * sizeof(ULONG));
++        FreeMem(hunk_addrs, hunks * sizeof(ULONG));
++    }
++    if (hunk_sizes) FreeMem(hunk_sizes, hunks * sizeof(ULONG));
++    if (hunk_reqs) FreeMem(hunk_reqs, hunks * sizeof(ULONG));
+     return 0;
++}
++
++/* One hunk of an image that M68KEmu_LoadHunksFromMemory() placed, as
++   LoadSeg() lays it out: ULONG size, BPTR next, data. Takes the address of
++   the data of a hunk (the entry point is the data of the first hunk) and
++   gives the size of that data and the address of the data of the next
++   hunk, 0 after the last. FALSE when the two words before the data do not
++   describe a block inside containment: nothing is taken from them then. */
++BOOL M68KEmu_ImageHunk(struct M68KEmuContext *ctx, ULONG data, ULONG *size, ULONG *next)
++{
++    ULONG total, link;
++
++    if (data < 8 || !m68k_in_mem(ctx, data - 8, 8))
++        return FALSE;
++    total = m68k_read32(ctx, data - 8);
++    link  = m68k_read32(ctx, data - 4);
++    if (total < 8 || !m68k_in_mem(ctx, data - 8, total))
++        return FALSE;
++    /* the link is the BPTR of the link word of the next block */
++    if (link >= (ctx->mem_size >> 2))
++        return FALSE;
++    *size = total - 8;
++    *next = link ? (link << 2) + 4 : 0;
++    return TRUE;
++}
++
++/* Give back the hunks of an image that M68KEmu_LoadHunksFromMemory() placed
++   and that is not going to be used. Only the blocks of that image's own
++   chain are freed, each with the size it was allocated with. */
++void M68KEmu_FreeImage(struct M68KEmuContext *ctx, ULONG entry)
++{
++    ULONG data = entry, hunks = 0;
++
++    /* an image has at most 100 hunks, see M68KEmu_LoadHunksFromMemory() */
++    while (data && hunks++ < 100)
++    {
++        ULONG size = 0, next = 0;
++
++        if (!M68KEmu_ImageHunk(ctx, data, &size, &next))
++            break;
++        M68KEmu_HeapFree(ctx, data - 8, size + 8);
++        data = next;
++    }
++}
++
++/* Give back a copy M68KEmu_LoadHunks() made and that is not going to be
++   run. The copy is chained as an image is, but a seglist has no limit of
++   100 segments: the walk ends with the chain, or with the number of
++   blocks containment can hold. */
++void M68KEmu_FreeHunks(struct M68KEmuContext *ctx, ULONG entry)
++{
++    ULONG data = entry, left = ctx->mem_size / 8;
++
++    while (data && left--)
++    {
++        ULONG size = 0, next = 0;
++
++        if (!M68KEmu_ImageHunk(ctx, data, &size, &next))
++            break;
++        M68KEmu_HeapFree(ctx, data - 8, size + 8);
++        data = next;
++    }
+ }
+ 
+ /* Auto-open libraries: scan containment memory for the C startup pattern:
+--- a/rom/m68kemu/m68kemu_shadow.c
++++ b/rom/m68kemu/m68kemu_shadow.c
+@@ -562,13 +562,14 @@
+ 
+ /* ── ExecBase shadow init ── */
+ 
+-/* ExecBase embedded list offsets (m68k -> AROS) */
++/* ExecBase embedded list offsets (m68k -> AROS). The native ones are the
++   target compiler's: they are not the same on every target. */
+ static const struct { UWORD m68k_off; UWORD native_off; const char *name; } execbase_lists[] = {
+-    { M68K_EXECBASE_INTRLIST,      720, "IntrList" },
+-    { M68K_EXECBASE_PORTLIST,      784, "PortList" },
+-    { M68K_EXECBASE_TASKREADY,     816, "TaskReady" },
+-    { M68K_EXECBASE_TASKWAIT,      848, "TaskWait" },
+-    { M68K_EXECBASE_SEMAPHORELIST, 1104, "SemaphoreList" },
++    { M68K_EXECBASE_INTRLIST,      offsetof(struct ExecBase, IntrList), "IntrList" },
++    { M68K_EXECBASE_PORTLIST,      offsetof(struct ExecBase, PortList), "PortList" },
++    { M68K_EXECBASE_TASKREADY,     offsetof(struct ExecBase, TaskReady), "TaskReady" },
++    { M68K_EXECBASE_TASKWAIT,      offsetof(struct ExecBase, TaskWait), "TaskWait" },
++    { M68K_EXECBASE_SEMAPHORELIST, offsetof(struct ExecBase, SemaphoreList), "SemaphoreList" },
+     {   0,    0, NULL },
+ };
+ 
+--- a/rom/m68kemu/m68kemu_tasks.c
++++ b/rom/m68kemu/m68kemu_tasks.c
+@@ -864,6 +864,7 @@
+ {
+     struct M68KEmuContext *ctx;
+     ULONG entry, stack, stacksize, exitcode, exitdata;
++    ULONG copy;         /* a seglist copied for this child that it gives back at its end, or 0 */
+     struct Task *parent;
+ };
+ 
+@@ -890,6 +891,14 @@
+             regs[1] = ch->exitdata;
+             M68KEmu_RunTask(ctx, ch->exitcode, ch->stack + ch->stacksize, regs);
+         }
++    }
++    /* A copy this child owns: its entry and its exit code have returned,
++       nothing of it runs any more. Given back while the lock is held,
++       before the stack and the rest. */
++    if (ch->copy)
++    {
++        M68KEmu_FreeHunks(ctx, ch->copy);
++        ch->copy = 0;
+     }
+     M68KEmu_HeapFree(ctx, ch->stack, ch->stacksize);
+     ctx->num_children--;
+@@ -970,15 +979,20 @@
+ }
+ 
+ /* A process of the program: from CreateNewProc tags, or CreateProc's name,
+-   priority, seglist and stack; NP_Entry or the seglist is 68k code */
++   priority, seglist and stack; NP_Entry or the seglist is 68k code.
++   freeseg: NP_FreeSeglist when the program does not give it, as dos has
++   it: TRUE for CreateNewProc, FALSE for CreateProc */
+ static IPTR create_proc(struct M68KEmuContext *ctx, void *cpu, ULONG state,
+-                        ULONG name68k, LONG pri, ULONG seglist, ULONG stacksize)
++                        ULONG name68k, LONG pri, ULONG seglist, ULONG stacksize,
++                        BOOL freeseg)
+ {
+     ULONG ti, tags = state;
+     struct M68KChild *ch;
+     struct TagItem t[20];
+     struct Process *p;
+     char *name = NULL;
++    ULONG copy = 0;     /* the entry of a seglist copied here for this process */
++    BOOL freeseg_given = FALSE;
+     int n = 0;
+ 
+     if (!(ch = AllocVec(sizeof(*ch), MEMF_CLEAR)))
+@@ -1020,11 +1034,20 @@
+         case NP_HomeDir:
+             t[n].ti_Tag = tag; t[n++].ti_Data = (IPTR)m68k_bptr_in(ctx, data);
+             break;
++        case NP_FreeSeglist:
++            /* passed on as before, every one; a copy made below follows
++               the first, the one dos goes by (FindTagItem) */
++            if (!freeseg_given)
++            {
++                freeseg = data != 0;
++                freeseg_given = TRUE;
++            }
++            t[n].ti_Tag = tag; t[n++].ti_Data = data;
++            break;
+         case NP_CloseInput:
+         case NP_CloseOutput:
+         case NP_CloseError:
+         case NP_Cli:
+-        case NP_FreeSeglist:
+             t[n].ti_Tag = tag; t[n++].ti_Data = data;
+             break;
+         }
+@@ -1080,7 +1103,7 @@
+         if (seg)
+         {
+             ULONG ep = ctx->entry_point, ss = ctx->seg_start;
+-            ch->entry = M68KEmu_LoadHunks(ctx, seg);
++            ch->entry = copy = M68KEmu_LoadHunks(ctx, seg);
+             ctx->entry_point = ep;
+             ctx->seg_start = ss;
+         }
+@@ -1094,6 +1117,9 @@
+             while (st && (t2 = m68k_next_tag(ctx, &st)))
+                 bug("[m68kemu]   %08lx = %08lx\n", (unsigned long)m68k_read32(ctx, t2), (unsigned long)m68k_read32(ctx, t2 + 4));
+         }
++        /* a seglist copied for a process that is not started */
++        if (copy)
++            M68KEmu_FreeHunks(ctx, copy);
+         FreeVec(ch);
+         FreeVec(name);
+         return 0;
+@@ -1113,32 +1139,50 @@
+         ctx->num_children--;
+         m68k_context_release(ctx);
+         M68KEmu_HeapFree(ctx, ch->stack, ch->stacksize);
++        if (copy)
++            M68KEmu_FreeHunks(ctx, copy);
+         FreeVec(ch);
+         return 0;
+     }
+     /* the child waits for the program's lock before it does anything */
+     m68k_process_forget(ctx, &p->pr_Task);
+     ULONG mproc = m68k_process_of(ctx, &p->pr_Task);
++    /* A copy of a seglist that dos would unload when the process ends
++       (NP_FreeSeglist TRUE) belongs to the child from here, which gives it
++       back after its last use; set while the parent holds the lock, before
++       the child can run. With NP_FreeSeglist FALSE, as CreateProc has it,
++       the program keeps the seglist and whatever it published of it (an
++       interrupt, a timer vector, a semaphore) after the process: the copy
++       stays in the program's memory then, as before. */
++    if (mproc && copy && freeseg)
++        ch->copy = copy;
+     /* No m68k Process for it: the program is told that there is no child.
+        The native process exists already, so it is cancelled while it still
+        waits for the lock: it will run neither its entry nor its exit code,
+        and gives back its stack, its count and its hold itself. */
+     if (!mproc)
++    {
+         ch->entry = ch->exitcode = 0;
++        /* a seglist copied for a process that is cancelled: it is not
++           going to be run, so it is given back now, while the child still
++           waits for the lock */
++        if (copy)
++            M68KEmu_FreeHunks(ctx, copy);
++    }
+     return mproc;
+ }
+ 
+ /* dos -498: CreateNewProc(D1=tags) */
+ IPTR m68k_dos_CreateNewProc(struct M68KEmuContext *ctx, void *cpu)
+ {
+-    return create_proc(ctx, cpu, M68KEmu_GetD(cpu, 1), 0, 0, 0, 0);
++    return create_proc(ctx, cpu, M68KEmu_GetD(cpu, 1), 0, 0, 0, 0, TRUE);
+ }
+ 
+ /* dos -138: CreateProc(D1=name, D2=pri, D3=seglist, D4=stack) -> the process's port */
+ IPTR m68k_dos_CreateProc(struct M68KEmuContext *ctx, void *cpu)
+ {
+     IPTR proc = create_proc(ctx, cpu, 0, M68KEmu_GetD(cpu, 1), (LONG)M68KEmu_GetD(cpu, 2),
+-                            M68KEmu_GetD(cpu, 3), M68KEmu_GetD(cpu, 4));
++                            M68KEmu_GetD(cpu, 3), M68KEmu_GetD(cpu, 4), FALSE);
+     return proc ? proc + M68K_PR_MSGPORT : 0;
+ }
+ 
