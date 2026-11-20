@@ -203,7 +203,7 @@ which assemble them from hand-encoded instructions:
 | `kjdiv` | `jit` | present | 12 | the engine ran 13 instructions in 3 runs, the interpreter ran 3 |
 
 All sixteen cases finished, each with `m68kemu.library 1.2` reported by
-`Version`. The two `kjdiv` cases are a fourth run, with the same library.
+`Version`. The two `kjdiv` cases are a fourth run, on 21 November, with the same library.
 
 That shows:
 
