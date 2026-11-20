@@ -214,8 +214,8 @@ memory) with `STOP_UNSUPPORTED` and the text "divisor read through the
 host", before any host call: PC at the division, nothing of it done,
 whatever the divisor's value. The host has to execute such a division
 itself; the host side of section 10 gives it to the interpreter, as every
-instruction the engine does not execute. No native case has run such a
-division yet. The
+instruction the engine does not execute, and a native case has run two
+such divisions that way. The
 [engine page](../../../docs/kaffeine/jit68-engine.md) lists the forms the
 host checks cover. The contract above is unchanged.
 

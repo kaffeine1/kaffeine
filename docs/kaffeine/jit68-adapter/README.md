@@ -12,10 +12,10 @@ a patch for `rom/m68kemu` of AROS mainline that lets `m68kemu.library` run
 first runs on AROS AArch64 under QEMU.
 
 State on 20 November 2026: the patch is written and has run on AROS AArch64
-under QEMU. Fourteen cases with four small 68k programs, with the
+under QEMU. Sixteen cases with five small 68k programs, with the
 interpreter alone and with the engine under it, gave the expected results;
 one of the programs has a process of its own, a software interrupt and a
-vertical blank server. It has not run an application and has not run on
+vertical blank server, and one has divisions the engine declines. It has not run an application and has not run on
 hardware. It is not submitted to AROS mainline.
 
 ## What it does
@@ -175,6 +175,11 @@ which assemble them from hand-encoded instructions:
   server with `AddIntServer()` while it runs a loop of twenty million
   instructions. It writes its three counters and its sum to `Output()` and
   returns 12 when all is right.
+- `kjdiv` makes three divisions and checks each result: one whose divisor
+  is the custom chip register POTGOR, which the library answers itself, one
+  whose divisor is in the program's memory, and a signed one on the same
+  register through an absolute address. The engine declines a division
+  whose divisor it would have to read through the library.
 - `hunk7` is `moveq #7,d0; rts`.
 
 | program | `M68KEMU_CPU` | engine library | result | what the library said |
@@ -194,8 +199,11 @@ which assemble them from hand-encoded instructions:
 | `kjtask` | unset | present | 12 | nothing; the software interrupt ran once, the process stored its sum, the server saw 158 vertical blanks |
 | `kjtask` | `jit` | present | 12 | the engine ran 20500117 instructions in 20041 runs, the interpreter ran 330; the software interrupt ran once, the process stored the same sum, the server saw 30 vertical blanks |
 
-All fourteen cases finished, each with `m68kemu.library 1.2` reported by
-`Version`.
+| `kjdiv` | unset | present | 12 | nothing |
+| `kjdiv` | `jit` | present | 12 | the engine ran 13 instructions in 3 runs, the interpreter ran 3 |
+
+All sixteen cases finished, each with `m68kemu.library 1.2` reported by
+`Version`. The two `kjdiv` cases are a fourth run, with the same library.
 
 That shows:
 
@@ -211,6 +219,10 @@ That shows:
   half a million instructions on the engine) and the vertical blank
   interrupt (raised between engine slices, taken by the interpreter, its
   server run 30 times in the shorter loop) work.
+- A division the engine declines is executed by the interpreter and the
+  run goes on: of the 16 instructions of `kjdiv`, the interpreter ran the
+  first one and the two divisions on the custom register, and the engine
+  the other 13, the third division among them.
 - `jit` without the library and an invalid value refuse the run before any
   68k instruction; `auto` without the library falls back and says why.
 
@@ -230,8 +242,8 @@ with the table.
 ## Not done
 
 - A hook that a native library calls (a BOOPSI dispatcher, a layers
-  hook), a CIA timer interrupt, and a division the engine declines, under
-  the engine. The code paths exist; no case ran them.
+  hook) and a CIA timer interrupt, under the engine. The code paths exist;
+  no case ran them.
 - An application.
 - Hardware. Every run was under QEMU.
 - A refused run returns -1 with `ERROR_INVALID_RESIDENT_LIBRARY`, but in
