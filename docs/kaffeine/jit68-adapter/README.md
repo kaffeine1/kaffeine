@@ -236,8 +236,10 @@ with the table.
 - Hardware. Every run was under QEMU.
 - A refused run returns -1 with `ERROR_INVALID_RESIDENT_LIBRARY`, but in
   these runs the Shell still printed an unrelated reason: after a command,
-  dos flushes the command's input, and for the startup script that flush
-  left its own error code. That is in dos, outside this patch.
+  dos flushes the command's input, and that flush left its own error code.
+  That is in dos, outside this patch; a fix for it is proposed to AROS as
+  [pull request 2353](https://github.com/aros-development-team/AROS/pull/2353).
+  The two have not been run together.
 - A build rule in the AROS tree for the engine library, and a submission of
   the adapter to AROS mainline.
 - An independent review of this patch.
