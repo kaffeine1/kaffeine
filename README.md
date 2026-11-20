@@ -6,10 +6,12 @@ it already has. The JIT is meant to become a separate optional library
 beside it, `kaffeine-jit68.library`, which `m68kemu.library` can use as its
 CPU backend. Its interface and engine source are in
 [`experimental/kaffeine-jit68`](experimental/kaffeine-jit68/README.md); the
-engine has passed its host checks, and a probe of the engine library has
-run on AROS AArch64 under QEMU; `m68kemu.library` does not use it yet
-([engine status](docs/kaffeine/jit68-engine.md)). Apart from those checks
-and that probe, the JIT that has run is in the legacy `kaffeine.library`
+engine has passed its host checks, a probe of the engine library has run
+on AROS AArch64 under QEMU, and with a patch for `m68kemu.library` the two
+libraries have run small 68k programs together there
+([engine status](docs/kaffeine/jit68-engine.md),
+[adapter](docs/kaffeine/jit68-adapter/README.md)). Apart from those checks,
+that probe and those programs, the JIT that has run is in the legacy `kaffeine.library`
 and in standalone probes. This repository
 holds that work, and the corrections `m68kemu.library` needs for 68k
 software on AROS ARM64. The aim behind it is to keep

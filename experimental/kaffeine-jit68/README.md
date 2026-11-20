@@ -11,7 +11,9 @@ checks of the engine. It is experimental. The directory [`aros`](aros) holds
 what makes the engine an AROS library, `kaffeine-jit68.library`, and a
 native probe of that library; a script builds both outside an AROS tree,
 and no `mmakefile.src` exists for them yet. The side of `m68kemu.library`
-that would load the engine is not written yet. What the engine is for, and
+that loads the engine is a patch for AROS mainline, on the
+[adapter page](../../docs/kaffeine/jit68-adapter/README.md), where the two
+libraries have run together under QEMU. What the engine is for, and
 the state of each step, are on the
 [engine page](../../docs/kaffeine/jit68-engine.md).
 
@@ -68,8 +70,7 @@ read through the host is declined before any host call (the
 [engine page](../../docs/kaffeine/jit68-engine.md) says how). It does not
 show that the engine follows the interface in every case, a build without
 the test seams, Linux or another compiler, anything on AROS or with an AROS
-compiler, the host side in `m68kemu.library`, which would have to execute a
-declined division itself and is not written, an application, a
+compiler, the host side in `m68kemu.library`, an application, a
 multiprocessor system or a speed.
 
 An earlier version of this source, with 25 groups and without the change to

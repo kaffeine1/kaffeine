@@ -5,11 +5,15 @@ Author: Michele Dipace (@kaffeine1)
 
 # kaffeine-jit68.library: interface version 1
 
-Version 1.0 of the interface, source revision 2. The engine in
+Version 1.0 of the interface, source revision 3. The engine in
 [`../engine`](../engine) implements it, and its host checks have passed
 (see [the README](../README.md)). The host side in `m68kemu.library`
-(section 10) is not written yet. On AROS the engine has run only through a
-probe of its library, which the README describes.
+(section 10) is written as a patch for AROS mainline and has run with the
+engine on AROS AArch64 under QEMU: the
+[adapter page](../../../docs/kaffeine/jit68-adapter/README.md) has the
+patch and the runs. Revision 3 rewrites section 10 to what that host side
+does and changes nothing of the interface; the header is the one of
+revision 2.
 
 The header `kaffeine-jit68-abi-v1.h` beside this file declares every name
 used here. The host is `m68kemu.library` of AROS mainline; the engine is the
@@ -209,7 +213,9 @@ in a `KJ68_RANGE_READ_HOST` range, in whole or in part, or outside guest
 memory) with `STOP_UNSUPPORTED` and the text "divisor read through the
 host", before any host call: PC at the division, nothing of it done,
 whatever the divisor's value. The host has to execute such a division
-itself; the host side that would do so (section 10) is not written. The
+itself; the host side of section 10 gives it to the interpreter, as every
+instruction the engine does not execute. No native case has run such a
+division yet. The
 [engine page](../../../docs/kaffeine/jit68-engine.md) lists the forms the
 host checks cover. The contract above is unchanged.
 
@@ -298,57 +304,93 @@ For one program run:
 A CPU whose run ended with `STOP_HOST` or `STOP_FAULT` is destroyed by the
 same rule. Nothing of the engine survives step 6 for that run.
 
-## 10. Selection and outcomes (host behaviour, not implemented yet)
+## 10. Selection and outcomes (host behaviour)
 
-The environment variable `M68KEMU_CPU`, read once per `RunHunk`/`RunFile`
-call before any guest instruction (local variable first, then global, as
-`M68KEMU_TRACE` is read):
+This section describes the host side written for `m68kemu.library` of AROS:
+the adapter, with its design, patch and native runs in
+[docs/kaffeine/jit68-adapter](../../../docs/kaffeine/jit68-adapter/README.md).
+It is the host's choice and not part of the interface. Source revision 3
+replaces the plan of revision 2, which had the host complete library calls
+itself through registers and memory and stop the program on `Supervisor()`,
+RTE, guest exception handlers and interrupts. The interface did not change.
 
-| value | backend |
+**The engine runs under the interpreter.** Every CPU of a run stays an
+interpreter CPU (`AROSMoira`): it keeps the registers the thunks read and
+write, takes every exception and interrupt and makes every library call as
+it does without an engine. With the engine selected, each of those objects
+also has an engine CPU, and each of the host's three execution loops (the
+program, a process of the program, a call from native code into 68k code)
+tries an engine slice before it interprets an instruction:
+
+- The engine takes over only at a plain instruction boundary: nothing
+  pending in the interpreter core (stopped, trace, an interrupt to check),
+  no interrupt raised and not yet taken, SR inside the model of section 5,
+  PC even, at or above 0x1000 and inside memory. Below 0x1000 are the
+  vectors and the host's own stubs.
+- D0-D7, A0-A7, SR and PC go to the engine with `set_reg`, it runs with a
+  budget of 1024, and they come back with `get_reg`. The PC comes back
+  through the interpreter's own prefetch reads, so a run that ends at one
+  of the return sentinels ends the loop exactly as it does without the
+  engine.
+- The instruction a run stopped at without executing it is one step of the
+  interpreter. An A-line opcode is a library call through the existing
+  dispatcher, with its exception frame and its RTE. `STOP_EXCEPTION`,
+  `STOP_UNSUPPORTED` and `STOP_PC_OUTSIDE` are handled the same way. So
+  `Supervisor()`, RTE, exceptions with a guest handler, MOVEC, CINV, CPUSH,
+  MOVE16 and the vertical blank and CIA interrupts are the interpreter's
+  code, unchanged.
+- `STOP_HOST`, `STOP_FAULT`, or a `run()` that does not answer `KJ68_OK`,
+  stop the program as a fault (`m68k_program_stop(ctx, TRUE)`) with a
+  diagnostic giving PC, opcode and text, and the result of the run is 20.
+  The host's callbacks never ask for a stop, so `STOP_HOST` is an engine
+  defect.
+
+The map (section 4) has the first page as a range written through the host
+(the low-memory guard and the host's stubs), the CIA and custom chip pages
+as ranges read and written through the host, and the bitplane range as a
+range written through the host while a program draws into a screen's
+planes. `generation` is incremented when a thunk changes that last range.
+The host's `read` and `write` call the interpreter's own access functions
+on the CPU that makes the access.
+
+Selection. The environment variable `M68KEMU_CPU` is read once per
+`RunHunk`/`RunFile` call, before the program is loaded (local variable
+first, then global):
+
+| value | run |
 | --- | --- |
-| unset, empty, `interpreter` | Moira, exactly as today |
-| `jit` | the engine; every failure below is final |
-| `auto` | the engine if every check below passes, otherwise Moira |
-| anything else | the call returns -1 before execution, with a diagnostic |
+| unset, empty | the interpreter, exactly as without the adapter, and no diagnostic |
+| `interpreter` | the interpreter; one line says so |
+| `jit` | the engine under the interpreter. If the library is absent, `KJ68_GetEngine` gives no table of interface 1.0, `domain_create` fails or the engine CPU of the program cannot be made, the call returns -1 with a diagnostic and no guest instruction runs |
+| `auto` | as `jit` when all of that works, otherwise the interpreter, with the reason in the line |
+| anything else | the call returns -1 with a diagnostic |
 
-| condition before the first guest instruction | `jit` | `auto` |
-| --- | --- | --- |
-| library absent | -1 | Moira |
-| `KJ68_GetEngine` NULL, size, version or capability mismatch | -1 | Moira |
-| `domain_create` or the root `cpu_create` fails (`NOMEM`, `NOHOST`, ...) | -1 | Moira |
+With the variable set, one line per run says what runs the program: the
+engine's `name` and interface version, or the interpreter and why. After a
+run with the engine a second line gives its counters (`get_stats`) and the
+number of instructions the interpreter ran, so that a run is never reported
+as more of the engine's than it was. An engine CPU that cannot be made for
+a later process or nested call leaves that CPU with the interpreter, with
+one line.
 
-`RunHunk` and `RunFile` already return -1 for failures before execution.
-One diagnostic line per run names the backend actually used, the engine
-`name` and ABI version, or the reason `auto` chose Moira; after a run with
-the engine, one line gives its counters (`get_stats`). The choice holds for
-the whole run: every CPU of the run, root, children and nested, uses the
-same backend, and there is no switch during execution in either direction.
+Invalidation (section 8) is called for all memory at the three loaders,
+`M68KEmu_SetupLibBase`, the two stubs that thunks write into the heap, the
+exec calls `CacheClearU`, `CacheClearE` and `CacheControl`, and at CINV or
+CPUSH.
 
-After guest execution has started:
+Teardown follows section 9. An engine CPU is destroyed with its interpreter
+CPU, the program's own before `m68k_ts_drop`. `M68KEmu_DestroyContext`
+destroys the domain after the last CPU and before it frees the program's
+memory, then closes the library.
 
-- a failed child or nested `cpu_create` behaves as the interpreter path's
-  failed allocation does today (`M68KEmu_RunTask` and `M68KEmu_Call68k`
-  return 0), with a diagnostic;
-- `STOP_UNSUPPORTED` or `STOP_EXCEPTION` that the host does not complete
-  (see below), `STOP_HOST` and `STOP_FAULT` stop the program as a fault
-  (`m68k_program_stop(ctx, TRUE)`) with a diagnostic giving reason, PC,
-  opcode and text, and the result of the run is 20 (a faulted run of the
-  interpreter returns the root D0, which can be 0; the engine path does
-  not inherit that ambiguity);
-- an explicit engine run is never reported as the interpreter, and the
-  interpreter is never reported as the engine.
+Limits of this host side:
 
-What the host completes itself in version 1.0, through registers and
-memory: A-line dispatch (the canonical steps 1-12 without the exception
-frame: pop the return address, call the thunk, set D0 and CCR, apply the
-tail call, set PC), the return sentinels, MOVEC (with the answers the
-interpreter gives, the skip of an unimplemented control register included;
-the host side is to pin them against Moira's MOVEC for the LC040 model),
-CINV/CPUSH/MOVE16 (as `emulate040` does today, with an
-`invalidate` for CINV/CPUSH of the instruction cache). Not completed under
-the engine in version 1.0, and so a stop with 20: `Supervisor()`, RTE, exceptions that need a guest handler,
-and interrupt delivery. How the vertical blank and CIA servers run without
-interrupts is decided with the host side.
+- The interpreter stays linked and needed.
+- The instruction ring of `M68KEMU_TRACE` has one entry per engine slice.
+- An interrupt can be late by one slice.
+- Code that a program stores into memory it already ran, without a cache
+  call, is stale under the engine and fresh under the interpreter (section
+  8).
 
 ## 11. Scope
 
