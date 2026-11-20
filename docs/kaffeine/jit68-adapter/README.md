@@ -12,11 +12,11 @@ a patch for `rom/m68kemu` of AROS mainline that lets `m68kemu.library` run
 first runs on AROS AArch64 under QEMU.
 
 State on 20 November 2026: the patch is written and has run on AROS AArch64
-under QEMU. Twelve cases with three small 68k programs, with the
-interpreter alone and with the engine under it, gave the expected results.
-It has not run an application, has not run on hardware, and has not run a
-program with processes or interrupts of its own. It is not submitted to
-AROS mainline.
+under QEMU. Fourteen cases with four small 68k programs, with the
+interpreter alone and with the engine under it, gave the expected results;
+one of the programs has a process of its own, a software interrupt and a
+vertical blank server. It has not run an application and has not run on
+hardware. It is not submitted to AROS mainline.
 
 ## What it does
 
@@ -54,7 +54,7 @@ is loaded (local variable first, then global):
 | --- | --- |
 | unset, empty | the interpreter, as without the adapter, and no message |
 | `interpreter` | the interpreter; one line says so |
-| `jit` | the engine under the interpreter, or no run at all: without the library, without a usable engine table, or when the engine cannot take the program's memory or make its CPU, the call returns -1 with a message |
+| `jit` | the engine under the interpreter, or no run at all: without the library, without a usable engine table, or when the engine cannot take the program's memory or make its CPU, the call returns -1 with a message and the error code `ERROR_INVALID_RESIDENT_LIBRARY` |
 | `auto` | the engine when all of that works, otherwise the interpreter, with the reason in the line |
 | anything else | -1 with a message |
 
@@ -121,7 +121,7 @@ applies to AROS master `b6dcaeeaa2724bbe4f6d9510c1ada4b8f69789fb`.
 | `m68kemu_jit.c` (new) | `M68KEMU_CPU`, opening the engine, the memory map, invalidation, the two message lines, the end |
 | `kaffeine-jit68-abi-v1.h` (new) | the interface header, as in `experimental/kaffeine-jit68/include` |
 | `m68kemu_moira.cpp` | an engine CPU per interpreter CPU, the slice, the slice tried in the three loops, the two access callbacks |
-| `m68kemu_run.c` | the selection, before the loader, in `RunHunk` and `RunFile` |
+| `m68kemu_run.c` | the selection, before the loader, in `RunHunk` and `RunFile`; the error code of a refused run |
 | `m68kemu_memory.c`, `m68kemu_m68klib.c`, `m68kemu_thunks.c` | invalidation where the library writes 68k code; the engine's end in `M68KEmu_DestroyContext` |
 | `m68kemu_intern.h` | the adapter's fields, at the end of the context |
 | `m68kemu.conf`, `mmakefile.src` | version 1.2; the new file |
@@ -138,8 +138,8 @@ procedure gives the build's own `m68kemu.library` byte for byte, and the
 objects of the files the patch does not touch came out identical to the
 build's objects. The compiler gave no new warning.
 
-Result: `m68kemu.library 1.2 (20.11.2026)`, 14087632 bytes, SHA-256
-`3c3a5be7e7faf554c2767d41370003274ce6453840c8862a8eef499be7654957`. The
+Result: `m68kemu.library 1.2 (20.11.2026)`, 14087952 bytes, SHA-256
+`c26e176f8425ccf4e3414e6ab274dc8f6eb33e00d7631d5121bc66adca8cad62`. The
 patch file is the source of exactly this library.
 
 ## Native runs
@@ -168,6 +168,13 @@ which assemble them from hand-encoded instructions:
 - `kjtime` takes `DateStamp()`, runs the loop of `kjsum` four million
   times, takes `DateStamp()` again and writes both stamps and the sum to
   `Output()`; it returns 12 when the sum is right.
+- `kjtask` makes the library run 68k code on more than one CPU of the
+  program. It calls exec `Cause()` with a software interrupt of its own;
+  starts a process with dos `CreateNewProc()` and `NP_Entry`, which sums in
+  a loop while the program waits in `Delay()`; and adds a vertical blank
+  server with `AddIntServer()` while it runs a loop of twenty million
+  instructions. It writes its three counters and its sum to `Output()` and
+  returns 12 when all is right.
 - `hunk7` is `moveq #7,d0; rts`.
 
 | program | `M68KEMU_CPU` | engine library | result | what the library said |
@@ -182,10 +189,12 @@ which assemble them from hand-encoded instructions:
 | `hunk7` | `jit` | present | 7 | the engine ran 1 instruction, the interpreter ran 1 |
 | `kjmix` | unset | present | 12 | nothing |
 | `kjmix` | `jit` | present | 12 | the engine ran 6179 instructions in 11 runs, the interpreter ran 9 |
-| `kjtime` | unset | present | 12 | nothing; the loop took 147 ticks of 1/50 s |
+| `kjtime` | unset | present | 12 | nothing; the loop took 155 ticks of 1/50 s |
 | `kjtime` | `jit` | present | 12 | the engine ran 20000024 instructions in 19519 runs, the interpreter ran 19; the loop took 30 ticks |
+| `kjtask` | unset | present | 12 | nothing; the software interrupt ran once, the process stored its sum, the server saw 158 vertical blanks |
+| `kjtask` | `jit` | present | 12 | the engine ran 20500117 instructions in 20041 runs, the interpreter ran 330; the software interrupt ran once, the process stored the same sum, the server saw 30 vertical blanks |
 
-All twelve cases finished, each with `m68kemu.library 1.2` reported by
+All fourteen cases finished, each with `m68kemu.library 1.2` reported by
 `Version`.
 
 That shows:
@@ -197,6 +206,11 @@ That shows:
   `Supervisor()` work, because the interpreter completes them. The few
   instructions the interpreter ran in each case are the library calls with
   their return, and the instructions the engine handed back.
+- Under the engine, a software interrupt (a nested call on a CPU of its
+  own), a process of the program (another CPU of the same engine domain,
+  half a million instructions on the engine) and the vertical blank
+  interrupt (raised between engine slices, taken by the interpreter, its
+  server run 30 times in the shorter loop) work.
 - `jit` without the library and an invalid value refuse the run before any
   68k instruction; `auto` without the library falls back and says why.
 
@@ -205,21 +219,25 @@ emulated machine under TCG on a busy host. They say that this loop was
 about five times faster with the engine there, and nothing about
 applications.
 
-A first run of eight cases on the same day used a `kjsum` that returned 42.
-The startup script stops at a result of 21 or more, so the cases of that
+The table is the third run of that day. The second had the first twelve
+rows with the build before this one, which did not yet set the error code
+of a refused run: the same results, with the timed loop at 147 and 30
+ticks. The first, of eight cases, used a `kjsum` that returned 42; the
+startup script stops at a result of 21 or more, so the cases of that
 program could not write their result. Their output and their lines agree
-with the table above.
+with the table.
 
 ## Not done
 
-- A program with processes of its own, calls from native code into 68k
-  code (hooks), or the vertical blank and CIA interrupts, under the engine.
-  The code paths exist; no case ran them.
+- A hook that a native library calls (a BOOPSI dispatcher, a layers
+  hook), a CIA timer interrupt, and a division the engine declines, under
+  the engine. The code paths exist; no case ran them.
 - An application.
 - Hardware. Every run was under QEMU.
-- A refused run returns -1 with the error code the process happened to
-  hold; the Shell then prints an unrelated message. A proper error code is
-  not set yet.
+- A refused run returns -1 with `ERROR_INVALID_RESIDENT_LIBRARY`, but in
+  these runs the Shell still printed an unrelated reason: after a command,
+  dos flushes the command's input, and for the startup script that flush
+  left its own error code. That is in dos, outside this patch.
 - A build rule in the AROS tree for the engine library, and a submission of
   the adapter to AROS mainline.
 - An independent review of this patch.

@@ -1,6 +1,6 @@
-From 1c05ab5296db6653bd20d2cd4ecbe2a95301cec1 Mon Sep 17 00:00:00 2001
+From dbb21b4315e95f0b1b22b8ec9fde90935668b299 Mon Sep 17 00:00:00 2001
 From: Michele Dipace <kaffeine1@users.noreply.github.com>
-Date: Fri, 20 Nov 2026 23:36:35 +0100
+Date: Fri, 20 Nov 2026 23:52:04 +0100
 Subject: [PATCH] m68kemu: an optional engine under the interpreter, selected
  by M68KEMU_CPU
 
@@ -22,7 +22,8 @@ Without M68KEMU_CPU nothing of this runs.
 - m68kemu_moira.cpp: an engine CPU per interpreter CPU, the slice, the
   two access callbacks; invalidation at CINV, CPUSH and the exec cache
   calls.
-- m68kemu_run.c: the selection before the loader in RunHunk and RunFile.
+- m68kemu_run.c: the selection before the loader in RunHunk and RunFile;
+  a refused run returns -1 with ERROR_INVALID_RESIDENT_LIBRARY.
 - m68kemu_memory.c, m68kemu_m68klib.c, m68kemu_thunks.c: invalidation
   where the library writes 68k code; the engine's end in
   M68KEmu_DestroyContext.
@@ -35,10 +36,10 @@ Without M68KEMU_CPU nothing of this runs.
  rom/m68kemu/m68kemu_m68klib.c       |   1 +
  rom/m68kemu/m68kemu_memory.c        |   5 +
  rom/m68kemu/m68kemu_moira.cpp       | 270 +++++++++++++++++++++++++++-
- rom/m68kemu/m68kemu_run.c           |   5 +-
+ rom/m68kemu/m68kemu_run.c           |  11 +-
  rom/m68kemu/m68kemu_thunks.c        |   2 +
  rom/m68kemu/mmakefile.src           |   1 +
- 10 files changed, 783 insertions(+), 5 deletions(-)
+ 10 files changed, 789 insertions(+), 5 deletions(-)
  create mode 100644 rom/m68kemu/kaffeine-jit68-abi-v1.h
  create mode 100644 rom/m68kemu/m68kemu_jit.c
 
@@ -1006,28 +1007,48 @@ index 935720ca3f..ddb7877c03 100644
      m68k_gil_release(ctx);
      if (ctx->trace_end)
 diff --git a/rom/m68kemu/m68kemu_run.c b/rom/m68kemu/m68kemu_run.c
-index 999449e69e..715fbeece3 100644
+index 999449e69e..9622a4c6a7 100644
 --- a/rom/m68kemu/m68kemu_run.c
 +++ b/rom/m68kemu/m68kemu_run.c
-@@ -236,7 +236,8 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+@@ -236,7 +236,9 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
          }
      }
  
 -    entry = M68KEmu_LoadHunks(ctx, segList);
 +    /* M68KEMU_CPU: the interpreter, or an engine under it (m68kemu_jit.c) */
-+    entry = m68k_jit_select(ctx) < 0 ? 0 : M68KEmu_LoadHunks(ctx, segList);
++    BOOL refused = m68k_jit_select(ctx) < 0;
++    entry = refused ? 0 : M68KEmu_LoadHunks(ctx, segList);
      if (ctx->trace_calls) bug("[m68kemu] TRACE build " __DATE__ " " __TIME__ " RunHunk seglist %p stack %u args %u -> entry %08x\n",
          BADDR(segList), (unsigned)stackSize, (unsigned)argSize, (unsigned)entry);
      if (entry)
-@@ -296,7 +297,7 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+@@ -253,6 +255,8 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+     }
+     m68k_wbstartup_done(ctx);
+     m68k_context_release(ctx);
++    if (refused)
++        SetIoErr(ERROR_INVALID_RESIDENT_LIBRARY);       /* M68KEMU_CPU asked for what is not there */
+     return result;
+ 
+     AROS_LIBFUNC_EXIT
+@@ -296,7 +300,8 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
      ctx = M68KEmu_CreateContextWithStack(M68KEmuBase, stackSize);
      if (!ctx) { FreeMem(fileData, fileSize); return -1; }
  
 -    entry = M68KEmu_LoadHunksFromMemory(ctx, fileData, fileSize);
-+    entry = m68k_jit_select(ctx) < 0 ? 0 : M68KEmu_LoadHunksFromMemory(ctx, fileData, fileSize);
++    BOOL refused = m68k_jit_select(ctx) < 0;
++    entry = refused ? 0 : M68KEmu_LoadHunksFromMemory(ctx, fileData, fileSize);
      FreeMem(fileData, fileSize);
  
      if (entry)
+@@ -309,6 +314,8 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+     }
+ 
+     m68k_context_release(ctx);
++    if (refused)
++        SetIoErr(ERROR_INVALID_RESIDENT_LIBRARY);
+     return result;
+ 
+     AROS_LIBFUNC_EXIT
 diff --git a/rom/m68kemu/m68kemu_thunks.c b/rom/m68kemu/m68kemu_thunks.c
 index 84cf8f75d4..6b10a0f1ec 100644
 --- a/rom/m68kemu/m68kemu_thunks.c
