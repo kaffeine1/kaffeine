@@ -379,10 +379,9 @@ struct HJState
     uint32_t limit;             /*  80 */
     uint32_t slice_budget;      /*  84 */
     UBYTE *mem;                 /*  88 */
-    void *fast;                 /*  96 */
-    void *slow;                 /* 104 */
-    struct HJCpu *backend;      /* 112 */
-    uint64_t reserved;          /* 120 */
+    void *slow;                 /*  96 */
+    struct HJCpu *backend;      /* 104 */
+    uint64_t reserved[2];       /* 112 */
     UBYTE pages[];              /* 128: KJ68_PAGE_* of each 4 KiB guest page */
 };
 
@@ -393,8 +392,7 @@ struct HJState
 #define ST_LIMIT  80
 #define ST_BUDGET 84
 #define ST_MEM    88
-#define ST_FAST   96
-#define ST_SLOW  104
+#define ST_SLOW   96
 #define ST_PAGES 128
 
 #if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
@@ -405,7 +403,6 @@ _Static_assert(offsetof(struct HJState, abort) == ST_ABORT, "state layout");
 _Static_assert(offsetof(struct HJState, limit) == ST_LIMIT, "state layout");
 _Static_assert(offsetof(struct HJState, slice_budget) == ST_BUDGET, "state layout");
 _Static_assert(offsetof(struct HJState, mem) == ST_MEM, "state layout");
-_Static_assert(offsetof(struct HJState, fast) == ST_FAST, "state layout");
 _Static_assert(offsetof(struct HJState, slow) == ST_SLOW, "state layout");
 _Static_assert(offsetof(struct HJState, pages) == ST_PAGES, "state layout");
 #endif
@@ -414,23 +411,20 @@ _Static_assert(offsetof(struct HJState, pages) == ST_PAGES, "state layout");
    divisor: no access, only whether the read would reach the host. */
 enum { SLOW_R8, SLOW_R16, SLOW_R32, SLOW_W8, SLOW_W16, SLOW_W32, SLOW_P16, SLOW_P32, SLOW_KINDS };
 
-#define HJ_FAST_BITS 12
-#define HJ_FAST_SIZE (1u << HJ_FAST_BITS)
 #define HJ_BUCKETS 4096u
-#define HJ_CODE_BYTES (16u << 20)
 #define HJ_MAX_INSNS 64
 #define HJ_SCRATCH_WORDS 12288u
 #define HJ_MAX_STUBS 1024u
-#define HJ_MAX_BLOCKS 32768u
-#define HJ_GUEST_BYTES (4u << 20)
 #define HJ_BUDGET 65535u
-#define HJ_EMPTY_TAG (~(uint64_t)0)
 
-struct HJFast
-{
-    uint64_t pc;
-    uint64_t entry;
-};
+/* The code memory, the block table and the guest-byte store of a domain
+   start at these sizes and double together, HJ_GROW_STEPS times at most,
+   whenever one of them is full (grow_code()): from 1 MiB of code, 2048
+   blocks and 256 KiB of guest bytes to 16 MiB, 32768 blocks and 4 MiB. */
+#define HJ_CODE_BYTES_START  (1u << 20)
+#define HJ_MAX_BLOCKS_START  2048u
+#define HJ_GUEST_BYTES_START (256u << 10)
+#define HJ_GROW_STEPS 4
 
 struct HJBlock
 {
@@ -447,7 +441,7 @@ struct HJBlock
 /* Exit reasons of translated code, as counted in HJStats.exits[]. */
 enum
 {
-    HJ_EXIT_LOOKUP = 1, /* next block not in the fast table */
+    HJ_EXIT_LOOKUP = 1, /* the block ended: the run loop finds the next one */
     HJ_EXIT_BUDGET,     /* back edges and lookups used up for this slice */
     HJ_EXIT_LINEA,      /* A-line opcode: to the bridge dispatcher */
     HJ_EXIT_FAULT,      /* instruction outside the subset, ILLEGAL, Line-F */
@@ -480,31 +474,30 @@ struct HJBackend
 {
     struct M68KEngDomain *dom;
     uint32_t *code;
+    size_t code_bytes;          /* the code memory as it is now */
     size_t code_words, code_used, glue_words;
-    uintptr_t g_enter, g_exit, g_lookup, g_budget, g_miss, g_slow[SLOW_KINDS];
+    uintptr_t g_enter, g_exit, g_lookup, g_budget, g_slow[SLOW_KINDS];
     uint32_t (*enter)(struct HJState *, const uint32_t *);
     struct HJBlock *buckets[HJ_BUCKETS];
     struct HJBlock *blocks;
-    unsigned nblocks;
+    unsigned nblocks, max_blocks;
     UBYTE *guest_bytes;
-    size_t guest_used;
+    size_t guest_used, guest_cap;
     uint32_t epoch;
-    uint32_t fast_generation;   /* a CPU empties its fast table when it changes */
     uint32_t *scratch;
     struct HJTrans *trans;
     struct HJStats stats;
 };
 
 /* The translator state of a CPU: its registers and page flags, which
-   translated code reads through R_STATE, and its fast table. */
+   translated code reads through R_STATE. */
 struct HJCpu
 {
     struct HJState *st;
     size_t st_bytes;
     struct M68KEngCPU *owner;
     struct HJBackend *b;
-    struct HJFast *fast;
-    uint32_t fast_generation, pages_generation;
+    uint32_t pages_generation;
     int declined;               /* a divisor probe found a host read */
 };
 
@@ -2937,7 +2930,7 @@ static void code_write_begin(struct HJBackend *b)
 {
     b->stats.write_windows++;
 #if HJ_RUNS
-    kj68_plat_code_write_begin(b->code, HJ_CODE_BYTES);
+    kj68_plat_code_write_begin(b->code, b->code_bytes);
 #endif
 }
 
@@ -2945,14 +2938,14 @@ static void code_write_end(struct HJBackend *b, const uint32_t *start, size_t wo
 {
     b->stats.icache_syncs++;
 #if HJ_RUNS
-    kj68_plat_code_write_end(b->code, HJ_CODE_BYTES, (void *)(uintptr_t)start, words * sizeof(*start));
+    kj68_plat_code_write_end(b->code, b->code_bytes, (void *)(uintptr_t)start, words * sizeof(*start));
 #else
     (void)start; (void)words;
 #endif
 }
 
 #if HJ_RUNS
-static void *code_alloc(void)
+static void *code_alloc(size_t bytes)
 {
     void *code;
 
@@ -2960,45 +2953,32 @@ static void *code_alloc(void)
     if (kj_test_fail_next())
         return NULL;
 #endif
-    code = kj68_plat_code_alloc(HJ_CODE_BYTES);
+    code = kj68_plat_code_alloc(bytes);
 #ifdef KJ68_TEST_SEAMS
     if (code)
-        kj68_test_exec_live += (long)HJ_CODE_BYTES;
+        kj68_test_exec_live += (long)bytes;
 #endif
     return code;
 }
 
-static void code_free(void *code)
+static void code_free(void *code, size_t bytes)
 {
     if (!code)
         return;
 #ifdef KJ68_TEST_SEAMS
-    kj68_test_exec_live -= (long)HJ_CODE_BYTES;
+    kj68_test_exec_live -= (long)bytes;
 #endif
-    kj68_plat_code_free(code, HJ_CODE_BYTES);
+    kj68_plat_code_free(code, bytes);
 }
 #endif
 
-static void fast_clear(struct HJCpu *c)
-{
-    unsigned i;
-
-    for (i = 0; i < HJ_FAST_SIZE; i++)
-    {
-        c->fast[i].pc = HJ_EMPTY_TAG;
-        c->fast[i].entry = 0;
-    }
-}
-
-/* Empties the code memory of the domain; every CPU empties its fast table
-   before it enters translated code again. */
+/* Empties the code memory of the domain. */
 static void reset_code(struct HJBackend *b)
 {
     b->code_used = b->glue_words;
     memset(b->buckets, 0, sizeof(b->buckets));
     b->nblocks = 0;
     b->guest_used = 0;
-    b->fast_generation++;
     b->stats.resets++;
     kj_count(&b->dom->counters.code_resets, 1);
 }
@@ -3045,21 +3025,17 @@ static void emit_glue(struct HJBackend *b, struct HJEmit *e)
     b->g_budget = e->origin + 4u * e->n;
     emit_mov32(e, R_VAL, HJ_EXIT_BUDGET);
     put(e, a64_b(words_to(e, b->g_exit)));
-    b->g_miss = e->origin + 4u * e->n;
-    emit_mov32(e, R_VAL, HJ_EXIT_LOOKUP);
-    put(e, a64_b(words_to(e, b->g_exit)));
 
-    /* lookup: w16 = guest PC; one probe of the fast table */
+    /* lookup: w16 = guest PC. The block ended at an address it does not
+       continue at by itself: back to the run loop, which finds or
+       translates the block there. With a slice budget of 1
+       (kj_tr_cpu_create) every block ends its slice here or at its back
+       edge, so the run loop sees each block and counts its instructions. */
     b->g_lookup = e->origin + 4u * e->n;
     put(e, a64_addsub_imm(0, 1, 1, R_BUDGET, R_BUDGET, 1, 0));
     put(e, a64_bcond(A64_EQ, words_to(e, b->g_budget)));
-    put(e, a64_ldst_uimm(3, 1, R_VAL, R_STATE, ST_FAST));
-    put(e, a64_bitfield(1, 2, R_SCR, R_ADDR, 1, HJ_FAST_BITS));
-    put(e, a64_addsub_reg(1, 0, 0, R_VAL, R_VAL, R_SCR, 0, 4));
-    put(e, a64_ldstp(1, 1, 2, R_SCR, R_VAL, R_VAL, 0));
-    put(e, a64_addsub_reg(1, 1, 1, ZR, R_SCR, R_ADDR, 0, 0));
-    put(e, a64_bcond(A64_NE, words_to(e, b->g_miss)));
-    put(e, a64_br(R_VAL));
+    emit_mov32(e, R_VAL, HJ_EXIT_LOOKUP);
+    put(e, a64_b(words_to(e, b->g_exit)));
 
     /* slow access: w16 address (kept), w17 value, w25 kind, w27 guest PC */
     common = e->origin + 4u * e->n;
@@ -3094,6 +3070,90 @@ static void emit_glue(struct HJBackend *b, struct HJEmit *e)
         put(e, a64_b(words_to(e, common)));
     }
 }
+
+#if HJ_RUNS
+/* The glue for code memory at origin, into the scratch buffer. FALSE when
+   it does not fit there; its size does not depend on origin. */
+static int glue_emit(struct HJBackend *b, struct HJEmit *e, const uint32_t *origin)
+{
+    memset(e, 0, sizeof(*e));
+    e->buf = b->scratch;
+    e->cap = HJ_SCRATCH_WORDS;
+    e->origin = (uintptr_t)origin;
+    emit_glue(b, e);
+    return !e->bad;
+}
+
+/* The glue that glue_emit() left in the scratch buffer goes to the start
+   of the code memory, which holds nothing else after this. */
+static void glue_publish(struct HJBackend *b, const struct HJEmit *e)
+{
+    uintptr_t entry = b->g_enter;
+
+    b->code_words = b->code_bytes / 4;
+    code_write_begin(b);
+    memcpy(b->code, b->scratch, 4u * e->n);
+    code_write_end(b, b->code, e->n);
+    b->glue_words = b->code_used = e->n;
+    memcpy(&b->enter, &entry, sizeof(entry));
+}
+
+/* The blocks of the table that a lookup still finds. A block whose guest
+   bytes changed leaves its chain when it is looked up again (get_block()),
+   and its place in the table stays used until the next reset. */
+static unsigned linked_blocks(const struct HJBackend *b)
+{
+    const struct HJBlock *blk;
+    unsigned i, n = 0;
+
+    for (i = 0; i < HJ_BUCKETS; i++)
+        for (blk = b->buckets[i]; blk; blk = blk->next)
+            n++;
+    return n;
+}
+
+/* The next size of the code memory, the block table and the guest-byte
+   store, when there is one, at least half of the blocks are still in use,
+   and there is memory for all three; otherwise they stay as they are. A
+   program that changes a little code again and again fills them with
+   blocks nothing finds any more: emptying them is enough for it. The
+   caller empties them next (reset_code()), so nothing they held is
+   carried over, and no translated code is running (translate()). */
+static void grow_code(struct HJBackend *b)
+{
+    size_t code_bytes = b->code_bytes * 2, guest_cap = b->guest_cap * 2;
+    unsigned max_blocks = b->max_blocks * 2;
+    uint32_t *code;
+    struct HJBlock *blocks;
+    UBYTE *guest_bytes;
+    struct HJEmit e;
+
+    if (b->code_bytes >= ((size_t)HJ_CODE_BYTES_START << HJ_GROW_STEPS) || linked_blocks(b) * 2 < b->nblocks)
+        return;
+    code = code_alloc(code_bytes);
+    blocks = kj_alloc(max_blocks * sizeof(*blocks));
+    guest_bytes = kj_alloc(guest_cap);
+    if (!code || !blocks || !guest_bytes)
+    {
+        code_free(code, code_bytes);
+        kj_free(blocks, max_blocks * sizeof(*blocks));
+        kj_free(guest_bytes, guest_cap);
+        return;
+    }
+    code_free(b->code, b->code_bytes);
+    kj_free(b->blocks, b->max_blocks * sizeof(*b->blocks));
+    kj_free(b->guest_bytes, b->guest_cap);
+    b->code = code;
+    b->code_bytes = code_bytes;
+    b->blocks = blocks;
+    b->max_blocks = max_blocks;
+    b->guest_bytes = guest_bytes;
+    b->guest_cap = guest_cap;
+    /* the glue has the size it had in kj_tr_domain_create(), where it fit */
+    glue_emit(b, &e, b->code);
+    glue_publish(b, &e);
+}
+#endif
 
 /* ------------------------------------------------------------------
    The C side: slow accesses, blocks
@@ -3189,14 +3249,6 @@ static uint32_t slow_access(struct HJState *st, uint32_t addr, uint32_t value, u
 
 static unsigned bucket_of(uint32_t pc) { return (pc >> 1) & (HJ_BUCKETS - 1); }
 
-static void fast_insert(struct HJCpu *c, const struct HJBlock *blk)
-{
-    struct HJFast *f = &c->fast[(blk->pc >> 1) & (HJ_FAST_SIZE - 1)];
-
-    f->pc = blk->pc;
-    f->entry = (uint64_t)(uintptr_t)blk->code;
-}
-
 /* Called only from kj_tr_run(), between blocks: no translated code is
    running, so the code memory can be emptied here. Not reentrant. */
 static struct HJBlock *translate(struct HJBackend *b, uint32_t pc)
@@ -3209,9 +3261,14 @@ static struct HJBlock *translate(struct HJBackend *b, uint32_t pc)
 
     for (attempt = 0; attempt < 2; attempt++)
     {
-        if (b->code_words - b->code_used < HJ_SCRATCH_WORDS || b->nblocks >= HJ_MAX_BLOCKS ||
-            HJ_GUEST_BYTES - b->guest_used < 4u * HJ_MAX_INSNS * 10u)
+        if (b->code_words - b->code_used < HJ_SCRATCH_WORDS || b->nblocks >= b->max_blocks ||
+            b->guest_cap - b->guest_used < 4u * HJ_MAX_INSNS * 10u)
+        {
+#if HJ_RUNS
+            grow_code(b);
+#endif
             reset_code(b);
+        }
         for (;;)
         {
             memset(&t->e, 0, sizeof(t->e));
@@ -3290,13 +3347,6 @@ static struct HJBlock *get_block(struct HJCpu *c, uint32_t pc)
     }
     if (!blk)
         blk = translate(b, pc);
-    if (c->fast_generation != b->fast_generation)
-    {
-        fast_clear(c);
-        c->fast_generation = b->fast_generation;
-    }
-    if (blk)
-        fast_insert(c, blk);
     return blk;
 }
 
@@ -3432,7 +3482,7 @@ static int HJ_EncoderSelfTest(char *message, unsigned long size)
         { 0xb9404675, a64_ldst_uimm(2, 1, 21, 19, 68), "ldr w21, [x19, #68]" },
         { 0xb9004270, a64_ldst_uimm(2, 0, 16, 19, 64), "str w16, [x19, #64]" },
         { 0xf9000bf0, a64_ldst_uimm(3, 0, 16, SP, 16), "str x16, [sp, #16]" },
-        { 0xf9403670, a64_ldst_uimm(3, 1, 16, 19, 104), "ldr x16, [x19, #104]" },
+        { 0xf9403270, a64_ldst_uimm(3, 1, 16, 19, 96), "ldr x16, [x19, #96]" },
         { 0xb9404a7b, a64_ldst_uimm(2, 1, 27, 19, 72), "ldr w27, [x19, #72]" },
         { 0xb9004a7a, a64_ldst_uimm(2, 0, 26, 19, 72), "str w26, [x19, #72]" },
         { 0xa9ba7bfd, a64_ldstp(1, 0, 3, 29, 30, SP, -96), "stp x29, x30, [sp, #-96]!" },
@@ -3510,9 +3560,9 @@ int kj_tr_encoder_self_test(char *message, unsigned long size)
 #if HJ_RUNS
 static void hj_free_code(struct HJBackend *b)
 {
-    code_free(b->code);
-    kj_free(b->blocks, HJ_MAX_BLOCKS * sizeof(*b->blocks));
-    kj_free(b->guest_bytes, HJ_GUEST_BYTES);
+    code_free(b->code, b->code_bytes);
+    kj_free(b->blocks, b->max_blocks * sizeof(*b->blocks));
+    kj_free(b->guest_bytes, b->guest_cap);
     kj_free(b->scratch, 4u * HJ_SCRATCH_WORDS);
     kj_free(b->trans, sizeof(*b->trans));
     kj_free(b, sizeof(*b));
@@ -3531,9 +3581,12 @@ LONG kj_tr_domain_create(struct M68KEngDomain *dom)
     if (!b)
         return M68KENG_ERR_NOMEM;
     b->dom = dom;
-    b->code = code_alloc();
-    b->blocks = kj_alloc(HJ_MAX_BLOCKS * sizeof(*b->blocks));
-    b->guest_bytes = kj_alloc(HJ_GUEST_BYTES);
+    b->code_bytes = HJ_CODE_BYTES_START;
+    b->max_blocks = HJ_MAX_BLOCKS_START;
+    b->guest_cap = HJ_GUEST_BYTES_START;
+    b->code = code_alloc(b->code_bytes);
+    b->blocks = kj_alloc(b->max_blocks * sizeof(*b->blocks));
+    b->guest_bytes = kj_alloc(b->guest_cap);
     b->scratch = kj_alloc(4u * HJ_SCRATCH_WORDS);
     b->trans = kj_alloc(sizeof(*b->trans));
     if (!b->code || !b->blocks || !b->guest_bytes || !b->scratch || !b->trans)
@@ -3541,28 +3594,14 @@ LONG kj_tr_domain_create(struct M68KEngDomain *dom)
         hj_free_code(b);
         return M68KENG_ERR_NOMEM;
     }
-    b->code_words = HJ_CODE_BYTES / 4;
-    memset(&e, 0, sizeof(e));
-    e.buf = b->scratch;
-    e.cap = HJ_SCRATCH_WORDS;
-    e.origin = (uintptr_t)b->code;
-    emit_glue(b, &e);
-    if (e.bad)
+    if (!glue_emit(b, &e, b->code))
     {
         /* not reachable with these sizes: the glue fits the scratch buffer */
         hj_free_code(b);
         return M68KENG_ERR_NOMEM;
     }
-    code_write_begin(b);
-    memcpy(b->code, b->scratch, 4u * e.n);
-    code_write_end(b, b->code, e.n);
-    b->glue_words = b->code_used = e.n;
+    glue_publish(b, &e);
     b->stats.write_windows = b->stats.icache_syncs = 0;
-    {
-        uintptr_t entry = b->g_enter;
-
-        memcpy(&b->enter, &entry, sizeof(entry));
-    }
     dom->code = b;
     return M68KENG_OK;
 #else
@@ -3584,7 +3623,7 @@ void kj_tr_domain_destroy(struct M68KEngDomain *dom)
 
 ULONG kj_tr_code_bytes(const struct M68KEngDomain *dom)
 {
-    return dom->code ? HJ_CODE_BYTES : 0;
+    return dom->code ? (ULONG)dom->code->code_bytes : 0;
 }
 
 /* Registers as cpu_create leaves them: 0, PC 0, SR 0x2700. */
@@ -3598,11 +3637,8 @@ LONG kj_tr_cpu_create(struct M68KEngCPU *owner)
         return M68KENG_ERR_NOMEM;
     c->st_bytes = sizeof(struct HJState) + dom->npages;
     c->st = kj_alloc(c->st_bytes);
-    c->fast = kj_alloc(HJ_FAST_SIZE * sizeof(*c->fast));
-    if (!c->st || !c->fast)
+    if (!c->st)
     {
-        kj_free(c->fast, HJ_FAST_SIZE * sizeof(*c->fast));
-        kj_free(c->st, c->st_bytes);
         kj_free(c, sizeof(*c));
         return M68KENG_ERR_NOMEM;
     }
@@ -3611,15 +3647,12 @@ LONG kj_tr_cpu_create(struct M68KEngCPU *owner)
     c->b = dom->code;
     st->mem = dom->base;
     st->limit = dom->size - 4;
-    st->fast = c->fast;
     st->slow = (void *)(uintptr_t)slow_access;
     st->backend = c;
     st->slice_budget = 1;      /* one block per entry: the run loop counts */
     st->sr_high = (M68KENG_SR_AT_CREATE >> 8) & 0x27u;
     memcpy(st->pages, dom->pages, dom->npages);
     c->pages_generation = dom->pages_generation;
-    fast_clear(c);
-    c->fast_generation = c->b->fast_generation;
     owner->tr = c;
     return M68KENG_OK;
 }
@@ -3630,7 +3663,6 @@ void kj_tr_cpu_destroy(struct M68KEngCPU *owner)
 
     if (!c)
         return;
-    kj_free(c->fast, HJ_FAST_SIZE * sizeof(*c->fast));
     kj_free(c->st, c->st_bytes);
     kj_free(c, sizeof(*c));
     owner->tr = NULL;
@@ -3670,15 +3702,14 @@ LONG kj_tr_set_reg(struct M68KEngCPU *owner, ULONG reg, ULONG value)
     return M68KENG_OK;
 }
 
-/* As the flush of that library: a new epoch makes every block compare its guest
-   bytes before it runs again, and every CPU empties its fast table. */
+/* A new epoch makes every block compare its guest bytes before it runs
+   again. */
 void kj_tr_invalidate(struct M68KEngDomain *dom)
 {
     struct HJBackend *b = dom->code;
 
     if (++b->epoch == 0)
         reset_code(b);
-    b->fast_generation++;
     b->stats.flushes++;
 }
 

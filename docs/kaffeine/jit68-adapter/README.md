@@ -18,8 +18,8 @@ one of the programs has a process of its own, a software interrupt and a
 vertical blank server, one has divisions the engine declines, one is a
 BOOPSI class whose dispatcher intuition calls back, and two use a CIA
 timer. It has not run an application and has not run on
-hardware. It is proposed to AROS mainline as
-[pull request 2359](https://github.com/aros-development-team/AROS/pull/2359), and the engine library as
+hardware. AROS mainline has it since 21 November 2026
+([pull request 2359](https://github.com/aros-development-team/AROS/pull/2359)); the engine library is proposed as
 [pull request 2360](https://github.com/aros-development-team/AROS/pull/2360).
 
 ## What it does
@@ -322,21 +322,27 @@ changed the result of a case that had run.
   That is in dos, outside this patch; a fix for it is proposed to AROS as
   [pull request 2353](https://github.com/aros-development-team/AROS/pull/2353).
   The two have not been run together.
-- Acceptance by AROS. The proposal is three pull requests:
+- Acceptance by AROS. The proposal was three pull requests:
   [2358](https://github.com/aros-development-team/AROS/pull/2358) makes the host tests of `m68kemu` link again,
   [2359](https://github.com/aros-development-team/AROS/pull/2359) is the adapter and
   [2360](https://github.com/aros-development-team/AROS/pull/2360) the engine library. They replace the earlier
   [pull request 2357](https://github.com/aros-development-team/AROS/pull/2357), which had the adapter and the engine in one
-  piece. In 2359 the interface is part of `rom/m68kemu` under neutral names
+  piece. 2358 and 2359 are merged, 2359 on 21 November 2026. In 2359 the
+  interface is part of `rom/m68kemu` under neutral names
   (`m68kemu_engine.h`, `ENGINE.md`, constants `M68KENG_*`), `m68kemu` names
   the engine library in one place, and its host tests run the engine slice
-  with two small test engines. In 2360 the engine is in
-  `workbench/libs/kaffeine-jit68` with a build rule for AArch64 targets,
-  and what it asks of the system is in a file of its own. Otherwise the
-  adapter is the patch of this page. The libraries built from those
-  branches with the commands of the build rules ran every case of this page
-  again with the same results, and AROS's own test and the probe of the
-  engine library passed. The full AROS build has not built the branches.
+  with two small test engines. 2360 is open. AROS takes no component under
+  a project's name, so there the engine is `m68kjit.library`, in
+  `workbench/libs/m68kjit`, with a build rule for AArch64 targets, and what
+  it asks of the system is in a file of its own. Its review asked for two
+  changes to the engine, and both are made: no fast table, and memory that
+  starts small and doubles. Otherwise the adapter is the patch of this
+  page. The libraries built from those branches with the commands of the
+  build rules ran every case of this page again with the same results, and
+  AROS's own test and the probe of the engine library passed. On 21
+  November 2026 a real build of an AROS tree for raspi-aarch64 built both
+  libraries, the probe and AROS's test at the head of 2360. The cases of
+  this page have not yet run with the files of that build.
 - The static analysis of pull request 2357 listed fifteen points, none in
   the sources of the engine. They are answered there and, for the two test
   programs, here: three variables are declared where they are used, the

@@ -168,13 +168,13 @@ other instructions.
 ## Host checks
 
 A test program drives the engine only through the interface, on an AArch64
-host (macOS or Linux). It has 26 groups of checks in 13 categories:
+host (macOS or Linux). It has 27 groups of checks in 13 categories:
 discovery; sizes and versions; allocation failures; lifecycle and leaks;
 registers; A-line
 opcodes; fetch and the host's return addresses, with the map change; the
 routing of memory accesses, byte order and the custom chip page; the budget
 and block limits; output buffers and counters; invalidation, changed code
-and resets of code memory; exceptions, unsupported instructions, the zero
+and resets and growth of code memory; exceptions, unsupported instructions, the zero
 divisor, a divisor the host would read, and faults; and the encoder, with
 programs and cases reused from the legacy tests.
 
@@ -191,10 +191,14 @@ source, with 25 groups and without the change to divisions, had passed on
 16 November 2026 with 38519 checks in each configuration. On 20 November
 2026 the published Makefile was run as it is, with Apple clang 21.0.0, and
 gave the same result: 26 groups and 40861 checks with 0 failures in each
-configuration, with the same output.
+configuration, with the same output. On 21 November 2026, with the two
+changes the review of AROS pull request 2360 asked for (no fast table; code
+memory, a block table and guest bytes that start small and double), the
+checks ran again on the same machine: 27 groups and 46010 checks with 0
+failures in each configuration.
 
 That shows that the engine compiles without warnings with that compiler,
-and that it passes the cases of those 26 groups in those two configurations
+and that it passes the cases of those 27 groups in those two configurations
 on that Mac. It does not show that the engine follows the interface in every
 case, a host that executes a declined division, a build without the test
 seams, Linux or another compiler, anything on AROS or with an AROS
@@ -212,7 +216,8 @@ memory for code, a dead end. The engine files are compiled unchanged. A
 script builds the library outside an AROS tree with the tools
 and the SDK of an AROS build. In the branch proposed to AROS as
 [pull request 2360](https://github.com/aros-development-team/AROS/pull/2360)
-it has a build rule, for AArch64 targets only.
+it has a build rule, for AArch64 targets only. There its name is
+`m68kjit.library`: AROS takes no component under a project's name.
 
 On 20 November 2026 the library was built for AROS AArch64 with the cross
 compiler of a build of AROS master `b6dcaeea` for raspi-aarch64, and a
@@ -269,8 +274,8 @@ not been tried: applications and hardware.
 | --- | --- |
 | Interface version 1 | Written; reviewed as source |
 | Engine and translator | Written; reviewed as source; published in `experimental/kaffeine-jit68`; compiled for the host checks and as an AROS AArch64 library |
-| Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own; again on 20 November 2026 with the published Makefile |
-| Engine library for AROS AArch64 | Built outside an AROS tree, 20 November 2026; a native probe through the interface passes under QEMU: 20 checks, 0 failures |
+| Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own; again on 20 November 2026 with the published Makefile; on 21 November 2026, with the two changes of the AROS review, 27 groups, 46010 checks, 0 failures |
+| Engine library for AROS AArch64 | Built outside an AROS tree, 20 November 2026; a native probe through the interface passes under QEMU: 20 checks, 0 failures. On 21 November 2026 a real build of an AROS tree for raspi-aarch64 built it, as `m68kjit.library`, at the head of AROS pull request 2360 |
 | Review of the behavior outside the JIT | In progress; its results are published once they are checked |
 | Host side in `m68kemu.library` (the adapter): selection, the engine under the interpreter, fallback | Written as a patch for AROS master; its design and its source read by a second reader; see the [adapter page](jit68-adapter/README.md) |
 | `m68kemu.library` with the adapter, built for AROS AArch64 | Built outside an AROS tree, 20 November 2026; twenty-three cases from the Shell pass under QEMU, with the interpreter and with the engine, one of them with a process, a software interrupt and a vertical blank server. `Run`, hooks called by native libraries and CIA timers not tried |
@@ -285,9 +290,9 @@ not been tried: applications and hardware.
    before the engine is connected.
 2. Repeat with applications, starting from IBrowse and Amigram, the two
    programs of the checks of 14 November 2026.
-3. Follow the review of AROS pull requests 2358, 2359 and 2360, which
-   propose a fix of the host tests of `m68kemu`, the adapter and the engine
-   library to mainline.
+3. Follow the review of AROS pull request 2360, the engine library. Pull
+   requests 2358 (a fix of the host tests of `m68kemu`) and 2359 (the
+   adapter) are merged.
 4. Give the engine an FPU, and after it an MMU. Neither the engine nor the
    interpreter of `m68kemu.library` has one today: a program runs as on a
    68LC040 with its MMU off. Both need a new minor version of the

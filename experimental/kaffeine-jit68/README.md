@@ -10,14 +10,18 @@ This directory holds the source of the optional 68k JIT engine for AROS's
 checks of the engine. It is experimental. The directory [`aros`](aros) holds
 what makes the engine an AROS library, `kaffeine-jit68.library`, and a
 native probe of that library; a script builds both outside an AROS tree.
-In the branch proposed to AROS as
-[pull request 2360](https://github.com/aros-development-team/AROS/pull/2360)
-the engine, the probe and these checks have their places in the AROS tree
-and the library a build rule; the interface is in `rom/m68kemu` there
-([pull request 2359](https://github.com/aros-development-team/AROS/pull/2359)).
-The sources here are the files of those branches with an author line added:
-[`tools/compare-with-aros.py`](tools/compare-with-aros.py) compares them
-with an AROS tree. The side of `m68kemu.library`
+In AROS the interface is in `rom/m68kemu`
+([pull request 2359](https://github.com/aros-development-team/AROS/pull/2359),
+merged on 21 November 2026). The engine, the probe and these checks are
+proposed as
+[pull request 2360](https://github.com/aros-development-team/AROS/pull/2360),
+where they have their places in the tree and the library a build rule.
+AROS takes no component under a project's name, so there the library is
+`m68kjit.library`, and every name that abbreviates `kaffeine-jit68` is
+changed with it. The sources here are the files of that branch with the
+names of this repository and an author line added:
+[`tools/compare-with-aros.py`](tools/compare-with-aros.py) makes the name
+changes and compares them with an AROS tree. The side of `m68kemu.library`
 that loads the engine is a patch for AROS mainline, on the
 [adapter page](../../docs/kaffeine/jit68-adapter/README.md), where the two
 libraries have run together under QEMU. What the engine is for, and
@@ -34,11 +38,11 @@ the state of each step, are on the
 | [`engine/kj68_translate.c`](engine/kj68_translate.c) | The AArch64 translator, generated from the translator of the legacy library (see below) |
 | [`engine/kj68_intern.h`](engine/kj68_intern.h) | The private interface between the two engine files, and the test seams |
 | [`engine/kj68_platform.h`](engine/kj68_platform.h) | What the engine asks of the system it runs on: memory, memory for code, a dead end |
-| [`host/kj68_host_tests.c`](host/kj68_host_tests.c) | The host checks: 26 groups, through the interface, with the table of operations, the test seams and the self test of the encoder from `kj68_intern.h` |
+| [`host/kj68_host_tests.c`](host/kj68_host_tests.c) | The host checks: 27 groups, through the interface, with the table of operations, the test seams and the self test of the encoder from `kj68_intern.h` |
 | [`host/kj68_platform_host.c`](host/kj68_platform_host.c) | The answers of a macOS or Linux host to `kj68_platform.h` |
 | [`host/include/exec/types.h`](host/include/exec/types.h) | The AROS exec types, for the host build only |
 | [`tools/make-translate.py`](tools/make-translate.py) | The generator of `engine/kj68_translate.c` |
-| [`tools/compare-with-aros.py`](tools/compare-with-aros.py) | Compares these sources with an AROS tree that has the branches proposed to AROS |
+| [`tools/compare-with-aros.py`](tools/compare-with-aros.py) | Compares these sources with an AROS tree that has the engine, under the names it has there |
 | [`Makefile`](Makefile) | A host build of the checks |
 | [`aros/kaffeine-jit68.conf`](aros/kaffeine-jit68.conf) | The library's configuration: its one function, `KJ68_GetEngine`, at LVO -30 |
 | [`aros/kj68_library.c`](aros/kj68_library.c) | That function |
@@ -79,8 +83,21 @@ only, and no clock, which fed a counter nothing read. `make check` then ran
 again on the same machine: 40861 checks, 0 failed, at `-O1` with the
 sanitizers and at `-O2`.
 
+On the same day the review of AROS pull request 2360 asked for two changes,
+and both are in these sources. The fast table of a CPU is gone: a CPU runs
+with a slice budget of 1, so the probe of that table never ran. And a
+domain no longer takes 16 MiB of code memory, a table for 32768 blocks and
+4 MiB for guest bytes when it is created. It starts with 1 MiB, 2048 blocks
+and 256 KiB, and the three double together, four times at most, when one
+of them is full and at least half of the blocks are still in use. A new
+group of checks, `growth`, runs 70000 blocks in a row up to the largest
+sizes, with each allocation of the next size made to fail once, and 5000
+translations of the same code, which must grow nothing. `make check` on
+the same machine: 27 groups, 46010 checks, 0 failed, at `-O1` with the
+sanitizers and at `-O2`.
+
 That shows that this source compiles without warnings with that compiler,
-and that it passes the cases of those 26 groups in those two configurations
+and that it passes the cases of those 27 groups in those two configurations
 on that Mac, among them `div-host-read`: a division whose divisor would be
 read through the host is declined before any host call (the
 [engine page](../../docs/kaffeine/jit68-engine.md) says how). It does not
@@ -153,6 +170,13 @@ ended with status 0 and `cmp` found its output equal to the translator in
 `engine/`. Counts in this form: 103 definitions unchanged, 30 changed, 34
 removed, 2 moved from the legacy header and 27 added.
 
+The two changes of the review of AROS pull request 2360 are a third stage:
+23 replacements, each checked to apply exactly once. Run as above on 21
+November 2026, the generator ended with status 0 and `cmp` found its output
+equal to the translator in `engine/`. Counts in this form: 102 definitions
+unchanged, 28 changed, 37 removed, 2 moved from the legacy header and 31
+added.
+
 ## The AROS library and its probe
 
 The files in [`aros`](aros) make the engine a library for AROS AArch64 and
@@ -177,7 +201,9 @@ test it there without `m68kemu.library`.
   runs of 100 instructions; RTS to an address outside memory; a word read
   and a word written in the range of the callbacks; changed code before
   and after `invalidate`; a division by zero and ILLEGAL, which the engine
-  reports and does not execute. Then it reads the engine's counters.
+  reports and does not execute. Then it reads the engine's counters. Since
+  the review of AROS pull request 2360 it also runs 2500 blocks in a row,
+  more than the engine's block table starts with, and has 22 checks.
 
 On 20 November 2026 both were built with the cross compiler (gcc 10.5),
 `genmodule` and SDK of a build of AROS master `b6dcaeea` for
@@ -202,6 +228,8 @@ instructions translated, 4013 instructions retired and 16 MiB of executable
 memory, which it takes with `AllocMem(MEMF_EXECUTABLE)` and publishes with
 `CacheClearE`. The same source, compiled on the Mac against the same engine
 files with stand-in headers, prints the same lines.
+
+The probe as it is now, with 22 checks, has not run on AROS yet.
 
 That shows that the engine translates and runs 68k code on AROS AArch64
 under QEMU, through its library and the interface. It does not show
