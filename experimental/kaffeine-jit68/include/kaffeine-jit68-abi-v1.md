@@ -8,7 +8,8 @@ Author: Michele Dipace (@kaffeine1)
 Version 1.0 of the interface, source revision 2. The engine in
 [`../engine`](../engine) implements it, and its host checks have passed
 (see [the README](../README.md)). The host side in `m68kemu.library`
-(section 10) is not written yet, and nothing has run on AROS.
+(section 10) is not written yet. On AROS the engine has run only through a
+probe of its library, which the README describes.
 
 The header `kaffeine-jit68-abi-v1.h` beside this file declares every name
 used here. The host is `m68kemu.library` of AROS mainline; the engine is the

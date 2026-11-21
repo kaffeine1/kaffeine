@@ -15,8 +15,10 @@ the JIT as that separate engine library, instead of maintaining a renamed
 copy of the whole library. Version 1 of the interface between the two
 libraries and the source of the engine are in
 [`experimental/kaffeine-jit68`](experimental/kaffeine-jit68/README.md); the
-engine has passed its host checks on an AArch64 Mac but has not run on AROS
-yet. The [engine page](docs/kaffeine/jit68-engine.md) describes them.
+engine has passed its host checks on an AArch64 Mac, and a probe of the
+engine library has run on AROS AArch64 under QEMU; `m68kemu.library` does
+not use the engine yet. The [engine page](docs/kaffeine/jit68-engine.md)
+describes them.
 
 That move is in progress, and this page says so wherever it matters. The
 results below were obtained with the earlier form of the work, and each
@@ -139,8 +141,9 @@ The legacy library selects its CPU through `struct KaffeineCPUOps`
 interpreter and the reference for extending the execution engine. In
 `m68kemu.library` of AROS mainline Moira is the interpreter and stays the
 default; the JIT is to be offered to it as a separate optional library,
-`kaffeine-jit68.library`, whose engine has passed its host checks but has
-not run on AROS yet ([engine page](docs/kaffeine/jit68-engine.md)).
+`kaffeine-jit68.library`, whose engine has passed its host checks and a
+probe of its library on AROS under QEMU, and which `m68kemu.library` does
+not use yet ([engine page](docs/kaffeine/jit68-engine.md)).
 
 In the legacy library, the [experimental JIT backend](docs/kaffeine/jit-backend.md)
 is selected with `Set KAFFEINE_CPU jit`. It uses independent guest-task CPUs,

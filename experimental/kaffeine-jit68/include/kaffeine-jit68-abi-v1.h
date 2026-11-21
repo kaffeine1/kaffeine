@@ -6,9 +6,10 @@
     m68kemu.library (the host) and an optional 68k execution engine.
 
     Interface version 1.0, source revision 2. The kaffeine-jit68 engine
-    implements it and has passed its checks on an AArch64 host; nothing has
-    run on AROS yet. The specification is kaffeine-jit68-abi-v1.md beside
-    this file; where a comment here is shorter, the specification governs.
+    implements it and has passed its checks on an AArch64 host and, through
+    a probe of its library, on AROS AArch64 under QEMU. The specification is
+    kaffeine-jit68-abi-v1.md beside this file; where a comment here is
+    shorter, the specification governs.
 */
 
 #ifndef KAFFEINE_JIT68_ABI_V1_H

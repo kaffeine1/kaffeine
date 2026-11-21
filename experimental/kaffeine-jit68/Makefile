@@ -3,7 +3,7 @@
 #
 # Host build and checks of the kaffeine-jit68 engine, for an AArch64 host
 # (macOS or Linux). It gives the options of the host run described in
-# README.md; written for publication, it has not been run as it is.
+# README.md, which also says what a run of this Makefile gave.
 
 CC    ?= cc
 BUILD ?= build

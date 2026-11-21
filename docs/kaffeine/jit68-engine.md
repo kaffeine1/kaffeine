@@ -7,7 +7,7 @@ Author: Michele Dipace (@kaffeine1)
 
 [Transition status](TRANSITION.md) | [Manifesto](MANIFESTO.md) | [Current implementation](../../README.KAFFEINE.md)
 
-Last updated: 17 November 2026.
+Last updated: 20 November 2026.
 
 This page records the 68k JIT in the form it is meant to have: an optional
 engine library beside AROS's `m68kemu.library`. It says what is written,
@@ -15,7 +15,9 @@ what has been reviewed, what has run and what has not. A review of source
 is not a run. The source is in
 [`experimental/kaffeine-jit68`](../../experimental/kaffeine-jit68/README.md).
 As of the date above, its host checks pass in both of their
-configurations, each run on its own; nothing of it has run on AROS.
+configurations, each run on its own; the engine has been built as a
+library for AROS AArch64, and a probe of that library has run on AROS under
+QEMU. Nothing of it has run with `m68kemu.library`.
 
 ## Two libraries
 
@@ -100,8 +102,10 @@ reason.
 These counts are those of the generator before the change to divisions
 described below. That change adapts the two division emitters and the list
 of slow-path kinds, and adds the probe of the divisor and one field of the
-CPU state. The generator carries the same edits, but its reuse map has not
-been produced again, because the generator has not been run in this form.
+CPU state. The generator carries the same edits. Run in that form on 20
+November 2026, it wrote the published translator byte for byte, with 110
+definitions kept as they are, 24 adapted, 2 from the legacy header, 27 new
+and 33 left out.
 
 ## Two corrections from the review
 
@@ -183,7 +187,10 @@ themselves with status 0 and wrote nothing on their error output, and all
 26 groups passed: 40861 checks with 0 failures. The output of the `-O2` run
 is byte for byte the output of the sanitizer run. An earlier version of the
 source, with 25 groups and without the change to divisions, had passed on
-16 November 2026 with 38519 checks in each configuration.
+16 November 2026 with 38519 checks in each configuration. On 20 November
+2026 the published Makefile was run as it is, with Apple clang 21.0.0, and
+gave the same result: 26 groups and 40861 checks with 0 failures in each
+configuration, with the same output.
 
 That shows that the engine compiles without warnings with that compiler,
 and that it passes the cases of those 26 groups in those two configurations
@@ -195,16 +202,46 @@ or a speed. The
 [README of the source](../../experimental/kaffeine-jit68/README.md) gives
 the compiler options and how the count of checks was settled.
 
+## On AROS: the library and a probe
+
+The engine is now also an AROS library. A configuration file gives
+`kaffeine-jit68.library` its one function at LVO -30, and a small source
+file holds that function and the two C library functions the engine calls
+that a library module does not get. The four engine files are compiled
+unchanged. A script builds the library outside an AROS tree with the tools
+and the SDK of an AROS build; there is no AROS build rule for it yet.
+
+On 20 November 2026 the library was built for AROS AArch64 with the cross
+compiler of a build of AROS master `b6dcaeea` for raspi-aarch64, and a
+native probe ran once on that system under QEMU 11.0.0, machine `raspi3b`.
+The probe uses the library and the interface alone, without
+`m68kemu.library`: it makes a domain over 64 KiB of its own memory and
+runs small 68k programs whose results it knows, among them a loop resumed
+across runs, a return to an address outside memory, accesses that go to
+its callbacks, changed code after `invalidate`, and a division by zero
+and ILLEGAL, which the engine reports and does not execute. All 20 checks
+passed. The engine's counters reported translated blocks and executable
+memory, which on AROS comes from `AllocMem(MEMF_EXECUTABLE)` and is
+published with `CacheClearE`.
+
+That shows that the engine translates and runs 68k code on AROS AArch64
+under QEMU through its library. It does not show the engine with
+`m68kemu.library`, a 68k program, physical hardware, more than one CPU
+object or domain at a time, or a speed. The
+[README of the source](../../experimental/kaffeine-jit68/README.md) gives
+the build and the numbers.
+
 ## State
 
 | Step | State |
 | --- | --- |
 | Interface version 1 | Written; reviewed as source |
-| Engine and translator | Written; reviewed as source; published in `experimental/kaffeine-jit68`; compiled for the host checks only |
-| Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own |
+| Engine and translator | Written; reviewed as source; published in `experimental/kaffeine-jit68`; compiled for the host checks and as an AROS AArch64 library |
+| Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own; again on 20 November 2026 with the published Makefile |
+| Engine library for AROS AArch64 | Built outside an AROS tree, 20 November 2026; a native probe through the interface passes under QEMU: 20 checks, 0 failures |
 | Review of the behavior outside the JIT | In progress; its results are published once they are checked |
 | Host side in `m68kemu.library`: selection, A-line completion, execution of a declined division, fallback | Not written |
-| Build for AROS AArch64; Shell and `Run` in QEMU | Not done |
+| `m68kemu.library` with the host side, built for AROS AArch64; Shell and `Run` in QEMU | Not done |
 | Applications | None run with this engine |
 | Multiprocessor systems | Not qualified; version 1 claims one processor |
 | Performance | Not measured |
@@ -216,8 +253,9 @@ the compiler options and how the count of checks was settled.
    before the engine is connected.
 2. Write the host side in `m68kemu.library`, with the interpreter as the
    default; it also executes the divisions the engine declines.
-3. Build both libraries for AROS AArch64 and run programs from the Shell
-   and with `Run` in QEMU, with the interpreter and with the engine.
+3. Build `m68kemu.library` with the host side for AROS AArch64, beside the
+   engine library, and run programs from the Shell and with `Run` in QEMU,
+   with the interpreter and with the engine.
 4. Repeat with applications, starting from IBrowse and Amigram, the two
    programs of the checks of 14 November 2026.
 
@@ -226,7 +264,7 @@ the compiler options and how the count of checks was settled.
 The interface header, its specification, the engine, the generator of its
 translator and the host checks are in
 [`experimental/kaffeine-jit68`](../../experimental/kaffeine-jit68/README.md),
-with a Makefile for the host checks and the steps to regenerate the
-translator. The Makefile and the regeneration steps are written for this
-publication and have not been run in that form, nor has the generator in
-its current form; the README says which files the host checks compiled.
+with a Makefile for the host checks, the steps to regenerate the
+translator, and the files that make the engine an AROS library with its
+probe. The README says which files the host checks compiled, and what the
+Makefile, the generator and the probe gave when they were run.
