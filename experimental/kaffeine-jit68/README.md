@@ -229,7 +229,11 @@ memory, which it takes with `AllocMem(MEMF_EXECUTABLE)` and publishes with
 `CacheClearE`. The same source, compiled on the Mac against the same engine
 files with stand-in headers, prints the same lines.
 
-The probe as it is now, with 22 checks, has not run on AROS yet.
+On 21 November 2026 the probe as it is now ran on that system under QEMU,
+built by a real build of an AROS tree at the head of AROS pull request 2360
+(where it is `m68kjitprobe`): 22 checks with 0 failures. Its 2500 blocks in
+a row made the engine take 2 MiB of code memory in place of the 1 MiB it
+starts with, and empty its code memory once.
 
 That shows that the engine translates and runs 68k code on AROS AArch64
 under QEMU, through its library and the interface. It does not show

@@ -341,8 +341,11 @@ changed the result of a case that had run.
   build rules ran every case of this page again with the same results, and
   AROS's own test and the probe of the engine library passed. On 21
   November 2026 a real build of an AROS tree for raspi-aarch64 built both
-  libraries, the probe and AROS's test at the head of 2360. The cases of
-  this page have not yet run with the files of that build.
+  libraries, the probe and AROS's test at the head of 2360, and with the
+  files of that build the cases of this page ran again: the same results,
+  and where a count does not depend on timing the same counts of
+  instructions. AROS's own test passed with and without the engine, and
+  the probe of the engine library passed with its 22 checks.
 - The static analysis of pull request 2357 listed fifteen points, none in
   the sources of the engine. They are answered there and, for the two test
   programs, here: three variables are declared where they are used, the
