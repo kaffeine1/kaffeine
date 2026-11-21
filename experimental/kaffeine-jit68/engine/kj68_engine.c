@@ -2,20 +2,16 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
     Author: Michele Dipace (@kaffeine1)
 
-    kaffeine-jit68 engine: the nine operations of interface version 1
-    (kaffeine-jit68-abi-v1.h; specification kaffeine-jit68-abi-v1.md,
-    source revision 2), with their checks in the contract's order, the guest
+    kaffeine-jit68 engine: the nine operations of the interface of
+    m68kemu.library for an engine (m68kemu_engine.h and ENGINE.md in
+    rom/m68kemu), with their checks in the contract's order, the guest
     memory map and the counters. The translation itself is in
     kj68_translate.c.
 */
 
-#include <stdlib.h>
 #include <string.h>
-#if defined(__AROS__)
-#include <exec/memory.h>
-#include <proto/exec.h>
-#endif
 #include "kj68_intern.h"
+#include "kj68_platform.h"
 
 /* ---- allocation ------------------------------------------------------- */
 
@@ -36,11 +32,7 @@ void *kj_alloc(size_t size)
     if (kj_test_fail_next())
         return NULL;
 #endif
-#if defined(__AROS__)
-    p = AllocVec(size, MEMF_ANY | MEMF_CLEAR);
-#else
-    p = calloc(1, size);
-#endif
+    p = kj68_plat_alloc(size);
 #ifdef KJ68_TEST_SEAMS
     if (p)
         kj68_test_allocs_live++;
@@ -56,11 +48,7 @@ void kj_free(void *p, size_t size)
 #ifdef KJ68_TEST_SEAMS
     kj68_test_allocs_live--;
 #endif
-#if defined(__AROS__)
-    FreeVec(p);
-#else
-    free(p);
-#endif
+    kj68_plat_free(p);
 }
 
 /* ---- counters ----------------------------------------------------------- */
@@ -76,7 +64,7 @@ static ULONG kj_sat32(uint64_t v)
 }
 
 #ifdef KJ68_TEST_SEAMS
-void kj68_test_preset_counters(struct KJ68Domain *dom, uint64_t counts, uint64_t retired)
+void kj68_test_preset_counters(struct M68KEngDomain *dom, uint64_t counts, uint64_t retired)
 {
     dom->counters.blocks = dom->counters.insns = dom->counters.runs = counts;
     dom->counters.invalidations = dom->counters.code_resets = counts;
@@ -87,22 +75,22 @@ void kj68_test_preset_counters(struct KJ68Domain *dom, uint64_t counts, uint64_t
 /* ---- the map ------------------------------------------------------------- */
 
 /* The contents rule of the contract: base, size at least 0x1000, at most
-   KJ68_MAX_RANGES ranges, each non-empty, inside memory, with known flags
+   M68KENG_MAX_RANGES ranges, each non-empty, inside memory, with known flags
    and at least one, sorted and disjoint. */
-static int kj_map_valid(const struct KJ68MemoryMap *map)
+static int kj_map_valid(const struct M68KEngMap *map)
 {
     ULONG i;
 
-    if (!map->base || map->size < 0x1000 || map->num_ranges > KJ68_MAX_RANGES)
+    if (!map->base || map->size < 0x1000 || map->num_ranges > M68KENG_MAX_RANGES)
         return 0;
     for (i = 0; i < map->num_ranges; i++)
     {
-        const struct KJ68Range *r = &map->ranges[i];
+        const struct M68KEngRange *r = &map->ranges[i];
 
         if (r->lo >= r->hi || r->hi > map->size)
             return 0;
-        if (!(r->flags & (KJ68_RANGE_READ_HOST | KJ68_RANGE_WRITE_HOST)) ||
-            (r->flags & ~(KJ68_RANGE_READ_HOST | KJ68_RANGE_WRITE_HOST)))
+        if (!(r->flags & (M68KENG_RANGE_READ_HOST | M68KENG_RANGE_WRITE_HOST)) ||
+            (r->flags & ~(M68KENG_RANGE_READ_HOST | M68KENG_RANGE_WRITE_HOST)))
             return 0;
         if (i && r->lo < map->ranges[i - 1].hi)
             return 0;
@@ -112,9 +100,9 @@ static int kj_map_valid(const struct KJ68MemoryMap *map)
 
 /* Takes a valid map whose base and size are the domain's: the ranges, and
    the flags of every page a range touches. */
-static void kj_map_take(struct KJ68Domain *dom)
+static void kj_map_take(struct M68KEngDomain *dom)
 {
-    const struct KJ68MemoryMap *map = dom->map;
+    const struct M68KEngMap *map = dom->map;
     ULONG i, p;
 
     dom->map_generation = map->generation;
@@ -123,9 +111,9 @@ static void kj_map_take(struct KJ68Domain *dom)
     memset(dom->pages, 0, dom->npages);
     for (i = 0; i < map->num_ranges; i++)
     {
-        const struct KJ68Range *r = &map->ranges[i];
-        UBYTE flag = (UBYTE)(((r->flags & KJ68_RANGE_READ_HOST) ? KJ68_PAGE_READ_HOST : 0) |
-                             ((r->flags & KJ68_RANGE_WRITE_HOST) ? KJ68_PAGE_WRITE_HOST : 0));
+        const struct M68KEngRange *r = &map->ranges[i];
+        UBYTE flag = (UBYTE)(((r->flags & M68KENG_RANGE_READ_HOST) ? KJ68_PAGE_READ_HOST : 0) |
+                             ((r->flags & M68KENG_RANGE_WRITE_HOST) ? KJ68_PAGE_WRITE_HOST : 0));
 
         for (p = r->lo >> KJ68_PAGE_SHIFT; p <= (r->hi - 1) >> KJ68_PAGE_SHIFT; p++)
             dom->pages[p] |= flag;
@@ -135,37 +123,37 @@ static void kj_map_take(struct KJ68Domain *dom)
 
 /* ---- the operations --------------------------------------------------------- */
 
-static const struct KJ68EngineOps kj_ops;
+static const struct M68KEngOps kj_ops;
 
-static LONG kj_domain_create(const struct KJ68HostServices *host, APTR host_domain,
-                             struct KJ68MemoryMap *map, ULONG required_caps,
-                             struct KJ68Domain **domain)
+static LONG kj_domain_create(const struct M68KEngHost *host, APTR host_domain,
+                             struct M68KEngMap *map, ULONG required_caps,
+                             struct M68KEngDomain **domain)
 {
-    struct KJ68Domain *dom;
+    struct M68KEngDomain *dom;
     LONG rc;
 
     if (domain)
         *domain = NULL;
     if (!host || !map || !domain)
-        return KJ68_ERR_ARG;
-    if (host->size_of < KJ68_V1_SIZE_HOST)
-        return KJ68_ERR_SIZE;
-    if (host->abi_major != KJ68_ABI_MAJOR)
-        return KJ68_ERR_VERSION;
+        return M68KENG_ERR_ARG;
+    if (host->size_of < M68KENG_V1_SIZE_HOST)
+        return M68KENG_ERR_SIZE;
+    if (host->abi_major != M68KENG_ABI_MAJOR)
+        return M68KENG_ERR_VERSION;
     if (!host->read || !host->write)
-        return KJ68_ERR_ARG;
-    if (map->size_of < KJ68_V1_SIZE_MAP)
-        return KJ68_ERR_SIZE;
+        return M68KENG_ERR_ARG;
+    if (map->size_of < M68KENG_V1_SIZE_MAP)
+        return M68KENG_ERR_SIZE;
     if (!kj_map_valid(map))
-        return KJ68_ERR_ARG;
+        return M68KENG_ERR_ARG;
     if (required_caps & ~kj_ops.caps)
-        return KJ68_ERR_CAPS;
+        return M68KENG_ERR_CAPS;
     if (!kj_tr_runs())
-        return KJ68_ERR_NOHOST;
+        return M68KENG_ERR_NOHOST;
 
     dom = kj_alloc(sizeof(*dom));
     if (!dom)
-        return KJ68_ERR_NOMEM;
+        return M68KENG_ERR_NOMEM;
     dom->host = host;
     dom->host_domain = host_domain;
     dom->map = map;
@@ -176,30 +164,30 @@ static LONG kj_domain_create(const struct KJ68HostServices *host, APTR host_doma
     if (!dom->pages)
     {
         kj_free(dom, sizeof(*dom));
-        return KJ68_ERR_NOMEM;
+        return M68KENG_ERR_NOMEM;
     }
     kj_map_take(dom);
     rc = kj_tr_domain_create(dom);
-    if (rc != KJ68_OK)
+    if (rc != M68KENG_OK)
     {
         kj_free(dom->pages, dom->npages);
         kj_free(dom, sizeof(*dom));
         return rc;
     }
     *domain = dom;
-    return KJ68_OK;
+    return M68KENG_OK;
 }
 
-static LONG kj_domain_destroy(struct KJ68Domain *dom)
+static LONG kj_domain_destroy(struct M68KEngDomain *dom)
 {
     if (!dom)
-        return KJ68_ERR_ARG;
+        return M68KENG_ERR_ARG;
     if (dom->busy || dom->cpus)
-        return KJ68_ERR_STATE;
+        return M68KENG_ERR_STATE;
     kj_tr_domain_destroy(dom);
     kj_free(dom->pages, dom->npages);
     kj_free(dom, sizeof(*dom));
-    return KJ68_OK;
+    return M68KENG_OK;
 }
 
 /* Every translation of the domain compares its guest bytes again before
@@ -207,104 +195,104 @@ static LONG kj_domain_destroy(struct KJ68Domain *dom)
    for its size: 0 changes nothing. A range past 0xFFFFFFFF would end at
    the top of the address space; checking everything covers it. A map
    change is not this: run() drops all translations for it. */
-static LONG kj_invalidate(struct KJ68Domain *dom, ULONG addr, ULONG size)
+static LONG kj_invalidate(struct M68KEngDomain *dom, ULONG addr, ULONG size)
 {
     (void)addr;
     if (!dom)
-        return KJ68_ERR_ARG;
+        return M68KENG_ERR_ARG;
     if (dom->busy)
-        return KJ68_ERR_STATE;
+        return M68KENG_ERR_STATE;
     if (size == 0)
-        return KJ68_OK;
+        return M68KENG_OK;
     kj_tr_invalidate(dom);
     kj_count(&dom->counters.invalidations, 1);
-    return KJ68_OK;
+    return M68KENG_OK;
 }
 
-static LONG kj_cpu_create(struct KJ68Domain *dom, APTR host_cpu, struct KJ68CPU **cpu)
+static LONG kj_cpu_create(struct M68KEngDomain *dom, APTR host_cpu, struct M68KEngCPU **cpu)
 {
-    struct KJ68CPU *c;
+    struct M68KEngCPU *c;
     LONG rc;
 
     if (cpu)
         *cpu = NULL;
     if (!dom || !cpu)
-        return KJ68_ERR_ARG;
+        return M68KENG_ERR_ARG;
     if (dom->busy)
-        return KJ68_ERR_STATE;
+        return M68KENG_ERR_STATE;
     c = kj_alloc(sizeof(*c));
     if (!c)
-        return KJ68_ERR_NOMEM;
+        return M68KENG_ERR_NOMEM;
     c->domain = dom;
     c->host_cpu = host_cpu;
     rc = kj_tr_cpu_create(c);
-    if (rc != KJ68_OK)
+    if (rc != M68KENG_OK)
     {
         kj_free(c, sizeof(*c));
         return rc;
     }
     dom->cpus++;
     *cpu = c;
-    return KJ68_OK;
+    return M68KENG_OK;
 }
 
-static LONG kj_cpu_destroy(struct KJ68CPU *c)
+static LONG kj_cpu_destroy(struct M68KEngCPU *c)
 {
     if (!c)
-        return KJ68_ERR_ARG;
+        return M68KENG_ERR_ARG;
     if (c->domain->busy)
-        return KJ68_ERR_STATE;
+        return M68KENG_ERR_STATE;
     kj_tr_cpu_destroy(c);
     c->domain->cpus--;
     kj_free(c, sizeof(*c));
-    return KJ68_OK;
+    return M68KENG_OK;
 }
 
-static LONG kj_get_reg(struct KJ68CPU *c, ULONG reg, ULONG *value)
+static LONG kj_get_reg(struct M68KEngCPU *c, ULONG reg, ULONG *value)
 {
-    if (!c || !value || reg >= KJ68_REG_COUNT)
-        return KJ68_ERR_ARG;
+    if (!c || !value || reg >= M68KENG_REG_COUNT)
+        return M68KENG_ERR_ARG;
     if (c->domain->busy)
-        return KJ68_ERR_STATE;
+        return M68KENG_ERR_STATE;
     *value = kj_tr_get_reg(c, reg);
-    return KJ68_OK;
+    return M68KENG_OK;
 }
 
-static LONG kj_set_reg(struct KJ68CPU *c, ULONG reg, ULONG value)
+static LONG kj_set_reg(struct M68KEngCPU *c, ULONG reg, ULONG value)
 {
-    if (!c || reg >= KJ68_REG_COUNT)
-        return KJ68_ERR_ARG;
+    if (!c || reg >= M68KENG_REG_COUNT)
+        return M68KENG_ERR_ARG;
     if (c->domain->busy)
-        return KJ68_ERR_STATE;
+        return M68KENG_ERR_STATE;
     return kj_tr_set_reg(c, reg, value);
 }
 
 /* Checks in the contract's order; on any error nothing runs and exit is
    untouched. A changed map is checked again: base and size must stay
    those of domain_create and the contents must be valid, or the call is
-   KJ68_ERR_ARG with nothing run (an implementation rule the contract does
+   M68KENG_ERR_ARG with nothing run (an implementation rule the contract does
    not state yet). A valid new generation drops every translation of the
    domain, so the instruction fetches of this run and of every other CPU
    of the domain follow the new map; the host needs no invalidate. */
-static LONG kj_run(struct KJ68CPU *c, ULONG budget, struct KJ68Exit *exit)
+static LONG kj_run(struct M68KEngCPU *c, ULONG budget, struct M68KEngExit *exit)
 {
-    struct KJ68Exit out;
-    struct KJ68Domain *dom;
-    const size_t from = offsetof(struct KJ68Exit, reason);
+    struct M68KEngExit out;
+    struct M68KEngDomain *dom;
+    const size_t from = offsetof(struct M68KEngExit, reason);
 
     if (!c || !exit)
-        return KJ68_ERR_ARG;
-    if (exit->size_of < KJ68_V1_SIZE_EXIT)
-        return KJ68_ERR_SIZE;
-    if (budget == 0 || budget > KJ68_MAX_BUDGET)
-        return KJ68_ERR_ARG;
+        return M68KENG_ERR_ARG;
+    if (exit->size_of < M68KENG_V1_SIZE_EXIT)
+        return M68KENG_ERR_SIZE;
+    if (budget == 0 || budget > M68KENG_MAX_BUDGET)
+        return M68KENG_ERR_ARG;
     dom = c->domain;
     if (dom->busy)
-        return KJ68_ERR_STATE;
+        return M68KENG_ERR_STATE;
     if (dom->map->generation != dom->map_generation)
     {
         if (dom->map->base != dom->base || dom->map->size != dom->size || !kj_map_valid(dom->map))
-            return KJ68_ERR_ARG;
+            return M68KENG_ERR_ARG;
         kj_map_take(dom);
         kj_tr_map_changed(dom);
     }
@@ -315,21 +303,21 @@ static LONG kj_run(struct KJ68CPU *c, ULONG budget, struct KJ68Exit *exit)
     kj_count(&dom->counters.runs, 1);
     kj_count(&dom->counters.retired, out.retired);
     /* the version 1 members only: size_of and any tail stay the caller's */
-    memcpy((UBYTE *)exit + from, (const UBYTE *)&out + from, KJ68_V1_SIZE_EXIT - from);
-    return KJ68_OK;
+    memcpy((UBYTE *)exit + from, (const UBYTE *)&out + from, M68KENG_V1_SIZE_EXIT - from);
+    return M68KENG_OK;
 }
 
-static LONG kj_get_stats(struct KJ68Domain *dom, struct KJ68Stats *stats)
+static LONG kj_get_stats(struct M68KEngDomain *dom, struct M68KEngStats *stats)
 {
-    struct KJ68Stats s;
-    const size_t from = offsetof(struct KJ68Stats, cpus);
+    struct M68KEngStats s;
+    const size_t from = offsetof(struct M68KEngStats, cpus);
 
     if (!dom || !stats)
-        return KJ68_ERR_ARG;
-    if (stats->size_of < KJ68_V1_SIZE_STATS)
-        return KJ68_ERR_SIZE;
+        return M68KENG_ERR_ARG;
+    if (stats->size_of < M68KENG_V1_SIZE_STATS)
+        return M68KENG_ERR_SIZE;
     if (dom->busy)
-        return KJ68_ERR_STATE;
+        return M68KENG_ERR_STATE;
     memset(&s, 0, sizeof(s));
     s.cpus = dom->cpus;
     s.blocks_translated = kj_sat32(dom->counters.blocks);
@@ -339,19 +327,19 @@ static LONG kj_get_stats(struct KJ68Domain *dom, struct KJ68Stats *stats)
     s.code_resets = kj_sat32(dom->counters.code_resets);
     s.code_bytes = kj_tr_code_bytes(dom);
     s.retired = dom->counters.retired;
-    memcpy((UBYTE *)stats + from, (const UBYTE *)&s + from, KJ68_V1_SIZE_STATS - from);
-    return KJ68_OK;
+    memcpy((UBYTE *)stats + from, (const UBYTE *)&s + from, M68KENG_V1_SIZE_STATS - from);
+    return M68KENG_OK;
 }
 
-static const struct KJ68EngineOps kj_ops =
+static const struct M68KEngOps kj_ops =
 {
-    sizeof(struct KJ68EngineOps), KJ68_ABI_MAJOR, KJ68_ABI_MINOR, KJ68_CAP_BASE,
-    KJ68_BLOCK_INSNS, (CONST_STRPTR)"kaffeine-jit68 0.1 (J1 source, AArch64 translator)",
+    sizeof(struct M68KEngOps), M68KENG_ABI_MAJOR, M68KENG_ABI_MINOR, M68KENG_CAP_BASE,
+    KJ68_BLOCK_INSNS, (CONST_STRPTR)"kaffeine-jit68 1.0 (AArch64 translator)",
     kj_domain_create, kj_domain_destroy, kj_invalidate, kj_cpu_create, kj_cpu_destroy,
     kj_get_reg, kj_set_reg, kj_run, kj_get_stats
 };
 
-const struct KJ68EngineOps *KJ68_GetEngineTable(ULONG abi_major)
+const struct M68KEngOps *KJ68_GetEngineTable(ULONG abi_major)
 {
-    return abi_major == KJ68_ABI_MAJOR ? &kj_ops : NULL;
+    return abi_major == M68KENG_ABI_MAJOR ? &kj_ops : NULL;
 }

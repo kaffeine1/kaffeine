@@ -2,7 +2,7 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
     Author: Michele Dipace (@kaffeine1)
 
-    Host checks of kaffeine-jit68 through interface version 1 only. The
+    Host checks of kaffeine-jit68 through its interface. The
     engine is reached through the table KJ68_GetEngineTable() returns, which
     the native KJ68_GetEngine will return; the test seams of kj68_intern.h
     (compiled only with KJ68_TEST_SEAMS) inject allocation failures, count
@@ -12,7 +12,8 @@
     canonical ranges (CIA and custom chip pages, low-memory guard, the
     bitplane mirror, out-of-bounds reads 0) and dispatches the few library
     calls the programs make, as m68kemu would through its exits. Programs
-    and expected results of the legacy hosted suite (test_hosted_jit.cpp,
+    and expected results of the hosted suite of kaffeine.library, the earlier
+    library of the Kaffeine project, called the legacy suite below (test_hosted_jit.cpp,
     sha256 c451efc8) are reused where their oracle is not Moira.
 
     Revision 2 adds map-change-fetch (a new map generation with no
@@ -30,7 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "kaffeine-jit68-abi-v1.h"
+#include "m68kemu_engine.h"
 #include "kj68_intern.h"
 
 #ifndef KJ68_TEST_SEAMS
@@ -41,7 +42,7 @@ static unsigned checks, failures;
 #define CHECK(x) do { checks++; if (!(x)) { failures++; \
     printf("  FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); } } while (0)
 
-static const struct KJ68EngineOps *ops;
+static const struct M68KEngOps *ops;
 
 /* The layout of the legacy suite. */
 #define L_ENTRY       0x1000u
@@ -61,8 +62,8 @@ static const struct KJ68EngineOps *ops;
 #define NEST_SENTINEL 0xFFDEAE00u   /* m68kemu: the return of a nested call */
 #define MIB           (1u << 20)
 
-#define R_D(n) (KJ68_REG_D0 + (n))
-#define R_A(n) (KJ68_REG_A0 + (n))
+#define R_D(n) (M68KENG_REG_D0 + (n))
+#define R_A(n) (M68KENG_REG_A0 + (n))
 
 /* ---- the stub host -------------------------------------------------------- */
 
@@ -76,8 +77,8 @@ struct Access
 
 struct Host
 {
-    struct KJ68HostServices services;   /* first: the cookie is the host */
-    struct KJ68MemoryMap map;
+    struct M68KEngHost services;   /* first: the cookie is the host */
+    struct M68KEngMap map;
     UBYTE *mem;
     ULONG size;
     int low_guard;
@@ -85,7 +86,7 @@ struct Host
     unsigned nlog;
     ULONG stop_addr;
     int stop_armed;
-    struct KJ68CPU *probe_cpu;          /* engine calls tried from a callback */
+    struct M68KEngCPU *probe_cpu;          /* engine calls tried from a callback */
     LONG probe_get_reg, probe_run;
 };
 
@@ -112,7 +113,7 @@ static void probe_engine(struct Host *h)
 {
     if (h->probe_cpu)
     {
-        struct KJ68Exit x;
+        struct M68KEngExit x;
         ULONG v = 0;
 
         memset(&x, 0, sizeof(x));
@@ -178,8 +179,8 @@ static void host_init(struct Host *h, ULONG size, UBYTE fill)
     memset(h->mem, fill, size);
     h->size = size;
     h->services.size_of = sizeof(h->services);
-    h->services.abi_major = KJ68_ABI_MAJOR;
-    h->services.abi_minor = KJ68_ABI_MINOR;
+    h->services.abi_major = M68KENG_ABI_MAJOR;
+    h->services.abi_minor = M68KENG_ABI_MINOR;
     h->services.read = host_read;
     h->services.write = host_write;
     h->map.size_of = sizeof(h->map);
@@ -190,19 +191,19 @@ static void host_init(struct Host *h, ULONG size, UBYTE fill)
 
 static void add_range(struct Host *h, ULONG lo, ULONG hi, ULONG flags)
 {
-    struct KJ68Range *r = &h->map.ranges[h->map.num_ranges++];
+    struct M68KEngRange *r = &h->map.ranges[h->map.num_ranges++];
 
     r->lo = lo;
     r->hi = hi;
     r->flags = flags;
 }
 
-#define RW (KJ68_RANGE_READ_HOST | KJ68_RANGE_WRITE_HOST)
+#define RW (M68KENG_RANGE_READ_HOST | M68KENG_RANGE_WRITE_HOST)
 
 static void canonical_ranges(struct Host *h)
 {
-    add_range(h, 0, 8, KJ68_RANGE_WRITE_HOST);
-    add_range(h, 0x100, 0x1C0, KJ68_RANGE_WRITE_HOST);
+    add_range(h, 0, 8, M68KENG_RANGE_WRITE_HOST);
+    add_range(h, 0x100, 0x1C0, M68KENG_RANGE_WRITE_HOST);
     add_range(h, 0xBFD000u, 0xBFF000u, RW);
     add_range(h, 0xDFF000u, 0xE00000u, RW);
     h->low_guard = 1;
@@ -213,11 +214,11 @@ static void canonical_ranges(struct Host *h)
 struct M
 {
     struct Host h;
-    struct KJ68Domain *d;
-    struct KJ68CPU *c;
-    struct KJ68CPU *nested;    /* the CPU of nested calls, made on first use */
+    struct M68KEngDomain *d;
+    struct M68KEngCPU *c;
+    struct M68KEngCPU *nested;    /* the CPU of nested calls, made on first use */
     ULONG pc;                  /* where the next code word goes */
-    struct KJ68Exit last;      /* the exit that ended the last program */
+    struct M68KEngExit last;      /* the exit that ended the last program */
 };
 
 static void put16(struct M *m, ULONG at, ULONG v)
@@ -279,17 +280,17 @@ static void hook_call(struct M *m)
     jsr_lib(m, L_UTILITY, 102);
 }
 
-static ULONG reg(struct KJ68CPU *c, ULONG r)
+static ULONG reg(struct M68KEngCPU *c, ULONG r)
 {
     ULONG v = 0;
 
-    CHECK(ops->get_reg(c, r, &v) == KJ68_OK);
+    CHECK(ops->get_reg(c, r, &v) == M68KENG_OK);
     return v;
 }
 
-static void set(struct KJ68CPU *c, ULONG r, ULONG v)
+static void set(struct M68KEngCPU *c, ULONG r, ULONG v)
 {
-    CHECK(ops->set_reg(c, r, v) == KJ68_OK);
+    CHECK(ops->set_reg(c, r, v) == M68KENG_OK);
 }
 
 static int m_open(struct M *m, ULONG size, UBYTE fill, int canonical)
@@ -309,19 +310,19 @@ static int m_open(struct M *m, ULONG size, UBYTE fill, int canonical)
         for (at = lib - 768; at < lib; at += 2)
             put16(m, at, 0xA000);
     }
-    if (ops->domain_create(&m->h.services, &m->h, &m->h.map, 0, &m->d) != KJ68_OK)
+    if (ops->domain_create(&m->h.services, &m->h, &m->h.map, 0, &m->d) != M68KENG_OK)
         return 0;
-    return ops->cpu_create(m->d, m, &m->c) == KJ68_OK;
+    return ops->cpu_create(m->d, m, &m->c) == M68KENG_OK;
 }
 
 static void m_close(struct M *m)
 {
     if (m->nested)
-        CHECK(ops->cpu_destroy(m->nested) == KJ68_OK);
+        CHECK(ops->cpu_destroy(m->nested) == M68KENG_OK);
     if (m->c)
-        CHECK(ops->cpu_destroy(m->c) == KJ68_OK);
+        CHECK(ops->cpu_destroy(m->c) == M68KENG_OK);
     if (m->d)
-        CHECK(ops->domain_destroy(m->d) == KJ68_OK);
+        CHECK(ops->domain_destroy(m->d) == M68KENG_OK);
     free(m->h.mem);
     memset(m, 0, sizeof(*m));
 }
@@ -339,8 +340,8 @@ static void m_start(struct M *m, ULONG entry, ULONG sysbase)
         set(m->c, r, 0);
     set(m->c, R_A(7), sp);
     set(m->c, R_A(6), sysbase);
-    set(m->c, KJ68_REG_SR, 0x2700);
-    set(m->c, KJ68_REG_PC, entry);
+    set(m->c, M68KENG_REG_SR, 0x2700);
+    set(m->c, M68KENG_REG_PC, entry);
 }
 
 /* ---- the library calls the programs make, as the host completes them ---- */
@@ -353,17 +354,17 @@ struct Seen
 static struct Seen snap;
 static unsigned snap_calls;
 
-static struct KJ68Exit run_to(struct M *m, struct KJ68CPU *c, unsigned long max_runs);
+static struct M68KEngExit run_to(struct M *m, struct M68KEngCPU *c, unsigned long max_runs);
 
 /* The canonical Call68k: a CPU of the same domain, on a stack 256 bytes
    below the caller's, returning to NEST_SENTINEL, D0 the result. */
-static ULONG call_hook(struct M *m, struct KJ68CPU *caller)
+static ULONG call_hook(struct M *m, struct M68KEngCPU *caller)
 {
-    struct KJ68Exit x;
+    struct M68KEngExit x;
     ULONG r, hook = reg(caller, R_A(0)), sp = (reg(caller, R_A(7)) - 256) & ~3u;
 
     if (!m->nested)
-        CHECK(ops->cpu_create(m->d, m, &m->nested) == KJ68_OK);
+        CHECK(ops->cpu_create(m->d, m, &m->nested) == M68KENG_OK);
     for (r = 0; r < 16; r++)
         set(m->nested, r, 0);
     set(m->nested, R_A(0), hook);
@@ -372,16 +373,16 @@ static ULONG call_hook(struct M *m, struct KJ68CPU *caller)
     sp -= 4;
     put32(m, sp, NEST_SENTINEL);
     set(m->nested, R_A(7), sp);
-    set(m->nested, KJ68_REG_SR, 0x2000);
-    set(m->nested, KJ68_REG_PC, get32(m, hook + 8));
+    set(m->nested, M68KENG_REG_SR, 0x2000);
+    set(m->nested, M68KENG_REG_PC, get32(m, hook + 8));
     x = run_to(m, m->nested, 1000000);
-    CHECK(x.reason == KJ68_STOP_PC_OUTSIDE && x.pc == NEST_SENTINEL);
+    CHECK(x.reason == M68KENG_STOP_PC_OUTSIDE && x.pc == NEST_SENTINEL);
     return reg(m->nested, R_D(0));
 }
 
 /* Pops the return address, acts, sets D0, returns to the caller. 0 for a
    call these checks do not know. */
-static int dispatch(struct M *m, struct KJ68CPU *c, ULONG pc)
+static int dispatch(struct M *m, struct M68KEngCPU *c, ULONG pc)
 {
     ULONG sp = reg(c, R_A(7)), ret = get32(m, sp), d0 = reg(c, R_D(0));
 
@@ -394,40 +395,40 @@ static int dispatch(struct M *m, struct KJ68CPU *c, ULONG pc)
             snap.d[r] = reg(c, R_D(r));
             snap.a[r] = reg(c, R_A(r));
         }
-        snap.sr = reg(c, KJ68_REG_SR);
+        snap.sr = reg(c, M68KENG_REG_SR);
         snap_calls++;
     }
     else if (pc == L_EXEC - 636)       /* CacheClearU() */
-        CHECK(ops->invalidate(m->d, 0, KJ68_INVALIDATE_ALL) == KJ68_OK);
+        CHECK(ops->invalidate(m->d, 0, M68KENG_INVALIDATE_ALL) == M68KENG_OK);
     else if (pc == L_EXEC - 642)       /* CacheClearE(A0, D0, D1) */
-        CHECK(ops->invalidate(m->d, reg(c, R_A(0)), reg(c, R_D(0))) == KJ68_OK);
+        CHECK(ops->invalidate(m->d, reg(c, R_A(0)), reg(c, R_D(0))) == M68KENG_OK);
     else if (pc == L_UTILITY - 102)    /* CallHookPkt() */
         d0 = call_hook(m, c);
     else
         return 0;
     set(c, R_A(7), sp + 4);
     set(c, R_D(0), d0);
-    set(c, KJ68_REG_PC, ret);
+    set(c, M68KENG_REG_PC, ret);
     return 1;
 }
 
-static struct KJ68Exit run_to(struct M *m, struct KJ68CPU *c, unsigned long max_runs)
+static struct M68KEngExit run_to(struct M *m, struct M68KEngCPU *c, unsigned long max_runs)
 {
-    struct KJ68Exit x;
+    struct M68KEngExit x;
     unsigned long n;
 
     for (n = 0; n < max_runs; n++)
     {
         memset(&x, 0, sizeof(x));
         x.size_of = sizeof(x);
-        if (ops->run(c, 4096, &x) != KJ68_OK)
+        if (ops->run(c, 4096, &x) != M68KENG_OK)
         {
             x.reason = 0;
             return x;
         }
-        if (x.reason == KJ68_STOP_BUDGET)
+        if (x.reason == M68KENG_STOP_BUDGET)
             continue;
-        if (x.reason == KJ68_STOP_ALINE && dispatch(m, c, x.pc))
+        if (x.reason == M68KENG_STOP_ALINE && dispatch(m, c, x.pc))
             continue;
         return x;
     }
@@ -440,7 +441,7 @@ static struct KJ68Exit run_to(struct M *m, struct KJ68CPU *c, unsigned long max_
 static LONG program(struct M *m)
 {
     m->last = run_to(m, m->c, 1000000);
-    if (m->last.reason != KJ68_STOP_PC_OUTSIDE || m->last.pc != SENTINEL)
+    if (m->last.reason != M68KENG_STOP_PC_OUTSIDE || m->last.pc != SENTINEL)
         return -999;
     return (LONG)reg(m->c, R_D(0));
 }
@@ -449,26 +450,26 @@ static ULONG snap_word(const struct M *m, ULONG off) { return get32(m, L_SNAPSHO
 
 /* A few words at L_ENTRY ended by an A-line, run once from L_ENTRY with an
    empty log; the code was written by the host, so it invalidates first. */
-static struct KJ68Exit one(struct M *m, const UWORD *code, unsigned n, ULONG budget)
+static struct M68KEngExit one(struct M *m, const UWORD *code, unsigned n, ULONG budget)
 {
-    struct KJ68Exit x;
+    struct M68KEngExit x;
 
     m->pc = L_ENTRY;
     words(m, code, n);
     w(m, 0xA000);
-    CHECK(ops->invalidate(m->d, L_ENTRY, 2 * n + 2) == KJ68_OK);
+    CHECK(ops->invalidate(m->d, L_ENTRY, 2 * n + 2) == M68KENG_OK);
     m->h.nlog = 0;
-    set(m->c, KJ68_REG_PC, L_ENTRY);
+    set(m->c, M68KENG_REG_PC, L_ENTRY);
     memset(&x, 0, sizeof(x));
     x.size_of = sizeof(x);
-    CHECK(ops->run(m->c, budget, &x) == KJ68_OK);
+    CHECK(ops->run(m->c, budget, &x) == M68KENG_OK);
     return x;
 }
 
 /* the run went to the A-line that ends the words of one() */
-static int ended(const struct KJ68Exit *x)
+static int ended(const struct M68KEngExit *x)
 {
-    return x->reason == KJ68_STOP_ALINE;
+    return x->reason == M68KENG_STOP_ALINE;
 }
 
 /* a text starts with the words expected of it */
@@ -496,11 +497,11 @@ static void t_discovery(void)
     CHECK(KJ68_GetEngineTable(1) == ops);
     CHECK(KJ68_GetEngineTable(0) == NULL);
     CHECK(KJ68_GetEngineTable(2) == NULL);
-    CHECK(ops->size_of >= KJ68_V1_SIZE_ENGINEOPS);
+    CHECK(ops->size_of >= M68KENG_V1_SIZE_OPS);
     CHECK(ops->abi_major == 1 && ops->abi_minor == 0);
-    CHECK(ops->caps == KJ68_CAP_BASE);
+    CHECK(ops->caps == M68KENG_CAP_BASE);
     CHECK(ops->max_block_insns == 64);
-    CHECK(ops->max_block_insns >= 1 && ops->max_block_insns <= KJ68_MAX_BLOCK_INSNS);
+    CHECK(ops->max_block_insns >= 1 && ops->max_block_insns <= M68KENG_MAX_BLOCK_INSNS);
     CHECK(ops->name != NULL && ops->name[0] != 0);
     CHECK(ops->domain_create && ops->domain_destroy && ops->invalidate && ops->cpu_create && ops->cpu_destroy &&
           ops->get_reg && ops->set_reg && ops->run && ops->get_stats);
@@ -512,26 +513,26 @@ static void t_discovery(void)
 
 struct HostPlus
 {
-    struct KJ68HostServices s;
+    struct M68KEngHost s;
     ULONG extra[4];
 };
 
 struct MapPlus
 {
-    struct KJ68MemoryMap m;
+    struct M68KEngMap m;
     ULONG extra[4];
 };
 
 /* domain_create with these arguments: its status, and on an error a NULL
    domain and nothing left allocated. */
-static LONG try_create(const struct KJ68HostServices *host, struct KJ68MemoryMap *map, ULONG caps)
+static LONG try_create(const struct M68KEngHost *host, struct M68KEngMap *map, ULONG caps)
 {
-    struct KJ68Domain *d = (struct KJ68Domain *)(uintptr_t)1;
+    struct M68KEngDomain *d = (struct M68KEngDomain *)(uintptr_t)1;
     long live = kj68_test_allocs_live, exec = kj68_test_exec_live;
     LONG rc = ops->domain_create(host, NULL, map, caps, &d);
 
-    if (rc == KJ68_OK)
-        CHECK(d != NULL && ops->domain_destroy(d) == KJ68_OK);
+    if (rc == M68KENG_OK)
+        CHECK(d != NULL && ops->domain_destroy(d) == M68KENG_OK);
     else
         CHECK(d == NULL);
     CHECK(kj68_test_allocs_live == live && kj68_test_exec_live == exec);
@@ -541,77 +542,77 @@ static LONG try_create(const struct KJ68HostServices *host, struct KJ68MemoryMap
 static void t_sizes(void)
 {
     struct Host h;
-    struct KJ68HostServices hs;
-    struct KJ68MemoryMap mp;
+    struct M68KEngHost hs;
+    struct M68KEngMap mp;
     struct HostPlus hp;
     struct MapPlus mpp;
-    struct KJ68Domain *d = (struct KJ68Domain *)(uintptr_t)1;
+    struct M68KEngDomain *d = (struct M68KEngDomain *)(uintptr_t)1;
 
-    CHECK(KJ68_V1_SIZE_EXIT == offsetof(struct KJ68Exit, text) + KJ68_TEXT_SIZE);
-    CHECK(KJ68_V1_SIZE_STATS == offsetof(struct KJ68Stats, retired) + sizeof(UQUAD));
-    CHECK(KJ68_V1_SIZE_MAP == offsetof(struct KJ68MemoryMap, ranges) + KJ68_MAX_RANGES * sizeof(struct KJ68Range));
-    CHECK(KJ68_V1_SIZE_HOST == offsetof(struct KJ68HostServices, log) + sizeof(void (*)(APTR, CONST_STRPTR)));
-    CHECK(KJ68_V1_SIZE_ENGINEOPS == offsetof(struct KJ68EngineOps, get_stats) + sizeof(void *));
+    CHECK(M68KENG_V1_SIZE_EXIT == offsetof(struct M68KEngExit, text) + M68KENG_TEXT_SIZE);
+    CHECK(M68KENG_V1_SIZE_STATS == offsetof(struct M68KEngStats, retired) + sizeof(UQUAD));
+    CHECK(M68KENG_V1_SIZE_MAP == offsetof(struct M68KEngMap, ranges) + M68KENG_MAX_RANGES * sizeof(struct M68KEngRange));
+    CHECK(M68KENG_V1_SIZE_HOST == offsetof(struct M68KEngHost, log) + sizeof(void (*)(APTR, CONST_STRPTR)));
+    CHECK(M68KENG_V1_SIZE_OPS == offsetof(struct M68KEngOps, get_stats) + sizeof(void *));
 
     host_init(&h, MIB, 0);
-    CHECK(ops->domain_create(NULL, NULL, &h.map, 0, &d) == KJ68_ERR_ARG && d == NULL);
-    CHECK(ops->domain_create(&h.services, NULL, NULL, 0, &d) == KJ68_ERR_ARG && d == NULL);
-    CHECK(ops->domain_create(&h.services, NULL, &h.map, 0, NULL) == KJ68_ERR_ARG);
+    CHECK(ops->domain_create(NULL, NULL, &h.map, 0, &d) == M68KENG_ERR_ARG && d == NULL);
+    CHECK(ops->domain_create(&h.services, NULL, NULL, 0, &d) == M68KENG_ERR_ARG && d == NULL);
+    CHECK(ops->domain_create(&h.services, NULL, &h.map, 0, NULL) == M68KENG_ERR_ARG);
 
-    hs = h.services; hs.size_of = KJ68_V1_SIZE_HOST - 1;
-    CHECK(try_create(&hs, &h.map, 0) == KJ68_ERR_SIZE);
+    hs = h.services; hs.size_of = M68KENG_V1_SIZE_HOST - 1;
+    CHECK(try_create(&hs, &h.map, 0) == M68KENG_ERR_SIZE);
     hs = h.services; hs.abi_major = 2;
-    CHECK(try_create(&hs, &h.map, 0) == KJ68_ERR_VERSION);
+    CHECK(try_create(&hs, &h.map, 0) == M68KENG_ERR_VERSION);
     hs = h.services; hs.read = NULL;
-    CHECK(try_create(&hs, &h.map, 0) == KJ68_ERR_ARG);
+    CHECK(try_create(&hs, &h.map, 0) == M68KENG_ERR_ARG);
     hs = h.services; hs.write = NULL;
-    CHECK(try_create(&hs, &h.map, 0) == KJ68_ERR_ARG);
-    mp = h.map; mp.size_of = KJ68_V1_SIZE_MAP - 1;
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_SIZE);
+    CHECK(try_create(&hs, &h.map, 0) == M68KENG_ERR_ARG);
+    mp = h.map; mp.size_of = M68KENG_V1_SIZE_MAP - 1;
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_SIZE);
     mp = h.map; mp.base = NULL;
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_ARG);
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_ARG);
     mp = h.map; mp.size = 0xFFF;
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_ARG);
-    mp = h.map; mp.num_ranges = KJ68_MAX_RANGES + 1;
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_ARG);
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_ARG);
+    mp = h.map; mp.num_ranges = M68KENG_MAX_RANGES + 1;
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_ARG);
     mp = h.map; mp.num_ranges = 2;      /* unsorted */
     mp.ranges[0].lo = 0x2000; mp.ranges[0].hi = 0x3000; mp.ranges[0].flags = RW;
     mp.ranges[1].lo = 0x1000; mp.ranges[1].hi = 0x1800; mp.ranges[1].flags = RW;
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_ARG);
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_ARG);
     mp.ranges[0].lo = 0x1000; mp.ranges[0].hi = 0x2000;      /* overlapping */
     mp.ranges[1].lo = 0x1800; mp.ranges[1].hi = 0x3000;
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_ARG);
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_ARG);
     mp.num_ranges = 1;
     mp.ranges[0].lo = 0x1000; mp.ranges[0].hi = 0x1000;      /* empty */
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_ARG);
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_ARG);
     mp.ranges[0].hi = MIB + 2;                               /* past the size */
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_ARG);
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_ARG);
     mp.ranges[0].hi = 0x2000; mp.ranges[0].flags = 0;        /* no flag */
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_ARG);
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_ARG);
     mp.ranges[0].flags = 4;                                  /* unknown flag */
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_ARG);
-    CHECK(try_create(&h.services, &h.map, KJ68_CAP_IRQ) == KJ68_ERR_CAPS);
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_ARG);
+    CHECK(try_create(&h.services, &h.map, M68KENG_CAP_IRQ) == M68KENG_ERR_CAPS);
 
     /* the first failing check of the contract wins */
-    hs = h.services; hs.size_of = KJ68_V1_SIZE_HOST - 1; hs.abi_major = 2;
-    CHECK(try_create(&hs, &h.map, 0) == KJ68_ERR_SIZE);
+    hs = h.services; hs.size_of = M68KENG_V1_SIZE_HOST - 1; hs.abi_major = 2;
+    CHECK(try_create(&hs, &h.map, 0) == M68KENG_ERR_SIZE);
     hs = h.services; hs.abi_major = 2; hs.read = NULL;
-    CHECK(try_create(&hs, &h.map, 0) == KJ68_ERR_VERSION);
+    CHECK(try_create(&hs, &h.map, 0) == M68KENG_ERR_VERSION);
     mp = h.map; mp.size_of = 4; mp.base = NULL;
-    CHECK(try_create(&h.services, &mp, 0) == KJ68_ERR_SIZE);
+    CHECK(try_create(&h.services, &mp, 0) == M68KENG_ERR_SIZE);
     mp = h.map; mp.base = NULL;
-    CHECK(try_create(&h.services, &mp, KJ68_CAP_IRQ) == KJ68_ERR_ARG);
+    CHECK(try_create(&h.services, &mp, M68KENG_CAP_IRQ) == M68KENG_ERR_ARG);
 
     /* exactly the v1 prefix, and an appended tail */
-    hs = h.services; hs.size_of = KJ68_V1_SIZE_HOST;
-    mp = h.map; mp.size_of = KJ68_V1_SIZE_MAP;
-    CHECK(try_create(&hs, &mp, 0) == KJ68_OK);
+    hs = h.services; hs.size_of = M68KENG_V1_SIZE_HOST;
+    mp = h.map; mp.size_of = M68KENG_V1_SIZE_MAP;
+    CHECK(try_create(&hs, &mp, 0) == M68KENG_OK);
     memset(&hp, 0x5A, sizeof(hp));
     hp.s = h.services; hp.s.size_of = sizeof(hp);
     memset(&mpp, 0x5A, sizeof(mpp));
     mpp.m = h.map; mpp.m.size_of = sizeof(mpp);
-    CHECK(try_create(&hp.s, &mpp.m, 0) == KJ68_OK);
-    CHECK(try_create(&h.services, &h.map, KJ68_CAP_BASE) == KJ68_OK);
+    CHECK(try_create(&hp.s, &mpp.m, 0) == M68KENG_OK);
+    CHECK(try_create(&h.services, &h.map, M68KENG_CAP_BASE) == M68KENG_OK);
     free(h.mem);
 }
 
@@ -620,8 +621,8 @@ static void t_sizes(void)
 static void t_alloc_failure(void)
 {
     struct Host h;
-    struct KJ68Domain *d = NULL;
-    struct KJ68CPU *c = NULL;
+    struct M68KEngDomain *d = NULL;
+    struct M68KEngCPU *c = NULL;
     long n, found = 0;
 
     host_init(&h, MIB, 0);
@@ -632,10 +633,10 @@ static void t_alloc_failure(void)
 
         kj68_test_fail_alloc_at = n;
         rc = ops->domain_create(&h.services, &h, &h.map, 0, &d);
-        if (rc == KJ68_OK)
+        if (rc == M68KENG_OK)
             found = n;
         else
-            CHECK(rc == KJ68_ERR_NOMEM && d == NULL && kj68_test_allocs_live == live && kj68_test_exec_live == exec);
+            CHECK(rc == M68KENG_ERR_NOMEM && d == NULL && kj68_test_allocs_live == live && kj68_test_exec_live == exec);
     }
     kj68_test_fail_alloc_at = 0;
     printf("  domain_create: %ld allocations\n", found - 1);
@@ -648,18 +649,18 @@ static void t_alloc_failure(void)
 
         kj68_test_fail_alloc_at = n;
         rc = ops->cpu_create(d, NULL, &c);
-        if (rc == KJ68_OK)
+        if (rc == M68KENG_OK)
             found = n;
         else
-            CHECK(rc == KJ68_ERR_NOMEM && c == NULL && kj68_test_allocs_live == live);
+            CHECK(rc == M68KENG_ERR_NOMEM && c == NULL && kj68_test_allocs_live == live);
     }
     kj68_test_fail_alloc_at = 0;
     printf("  cpu_create: %ld allocations\n", found - 1);
     CHECK(found == 5 && c != NULL);
     if (c)
-        CHECK(ops->cpu_destroy(c) == KJ68_OK);
+        CHECK(ops->cpu_destroy(c) == M68KENG_OK);
     if (d)
-        CHECK(ops->domain_destroy(d) == KJ68_OK);
+        CHECK(ops->domain_destroy(d) == M68KENG_OK);
     free(h.mem);
 }
 
@@ -668,34 +669,34 @@ static void t_alloc_failure(void)
 static void t_lifecycle(void)
 {
     struct Host h;
-    struct KJ68Stats s;
+    struct M68KEngStats s;
     int round;
 
     host_init(&h, 2 * MIB, 0);
-    CHECK(ops->domain_destroy(NULL) == KJ68_ERR_ARG);
-    CHECK(ops->cpu_destroy(NULL) == KJ68_ERR_ARG);
-    CHECK(ops->get_stats(NULL, &s) == KJ68_ERR_ARG);
+    CHECK(ops->domain_destroy(NULL) == M68KENG_ERR_ARG);
+    CHECK(ops->cpu_destroy(NULL) == M68KENG_ERR_ARG);
+    CHECK(ops->get_stats(NULL, &s) == M68KENG_ERR_ARG);
     for (round = 0; round < 3; round++)
     {
-        struct KJ68Domain *d = NULL;
-        struct KJ68CPU *c[4];
+        struct M68KEngDomain *d = NULL;
+        struct M68KEngCPU *c[4];
         int i;
 
-        CHECK(ops->domain_create(&h.services, &h, &h.map, 0, &d) == KJ68_OK);
+        CHECK(ops->domain_create(&h.services, &h, &h.map, 0, &d) == M68KENG_OK);
         if (!d)
             break;
         for (i = 0; i < 4; i++)
-            CHECK(ops->cpu_create(d, NULL, &c[i]) == KJ68_OK);
+            CHECK(ops->cpu_create(d, NULL, &c[i]) == M68KENG_OK);
         memset(&s, 0, sizeof(s));
         s.size_of = sizeof(s);
-        CHECK(ops->get_stats(d, &s) == KJ68_OK && s.cpus == 4 && s.code_bytes == (16u << 20));
+        CHECK(ops->get_stats(d, &s) == M68KENG_OK && s.cpus == 4 && s.code_bytes == (16u << 20));
         CHECK(kj68_test_exec_live == (16 << 20));
-        CHECK(ops->domain_destroy(d) == KJ68_ERR_STATE);
-        CHECK(ops->get_stats(d, &s) == KJ68_OK && s.cpus == 4);
+        CHECK(ops->domain_destroy(d) == M68KENG_ERR_STATE);
+        CHECK(ops->get_stats(d, &s) == M68KENG_OK && s.cpus == 4);
         for (i = 0; i < 4; i++)
-            CHECK(ops->cpu_destroy(c[i]) == KJ68_OK);
-        CHECK(ops->get_stats(d, &s) == KJ68_OK && s.cpus == 0);
-        CHECK(ops->domain_destroy(d) == KJ68_OK);
+            CHECK(ops->cpu_destroy(c[i]) == M68KENG_OK);
+        CHECK(ops->get_stats(d, &s) == M68KENG_OK && s.cpus == 0);
+        CHECK(ops->domain_destroy(d) == M68KENG_OK);
         CHECK(kj68_test_allocs_live == 0 && kj68_test_exec_live == 0);
     }
     free(h.mem);
@@ -711,26 +712,26 @@ static void t_registers(void)
     CHECK(m_open(&m, MIB, 0, 0));
     for (r = 0; r < 16; r++)
         CHECK(reg(m.c, r) == 0);
-    CHECK(reg(m.c, KJ68_REG_PC) == 0 && reg(m.c, KJ68_REG_SR) == 0x2700);
+    CHECK(reg(m.c, M68KENG_REG_PC) == 0 && reg(m.c, M68KENG_REG_SR) == 0x2700);
     for (r = 0; r < 16; r++)
         set(m.c, r, 0x11110000u + r);
-    set(m.c, KJ68_REG_PC, 0x2468);
+    set(m.c, M68KENG_REG_PC, 0x2468);
     for (r = 0; r < 16; r++)
         CHECK(reg(m.c, r) == 0x11110000u + r);
-    CHECK(reg(m.c, KJ68_REG_PC) == 0x2468);
-    set(m.c, KJ68_REG_SR, 0x2715);
-    CHECK(reg(m.c, KJ68_REG_SR) == 0x2715);
-    CHECK(ops->set_reg(m.c, KJ68_REG_SR, 0x0015) == KJ68_ERR_UNSUPPORTED);   /* S clear */
-    CHECK(ops->set_reg(m.c, KJ68_REG_SR, 0xA715) == KJ68_ERR_UNSUPPORTED);   /* T1 */
-    CHECK(ops->set_reg(m.c, KJ68_REG_SR, 0x6715) == KJ68_ERR_UNSUPPORTED);   /* T0 */
-    CHECK(ops->set_reg(m.c, KJ68_REG_SR, 0x3715) == KJ68_ERR_UNSUPPORTED);   /* M */
-    CHECK(reg(m.c, KJ68_REG_SR) == 0x2715);
-    set(m.c, KJ68_REG_SR, 0x2FFF);                                           /* reserved bits dropped */
-    CHECK(reg(m.c, KJ68_REG_SR) == 0x271F);
-    CHECK(ops->get_reg(m.c, KJ68_REG_COUNT, &v) == KJ68_ERR_ARG);
-    CHECK(ops->set_reg(m.c, KJ68_REG_COUNT, 0) == KJ68_ERR_ARG);
-    CHECK(ops->get_reg(m.c, 0, NULL) == KJ68_ERR_ARG);
-    CHECK(ops->get_reg(NULL, 0, &v) == KJ68_ERR_ARG);
+    CHECK(reg(m.c, M68KENG_REG_PC) == 0x2468);
+    set(m.c, M68KENG_REG_SR, 0x2715);
+    CHECK(reg(m.c, M68KENG_REG_SR) == 0x2715);
+    CHECK(ops->set_reg(m.c, M68KENG_REG_SR, 0x0015) == M68KENG_ERR_UNSUPPORTED);   /* S clear */
+    CHECK(ops->set_reg(m.c, M68KENG_REG_SR, 0xA715) == M68KENG_ERR_UNSUPPORTED);   /* T1 */
+    CHECK(ops->set_reg(m.c, M68KENG_REG_SR, 0x6715) == M68KENG_ERR_UNSUPPORTED);   /* T0 */
+    CHECK(ops->set_reg(m.c, M68KENG_REG_SR, 0x3715) == M68KENG_ERR_UNSUPPORTED);   /* M */
+    CHECK(reg(m.c, M68KENG_REG_SR) == 0x2715);
+    set(m.c, M68KENG_REG_SR, 0x2FFF);                                           /* reserved bits dropped */
+    CHECK(reg(m.c, M68KENG_REG_SR) == 0x271F);
+    CHECK(ops->get_reg(m.c, M68KENG_REG_COUNT, &v) == M68KENG_ERR_ARG);
+    CHECK(ops->set_reg(m.c, M68KENG_REG_COUNT, 0) == M68KENG_ERR_ARG);
+    CHECK(ops->get_reg(m.c, 0, NULL) == M68KENG_ERR_ARG);
+    CHECK(ops->get_reg(NULL, 0, &v) == M68KENG_ERR_ARG);
     m_close(&m);
 }
 
@@ -740,20 +741,20 @@ static void t_aline(void)
 {
     static const UWORD code[] = { 0x7005, 0x7207, 0xA123, 0x7401, 0xA124 };
     struct M m;
-    struct KJ68Exit x;
+    struct M68KEngExit x;
 
     CHECK(m_open(&m, MIB, 0, 0));
     words(&m, code, 5);
     set(m.c, R_A(7), L_STACK);
-    set(m.c, KJ68_REG_PC, L_ENTRY);
+    set(m.c, M68KENG_REG_PC, L_ENTRY);
     memset(&x, 0, sizeof(x));
     x.size_of = sizeof(x);
-    CHECK(ops->run(m.c, 100, &x) == KJ68_OK);
-    CHECK(x.reason == KJ68_STOP_ALINE && x.pc == L_ENTRY + 4 && x.opcode == 0xA123 && x.retired == 2);
-    CHECK(reg(m.c, R_D(0)) == 5 && reg(m.c, R_D(1)) == 7 && reg(m.c, KJ68_REG_PC) == L_ENTRY + 4);
-    set(m.c, KJ68_REG_PC, L_ENTRY + 6);
-    CHECK(ops->run(m.c, 100, &x) == KJ68_OK);
-    CHECK(x.reason == KJ68_STOP_ALINE && x.pc == L_ENTRY + 8 && x.opcode == 0xA124 && x.retired == 1);
+    CHECK(ops->run(m.c, 100, &x) == M68KENG_OK);
+    CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == L_ENTRY + 4 && x.opcode == 0xA123 && x.retired == 2);
+    CHECK(reg(m.c, R_D(0)) == 5 && reg(m.c, R_D(1)) == 7 && reg(m.c, M68KENG_REG_PC) == L_ENTRY + 4);
+    set(m.c, M68KENG_REG_PC, L_ENTRY + 6);
+    CHECK(ops->run(m.c, 100, &x) == M68KENG_OK);
+    CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == L_ENTRY + 8 && x.opcode == 0xA124 && x.retired == 1);
     CHECK(reg(m.c, R_D(2)) == 1);
     m_close(&m);
 }
@@ -764,7 +765,7 @@ static void t_fetch(void)
 {
     static const UWORD jmp_custom[] = { 0x4EF9, 0x00DF, 0xF000 };
     struct M m;
-    struct KJ68Exit x;
+    struct M68KEngExit x;
     ULONG s;
 
     CHECK(m_open(&m, MIB, 0, 0));
@@ -774,51 +775,51 @@ static void t_fetch(void)
 
         put16(&m, L_ENTRY, 0x4E75);                      /* RTS */
         put32(&m, L_STACK - 4, sentinel);
-        CHECK(ops->invalidate(m.d, L_ENTRY, 2) == KJ68_OK);
+        CHECK(ops->invalidate(m.d, L_ENTRY, 2) == M68KENG_OK);
         set(m.c, R_A(7), L_STACK - 4);
-        set(m.c, KJ68_REG_PC, L_ENTRY);
+        set(m.c, M68KENG_REG_PC, L_ENTRY);
         memset(&x, 0, sizeof(x));
         x.size_of = sizeof(x);
-        CHECK(ops->run(m.c, 100, &x) == KJ68_OK);
-        CHECK(x.reason == KJ68_STOP_PC_OUTSIDE && x.pc == sentinel && x.address == sentinel && x.retired == 1);
+        CHECK(ops->run(m.c, 100, &x) == M68KENG_OK);
+        CHECK(x.reason == M68KENG_STOP_PC_OUTSIDE && x.pc == sentinel && x.address == sentinel && x.retired == 1);
     }
-    set(m.c, KJ68_REG_PC, L_ENTRY + 1);
-    CHECK(ops->run(m.c, 100, &x) == KJ68_OK);
-    CHECK(x.reason == KJ68_STOP_EXCEPTION && x.vector == 3 && x.pc == L_ENTRY + 1 && x.retired == 0);
-    CHECK(reg(m.c, KJ68_REG_PC) == L_ENTRY + 1);
+    set(m.c, M68KENG_REG_PC, L_ENTRY + 1);
+    CHECK(ops->run(m.c, 100, &x) == M68KENG_OK);
+    CHECK(x.reason == M68KENG_STOP_EXCEPTION && x.vector == 3 && x.pc == L_ENTRY + 1 && x.retired == 0);
+    CHECK(reg(m.c, M68KENG_REG_PC) == L_ENTRY + 1);
     /* MOVE.L #imm,D0 whose second immediate word is past the end */
     put16(&m, MIB - 4, 0x203C);
     put16(&m, MIB - 2, 0x1234);
-    set(m.c, KJ68_REG_PC, MIB - 4);
-    CHECK(ops->run(m.c, 100, &x) == KJ68_OK);
-    CHECK(x.reason == KJ68_STOP_PC_OUTSIDE && x.pc == MIB - 4 && x.address == MIB && x.retired == 0);
+    set(m.c, M68KENG_REG_PC, MIB - 4);
+    CHECK(ops->run(m.c, 100, &x) == M68KENG_OK);
+    CHECK(x.reason == M68KENG_STOP_PC_OUTSIDE && x.pc == MIB - 4 && x.address == MIB && x.retired == 0);
     m_close(&m);
 
     CHECK(m_open(&m, 32 * MIB, 0, 1));
-    set(m.c, KJ68_REG_PC, 0xBFD000u);                     /* a READ_HOST range */
+    set(m.c, M68KENG_REG_PC, 0xBFD000u);                     /* a READ_HOST range */
     memset(&x, 0, sizeof(x));
     x.size_of = sizeof(x);
-    CHECK(ops->run(m.c, 100, &x) == KJ68_OK);
-    CHECK(x.reason == KJ68_STOP_PC_OUTSIDE && x.pc == 0xBFD000u && x.address == 0xBFD000u);
+    CHECK(ops->run(m.c, 100, &x) == M68KENG_OK);
+    CHECK(x.reason == M68KENG_STOP_PC_OUTSIDE && x.pc == 0xBFD000u && x.address == 0xBFD000u);
     x = one(&m, jmp_custom, 3, 100);
-    CHECK(x.reason == KJ68_STOP_PC_OUTSIDE && x.pc == 0xDFF000u && x.retired == 1);
+    CHECK(x.reason == M68KENG_STOP_PC_OUTSIDE && x.pc == 0xDFF000u && x.retired == 1);
     CHECK(m.h.nlog == 0);                                 /* a fetch never goes to the host */
     m_close(&m);
 }
 
 /* One run of c from pc with budget 64. */
-static struct KJ68Exit run_at(struct KJ68CPU *c, ULONG pc)
+static struct M68KEngExit run_at(struct M68KEngCPU *c, ULONG pc)
 {
-    struct KJ68Exit x;
+    struct M68KEngExit x;
 
-    set(c, KJ68_REG_PC, pc);
+    set(c, M68KENG_REG_PC, pc);
     memset(&x, 0, sizeof(x));
     x.size_of = sizeof(x);
-    CHECK(ops->run(c, 64, &x) == KJ68_OK);
+    CHECK(ops->run(c, 64, &x) == M68KENG_OK);
     return x;
 }
 
-static void mark_regs(struct KJ68CPU *c)
+static void mark_regs(struct M68KEngCPU *c)
 {
     ULONG r;
 
@@ -833,54 +834,54 @@ static void mark_regs(struct KJ68CPU *c)
 static void t_map_change(void)
 {
     const ULONG one_insn = L_ENTRY, three = L_ENTRY + 0x100;
-    struct KJ68CPU *cpu[2];
+    struct M68KEngCPU *cpu[2];
     struct M m;
-    struct KJ68Exit x;
+    struct M68KEngExit x;
     unsigned i;
 
     CHECK(m_open(&m, MIB, 0, 0));
     cpu[0] = m.c;
-    CHECK(ops->cpu_create(m.d, NULL, &cpu[1]) == KJ68_OK);
+    CHECK(ops->cpu_create(m.d, NULL, &cpu[1]) == M68KENG_OK);
     m.pc = one_insn;
     ld(&m, 0, 0x11223344u);                 /* MOVE.L #$11223344,D0: words at +2 and +4 */
     w(&m, 0xA000);
     m.pc = three;
     w(&m, 0x7201); w(&m, 0x7402);           /* MOVEQ #1,D1; MOVEQ #2,D2 */
     w(&m, 0x7603); w(&m, 0xA000);           /* MOVEQ #3,D3 at +4 */
-    CHECK(ops->invalidate(m.d, L_ENTRY, 0x200) == KJ68_OK);   /* the host wrote code */
+    CHECK(ops->invalidate(m.d, L_ENTRY, 0x200) == M68KENG_OK);   /* the host wrote code */
 
     /* both CPUs translate and run both blocks under the first map */
     for (i = 0; i < 2; i++)
     {
         mark_regs(cpu[i]);
         x = run_at(cpu[i], one_insn);
-        CHECK(x.reason == KJ68_STOP_ALINE && x.pc == one_insn + 6 && x.retired == 1 && reg(cpu[i], R_D(0)) == 0x11223344u);
+        CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == one_insn + 6 && x.retired == 1 && reg(cpu[i], R_D(0)) == 0x11223344u);
         x = run_at(cpu[i], three);
-        CHECK(x.reason == KJ68_STOP_ALINE && x.pc == three + 6 && x.retired == 3 && reg(cpu[i], R_D(3)) == 3);
+        CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == three + 6 && x.retired == 3 && reg(cpu[i], R_D(3)) == 3);
     }
 
     /* a READ_HOST range over the second immediate word: the second CPU
        takes the new map, the first one runs after it */
     m.h.map.num_ranges = 0;
-    add_range(&m.h, one_insn + 4, one_insn + 6, KJ68_RANGE_READ_HOST);
+    add_range(&m.h, one_insn + 4, one_insn + 6, M68KENG_RANGE_READ_HOST);
     m.h.map.generation++;
     m.h.nlog = 0;
     for (i = 2; i-- > 0;)
     {
         mark_regs(cpu[i]);
         x = run_at(cpu[i], one_insn);
-        CHECK(x.reason == KJ68_STOP_PC_OUTSIDE && x.pc == one_insn && x.address == one_insn + 4 && x.retired == 0);
-        CHECK(reg(cpu[i], R_D(0)) == 0xD0D0D0D0u && reg(cpu[i], KJ68_REG_PC) == one_insn);
+        CHECK(x.reason == M68KENG_STOP_PC_OUTSIDE && x.pc == one_insn && x.address == one_insn + 4 && x.retired == 0);
+        CHECK(reg(cpu[i], R_D(0)) == 0xD0D0D0D0u && reg(cpu[i], M68KENG_REG_PC) == one_insn);
     }
 
     /* and one over the third opcode of the other block */
-    add_range(&m.h, three + 4, three + 6, KJ68_RANGE_READ_HOST);
+    add_range(&m.h, three + 4, three + 6, M68KENG_RANGE_READ_HOST);
     m.h.map.generation++;
     for (i = 0; i < 2; i++)
     {
         mark_regs(cpu[i]);
         x = run_at(cpu[i], three);
-        CHECK(x.reason == KJ68_STOP_PC_OUTSIDE && x.pc == three + 4 && x.address == three + 4 && x.retired == 2);
+        CHECK(x.reason == M68KENG_STOP_PC_OUTSIDE && x.pc == three + 4 && x.address == three + 4 && x.retired == 2);
         CHECK(reg(cpu[i], R_D(1)) == 1 && reg(cpu[i], R_D(2)) == 2 && reg(cpu[i], R_D(3)) == 0xD0D0D0D3u);
     }
     CHECK(m.h.nlog == 0);                   /* a fetch never goes to the host */
@@ -892,24 +893,24 @@ static void t_map_change(void)
     {
         mark_regs(cpu[i]);
         x = run_at(cpu[i], three);
-        CHECK(x.reason == KJ68_STOP_ALINE && x.pc == three + 6 && x.retired == 3 && reg(cpu[i], R_D(3)) == 3);
+        CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == three + 6 && x.retired == 3 && reg(cpu[i], R_D(3)) == 3);
         x = run_at(cpu[i], one_insn);
-        CHECK(x.reason == KJ68_STOP_ALINE && x.pc == one_insn + 6 && x.retired == 1 && reg(cpu[i], R_D(0)) == 0x11223344u);
+        CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == one_insn + 6 && x.retired == 1 && reg(cpu[i], R_D(0)) == 0x11223344u);
     }
 
     /* a WRITE_HOST range over the code does not touch instruction fetch */
-    add_range(&m.h, L_ENTRY, L_ENTRY + 0x200, KJ68_RANGE_WRITE_HOST);
+    add_range(&m.h, L_ENTRY, L_ENTRY + 0x200, M68KENG_RANGE_WRITE_HOST);
     m.h.map.generation++;
     for (i = 0; i < 2; i++)
     {
         mark_regs(cpu[i]);
         x = run_at(cpu[i], one_insn);
-        CHECK(x.reason == KJ68_STOP_ALINE && x.retired == 1 && reg(cpu[i], R_D(0)) == 0x11223344u);
+        CHECK(x.reason == M68KENG_STOP_ALINE && x.retired == 1 && reg(cpu[i], R_D(0)) == 0x11223344u);
         x = run_at(cpu[i], three);
-        CHECK(x.reason == KJ68_STOP_ALINE && x.retired == 3 && reg(cpu[i], R_D(3)) == 3);
+        CHECK(x.reason == M68KENG_STOP_ALINE && x.retired == 3 && reg(cpu[i], R_D(3)) == 3);
     }
     CHECK(m.h.nlog == 0);
-    CHECK(ops->cpu_destroy(cpu[1]) == KJ68_OK);
+    CHECK(ops->cpu_destroy(cpu[1]) == M68KENG_OK);
     m_close(&m);
 }
 
@@ -928,7 +929,7 @@ static void t_routing(void)
     static const UWORD far_load[] = { 0x2839, 0x0200, 0x0000 };   /* MOVE.L $2000000,D4 */
     static const UWORD stop_prog[] = { 0x7001, 0x3080, 0x7002 };  /* MOVEQ #1,D0; MOVE.W D0,(A0); MOVEQ #2,D0 */
     struct M m;
-    struct KJ68Exit x;
+    struct M68KEngExit x;
 
     CHECK(m_open(&m, 32 * MIB, 0, 1));
     set(m.c, R_A(7), L_STACK);
@@ -938,7 +939,7 @@ static void t_routing(void)
 
     set(m.c, R_A(0), 0xBFE001u);
     x = one(&m, move_b, 1, 64);
-    CHECK(x.reason == KJ68_STOP_ALINE && m.h.nlog == 1 && logged(&m.h, 0, 1, 0xBFE001u, 1));
+    CHECK(x.reason == M68KENG_STOP_ALINE && m.h.nlog == 1 && logged(&m.h, 0, 1, 0xBFE001u, 1));
     CHECK(m.h.log[0].value == 0x5A && m.h.log[0].pc == L_ENTRY);
 
     set(m.c, R_A(0), 0xDFF006u);
@@ -981,7 +982,7 @@ static void t_routing(void)
     /* a bitplane range the host adds, then moves */
     m.h.map.ranges[4] = m.h.map.ranges[3];
     m.h.map.ranges[3] = m.h.map.ranges[2];
-    m.h.map.ranges[2].lo = 0x200000u; m.h.map.ranges[2].hi = 0x201000u; m.h.map.ranges[2].flags = KJ68_RANGE_WRITE_HOST;
+    m.h.map.ranges[2].lo = 0x200000u; m.h.map.ranges[2].hi = 0x201000u; m.h.map.ranges[2].flags = M68KENG_RANGE_WRITE_HOST;
     m.h.map.num_ranges = 5;
     m.h.map.generation++;
     set(m.c, R_A(0), 0x200000u);
@@ -1001,7 +1002,7 @@ static void t_routing(void)
     m.h.map.generation++;
     memset(&x, 0, sizeof(x));
     x.size_of = sizeof(x);
-    CHECK(ops->run(m.c, 64, &x) == KJ68_ERR_ARG && x.reason == 0);
+    CHECK(ops->run(m.c, 64, &x) == M68KENG_ERR_ARG && x.reason == 0);
     m.h.map.size = 32 * MIB;
     m.h.map.generation++;
 
@@ -1009,7 +1010,7 @@ static void t_routing(void)
     m.h.probe_cpu = m.c;
     set(m.c, R_A(0), 0xDFF006u);
     x = one(&m, move_w_load, 1, 64);
-    CHECK(m.h.probe_get_reg == KJ68_ERR_STATE && m.h.probe_run == KJ68_ERR_STATE && x.reason == KJ68_STOP_ALINE);
+    CHECK(m.h.probe_get_reg == M68KENG_ERR_STATE && m.h.probe_run == M68KENG_ERR_STATE && x.reason == M68KENG_STOP_ALINE);
     m.h.probe_cpu = NULL;
 
     /* the host stops the run: terminal, PC at the accessing instruction */
@@ -1017,7 +1018,7 @@ static void t_routing(void)
     m.h.stop_armed = 1;
     set(m.c, R_A(0), 0xDFF040u);
     x = one(&m, stop_prog, 3, 64);
-    CHECK(x.reason == KJ68_STOP_HOST && x.pc == L_ENTRY + 2 && reg(m.c, R_D(0)) == 1 && x.retired <= 1);
+    CHECK(x.reason == M68KENG_STOP_HOST && x.pc == L_ENTRY + 2 && reg(m.c, R_D(0)) == 1 && x.retired <= 1);
     m.h.stop_armed = 0;
     m_close(&m);
 }
@@ -1109,28 +1110,28 @@ static void t_budget(void)
     static const UWORD block4[] = { 0x7001, 0x5281, 0x5282, 0x60F8 };   /* MOVEQ; ADDQ.L D1; ADDQ.L D2; BRA.S start */
     static const UWORD two[] = { 0x7001, 0x7202 };
     static const UWORD spin[] = { 0x60FE };                             /* BRA.S * */
-    static const ULONG bad[] = { 0, KJ68_MAX_BUDGET + 1, 0xFFFFFFFFu };
+    static const ULONG bad[] = { 0, M68KENG_MAX_BUDGET + 1, 0xFFFFFFFFu };
     struct M m;
-    struct KJ68Exit x, before;
-    struct KJ68Stats s0, s1;
+    struct M68KEngExit x, before;
+    struct M68KEngStats s0, s1;
     ULONG i;
 
     CHECK(m_open(&m, MIB, 0, 0));
     set(m.c, R_A(7), L_STACK);
-    set(m.c, KJ68_REG_PC, L_ENTRY);
+    set(m.c, M68KENG_REG_PC, L_ENTRY);
     memset(&s0, 0, sizeof(s0));
     s0.size_of = sizeof(s0);
     s1 = s0;
-    CHECK(ops->get_stats(m.d, &s0) == KJ68_OK);
+    CHECK(ops->get_stats(m.d, &s0) == M68KENG_OK);
     for (i = 0; i < 3; i++)
     {
         memset(&x, 0x5C, sizeof(x));
         x.size_of = sizeof(x);
         before = x;
-        CHECK(ops->run(m.c, bad[i], &x) == KJ68_ERR_ARG);
-        CHECK(memcmp(&x, &before, sizeof(x)) == 0 && reg(m.c, KJ68_REG_PC) == L_ENTRY);
+        CHECK(ops->run(m.c, bad[i], &x) == M68KENG_ERR_ARG);
+        CHECK(memcmp(&x, &before, sizeof(x)) == 0 && reg(m.c, M68KENG_REG_PC) == L_ENTRY);
     }
-    CHECK(ops->get_stats(m.d, &s1) == KJ68_OK && s1.runs == s0.runs && s1.retired == s0.retired);
+    CHECK(ops->get_stats(m.d, &s1) == M68KENG_OK && s1.runs == s0.runs && s1.retired == s0.retired);
 
     m.pc = L_ENTRY;
     words(&m, block4, 4);
@@ -1139,26 +1140,26 @@ static void t_budget(void)
 
         for (i = 0; i < 4; i++)
         {
-            set(m.c, KJ68_REG_PC, L_ENTRY);
+            set(m.c, M68KENG_REG_PC, L_ENTRY);
             set(m.c, R_D(1), 0);
             memset(&x, 0, sizeof(x));
             x.size_of = sizeof(x);
-            CHECK(ops->run(m.c, budgets[i], &x) == KJ68_OK);
-            CHECK(x.reason == KJ68_STOP_BUDGET && x.retired == want[i] && x.pc == L_ENTRY);
+            CHECK(ops->run(m.c, budgets[i], &x) == M68KENG_OK);
+            CHECK(x.reason == M68KENG_STOP_BUDGET && x.retired == want[i] && x.pc == L_ENTRY);
             CHECK(x.retired <= budgets[i] + ops->max_block_insns - 1);
             CHECK(reg(m.c, R_D(1)) == want[i] / 4);
         }
     }
-    x = one(&m, two, 2, KJ68_MAX_BUDGET);
-    CHECK(x.reason == KJ68_STOP_ALINE && x.retired == 2);
+    x = one(&m, two, 2, M68KENG_MAX_BUDGET);
+    CHECK(x.reason == M68KENG_STOP_ALINE && x.retired == 2);
     m.pc = L_ENTRY;
     words(&m, spin, 1);
-    CHECK(ops->invalidate(m.d, L_ENTRY, 2) == KJ68_OK);
-    set(m.c, KJ68_REG_PC, L_ENTRY);
+    CHECK(ops->invalidate(m.d, L_ENTRY, 2) == M68KENG_OK);
+    set(m.c, M68KENG_REG_PC, L_ENTRY);
     memset(&x, 0, sizeof(x));
     x.size_of = sizeof(x);
-    CHECK(ops->run(m.c, 1000, &x) == KJ68_OK);
-    CHECK(x.reason == KJ68_STOP_BUDGET && x.retired == 1000 && x.pc == L_ENTRY);
+    CHECK(ops->run(m.c, 1000, &x) == M68KENG_OK);
+    CHECK(x.reason == M68KENG_STOP_BUDGET && x.retired == 1000 && x.pc == L_ENTRY);
     m_close(&m);
 }
 
@@ -1167,7 +1168,7 @@ static void t_budget(void)
 static void t_block_limits(void)
 {
     struct M m;
-    struct KJ68Stats s;
+    struct M68KEngStats s;
     int i;
     static const UWORD loop[] = { 0x5280, 0x5381, 0x6AFA, 0x4E75 };   /* ADDQ.L #1,D0; SUBQ.L #1,D1; BPL.S; RTS */
 
@@ -1188,7 +1189,7 @@ static void t_block_limits(void)
     CHECK((snap.d[3] & 0x1F) == 0x15 && (snap.d[5] & 0x1F) == 0x14);
     memset(&s, 0, sizeof(s));
     s.size_of = sizeof(s);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK);
     printf("  64-instruction block: %lu instructions translated in %lu blocks\n",
            (unsigned long)s.insns_translated, (unsigned long)s.blocks_translated);
     CHECK(s.insns_translated == 64 + 5 + 1 + 1);
@@ -1206,13 +1207,13 @@ static void t_block_limits(void)
 
 struct ExitPlus
 {
-    struct KJ68Exit x;
+    struct M68KEngExit x;
     ULONG tail[8];
 };
 
 struct StatsPlus
 {
-    struct KJ68Stats s;
+    struct M68KEngStats s;
     ULONG tail[8];
 };
 
@@ -1231,63 +1232,63 @@ static void t_outputs(void)
 {
     static const UWORD two[] = { 0x7001, 0x7202 };
     struct M m;
-    struct KJ68Exit x, copy;
+    struct M68KEngExit x, copy;
     struct ExitPlus xp;
-    struct KJ68Stats s, scopy;
+    struct M68KEngStats s, scopy;
     struct StatsPlus sp;
     int i;
 
     CHECK(m_open(&m, MIB, 0, 0));
     set(m.c, R_A(7), L_STACK);
-    set(m.c, KJ68_REG_PC, L_ENTRY);
+    set(m.c, M68KENG_REG_PC, L_ENTRY);
     memset(&x, 0x3C, sizeof(x));
-    x.size_of = KJ68_V1_SIZE_EXIT - 1;
+    x.size_of = M68KENG_V1_SIZE_EXIT - 1;
     copy = x;
-    CHECK(ops->run(m.c, 10, &x) == KJ68_ERR_SIZE && memcmp(&x, &copy, sizeof(x)) == 0);
-    CHECK(reg(m.c, KJ68_REG_PC) == L_ENTRY);
-    CHECK(ops->run(NULL, 10, &x) == KJ68_ERR_ARG);
-    CHECK(ops->run(m.c, 10, NULL) == KJ68_ERR_ARG);
-    CHECK(ops->run(m.c, 0, &x) == KJ68_ERR_SIZE);         /* size before budget */
+    CHECK(ops->run(m.c, 10, &x) == M68KENG_ERR_SIZE && memcmp(&x, &copy, sizeof(x)) == 0);
+    CHECK(reg(m.c, M68KENG_REG_PC) == L_ENTRY);
+    CHECK(ops->run(NULL, 10, &x) == M68KENG_ERR_ARG);
+    CHECK(ops->run(m.c, 10, NULL) == M68KENG_ERR_ARG);
+    CHECK(ops->run(m.c, 0, &x) == M68KENG_ERR_SIZE);         /* size before budget */
 
     m.pc = L_ENTRY;
     words(&m, two, 2);
     w(&m, 0xA000);
-    CHECK(ops->invalidate(m.d, L_ENTRY, 6) == KJ68_OK);
+    CHECK(ops->invalidate(m.d, L_ENTRY, 6) == M68KENG_OK);
     memset(&xp, 0xA5, sizeof(xp));
     xp.x.size_of = sizeof(xp);
-    CHECK(ops->run(m.c, 10, &xp.x) == KJ68_OK);
-    CHECK(xp.x.size_of == sizeof(xp) && xp.x.reason == KJ68_STOP_ALINE && xp.x.retired == 2);
+    CHECK(ops->run(m.c, 10, &xp.x) == M68KENG_OK);
+    CHECK(xp.x.size_of == sizeof(xp) && xp.x.reason == M68KENG_STOP_ALINE && xp.x.retired == 2);
     CHECK(all_bytes(xp.tail, sizeof(xp.tail), 0xA5));
-    CHECK(all_bytes((const UBYTE *)&xp.x + KJ68_V1_SIZE_EXIT, sizeof(xp.x) - KJ68_V1_SIZE_EXIT, 0xA5));
+    CHECK(all_bytes((const UBYTE *)&xp.x + M68KENG_V1_SIZE_EXIT, sizeof(xp.x) - M68KENG_V1_SIZE_EXIT, 0xA5));
 
     memset(&s, 0x3C, sizeof(s));
-    s.size_of = KJ68_V1_SIZE_STATS - 1;
+    s.size_of = M68KENG_V1_SIZE_STATS - 1;
     scopy = s;
-    CHECK(ops->get_stats(m.d, &s) == KJ68_ERR_SIZE && memcmp(&s, &scopy, sizeof(s)) == 0);
-    CHECK(ops->get_stats(m.d, NULL) == KJ68_ERR_ARG);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_ERR_SIZE && memcmp(&s, &scopy, sizeof(s)) == 0);
+    CHECK(ops->get_stats(m.d, NULL) == M68KENG_ERR_ARG);
     memset(&sp, 0xA5, sizeof(sp));
     sp.s.size_of = sizeof(sp);
-    CHECK(ops->get_stats(m.d, &sp.s) == KJ68_OK && sp.s.size_of == sizeof(sp) && sp.s.runs == 1 && sp.s.retired == 2);
+    CHECK(ops->get_stats(m.d, &sp.s) == M68KENG_OK && sp.s.size_of == sizeof(sp) && sp.s.runs == 1 && sp.s.retired == 2);
     CHECK(all_bytes(sp.tail, sizeof(sp.tail), 0xA5));
 
     /* saturation, by a preset only the host checks compile in */
     kj68_test_preset_counters(m.d, 0xFFFFFFFEu, UINT64_MAX - 2);
     for (i = 0; i < 2; i++)
     {
-        set(m.c, KJ68_REG_PC, L_ENTRY);
+        set(m.c, M68KENG_REG_PC, L_ENTRY);
         memset(&x, 0, sizeof(x));
         x.size_of = sizeof(x);
-        CHECK(ops->run(m.c, 10, &x) == KJ68_OK && x.retired == 2);
+        CHECK(ops->run(m.c, 10, &x) == M68KENG_OK && x.retired == 2);
     }
     memset(&s, 0, sizeof(s));
     s.size_of = sizeof(s);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK);
     CHECK(s.runs == 0xFFFFFFFFu && s.retired == UINT64_MAX);
     CHECK(s.blocks_translated == 0xFFFFFFFEu && s.insns_translated == 0xFFFFFFFEu);   /* nothing new translated */
     CHECK(s.invalidations == 0xFFFFFFFEu && s.code_resets == 0xFFFFFFFEu);
-    CHECK(ops->invalidate(m.d, 0, KJ68_INVALIDATE_ALL) == KJ68_OK);
-    CHECK(ops->invalidate(m.d, 0, KJ68_INVALIDATE_ALL) == KJ68_OK);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK && s.invalidations == 0xFFFFFFFFu);
+    CHECK(ops->invalidate(m.d, 0, M68KENG_INVALIDATE_ALL) == M68KENG_OK);
+    CHECK(ops->invalidate(m.d, 0, M68KENG_INVALIDATE_ALL) == M68KENG_OK);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK && s.invalidations == 0xFFFFFFFFu);
     m_close(&m);
 }
 
@@ -1296,42 +1297,42 @@ static void t_outputs(void)
 static void t_invalidation(void)
 {
     struct M m;
-    struct KJ68CPU *c2 = NULL;
-    struct KJ68Exit x;
-    struct KJ68Stats s;
+    struct M68KEngCPU *c2 = NULL;
+    struct M68KEngExit x;
+    struct M68KEngStats s;
     ULONG d0, before;
 
     CHECK(m_open(&m, MIB, 0, 0));
-    CHECK(ops->cpu_create(m.d, NULL, &c2) == KJ68_OK);
+    CHECK(ops->cpu_create(m.d, NULL, &c2) == M68KENG_OK);
     put16(&m, L_ENTRY, 0x7001);                 /* MOVEQ #1,D0 */
     put16(&m, L_ENTRY + 2, 0xA000);
     memset(&x, 0, sizeof(x));
     x.size_of = sizeof(x);
-    set(m.c, KJ68_REG_PC, L_ENTRY);
-    CHECK(ops->run(m.c, 10, &x) == KJ68_OK && reg(m.c, R_D(0)) == 1);
+    set(m.c, M68KENG_REG_PC, L_ENTRY);
+    CHECK(ops->run(m.c, 10, &x) == M68KENG_OK && reg(m.c, R_D(0)) == 1);
     put16(&m, L_ENTRY, 0x7002);                 /* MOVEQ #2,D0, not invalidated yet */
-    set(c2, KJ68_REG_PC, L_ENTRY);
-    CHECK(ops->run(c2, 10, &x) == KJ68_OK);
+    set(c2, M68KENG_REG_PC, L_ENTRY);
+    CHECK(ops->run(c2, 10, &x) == M68KENG_OK);
     d0 = reg(c2, R_D(0));
     printf("  without invalidate the other CPU ran %s code\n", d0 == 1 ? "the old" : "the new");
     CHECK(d0 == 1 || d0 == 2);
-    CHECK(ops->invalidate(m.d, L_ENTRY, 2) == KJ68_OK);
-    set(m.c, KJ68_REG_PC, L_ENTRY);
-    CHECK(ops->run(m.c, 10, &x) == KJ68_OK && reg(m.c, R_D(0)) == 2);
-    set(c2, KJ68_REG_PC, L_ENTRY);
-    CHECK(ops->run(c2, 10, &x) == KJ68_OK && reg(c2, R_D(0)) == 2);
+    CHECK(ops->invalidate(m.d, L_ENTRY, 2) == M68KENG_OK);
+    set(m.c, M68KENG_REG_PC, L_ENTRY);
+    CHECK(ops->run(m.c, 10, &x) == M68KENG_OK && reg(m.c, R_D(0)) == 2);
+    set(c2, M68KENG_REG_PC, L_ENTRY);
+    CHECK(ops->run(c2, 10, &x) == M68KENG_OK && reg(c2, R_D(0)) == 2);
 
     memset(&s, 0, sizeof(s));
     s.size_of = sizeof(s);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK);
     before = s.invalidations;
-    CHECK(ops->invalidate(m.d, L_ENTRY, 0) == KJ68_OK);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK && s.invalidations == before);
-    CHECK(ops->invalidate(m.d, 0xFFFFFFF0u, 0x100) == KJ68_OK);
-    CHECK(ops->invalidate(m.d, 0, KJ68_INVALIDATE_ALL) == KJ68_OK);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK && s.invalidations == before + 2);
-    CHECK(ops->invalidate(NULL, 0, 4) == KJ68_ERR_ARG);
-    CHECK(ops->cpu_destroy(c2) == KJ68_OK);
+    CHECK(ops->invalidate(m.d, L_ENTRY, 0) == M68KENG_OK);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK && s.invalidations == before);
+    CHECK(ops->invalidate(m.d, 0xFFFFFFF0u, 0x100) == M68KENG_OK);
+    CHECK(ops->invalidate(m.d, 0, M68KENG_INVALIDATE_ALL) == M68KENG_OK);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK && s.invalidations == before + 2);
+    CHECK(ops->invalidate(NULL, 0, 4) == M68KENG_ERR_ARG);
+    CHECK(ops->cpu_destroy(c2) == M68KENG_OK);
     m_close(&m);
 }
 
@@ -1340,7 +1341,7 @@ static void t_invalidation(void)
 static void t_code_changes(void)
 {
     struct M m;
-    struct KJ68Stats s;
+    struct M68KEngStats s;
     const ULONG sub = L_HOOK_CODE, same = sub + 0x10, results = L_BUFFER;
     static const ULONG want[] = { 1, 1, 2, 2, 3 };
     unsigned slot;
@@ -1372,7 +1373,7 @@ static void t_code_changes(void)
         CHECK(get32(&m, results + 4 * slot) == want[slot]);
     memset(&s, 0, sizeof(s));
     s.size_of = sizeof(s);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK && s.invalidations == 2);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK && s.invalidations == 2);
     m_close(&m);
 }
 
@@ -1382,7 +1383,7 @@ static void t_code_changes(void)
 static void t_code_reset(void)
 {
     struct M m;
-    struct KJ68Stats s;
+    struct M68KEngStats s;
     const unsigned units = 40000;
     unsigned i;
 
@@ -1407,7 +1408,7 @@ static void t_code_reset(void)
     CHECK(program(&m) == (LONG)units + 5);
     memset(&s, 0, sizeof(s));
     s.size_of = sizeof(s);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK && s.code_resets >= 1 && s.invalidations == 1 && s.cpus == 2);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK && s.code_resets >= 1 && s.invalidations == 1 && s.cpus == 2);
     printf("  %u chained blocks in a nested call: %lu blocks, %lu code resets\n", units,
            (unsigned long)s.blocks_translated, (unsigned long)s.code_resets);
     m_close(&m);
@@ -1426,17 +1427,17 @@ struct ExceptionCase
 static void t_exceptions(void)
 {
     static const struct ExceptionCase cases[] = {
-        { { 0x4AFC }, 1, KJ68_STOP_EXCEPTION, 4, "ILLEGAL" },
-        { { 0xF200, 0xB000 }, 2, KJ68_STOP_EXCEPTION, 11, "Line-F" },          /* an FPU opcode */
-        { { 0x4E43 }, 1, KJ68_STOP_EXCEPTION, 35, "TRAP" },                     /* TRAP #3 */
-        { { 0x80C1 }, 1, KJ68_STOP_EXCEPTION, 5, "divide by zero" },            /* DIVU.W D1,D0, D1 = 0 */
-        { { 0x4181 }, 1, KJ68_STOP_UNSUPPORTED, 0, "opcode outside the subset" },   /* CHK.W D1,D0 */
-        { { 0x46C0 }, 1, KJ68_STOP_UNSUPPORTED, 0, "full SR write" },           /* MOVE D0,SR */
-        { { 0x4E73 }, 1, KJ68_STOP_UNSUPPORTED, 0, "opcode outside the subset" },   /* RTE */
-        { { 0x4E72, 0x2000 }, 2, KJ68_STOP_UNSUPPORTED, 0, "opcode outside the subset" },   /* STOP */
-        { { 0x4E7A, 0x0801 }, 2, KJ68_STOP_UNSUPPORTED, 0, "opcode outside the subset" },   /* MOVEC VBR,D0 */
-        { { 0xF4D8 }, 1, KJ68_STOP_UNSUPPORTED, 0, "Line-F" },                  /* CINVA */
-        { { 0xF620, 0x8000 }, 2, KJ68_STOP_UNSUPPORTED, 0, "Line-F" }          /* MOVE16 (A0)+,(A0)+ */
+        { { 0x4AFC }, 1, M68KENG_STOP_EXCEPTION, 4, "ILLEGAL" },
+        { { 0xF200, 0xB000 }, 2, M68KENG_STOP_EXCEPTION, 11, "Line-F" },          /* an FPU opcode */
+        { { 0x4E43 }, 1, M68KENG_STOP_EXCEPTION, 35, "TRAP" },                     /* TRAP #3 */
+        { { 0x80C1 }, 1, M68KENG_STOP_EXCEPTION, 5, "divide by zero" },            /* DIVU.W D1,D0, D1 = 0 */
+        { { 0x4181 }, 1, M68KENG_STOP_UNSUPPORTED, 0, "opcode outside the subset" },   /* CHK.W D1,D0 */
+        { { 0x46C0 }, 1, M68KENG_STOP_UNSUPPORTED, 0, "full SR write" },           /* MOVE D0,SR */
+        { { 0x4E73 }, 1, M68KENG_STOP_UNSUPPORTED, 0, "opcode outside the subset" },   /* RTE */
+        { { 0x4E72, 0x2000 }, 2, M68KENG_STOP_UNSUPPORTED, 0, "opcode outside the subset" },   /* STOP */
+        { { 0x4E7A, 0x0801 }, 2, M68KENG_STOP_UNSUPPORTED, 0, "opcode outside the subset" },   /* MOVEC VBR,D0 */
+        { { 0xF4D8 }, 1, M68KENG_STOP_UNSUPPORTED, 0, "Line-F" },                  /* CINVA */
+        { { 0xF620, 0x8000 }, 2, M68KENG_STOP_UNSUPPORTED, 0, "Line-F" }          /* MOVE16 (A0)+,(A0)+ */
     };
     struct M m;
     unsigned i;
@@ -1446,7 +1447,7 @@ static void t_exceptions(void)
     {
         const struct ExceptionCase *e = &cases[i];
         UWORD code[4];
-        struct KJ68Exit x;
+        struct M68KEngExit x;
 
         code[0] = 0x7005;                   /* MOVEQ #5,D0 */
         memcpy(code + 1, e->code, e->n * sizeof(UWORD));
@@ -1455,11 +1456,11 @@ static void t_exceptions(void)
         set(m.c, R_A(7), L_STACK);
         x = one(&m, code, e->n + 1, 64);
         CHECK(x.reason == e->reason && x.pc == L_ENTRY + 2 && x.opcode == e->code[0] && x.retired == 1);
-        if (e->reason == KJ68_STOP_EXCEPTION)
+        if (e->reason == M68KENG_STOP_EXCEPTION)
             CHECK(x.vector == e->vector);
         CHECK(starts(x.text, e->text));
-        CHECK(reg(m.c, R_D(0)) == 5 && reg(m.c, KJ68_REG_PC) == L_ENTRY + 2 && reg(m.c, R_A(0)) == L_SCRATCH);
-        CHECK(reg(m.c, KJ68_REG_SR) == 0x2700);
+        CHECK(reg(m.c, R_D(0)) == 5 && reg(m.c, M68KENG_REG_PC) == L_ENTRY + 2 && reg(m.c, R_A(0)) == L_SCRATCH);
+        CHECK(reg(m.c, M68KENG_REG_SR) == 0x2700);
         if (x.reason != e->reason)
             printf("  case %u: reason %lu, text \"%s\"\n", i, (unsigned long)x.reason, x.text);
     }
@@ -1502,7 +1503,7 @@ static void t_zero_divisor(void)
             const ULONG size = c->ext ? 4 : 2, a0 = L_SCRATCH + (c->pre ? size : 0);
             const unsigned dst = c->ext ? 1 : 0;
             UWORD code[3];
-            struct KJ68Exit x;
+            struct M68KEngExit x;
             ULONG r;
 
             code[0] = 0x7EFD;                   /* MOVEQ #-3,D7 */
@@ -1525,7 +1526,7 @@ static void t_zero_divisor(void)
                 set(m.c, R_D(2), 0);
             set(m.c, R_A(0), a0);
             set(m.c, R_A(7), L_STACK);
-            set(m.c, KJ68_REG_SR, 0x2710);      /* X set */
+            set(m.c, M68KENG_REG_SR, 0x2710);      /* X set */
             x = one(&m, code, c->ext ? 3 : 2, 64);
             CHECK(reg(m.c, R_D(7)) == 0xFFFFFFFDu && m.h.nlog == 0);
             for (r = 1; r < 7; r++)
@@ -1533,9 +1534,9 @@ static void t_zero_divisor(void)
             CHECK(reg(m.c, R_A(7)) == L_STACK);
             if (zero)
             {
-                CHECK(x.reason == KJ68_STOP_EXCEPTION && x.vector == 5 && x.pc == L_ENTRY + 2 && x.opcode == c->op &&
+                CHECK(x.reason == M68KENG_STOP_EXCEPTION && x.vector == 5 && x.pc == L_ENTRY + 2 && x.opcode == c->op &&
                       x.retired == 1 && x.address == 0 && strcmp(x.text, "divide by zero") == 0);
-                CHECK(reg(m.c, KJ68_REG_PC) == L_ENTRY + 2 && reg(m.c, KJ68_REG_SR) == 0x2718);
+                CHECK(reg(m.c, M68KENG_REG_PC) == L_ENTRY + 2 && reg(m.c, M68KENG_REG_SR) == 0x2718);
                 CHECK(reg(m.c, R_A(0)) == a0 && reg(m.c, R_D(dst)) == 100);
                 for (r = 0; r < 7; r++)
                     if (r != dst && !(c->quad && r == 2))
@@ -1546,13 +1547,13 @@ static void t_zero_divisor(void)
             }
             else
             {
-                CHECK(x.reason == KJ68_STOP_ALINE && x.pc == L_ENTRY + 2 + 2 * (c->ext ? 2 : 1) && x.retired == 2);
+                CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == L_ENTRY + 2 + 2 * (c->ext ? 2 : 1) && x.retired == 2);
                 CHECK(reg(m.c, R_A(0)) == (c->pre ? L_SCRATCH : L_SCRATCH + size));
-                CHECK(reg(m.c, R_D(dst)) == c->q && reg(m.c, KJ68_REG_SR) == 0x2710);
+                CHECK(reg(m.c, R_D(dst)) == c->q && reg(m.c, M68KENG_REG_SR) == 0x2710);
                 if (c->quad)
                     CHECK(reg(m.c, R_D(2)) == c->r);
             }
-            if (x.reason != (zero ? KJ68_STOP_EXCEPTION : KJ68_STOP_ALINE))
+            if (x.reason != (zero ? M68KENG_STOP_EXCEPTION : M68KENG_STOP_ALINE))
                 printf("  case %u, divisor %s: reason %lu, text \"%s\"\n", i, zero ? "0" : "7", (unsigned long)x.reason, x.text);
         }
     m_close(&m);
@@ -1562,19 +1563,19 @@ static void t_zero_divisor(void)
 static void t_faults(void)
 {
     static const struct ExceptionCase cases[] = {
-        { { 0x4AFC }, 1, KJ68_STOP_EXCEPTION, 4, "ILLEGAL" },
-        { { 0x80C8 }, 1, KJ68_STOP_UNSUPPORTED, 0, "DIV.W mode" },
-        { { 0x4C00, 0x8000 }, 2, KJ68_STOP_UNSUPPORTED, 0, "MUL.L extension" },
-        { { 0x4C40, 0x8000 }, 2, KJ68_STOP_UNSUPPORTED, 0, "DIV.L extension" },
-        { { 0xE9C0, 0x8000 }, 2, KJ68_STOP_UNSUPPORTED, 0, "bitfield extension" },
-        { { 0x0AD0, 0x8000 }, 2, KJ68_STOP_UNSUPPORTED, 0, "CAS extension" },
-        { { 0xF200, 0xB000 }, 2, KJ68_STOP_EXCEPTION, 11, "Line-F" },
-        { { 0x4E73 }, 1, KJ68_STOP_UNSUPPORTED, 0, "opcode outside the subset" }
+        { { 0x4AFC }, 1, M68KENG_STOP_EXCEPTION, 4, "ILLEGAL" },
+        { { 0x80C8 }, 1, M68KENG_STOP_UNSUPPORTED, 0, "DIV.W mode" },
+        { { 0x4C00, 0x8000 }, 2, M68KENG_STOP_UNSUPPORTED, 0, "MUL.L extension" },
+        { { 0x4C40, 0x8000 }, 2, M68KENG_STOP_UNSUPPORTED, 0, "DIV.L extension" },
+        { { 0xE9C0, 0x8000 }, 2, M68KENG_STOP_UNSUPPORTED, 0, "bitfield extension" },
+        { { 0x0AD0, 0x8000 }, 2, M68KENG_STOP_UNSUPPORTED, 0, "CAS extension" },
+        { { 0xF200, 0xB000 }, 2, M68KENG_STOP_EXCEPTION, 11, "Line-F" },
+        { { 0x4E73 }, 1, M68KENG_STOP_UNSUPPORTED, 0, "opcode outside the subset" }
     };
     static const UWORD divl_zero[] = { 0x7005, 0x4C7C, 0x0000, 0x0000, 0x0000 };   /* DIVU.L #0,D0 */
     struct M m;
-    struct KJ68Exit x;
-    struct KJ68Stats s;
+    struct M68KEngExit x;
+    struct M68KEngStats s;
     unsigned i;
     ULONG ext;
 
@@ -1589,11 +1590,11 @@ static void t_faults(void)
         x = one(&m, code, cases[i].n + 1, 64);
         CHECK(x.reason == cases[i].reason && x.pc == L_ENTRY + 2 && x.retired == 1);
         CHECK(starts(x.text, cases[i].text));
-        if (cases[i].reason == KJ68_STOP_EXCEPTION)
+        if (cases[i].reason == M68KENG_STOP_EXCEPTION)
             CHECK(x.vector == cases[i].vector);
     }
     x = one(&m, divl_zero, 5, 64);
-    CHECK(x.reason == KJ68_STOP_EXCEPTION && x.vector == 5 && x.pc == L_ENTRY + 2 && x.retired == 1);
+    CHECK(x.reason == M68KENG_STOP_EXCEPTION && x.vector == 5 && x.pc == L_ENTRY + 2 && x.retired == 1);
     m_close(&m);
 
     /* The extension words of an unsupported instruction count when a
@@ -1608,14 +1609,14 @@ static void t_faults(void)
     w(&m, 0x2030); w(&m, 0x0100);             /* MOVE.L (0,A0,D0.W),D0, full format */
     rts(&m);
     m_start(&m, L_ENTRY, L_EXEC);
-    CHECK(program(&m) == -999 && m.last.reason == KJ68_STOP_UNSUPPORTED && m.last.pc == ext - 2);
+    CHECK(program(&m) == -999 && m.last.reason == M68KENG_STOP_UNSUPPORTED && m.last.pc == ext - 2);
     CHECK(strncmp(m.last.text, "MOVE source", 11) == 0);
     put16(&m, ext, 0x0000);                   /* the brief format */
     m_start(&m, L_ENTRY, L_EXEC);
     CHECK(program(&m) == 0x12345678);
     memset(&s, 0, sizeof(s));
     s.size_of = sizeof(s);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK && s.invalidations == 2);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK && s.invalidations == 2);
     m_close(&m);
 }
 
@@ -1643,7 +1644,7 @@ static void t_program(void)
     static const UWORD cmpswap[] = { 0x48E7, 0xC000, 0x3018, 0x3210, 0xB041, 0x6306, 0x3080, 0x3141, 0xFFFE,
                                      0x4CDF, 0x0003, 0x4E75 };
     struct M m;
-    struct KJ68Stats s;
+    struct M68KEngStats s;
     ULONG i, d0 = 0, d1 = 1023, outer, inner, bsr_at;
     UWORD values[64];
 
@@ -1664,7 +1665,7 @@ static void t_program(void)
     CHECK((ULONG)program(&m) == d0);
     memset(&s, 0, sizeof(s));
     s.size_of = sizeof(s);
-    CHECK(ops->get_stats(m.d, &s) == KJ68_OK && s.blocks_translated == 3);
+    CHECK(ops->get_stats(m.d, &s) == M68KENG_OK && s.blocks_translated == 3);
     m_close(&m);
 
     CHECK(m_open(&m, MIB, 0xA5, 0));
@@ -1856,7 +1857,7 @@ static void t_word_division(void)
         w(&m, 0x23FC); l(&m, 0xBAD); l(&m, L_DATA);
         rts(&m);
         m_start(&m, L_ENTRY, L_PROBE);
-        CHECK(program(&m) == -999 && m.last.reason == KJ68_STOP_EXCEPTION && m.last.vector == 5);
+        CHECK(program(&m) == -999 && m.last.reason == M68KENG_STOP_EXCEPTION && m.last.vector == 5);
         CHECK(get32(&m, L_DATA) == 0xA5A5A5A5u);
         m_close(&m);
     }
@@ -1951,7 +1952,7 @@ static void t_full_index(void)
     {
         static const UWORD prefix[] = { 0x207C, 0x0000, 0x8000, 0x203C, 0x1234, 0x5678 };   /* A0, D0 */
         UWORD code[9];
-        struct KJ68Exit x;
+        struct M68KEngExit x;
 
         CHECK(m_open(&m, MIB, 0xA5, 0));
         memcpy(code, prefix, sizeof(prefix));
@@ -1959,25 +1960,25 @@ static void t_full_index(void)
         set(m.c, R_A(2), L_SCRATCH);
         set(m.c, R_A(7), L_STACK);
         x = one(&m, code, 9, 64);
-        CHECK(x.reason == KJ68_STOP_UNSUPPORTED && strstr(x.text, "unary mode") != NULL);
+        CHECK(x.reason == M68KENG_STOP_UNSUPPORTED && strstr(x.text, "unary mode") != NULL);
         CHECK(all_bytes(m.h.mem + L_SCRATCH, L_SCRATCH_END - L_SCRATCH, 0xA5));
         m_close(&m);
     }
     for (i = 0; i < 2; i++)
     {
         ULONG bytes = i ? 6 : 4, entry = MIB - bytes;
-        struct KJ68Exit x;
+        struct M68KEngExit x;
 
         CHECK(m_open(&m, MIB, 0xA5, 0));
         put16(&m, entry, 0x4AB2);
         put16(&m, entry + 2, 0x0130);
         if (bytes == 6)
             put16(&m, MIB - 2, 0x1234);
-        set(m.c, KJ68_REG_PC, entry);
+        set(m.c, M68KENG_REG_PC, entry);
         memset(&x, 0, sizeof(x));
         x.size_of = sizeof(x);
-        CHECK(ops->run(m.c, 64, &x) == KJ68_OK);
-        CHECK(x.reason == KJ68_STOP_PC_OUTSIDE && x.pc == entry && x.address == MIB);
+        CHECK(ops->run(m.c, 64, &x) == M68KENG_OK);
+        CHECK(x.reason == M68KENG_STOP_PC_OUTSIDE && x.pc == entry && x.address == MIB);
         m_close(&m);
     }
 }
@@ -2045,7 +2046,7 @@ static const struct DivHostCase div_host_cases[] = {
     { { 0x80F8, 0x0004 }, 2, 0xA0000000u, 0xA0000001u, 4, 0, 0, 0, 0xA0000000u }    /* $4.W: a write-only range */
 };
 
-static struct KJ68Exit div_host_one(struct M *m, const struct DivHostCase *c, ULONG divisor)
+static struct M68KEngExit div_host_one(struct M *m, const struct DivHostCase *c, ULONG divisor)
 {
     UWORD code[4];
     ULONG r;
@@ -2069,21 +2070,21 @@ static struct KJ68Exit div_host_one(struct M *m, const struct DivHostCase *c, UL
     set(m->c, R_A(0), c->a0);
     set(m->c, R_A(1), c->a1);
     set(m->c, R_A(7), L_STACK);
-    set(m->c, KJ68_REG_SR, 0x2710);         /* X set */
+    set(m->c, M68KENG_REG_SR, 0x2710);         /* X set */
     return one(m, code, c->n + 1, 64);
 }
 
 /* What every declined division leaves: the exit, the registers, the memory,
    the empty host log. */
-static void div_host_declined(struct M *m, const struct DivHostCase *c, const struct KJ68Exit *x, ULONG divisor)
+static void div_host_declined(struct M *m, const struct DivHostCase *c, const struct M68KEngExit *x, ULONG divisor)
 {
     unsigned dst = c->wide ? 1 : 0;
     ULONG r;
 
-    CHECK(x->reason == KJ68_STOP_UNSUPPORTED && x->pc == L_ENTRY + 2 && x->retired == 1 && x->opcode == c->op[0] &&
+    CHECK(x->reason == M68KENG_STOP_UNSUPPORTED && x->pc == L_ENTRY + 2 && x->retired == 1 && x->opcode == c->op[0] &&
           strcmp(x->text, "divisor read through the host") == 0);
     CHECK(m->h.nlog == 0);
-    CHECK(reg(m->c, KJ68_REG_PC) == L_ENTRY + 2 && reg(m->c, KJ68_REG_SR) == 0x2718);
+    CHECK(reg(m->c, M68KENG_REG_PC) == L_ENTRY + 2 && reg(m->c, M68KENG_REG_SR) == 0x2718);
     CHECK(reg(m->c, R_D(7)) == 0xFFFFFFFDu && reg(m->c, R_D(dst)) == 100);
     for (r = 0; r < 7; r++)
         if (r != dst && !(c->quad && r == 2))
@@ -2105,14 +2106,14 @@ static void t_div_host_read(void)
     static const UWORD load[] = { 0x3210 };                       /* MOVE.W (A0),D1 */
     const unsigned ncases = sizeof(div_host_cases) / sizeof(div_host_cases[0]);
     const struct DivHostCase *host = &div_host_cases[0], *direct = &div_host_cases[DH_FIRST_DIRECT];
-    struct KJ68CPU *other = NULL;
-    struct KJ68Exit x;
+    struct M68KEngCPU *other = NULL;
+    struct M68KEngExit x;
     struct M m;
     unsigned i, value;
 
     CHECK(m_open(&m, MIB, 0, 0));
-    add_range(&m.h, 0, 8, KJ68_RANGE_WRITE_HOST);
-    add_range(&m.h, DH_LO, DH_HI, KJ68_RANGE_READ_HOST);
+    add_range(&m.h, 0, 8, M68KENG_RANGE_WRITE_HOST);
+    add_range(&m.h, DH_LO, DH_HI, M68KENG_RANGE_READ_HOST);
     m.h.map.generation++;
 
     /* each case with a zero divisor and with 7 */
@@ -2127,18 +2128,18 @@ static void t_div_host_read(void)
                 div_host_declined(&m, c, &x, divisor);
             else if (!divisor)
             {
-                CHECK(x.reason == KJ68_STOP_EXCEPTION && x.vector == 5 && x.pc == L_ENTRY + 2 && x.retired == 1 && m.h.nlog == 0);
+                CHECK(x.reason == M68KENG_STOP_EXCEPTION && x.vector == 5 && x.pc == L_ENTRY + 2 && x.retired == 1 && m.h.nlog == 0);
                 CHECK(reg(m.c, R_A(0)) == c->a0);
             }
             else
             {
-                CHECK(x.reason == KJ68_STOP_ALINE && x.pc == L_ENTRY + 2 + 2 * c->n && x.retired == 2 && m.h.nlog == 0);
-                CHECK(reg(m.c, R_A(0)) == c->a0_after && reg(m.c, KJ68_REG_SR) == 0x2710);
+                CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == L_ENTRY + 2 + 2 * c->n && x.retired == 2 && m.h.nlog == 0);
+                CHECK(reg(m.c, R_A(0)) == c->a0_after && reg(m.c, M68KENG_REG_SR) == 0x2710);
                 CHECK(reg(m.c, R_D(c->wide ? 1 : 0)) == (c->wide ? 14u : 0x0002000Eu));
                 if (c->quad)
                     CHECK(reg(m.c, R_D(2)) == 2);
             }
-            if (c->host ? x.reason != KJ68_STOP_UNSUPPORTED : x.reason != (divisor ? KJ68_STOP_ALINE : KJ68_STOP_EXCEPTION))
+            if (c->host ? x.reason != M68KENG_STOP_UNSUPPORTED : x.reason != (divisor ? M68KENG_STOP_ALINE : M68KENG_STOP_EXCEPTION))
                 printf("  case %u, divisor %lu: reason %lu, text \"%s\"\n", i, (unsigned long)divisor, (unsigned long)x.reason, x.text);
         }
 
@@ -2146,21 +2147,21 @@ static void t_div_host_read(void)
     set(m.c, R_A(0), DH_LO);
     set(m.c, R_D(0), 0);
     x = one(&m, indirect, 3, 64);
-    CHECK(x.reason == KJ68_STOP_UNSUPPORTED && x.pc == L_ENTRY + 2 && strcmp(x.text, "DIV.W mode") == 0 && m.h.nlog == 0);
+    CHECK(x.reason == M68KENG_STOP_UNSUPPORTED && x.pc == L_ENTRY + 2 && strcmp(x.text, "DIV.W mode") == 0 && m.h.nlog == 0);
 
     /* nothing is left over: a later fault is classified as before, ordinary
        reads through the host still reach it */
     x = div_host_one(&m, host, 7);
     div_host_declined(&m, host, &x, 7);
     x = one(&m, ill, 2, 64);
-    CHECK(x.reason == KJ68_STOP_EXCEPTION && x.vector == 4 && strcmp(x.text, "ILLEGAL") == 0);
+    CHECK(x.reason == M68KENG_STOP_EXCEPTION && x.vector == 4 && strcmp(x.text, "ILLEGAL") == 0);
     x = div_host_one(&m, direct, 0);
-    CHECK(x.reason == KJ68_STOP_EXCEPTION && x.vector == 5 && strcmp(x.text, "divide by zero") == 0);
+    CHECK(x.reason == M68KENG_STOP_EXCEPTION && x.vector == 5 && strcmp(x.text, "divide by zero") == 0);
     put16(&m, DH_LO, 0x0123);
     set(m.c, R_A(0), DH_LO);
     set(m.c, R_D(1), 0x77777777u);
     x = one(&m, load, 1, 64);
-    CHECK(x.reason == KJ68_STOP_ALINE && m.h.nlog == 1 && logged(&m.h, 0, 0, DH_LO, 2) && reg(m.c, R_D(1)) == 0x77770123u);
+    CHECK(x.reason == M68KENG_STOP_ALINE && m.h.nlog == 1 && logged(&m.h, 0, 0, DH_LO, 2) && reg(m.c, R_D(1)) == 0x77770123u);
 
     /* the probe is made at run time: the same translation, kept from the
        declined run (no invalidate), divides or declines by the address */
@@ -2171,36 +2172,36 @@ static void t_div_host_read(void)
     put16(&m, DH_LO + 0x100, 7);
     set(m.c, R_D(0), 100);
     x = run_at(m.c, L_ENTRY);
-    CHECK(x.reason == KJ68_STOP_ALINE && x.pc == L_ENTRY + 4 && x.retired == 2 && m.h.nlog == 0 && reg(m.c, R_D(0)) == 0x0002000Eu);
+    CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == L_ENTRY + 4 && x.retired == 2 && m.h.nlog == 0 && reg(m.c, R_D(0)) == 0x0002000Eu);
     set(m.c, R_A(0), DH_LO);
     set(m.c, R_D(0), 100);
     x = run_at(m.c, L_ENTRY);
-    CHECK(x.reason == KJ68_STOP_UNSUPPORTED && x.pc == L_ENTRY + 2 && x.retired == 1 && m.h.nlog == 0 && reg(m.c, R_D(0)) == 100);
+    CHECK(x.reason == M68KENG_STOP_UNSUPPORTED && x.pc == L_ENTRY + 2 && x.retired == 1 && m.h.nlog == 0 && reg(m.c, R_D(0)) == 100);
 
     /* after a decline the host can execute the division itself and go on */
     set(m.c, R_D(0), 0x0002000Eu);
     x = run_at(m.c, L_ENTRY + 4);
-    CHECK(x.reason == KJ68_STOP_ALINE && x.pc == L_ENTRY + 4 && x.retired == 0 && m.h.nlog == 0);
+    CHECK(x.reason == M68KENG_STOP_ALINE && x.pc == L_ENTRY + 4 && x.retired == 0 && m.h.nlog == 0);
 
     /* another CPU of the domain: its own decline, no state from the first */
-    CHECK(ops->cpu_create(m.d, NULL, &other) == KJ68_OK);
+    CHECK(ops->cpu_create(m.d, NULL, &other) == M68KENG_OK);
     if (other)
     {
         m.h.nlog = 0;
         set(other, R_A(0), DH_LO);
         set(other, R_D(0), 100);
         set(other, R_A(7), L_STACK);
-        set(other, KJ68_REG_SR, 0x2700);
+        set(other, M68KENG_REG_SR, 0x2700);
         x = run_at(other, L_ENTRY + 2);
-        CHECK(x.reason == KJ68_STOP_UNSUPPORTED && x.pc == L_ENTRY + 2 && m.h.nlog == 0 && reg(other, R_D(0)) == 100);
+        CHECK(x.reason == M68KENG_STOP_UNSUPPORTED && x.pc == L_ENTRY + 2 && m.h.nlog == 0 && reg(other, R_D(0)) == 100);
         set(m.c, R_A(0), DH_LO + 0x100);
         set(m.c, R_D(0), 100);
         x = run_at(m.c, L_ENTRY + 2);
-        CHECK(x.reason == KJ68_STOP_ALINE && reg(m.c, R_D(0)) == 0x0002000Eu);
+        CHECK(x.reason == M68KENG_STOP_ALINE && reg(m.c, R_D(0)) == 0x0002000Eu);
         set(other, R_A(0), DH_LO + 0x100);
         x = run_at(other, L_ENTRY + 2);
-        CHECK(x.reason == KJ68_STOP_ALINE && m.h.nlog == 0 && reg(other, R_D(0)) == 0x0002000Eu);
-        CHECK(ops->cpu_destroy(other) == KJ68_OK);
+        CHECK(x.reason == M68KENG_STOP_ALINE && m.h.nlog == 0 && reg(other, R_D(0)) == 0x0002000Eu);
+        CHECK(ops->cpu_destroy(other) == M68KENG_OK);
     }
 
     /* a new map generation: without the range the division reads directly,
@@ -2212,19 +2213,19 @@ static void t_div_host_read(void)
     set(m.c, R_A(0), DH_LO);
     set(m.c, R_D(0), 100);
     x = run_at(m.c, L_ENTRY + 2);
-    CHECK(x.reason == KJ68_STOP_ALINE && m.h.nlog == 0 && reg(m.c, R_D(0)) == 0x0002000Eu);
-    add_range(&m.h, DH_LO, DH_HI, KJ68_RANGE_READ_HOST);
+    CHECK(x.reason == M68KENG_STOP_ALINE && m.h.nlog == 0 && reg(m.c, R_D(0)) == 0x0002000Eu);
+    add_range(&m.h, DH_LO, DH_HI, M68KENG_RANGE_READ_HOST);
     m.h.map.generation++;
     set(m.c, R_A(0), DH_LO);
     set(m.c, R_D(0), 100);
     x = run_at(m.c, L_ENTRY + 2);
-    CHECK(x.reason == KJ68_STOP_UNSUPPORTED && m.h.nlog == 0 && reg(m.c, R_D(0)) == 100);
+    CHECK(x.reason == M68KENG_STOP_UNSUPPORTED && m.h.nlog == 0 && reg(m.c, R_D(0)) == 100);
     m_close(&m);
 }
 
 int main(void)
 {
-    ops = KJ68_GetEngineTable(KJ68_ABI_MAJOR);
+    ops = KJ68_GetEngineTable(M68KENG_ABI_MAJOR);
     if (!ops)
     {
         printf("no engine for ABI 1\n");

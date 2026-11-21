@@ -3,8 +3,8 @@
     Author: Michele Dipace (@kaffeine1)
 
     kaffeine-jit68 engine: the private interface between the operations of
-    interface version 1 (kj68_engine.c) and the translator
-    (kj68_translate.c). Nothing here is part of the external interface.
+    the interface (kj68_engine.c) and the translator (kj68_translate.c).
+    Nothing here is part of the interface with m68kemu.library.
 */
 
 #ifndef KJ68_INTERN_H
@@ -12,7 +12,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include "kaffeine-jit68-abi-v1.h"
+#include "m68kemu_engine.h"         /* the interface, in rom/m68kemu */
 
 /* The translator's state of a domain (code memory, glue, blocks) and of a
    CPU (registers, page flags, fast table); kj68_translate.c defines them. */
@@ -29,24 +29,24 @@ struct HJCpu;
 #define KJ68_BLOCK_INSNS 64
 
 /* Cumulative counts, 64 bits, saturating; get_stats saturates them again
-   to the widths of struct KJ68Stats. */
+   to the widths of struct M68KEngStats. */
 struct KJ68Counters
 {
     uint64_t blocks, insns, runs, invalidations, code_resets, retired;
 };
 
-struct KJ68Domain
+struct M68KEngDomain
 {
-    const struct KJ68HostServices *host;
+    const struct M68KEngHost *host;
     APTR host_domain;
-    struct KJ68MemoryMap *map;
+    struct M68KEngMap *map;
     /* The map as last checked. base and size are those of domain_create
        for the whole life of the domain. */
     ULONG map_generation;
     UBYTE *base;
     ULONG size;
     ULONG num_ranges;
-    struct KJ68Range ranges[KJ68_MAX_RANGES];
+    struct M68KEngRange ranges[M68KENG_MAX_RANGES];
     UBYTE *pages;                 /* KJ68_PAGE_* of each 4 KiB page */
     ULONG npages;
     ULONG pages_generation;       /* changes whenever pages change */
@@ -56,9 +56,9 @@ struct KJ68Domain
     struct HJBackend *code;
 };
 
-struct KJ68CPU
+struct M68KEngCPU
 {
-    struct KJ68Domain *domain;
+    struct M68KEngDomain *domain;
     APTR host_cpu;
     struct HJCpu *tr;
 };
@@ -69,7 +69,7 @@ extern "C" {
 
 /* The engine's table for an ABI major, or NULL: what the library function
    KJ68_GetEngine (LVO -30) returns on AROS; host builds call it directly. */
-const struct KJ68EngineOps *KJ68_GetEngineTable(ULONG abi_major);
+const struct M68KEngOps *KJ68_GetEngineTable(ULONG abi_major);
 
 /* kj68_engine.c */
 void *kj_alloc(size_t size);            /* zeroed; NULL on failure */
@@ -78,27 +78,24 @@ void kj_count(uint64_t *counter, uint64_t n);
 
 /* kj68_translate.c: the translator as the engine uses it */
 int kj_tr_runs(void);
-const char *kj_tr_exec_memory_kind(void);
+#ifdef KJ68_TEST_SEAMS
+const char *kj_tr_exec_memory_kind(void);       /* for a line of the host checks */
 int kj_tr_encoder_self_test(char *message, unsigned long size);
-LONG kj_tr_domain_create(struct KJ68Domain *dom);   /* KJ68_OK, ERR_NOHOST, ERR_NOMEM */
-void kj_tr_domain_destroy(struct KJ68Domain *dom);
-ULONG kj_tr_code_bytes(const struct KJ68Domain *dom);
-LONG kj_tr_cpu_create(struct KJ68CPU *cpu);          /* KJ68_OK, ERR_NOMEM */
-void kj_tr_cpu_destroy(struct KJ68CPU *cpu);
-ULONG kj_tr_get_reg(const struct KJ68CPU *cpu, ULONG reg);
-LONG kj_tr_set_reg(struct KJ68CPU *cpu, ULONG reg, ULONG value);
-void kj_tr_invalidate(struct KJ68Domain *dom);
+#endif
+LONG kj_tr_domain_create(struct M68KEngDomain *dom);   /* M68KENG_OK, ERR_NOHOST, ERR_NOMEM */
+void kj_tr_domain_destroy(struct M68KEngDomain *dom);
+ULONG kj_tr_code_bytes(const struct M68KEngDomain *dom);
+LONG kj_tr_cpu_create(struct M68KEngCPU *cpu);          /* M68KENG_OK, ERR_NOMEM */
+void kj_tr_cpu_destroy(struct M68KEngCPU *cpu);
+ULONG kj_tr_get_reg(const struct M68KEngCPU *cpu, ULONG reg);
+LONG kj_tr_set_reg(struct M68KEngCPU *cpu, ULONG reg, ULONG value);
+void kj_tr_invalidate(struct M68KEngDomain *dom);
 /* After a new map generation is taken: drops every translation of the
    domain, whatever its guest bytes. */
-void kj_tr_map_changed(struct KJ68Domain *dom);
+void kj_tr_map_changed(struct M68KEngDomain *dom);
 /* Writes every version 1 member of exit but size_of, which the caller has
    zeroed; the map and the pages are current. */
-void kj_tr_run(struct KJ68CPU *cpu, ULONG budget, struct KJ68Exit *exit);
-
-/* The translator's own functions, kept from kaffeine_jit.c */
-int HJ_Available(void);
-const char *HJ_ExecMemoryKind(void);
-int HJ_EncoderSelfTest(char *message, unsigned long size);
+void kj_tr_run(struct M68KEngCPU *cpu, ULONG budget, struct M68KEngExit *exit);
 
 #ifdef KJ68_TEST_SEAMS
 /* Host test build only: the n-th allocation from now (kj_alloc or the
@@ -107,7 +104,7 @@ extern long kj68_test_fail_alloc_at;
 extern long kj68_test_allocs_live;
 extern long kj68_test_exec_live;
 int kj_test_fail_next(void);
-void kj68_test_preset_counters(struct KJ68Domain *dom, uint64_t counts, uint64_t retired);
+void kj68_test_preset_counters(struct M68KEngDomain *dom, uint64_t counts, uint64_t retired);
 #endif
 
 #ifdef __cplusplus

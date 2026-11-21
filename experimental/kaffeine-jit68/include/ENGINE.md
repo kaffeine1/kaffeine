@@ -3,22 +3,16 @@ Copyright (C) 2026, The AROS Development Team. All rights reserved.
 Author: Michele Dipace (@kaffeine1)
 -->
 
-# kaffeine-jit68.library: interface version 1
+# m68kemu.library: the interface of an optional execution engine, version 1
 
-Version 1.0 of the interface, source revision 3. The engine in
-[`../engine`](../engine) implements it, and its host checks have passed
-(see [the README](../README.md)). The host side in `m68kemu.library`
-(section 10) is written as a patch for AROS mainline and has run with the
-engine on AROS AArch64 under QEMU: the
-[adapter page](../../../docs/kaffeine/jit68-adapter/README.md) has the
-patch and the runs. Revision 3 rewrites section 10 to what that host side
-does and changes nothing of the interface; the header is the one of
-revision 2.
+Version 1.0 of the interface. The host side is in this directory
+(`m68kemu_engine.c` and the slice in `m68kemu_moira.cpp`); section 10 here
+and `INTERNALS.md` describe it.
 
-The header `kaffeine-jit68-abi-v1.h` beside this file declares every name
-used here. The host is `m68kemu.library` of AROS mainline; the engine is the
-optional `kaffeine-jit68.library`. The interpreter (Moira) stays the default,
-and `RunHunk`/`RunFile` keep their LVOs, arguments and results.
+The header `m68kemu_engine.h` beside this file declares every name used
+here. The host is `m68kemu.library`; an engine is a separate, optional
+library. The interpreter (Moira) stays the default, and `RunHunk`/`RunFile`
+keep their LVOs, arguments and results.
 
 ## 1. Design in one paragraph
 
@@ -35,39 +29,46 @@ callbacks and opaque cookies.
 
 ## 2. Discovery, versions and sizes
 
-1. The host opens `KJ68_LIBNAME` with version `KJ68_LIBVERSION` (1). NULL:
-   the engine is absent.
-2. It calls `KJ68_GetEngine(KJ68_ABI_MAJOR)`, the library's only function
-   (LVO -30, argument in D0). NULL: no engine for ABI major 1.
-3. It checks the returned `struct KJ68EngineOps`: `size_of >=
-   KJ68_V1_SIZE_ENGINEOPS`, `abi_major == 1`, `abi_minor >=` the minor it
-   needs (its own `KJ68_ABI_MINOR`, 0), `caps & KJ68_CAP_BASE`,
-   `1 <= max_block_insns <= KJ68_MAX_BLOCK_INSNS`, `name` not NULL. Any
-   failure: incompatible.
+1. The host opens the engine library by its name, version 1 or later. NULL:
+   the engine is absent. `m68kemu.library` looks for one name, the one in
+   `m68kemu_engine.c`: another engine takes that place by being installed
+   under that name or by a change of that line. There is no choice among
+   several engines at run time.
+2. It calls the library's first function after the standard vectors. In the
+   library's `.conf` it is the first entry of the function list, declared
+   `APTR <name>(ULONG abiMajor) (D0)`, which the build puts at LVO -30 on
+   every target. The interface gives the function no name. The host passes
+   `M68KENG_ABI_MAJOR` and gets a `const struct M68KEngOps *`, or NULL: no
+   engine for ABI major 1.
+3. It checks the returned `struct M68KEngOps`: `size_of >=
+   M68KENG_V1_SIZE_OPS`, `abi_major == 1`, `abi_minor >=` the minor it
+   needs (its own `M68KENG_ABI_MINOR`, 0), `caps & M68KENG_CAP_BASE`,
+   `1 <= max_block_insns <= M68KENG_MAX_BLOCK_INSNS`, `name` and each of the
+   nine operations not NULL. Any failure: incompatible.
 4. `domain_create` makes the engine check the host's side (section 7 gives
-   the order): `host->size_of >= KJ68_V1_SIZE_HOST`, `host->abi_major ==
-   1`, `read` and `write` not NULL, `map->size_of >= KJ68_V1_SIZE_MAP`, and
+   the order): `host->size_of >= M68KENG_V1_SIZE_HOST`, `host->abi_major ==
+   1`, `read` and `write` not NULL, `map->size_of >= M68KENG_V1_SIZE_MAP`, and
    that `required_caps` is a subset of `caps`.
 
-Size rule. Every versioned record of the interface (`struct KJ68EngineOps`,
-`KJ68HostServices`, `KJ68MemoryMap`, `KJ68Exit` and `KJ68Stats`) starts with
+Size rule. Every versioned record of the interface (`struct M68KEngOps`,
+`M68KEngHost`, `M68KEngMap`, `M68KEngExit` and `M68KEngStats`) starts with
 `size_of`, which its writer sets to `sizeof` of the structure as it was
-compiled. A plain record embedded in one of them, such as `struct KJ68Range`
+compiled. A plain record embedded in one of them, such as `struct M68KEngRange`
 in the memory map, has no `size_of`; the size of the record that holds it
-covers it. `KJ68_V1_SIZE_*` is the
+covers it. `M68KENG_V1_SIZE_*` is the
 version 1.0 prefix: the byte just past the last version 1.0 member
-(`KJ68_V1_END`, `offsetof` plus the member's size), as the target's
+(`M68KENG_V1_END`, `offsetof` plus the member's size), as the target's
 compiler lays it out, trailing padding not included. A later minor only
 appends members after that prefix and capability bits, never moves or
-re-means an existing member, and so never changes a `KJ68_V1_SIZE_*` value
+re-means an existing member, and so never changes a `M68KENG_V1_SIZE_*` value
 for a target. Therefore:
 
-- a `size_of` below the prefix is `KJ68_ERR_SIZE`, for input and output
+- a `size_of` below the prefix is `M68KENG_ERR_SIZE`, for input and output
   structures alike;
 - a `size_of` at or above it is accepted: the reader uses only the members
   that lie entirely within both its own definition and the other side's
   `size_of`; a member past either is absent (NULL or 0 for an input);
-- an output structure (`KJ68Exit`, `KJ68Stats`) is written only in the
+- an output structure (`M68KEngExit`, `M68KEngStats`) is written only in the
   members that lie entirely within both the engine's definition and the
   caller's `size_of`; `size_of` itself and every byte past those members,
   an appended tail the engine does not know included, keep what the caller
@@ -86,9 +87,9 @@ the host keeps the library open.
 | guest address, register, value | 32 bits (`ULONG`) | the header refuses a target where `ULONG` is not 4 bytes |
 | SR | 16 significant bits in a `ULONG` | |
 | access width | 1, 2 (host calls); 1, 2, 4 (direct) | |
-| status | `LONG` | `KJ68_OK` or `KJ68_ERR_*` |
-| budget | `ULONG`, 1 to `KJ68_MAX_BUDGET` (0xFFFF0000) | |
-| `max_block_insns` | `ULONG`, 1 to `KJ68_MAX_BLOCK_INSNS` (0x10000) | |
+| status | `LONG` | `M68KENG_OK` or `M68KENG_ERR_*` |
+| budget | `ULONG`, 1 to `M68KENG_MAX_BUDGET` (0xFFFF0000) | |
+| `max_block_insns` | `ULONG`, 1 to `M68KENG_MAX_BLOCK_INSNS` (0x10000) | |
 | retired per run | `ULONG`, at most `budget + max_block_insns - 1`, which is at most 0xFFFFFFFF | exact, never clipped or wrapped |
 | retired total | `UQUAD` | saturating |
 | other counters | `ULONG` | saturating |
@@ -97,21 +98,21 @@ the host keeps the library open.
 Guest arithmetic on addresses wraps at 32 bits before any check. The two
 bounds above are what make every per-run count fit: the engine counts in
 unsigned arithmetic of at least 32 bits and cannot wrap for an accepted
-call. A counter of `struct KJ68Stats` stops at its largest value
+call. A counter of `struct M68KEngStats` stops at its largest value
 (0xFFFFFFFF, or 0xFFFFFFFFFFFFFFFF for `retired`) instead of wrapping;
 `cpus` and `code_bytes` are current values and saturate the same way.
 
 ## 4. Guest memory
 
-`struct KJ68MemoryMap` is host memory: `base` is guest address 0, `size`
+`struct M68KEngMap` is host memory: `base` is guest address 0, `size`
 bytes are guest memory (at least 0x1000), stored big-endian, and up to
-`KJ68_MAX_RANGES` sorted disjoint ranges `[lo, hi)` with `hi <= size`.
+`M68KENG_MAX_RANGES` sorted disjoint ranges `[lo, hi)` with `hi <= size`.
 
 For a data access of width `w` at address `a`:
 
 - it is **direct** when `a <= size - w` and no byte of `[a, a + w)` lies in
-  a range whose flags cover the access (`KJ68_RANGE_READ_HOST` for reads,
-  `KJ68_RANGE_WRITE_HOST` for writes). The engine then reads or writes
+  a range whose flags cover the access (`M68KENG_RANGE_READ_HOST` for reads,
+  `M68KENG_RANGE_WRITE_HOST` for writes). The engine then reads or writes
   `base` itself, big-endian, at any alignment (the 68040 allows misaligned
   data);
 - otherwise it goes to the host: bytes as one call of width 1, words as one
@@ -130,8 +131,8 @@ those semantics.
 Instruction fetch is always direct and never goes to the host. A fetch of
 the word at `p` needs `p` even, `p <= size - 2` and `[p, p + 2)` outside
 every `READ_HOST` range. An odd PC at the start of an instruction is
-`KJ68_STOP_EXCEPTION` with vector 3. Any other first word that cannot be
-fetched is `KJ68_STOP_PC_OUTSIDE` with `address == pc`; an extension word
+`M68KENG_STOP_EXCEPTION` with vector 3. Any other first word that cannot be
+fetched is `M68KENG_STOP_PC_OUTSIDE` with `address == pc`; an extension word
 that cannot be fetched is the same exit with `address` set to that word and
 `pc` at the instruction. The host's return sentinels (`SENTINEL_ADDR`
 0xFFDEAD00, `NEST_SENTINEL` 0xFFDEAE00) are outside memory and arrive this
@@ -145,22 +146,22 @@ the case that makes this necessary.
 
 ## 5. Registers
 
-`get_reg`/`set_reg` take D0-D7 as 0-7 (`KJ68_REG_D0` + n), A0-A7 as 8-15
-(`KJ68_REG_A0` + n; `KJ68_REG_A7` is the active stack pointer),
-`KJ68_REG_PC` and `KJ68_REG_SR`. An index of `KJ68_REG_COUNT` (18) or more
-is `KJ68_ERR_ARG`.
+`get_reg`/`set_reg` take D0-D7 as 0-7 (`M68KENG_REG_D0` + n), A0-A7 as 8-15
+(`M68KENG_REG_A0` + n; `M68KENG_REG_A7` is the active stack pointer),
+`M68KENG_REG_PC` and `M68KENG_REG_SR`. An index of `M68KENG_REG_COUNT` (18) or more
+is `M68KENG_ERR_ARG`.
 
 Version 1.0 has one CPU mode: supervisor, no trace, master bit clear. It is
 the mode the canonical host gives every CPU: the root after reset, nested
 calls and tasks start with SR 0x2000, and the host's own frames keep S set.
 A program that clears S itself leaves version 1.0. `set_reg(SR, v)` with
-`(v & 0xF000) != 0x2000` is `KJ68_ERR_UNSUPPORTED` and changes nothing;
-otherwise SR becomes `v & KJ68_SR_DEFINED`, interrupt mask included. RTE,
+`(v & 0xF000) != 0x2000` is `M68KENG_ERR_UNSUPPORTED` and changes nothing;
+otherwise SR becomes `v & M68KENG_SR_DEFINED`, interrupt mask included. RTE,
 STOP, and any instruction that would clear S or set T or M (MOVE to SR,
-ANDI/EORI/ORI to SR) are `KJ68_STOP_UNSUPPORTED` before they do anything.
+ANDI/EORI/ORI to SR) are `M68KENG_STOP_UNSUPPORTED` before they do anything.
 
 `cpu_create` leaves D0-D7 and A0-A7 at 0, PC at 0 and SR at
-`KJ68_SR_AT_CREATE` (0x2700). The engine has no reset vectors and no
+`M68KENG_SR_AT_CREATE` (0x2700). The engine has no reset vectors and no
 prefetch state visible to the host: the next `run()` starts at the PC last
 set.
 
@@ -169,23 +170,25 @@ architectural value at the instruction boundary given by the exit, and a
 `set_reg` takes effect at the next `run()`. Native calls happen only
 between runs, so a thunk sees current registers and its writes, including
 D0, CCR and PC, are what the guest resumes with. During a host `read` or
-`write` callback the registers are not available (`KJ68_ERR_STATE`).
+`write` callback the registers are not available (`M68KENG_ERR_STATE`).
 
 ## 6. Execution
 
 `run(cpu, budget, exit)` checks, in this order: `cpu` or `exit` NULL is
-`KJ68_ERR_ARG`; `exit->size_of < KJ68_V1_SIZE_EXIT` is `KJ68_ERR_SIZE`;
-`budget` 0 or above `KJ68_MAX_BUDGET` is `KJ68_ERR_ARG`; a call while
-another `run()` of the domain is active is `KJ68_ERR_STATE`. On any error
+`M68KENG_ERR_ARG`; `exit->size_of < M68KENG_V1_SIZE_EXIT` is `M68KENG_ERR_SIZE`;
+`budget` 0 or above `M68KENG_MAX_BUDGET` is `M68KENG_ERR_ARG`; a call while
+another `run()` of the domain is active is `M68KENG_ERR_STATE`. On any error
 no instruction is executed, the CPU and the domain are unchanged and `exit`
-is untouched. Otherwise it returns `KJ68_OK` with `exit` written as section
+is untouched. Otherwise it returns `M68KENG_OK` with `exit` written as section
 2 says. It retires at most `budget + max_block_insns - 1` instructions:
 it may stop at any instruction boundary, it never starts a block once
 `budget` instructions have retired, and a block retires at most
 `max_block_insns`. `exit->retired` is exact for every resumable reason and
-at most the true count for the two terminal ones. The engine executes an
-instruction-synchronization barrier before entering translated code in
-each run, so code published earlier from any core is executed as published.
+at most the true count for the two terminal ones. An engine that runs code
+it has generated makes sure, before it enters that code in each run, that
+the processor executes it as published (on AArch64, an
+instruction-synchronization barrier), also when it was published from
+another core.
 
 | reason | state | host may resume |
 | --- | --- | --- |
@@ -207,18 +210,6 @@ execute it may answer `STOP_UNSUPPORTED`; that is always a legal answer.
 A-line opcodes always end the run with `STOP_ALINE`, inside or outside the
 host's library tables.
 
-Implementation note, not part of the contract. The engine in `../engine`
-answers a division whose divisor would be read through the host (a divisor
-in a `KJ68_RANGE_READ_HOST` range, in whole or in part, or outside guest
-memory) with `STOP_UNSUPPORTED` and the text "divisor read through the
-host", before any host call: PC at the division, nothing of it done,
-whatever the divisor's value. The host has to execute such a division
-itself; the host side of section 10 gives it to the interpreter, as every
-instruction the engine does not execute, and a native case has run two
-such divisions that way. The
-[engine page](../../../docs/kaffeine/jit68-engine.md) lists the forms the
-host checks cover. The contract above is unchanged.
-
 ## 7. Calls, ownership and concurrency
 
 | Operation | Allowed when | Effect and failure |
@@ -227,9 +218,9 @@ host checks cover. The contract above is unchanged.
 | `cpu_create(domain, host_cpu, &cpu)` | no `run()` of the domain active | `OK`; else `NULL` stored (when `cpu` is not NULL) and nothing allocated. Checks in order: `domain` or `cpu` NULL `ERR_ARG`; a `run()` active `ERR_STATE`; allocation `ERR_NOMEM` |
 | `set_reg`, `get_reg` | the CPU is not inside `run()` | as section 5 |
 | `run(cpu, budget, exit)` | no other `run()` of the domain active, not from a host callback | as section 6, check order included |
-| `invalidate(domain, addr, size)` | no `run()` of the domain active | `OK`; afterwards no CPU of the domain executes code derived from the old bytes of `[addr, addr + size)`; `size` 0 changes nothing; a range past 0xFFFFFFFF ends at the top of the address space, it does not wrap; `addr` 0 with `KJ68_INVALIDATE_ALL` is all memory; the engine may drop more |
+| `invalidate(domain, addr, size)` | no `run()` of the domain active | `OK`; afterwards no CPU of the domain executes code derived from the old bytes of `[addr, addr + size)`; `size` 0 changes nothing; a range past 0xFFFFFFFF ends at the top of the address space, it does not wrap; `addr` 0 with `M68KENG_INVALIDATE_ALL` is all memory; the engine may drop more |
 | `cpu_destroy(cpu)` | the CPU is not inside `run()` | `OK`; everything the engine held for that CPU is released |
-| `get_stats(domain, stats)` | no `run()` of the domain active | checks in order: `domain` or `stats` NULL `ERR_ARG`; `stats->size_of < KJ68_V1_SIZE_STATS` `ERR_SIZE`; a `run()` active `ERR_STATE`; on error `stats` untouched; on `OK` written as section 2 says |
+| `get_stats(domain, stats)` | no `run()` of the domain active | checks in order: `domain` or `stats` NULL `ERR_ARG`; `stats->size_of < M68KENG_V1_SIZE_STATS` `ERR_SIZE`; a `run()` active `ERR_STATE`; on error `stats` untouched; on `OK` written as section 2 says |
 | `domain_destroy(domain)` | every CPU of the domain destroyed | `OK`: the engine holds nothing of the domain any more (memory, executable code, references into guest memory); `ERR_STATE` with CPUs alive, nothing freed |
 
 `ERR_STATE` is a host defect, never a normal outcome.
@@ -239,9 +230,9 @@ Ownership:
 - The host owns guest memory, the map, the host services, the cookies, the
   exit and stats buffers and the library reference. Map and services stay
   valid until `domain_destroy` returns.
-- The engine owns domains, CPUs, translations, its executable memory and
-  its counters. It allocates executable memory itself
-  (`AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)` on standalone AROS AArch64,
+- The engine owns domains, CPUs, its counters and what it makes of the
+  program's code. An engine that generates code allocates the memory for it
+  itself (on native AROS `AllocMem(MEMF_PUBLIC | MEMF_EXECUTABLE)`,
   published with `CacheClearE(..., CACRF_ClearD | CACRF_ClearI)` before it
   runs) and frees all of it by `domain_destroy` at the latest. It never
   frees host memory and keeps pointers into guest memory only while the
@@ -253,7 +244,7 @@ Ownership:
 
 Concurrency: the host makes at most one engine call per domain at a time.
 In `m68kemu.library` this is the program lock: "a CPU runs 68k code only
-while its task holds `ctx->gil`" (`rom/m68kemu/INTERNALS.md` of AROS,
+while its task holds `ctx->gil`" (`INTERNALS.md`,
 The Program Lock). Every
 engine call on a domain while a CPU of it exists is made under that lock;
 `domain_create` comes before the first CPU and `domain_destroy` after the
@@ -292,11 +283,11 @@ For one program run:
    the root task returns.
 4. Children and native programs may outlive the root's run; the context
    lives until the last of them releases it (`ctx->alive`,
-   `rom/m68kemu/INTERNALS.md` of AROS, Context Lifetime), possibly after
+   `INTERNALS.md`, Context Lifetime), possibly after
    `RunHunk` has returned. The last
    release calls `M68KEmu_DestroyContext`, which already frees every CPU and
    task state left: those CPUs are destroyed first, then `domain_destroy`
-   is called and must return `KJ68_OK`.
+   is called and must return `M68KENG_OK`.
 5. The host frees guest memory after that, in the same function.
 6. The host closes the engine library after `domain_destroy` and after it
    drops its pointer to the ops table.
@@ -306,13 +297,8 @@ same rule. Nothing of the engine survives step 6 for that run.
 
 ## 10. Selection and outcomes (host behaviour)
 
-This section describes the host side written for `m68kemu.library` of AROS:
-the adapter, with its design, patch and native runs in
-[docs/kaffeine/jit68-adapter](../../../docs/kaffeine/jit68-adapter/README.md).
-It is the host's choice and not part of the interface. Source revision 3
-replaces the plan of revision 2, which had the host complete library calls
-itself through registers and memory and stop the program on `Supervisor()`,
-RTE, guest exception handlers and interrupts. The interface did not change.
+This section describes the host side (`m68kemu_engine.c`,
+`m68kemu_moira.cpp`). It is the host's choice and not part of the interface.
 
 **The engine runs under the interpreter.** Every CPU of a run stays an
 interpreter CPU (`AROSMoira`): it keeps the registers the thunks read and
@@ -342,7 +328,7 @@ tries an engine slice before it interprets an instruction:
   `Supervisor()`, RTE, exceptions with a guest handler, MOVEC, CINV, CPUSH,
   MOVE16 and the vertical blank and CIA interrupts are the interpreter's
   code, unchanged.
-- `STOP_HOST`, `STOP_FAULT`, or a `run()` that does not answer `KJ68_OK`,
+- `STOP_HOST`, `STOP_FAULT`, or a `run()` that does not answer `M68KENG_OK`,
   stop the program as a fault (`m68k_program_stop(ctx, TRUE)`) with a
   diagnostic giving PC, opcode and text, and the result of the run is 20.
   The host's callbacks never ask for a stop, so `STOP_HOST` is an engine
@@ -362,9 +348,9 @@ first, then global):
 
 | value | run |
 | --- | --- |
-| unset, empty | the interpreter, exactly as without the adapter, and no diagnostic |
+| unset, empty | the interpreter, exactly as without this code, and no diagnostic |
 | `interpreter` | the interpreter; one line says so |
-| `jit` | the engine under the interpreter. If the library is absent, `KJ68_GetEngine` gives no table of interface 1.0, `domain_create` fails or the engine CPU of the program cannot be made, the call returns -1 with a diagnostic and no guest instruction runs |
+| `jit` | the engine under the interpreter. If the library is absent, its function gives no table of interface 1.0, `domain_create` fails or the engine CPU of the program cannot be made, the call returns -1 with a diagnostic and no guest instruction runs |
 | `auto` | as `jit` when all of that works, otherwise the interpreter, with the reason in the line |
 | anything else, or a value too long for the host's buffer | the call returns -1 with a diagnostic |
 
@@ -397,7 +383,7 @@ Limits of this host side:
 
 ## 11. Scope
 
-Version 1.0 is the AArch64 uniprocessor pilot. It claims no SMP, MMU, FPU,
+Version 1.0 is for one processor. It claims no SMP, MMU, FPU,
 full 68040 coverage, PPC, mid-run backend switching, serialized CPU state or
 live migration of a run. Capability bits for some of these are reserved
 only. Unsupported instructions are reported truthfully, never skipped.

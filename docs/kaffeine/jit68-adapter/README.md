@@ -6,7 +6,7 @@ Author: Michele Dipace (@kaffeine1)
 # The engine under m68kemu.library: the adapter
 
 This directory holds the host side of the
-[kaffeine-jit68 interface](../../../experimental/kaffeine-jit68/include/kaffeine-jit68-abi-v1.md):
+[kaffeine-jit68 interface](../../../experimental/kaffeine-jit68/include/ENGINE.md):
 a patch for `rom/m68kemu` of AROS mainline that lets `m68kemu.library` run
 68k code on the optional `kaffeine-jit68.library`, and the record of its
 first runs on AROS AArch64 under QEMU.
@@ -123,7 +123,7 @@ applies to AROS master `b6dcaeeaa2724bbe4f6d9510c1ada4b8f69789fb`.
 | file | change |
 | --- | --- |
 | `m68kemu_jit.c` (new) | `M68KEMU_CPU`, opening the engine, the memory map, invalidation, the two message lines, the end |
-| `kaffeine-jit68-abi-v1.h` (new) | the interface header, as in `experimental/kaffeine-jit68/include` |
+| `kaffeine-jit68-abi-v1.h` (new) | the interface header under its first name; `experimental/kaffeine-jit68/include/m68kemu_engine.h` is the same interface with the names of the AROS branch |
 | `m68kemu_moira.cpp` | an engine CPU per interpreter CPU, the slice, the slice tried in the three loops, the two access callbacks |
 | `m68kemu_run.c` | the selection, before the loader, in `RunHunk` and `RunFile`; the error code of a refused run |
 | `m68kemu_memory.c`, `m68kemu_m68klib.c`, `m68kemu_thunks.c` | invalidation where the library writes 68k code; the engine's end in `M68KEmu_DestroyContext` |

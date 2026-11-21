@@ -1119,6 +1119,75 @@ for bad in ('KaffeineContext', 'Kaffeine_', 'kaffeine_intern', 'callback_depth',
 text.encode('ascii')
 assert '\t' not in text
 
+# ---- the form proposed to AROS -----------------------------------------------------------------------------
+# The text above is the translator for interface version 1 under its first names. What follows gives it the
+# names of the interface as m68kemu.library has it (m68kemu_engine.h), and the changes made for AROS: no code
+# for a particular system in this file (kj68_platform.h), the encoder self test for the host checks only, no
+# clock. Each replaced piece must be there exactly once.
+INTERFACE_NAMES = {
+    'KJ68CPU': 'M68KEngCPU',
+    'KJ68Domain': 'M68KEngDomain',
+    'KJ68EngineOps': 'M68KEngOps',
+    'KJ68Exit': 'M68KEngExit',
+    'KJ68HostServices': 'M68KEngHost',
+    'KJ68MemoryMap': 'M68KEngMap',
+    'KJ68Range': 'M68KEngRange',
+    'KJ68Stats': 'M68KEngStats',
+    'KJ68_ERR_NOHOST': 'M68KENG_ERR_NOHOST',
+    'KJ68_ERR_NOMEM': 'M68KENG_ERR_NOMEM',
+    'KJ68_ERR_UNSUPPORTED': 'M68KENG_ERR_UNSUPPORTED',
+    'KJ68_OK': 'M68KENG_OK',
+    'KJ68_RANGE_READ_HOST': 'M68KENG_RANGE_READ_HOST',
+    'KJ68_RANGE_WRITE_HOST': 'M68KENG_RANGE_WRITE_HOST',
+    'KJ68_REG_PC': 'M68KENG_REG_PC',
+    'KJ68_SR_AT_CREATE': 'M68KENG_SR_AT_CREATE',
+    'KJ68_SR_DEFINED': 'M68KENG_SR_DEFINED',
+    'KJ68_SR_MODEL_MASK': 'M68KENG_SR_MODEL_MASK',
+    'KJ68_SR_MODEL_VALUE': 'M68KENG_SR_MODEL_VALUE',
+    'KJ68_STOP_ALINE': 'M68KENG_STOP_ALINE',
+    'KJ68_STOP_BUDGET': 'M68KENG_STOP_BUDGET',
+    'KJ68_STOP_EXCEPTION': 'M68KENG_STOP_EXCEPTION',
+    'KJ68_STOP_FAULT': 'M68KENG_STOP_FAULT',
+    'KJ68_STOP_HOST': 'M68KENG_STOP_HOST',
+    'KJ68_STOP_PC_OUTSIDE': 'M68KENG_STOP_PC_OUTSIDE',
+    'KJ68_STOP_UNSUPPORTED': 'M68KENG_STOP_UNSUPPORTED',
+    'KJ68_TEXT_SIZE': 'M68KENG_TEXT_SIZE',
+}
+text = re.sub(r'\b[A-Za-z_][A-Za-z0-9_]*\b', lambda m: INTERFACE_NAMES.get(m.group(0), m.group(0)), text)
+
+AROS_FORM = [
+    ('    Author: Michele Dipace (@kaffeine1)\n\n    kaffeine-jit68 engine: the AArch64 translator of the legacy\n    kaffeine.library (rom/kaffeine/kaffeine_jit.c, sha256 65b150bb), adapted\n    to interface version 1 (kaffeine-jit68-abi-v1.h): guest memory through\n    the host\'s map, exits to the host where the legacy library dispatched,\n    translations shared by the CPUs of a domain. The instruction decoding\n    and emission are those of the legacy file. It contains no Emu68 code.\n*/\n#if defined(__APPLE__)\n#define _DARWIN_C_SOURCE 1\n#else\n#define _DEFAULT_SOURCE 1\n#define _POSIX_C_SOURCE 200809L\n#endif\n\n#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <time.h>\n#include "kj68_intern.h"\n\n#if defined(__AROS__)\n#include <aros/config.h>\n#define HJ_AROS_STANDALONE (AROS_FLAVOUR == AROS_FLAVOUR_STANDALONE)\n#else\n#define HJ_AROS_STANDALONE 0\n#endif\n\n/* Hosted AROS has a different executable-memory contract. The AROS path\n   below is only for the standalone flavour used by native AArch64. */\n#if defined(__aarch64__) && (HJ_AROS_STANDALONE || \\\n    (!defined(__AROS__) && (defined(__APPLE__) || defined(__linux__))))\n#define HJ_RUNS 1\n#if defined(__AROS__)\n#include <exec/execbase.h>\n#include <exec/memory.h>\n#include <proto/exec.h>\n#else\n#include <sys/mman.h>\n#if defined(__APPLE__)\n#include <pthread.h>\n#include <libkern/OSCacheControl.h>\n#endif\n#endif\n#else\n#define HJ_RUNS 0\n',
+     '    Author: Michele Dipace (@kaffeine1)\n\n    kaffeine-jit68 engine: the AArch64 translator. It comes from the\n    translator of kaffeine.library, the earlier library of the Kaffeine\n    project (https://github.com/kaffeine1/kaffeine,\n    rom/kaffeine/kaffeine_jit.c), adapted to the interface of\n    m68kemu_engine.h: guest memory through the host\'s map, exits to the host\n    where that library dispatched, translations shared by the CPUs of a\n    domain. The instruction decoding and emission are those of that file.\n    tools/make-translate.py writes this file from that one. It contains no\n    Emu68 code.\n*/\n\n#include <stddef.h>\n#include <stdint.h>\n#include <string.h>\n#ifdef KJ68_TEST_SEAMS\n#include <stdio.h>              /* the encoder self test of the host checks */\n#endif\n#include "kj68_intern.h"\n#include "kj68_platform.h"\n\n/* translated code runs on AArch64, where the platform can run it */\n#if defined(__aarch64__) && KJ68_PLAT_RUNS\n#define HJ_RUNS 1\n#else\n#define HJ_RUNS 0\n'),
+    ('\n    if (a64_bitmask(value, 0, &field) != 0)\n        abort();\n    return a64_logic_imm(0, opc, rd, rn, field);\n}\n',
+     '\n    if (a64_bitmask(value, 0, &field) != 0)\n        kj68_plat_dead_end();\n    return a64_logic_imm(0, opc, rd, rn, field);\n}\n'),
+    ('    unsigned long guest_insns;   /* 68k instructions in them */\n    unsigned long host_words;    /* AArch64 words emitted for them */\n    unsigned long translate_ns;  /* decoding, emission, copy and cache sync */\n    unsigned long write_windows; /* code publication windows */\n    unsigned long icache_syncs;  /* host instruction cache maintenance */\n',
+     '    unsigned long guest_insns;   /* 68k instructions in them */\n    unsigned long host_words;    /* AArch64 words emitted for them */\n    unsigned long write_windows; /* code publication windows */\n    unsigned long icache_syncs;  /* host instruction cache maintenance */\n'),
+    ('{\n    b->stats.write_windows++;\n#if HJ_RUNS && defined(__APPLE__)\n    pthread_jit_write_protect_np(0);\n#elif HJ_RUNS && defined(__AROS__)\n    /* Native AROS AArch64 ordinary RAM is writable and executable.\n       Publication still needs its explicit data/instruction cache API. */\n    (void)b;\n#elif HJ_RUNS\n    mprotect(b->code, HJ_CODE_BYTES, PROT_READ | PROT_WRITE);\n#else\n    (void)b;\n#endif\n}\n\nstatic void code_write_end(struct HJBackend *b, const uint32_t *start, size_t words)\n{\n    b->stats.icache_syncs++;\n#if HJ_RUNS && defined(__APPLE__)\n    pthread_jit_write_protect_np(1);\n    sys_icache_invalidate((void *)(uintptr_t)start, words * 4);\n#elif HJ_RUNS && defined(__AROS__)\n    CacheClearE((APTR)start, words * sizeof(*start), CACRF_ClearD | CACRF_ClearI);\n#elif HJ_RUNS\n    mprotect(b->code, HJ_CODE_BYTES, PROT_READ | PROT_EXEC);\n    __builtin___clear_cache((char *)(uintptr_t)start, (char *)(uintptr_t)(start + words));\n#else\n    (void)b; (void)start; (void)words;\n#endif\n}\n\nstatic uint64_t now_ns(void)\n{\n    struct timespec ts;\n\n    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)\n        return 0;\n    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;\n}\n\n',
+     '{\n    b->stats.write_windows++;\n#if HJ_RUNS\n    kj68_plat_code_write_begin(b->code, HJ_CODE_BYTES);\n#endif\n}\n\nstatic void code_write_end(struct HJBackend *b, const uint32_t *start, size_t words)\n{\n    b->stats.icache_syncs++;\n#if HJ_RUNS\n    kj68_plat_code_write_end(b->code, HJ_CODE_BYTES, (void *)(uintptr_t)start, words * sizeof(*start));\n#else\n    (void)start; (void)words;\n#endif\n}\n\n'),
+    ('        return NULL;\n#endif\n#if defined(__AROS__)\n    code = AllocMem(HJ_CODE_BYTES, MEMF_PUBLIC | MEMF_EXECUTABLE);\n#else\n#if defined(__APPLE__)\n    code = mmap(NULL, HJ_CODE_BYTES, PROT_READ | PROT_WRITE | PROT_EXEC,\n                MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);\n#else\n    code = mmap(NULL, HJ_CODE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);\n#endif\n    if (code == MAP_FAILED)\n        code = NULL;\n#endif\n#ifdef KJ68_TEST_SEAMS\n    if (code)\n',
+     '        return NULL;\n#endif\n    code = kj68_plat_code_alloc(HJ_CODE_BYTES);\n#ifdef KJ68_TEST_SEAMS\n    if (code)\n'),
+    ('    kj68_test_exec_live -= (long)HJ_CODE_BYTES;\n#endif\n#if defined(__AROS__)\n    FreeMem(code, HJ_CODE_BYTES);\n#else\n    munmap(code, HJ_CODE_BYTES);\n#endif\n}\n#endif\n',
+     '    kj68_test_exec_live -= (long)HJ_CODE_BYTES;\n#endif\n    kj68_plat_code_free(code, HJ_CODE_BYTES);\n}\n#endif\n'),
+    ('{\n    struct HJTrans *t = b->trans;\n    uint64_t t0 = now_ns();\n    unsigned max = HJ_MAX_INSNS, n = 0, attempt;\n    uint32_t end = pc;\n',
+     '{\n    struct HJTrans *t = b->trans;\n    unsigned max = HJ_MAX_INSNS, n = 0, attempt;\n    uint32_t end = pc;\n'),
+    ('    b->stats.guest_insns += n;\n    b->stats.host_words += t->e.n;\n    b->stats.translate_ns += (unsigned long)(now_ns() - t0);\n    kj_count(&b->dom->counters.blocks, 1);\n    kj_count(&b->dom->counters.insns, n);\n',
+     '    b->stats.guest_insns += n;\n    b->stats.host_words += t->e.n;\n    kj_count(&b->dom->counters.blocks, 1);\n    kj_count(&b->dom->counters.insns, n);\n'),
+    ('   ------------------------------------------------------------------ */\n\n/* Words that clang assembled from the same text (Apple clang 21,\n   -arch arm64): every encoder and alias above, with negative offsets,\n   shifted operands, bitmask immediates and branches both ways. */\nint HJ_EncoderSelfTest(char *message, unsigned long size)\n{\n    const struct { uint32_t want, got; const char *text; } enc[] =\n',
+     '   ------------------------------------------------------------------ */\n\n#ifdef KJ68_TEST_SEAMS\n/* For the host checks. Words that clang assembled from the same text\n   (Apple clang 21, -arch arm64): every encoder and alias above, with\n   negative offsets, shifted operands, bitmask immediates and branches both\n   ways. */\nstatic int HJ_EncoderSelfTest(char *message, unsigned long size)\n{\n    const struct { uint32_t want, got; const char *text; } enc[] =\n'),
+    ('}\n\nint HJ_Available(void)\n{\n    return HJ_RUNS;\n}\n\nconst char *HJ_ExecMemoryKind(void)\n{\n#if HJ_RUNS && defined(__APPLE__)\n    return "MAP_JIT";\n#elif HJ_RUNS && defined(__AROS__)\n    return "AROS AllocMem/CacheClearE";\n#elif HJ_RUNS\n    return "mprotect";\n#else\n    return "none";\n#endif\n}\n\n',
+     '}\n\nstatic const char *HJ_ExecMemoryKind(void)\n{\n#if HJ_RUNS\n    return kj68_plat_code_method();\n#else\n    return "none";\n#endif\n}\n#endif\n\nstatic int HJ_Available(void)\n{\n    return HJ_RUNS;\n}\n\n'),
+    ('}\n\nconst char *kj_tr_exec_memory_kind(void)\n{\n',
+     '}\n\n#ifdef KJ68_TEST_SEAMS\nconst char *kj_tr_exec_memory_kind(void)\n{\n'),
+    ('    return HJ_EncoderSelfTest(message, size);\n}\n\n#if HJ_RUNS\n',
+     '    return HJ_EncoderSelfTest(message, size);\n}\n#endif\n\n#if HJ_RUNS\n'),
+    ('}\n\n/* As the legacy flush: a new epoch makes every block compare its guest\n   bytes before it runs again, and every CPU empties its fast table. */\nvoid kj_tr_invalidate(struct M68KEngDomain *dom)\n',
+     '}\n\n/* As the flush of that library: a new epoch makes every block compare its guest\n   bytes before it runs again, and every CPU empties its fast table. */\nvoid kj_tr_invalidate(struct M68KEngDomain *dom)\n'),
+]
+for was, now in AROS_FORM:
+    assert text.count(was) == 1, was[:60]
+    text = text.replace(was, now)
+text.encode('ascii')
+
 # ---- the reuse map, by top-level definition ------------------------------------------------
 def definitions(lines):
     """Top-level definitions (functions, structs, enums, tables): name -> text,
