@@ -1186,6 +1186,889 @@ AROS_FORM = [
 for was, now in AROS_FORM:
     assert text.count(was) == 1, was[:60]
     text = text.replace(was, now)
+
+# ---- third stage: what the review of AROS pull request 2360 asked for ------------------------------
+# No fast table (with a slice budget of 1 its probe never ran), and code memory, block table and
+# guest-byte store that start small and double. Exact texts of the second stage's output, each found once.
+REVIEW_2360 = [
+    (r'''    uint32_t limit;             /*  80 */
+    uint32_t slice_budget;      /*  84 */
+    UBYTE *mem;                 /*  88 */
+    void *fast;                 /*  96 */
+    void *slow;                 /* 104 */
+    struct HJCpu *backend;      /* 112 */
+    uint64_t reserved;          /* 120 */
+    UBYTE pages[];              /* 128: KJ68_PAGE_* of each 4 KiB guest page */
+};
+
+''', r'''    uint32_t limit;             /*  80 */
+    uint32_t slice_budget;      /*  84 */
+    UBYTE *mem;                 /*  88 */
+    void *slow;                 /*  96 */
+    struct HJCpu *backend;      /* 104 */
+    uint64_t reserved[2];       /* 112 */
+    UBYTE pages[];              /* 128: KJ68_PAGE_* of each 4 KiB guest page */
+};
+
+'''),
+    (r'''#define ST_LIMIT  80
+#define ST_BUDGET 84
+#define ST_MEM    88
+#define ST_FAST   96
+#define ST_SLOW  104
+#define ST_PAGES 128
+
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
+''', r'''#define ST_LIMIT  80
+#define ST_BUDGET 84
+#define ST_MEM    88
+#define ST_SLOW   96
+#define ST_PAGES 128
+
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
+'''),
+    (r'''_Static_assert(offsetof(struct HJState, limit) == ST_LIMIT, "state layout");
+_Static_assert(offsetof(struct HJState, slice_budget) == ST_BUDGET, "state layout");
+_Static_assert(offsetof(struct HJState, mem) == ST_MEM, "state layout");
+_Static_assert(offsetof(struct HJState, fast) == ST_FAST, "state layout");
+_Static_assert(offsetof(struct HJState, slow) == ST_SLOW, "state layout");
+_Static_assert(offsetof(struct HJState, pages) == ST_PAGES, "state layout");
+#endif
+''', r'''_Static_assert(offsetof(struct HJState, limit) == ST_LIMIT, "state layout");
+_Static_assert(offsetof(struct HJState, slice_budget) == ST_BUDGET, "state layout");
+_Static_assert(offsetof(struct HJState, mem) == ST_MEM, "state layout");
+_Static_assert(offsetof(struct HJState, slow) == ST_SLOW, "state layout");
+_Static_assert(offsetof(struct HJState, pages) == ST_PAGES, "state layout");
+#endif
+'''),
+    (r'''   divisor: no access, only whether the read would reach the host. */
+enum { SLOW_R8, SLOW_R16, SLOW_R32, SLOW_W8, SLOW_W16, SLOW_W32, SLOW_P16, SLOW_P32, SLOW_KINDS };
+
+#define HJ_FAST_BITS 12
+#define HJ_FAST_SIZE (1u << HJ_FAST_BITS)
+#define HJ_BUCKETS 4096u
+#define HJ_CODE_BYTES (16u << 20)
+#define HJ_MAX_INSNS 64
+#define HJ_SCRATCH_WORDS 12288u
+#define HJ_MAX_STUBS 1024u
+#define HJ_MAX_BLOCKS 32768u
+#define HJ_GUEST_BYTES (4u << 20)
+#define HJ_BUDGET 65535u
+#define HJ_EMPTY_TAG (~(uint64_t)0)
+
+struct HJFast
+{
+    uint64_t pc;
+    uint64_t entry;
+};
+
+struct HJBlock
+{
+''', r'''   divisor: no access, only whether the read would reach the host. */
+enum { SLOW_R8, SLOW_R16, SLOW_R32, SLOW_W8, SLOW_W16, SLOW_W32, SLOW_P16, SLOW_P32, SLOW_KINDS };
+
+#define HJ_BUCKETS 4096u
+#define HJ_MAX_INSNS 64
+#define HJ_SCRATCH_WORDS 12288u
+#define HJ_MAX_STUBS 1024u
+#define HJ_BUDGET 65535u
+
+/* The code memory, the block table and the guest-byte store of a domain
+   start at these sizes and double together, HJ_GROW_STEPS times at most,
+   whenever one of them is full (grow_code()): from 1 MiB of code, 2048
+   blocks and 256 KiB of guest bytes to 16 MiB, 32768 blocks and 4 MiB. */
+#define HJ_CODE_BYTES_START  (1u << 20)
+#define HJ_MAX_BLOCKS_START  2048u
+#define HJ_GUEST_BYTES_START (256u << 10)
+#define HJ_GROW_STEPS 4
+
+struct HJBlock
+{
+'''),
+    (r'''/* Exit reasons of translated code, as counted in HJStats.exits[]. */
+enum
+{
+    HJ_EXIT_LOOKUP = 1, /* next block not in the fast table */
+    HJ_EXIT_BUDGET,     /* back edges and lookups used up for this slice */
+    HJ_EXIT_LINEA,      /* A-line opcode: to the bridge dispatcher */
+    HJ_EXIT_FAULT,      /* instruction outside the subset, ILLEGAL, Line-F */
+''', r'''/* Exit reasons of translated code, as counted in HJStats.exits[]. */
+enum
+{
+    HJ_EXIT_LOOKUP = 1, /* the block ended: the run loop finds the next one */
+    HJ_EXIT_BUDGET,     /* back edges and lookups used up for this slice */
+    HJ_EXIT_LINEA,      /* A-line opcode: to the bridge dispatcher */
+    HJ_EXIT_FAULT,      /* instruction outside the subset, ILLEGAL, Line-F */
+'''),
+    (r'''{
+    struct M68KEngDomain *dom;
+    uint32_t *code;
+    size_t code_words, code_used, glue_words;
+    uintptr_t g_enter, g_exit, g_lookup, g_budget, g_miss, g_slow[SLOW_KINDS];
+    uint32_t (*enter)(struct HJState *, const uint32_t *);
+    struct HJBlock *buckets[HJ_BUCKETS];
+    struct HJBlock *blocks;
+    unsigned nblocks;
+    UBYTE *guest_bytes;
+    size_t guest_used;
+    uint32_t epoch;
+    uint32_t fast_generation;   /* a CPU empties its fast table when it changes */
+    uint32_t *scratch;
+    struct HJTrans *trans;
+    struct HJStats stats;
+};
+
+/* The translator state of a CPU: its registers and page flags, which
+   translated code reads through R_STATE, and its fast table. */
+struct HJCpu
+{
+    struct HJState *st;
+    size_t st_bytes;
+    struct M68KEngCPU *owner;
+    struct HJBackend *b;
+    struct HJFast *fast;
+    uint32_t fast_generation, pages_generation;
+    int declined;               /* a divisor probe found a host read */
+};
+
+''', r'''{
+    struct M68KEngDomain *dom;
+    uint32_t *code;
+    size_t code_bytes;          /* the code memory as it is now */
+    size_t code_words, code_used, glue_words;
+    uintptr_t g_enter, g_exit, g_lookup, g_budget, g_slow[SLOW_KINDS];
+    uint32_t (*enter)(struct HJState *, const uint32_t *);
+    struct HJBlock *buckets[HJ_BUCKETS];
+    struct HJBlock *blocks;
+    unsigned nblocks, max_blocks;
+    UBYTE *guest_bytes;
+    size_t guest_used, guest_cap;
+    uint32_t epoch;
+    uint32_t *scratch;
+    struct HJTrans *trans;
+    struct HJStats stats;
+};
+
+/* The translator state of a CPU: its registers and page flags, which
+   translated code reads through R_STATE. */
+struct HJCpu
+{
+    struct HJState *st;
+    size_t st_bytes;
+    struct M68KEngCPU *owner;
+    struct HJBackend *b;
+    uint32_t pages_generation;
+    int declined;               /* a divisor probe found a host read */
+};
+
+'''),
+    (r'''{
+    b->stats.write_windows++;
+#if HJ_RUNS
+    kj68_plat_code_write_begin(b->code, HJ_CODE_BYTES);
+#endif
+}
+
+''', r'''{
+    b->stats.write_windows++;
+#if HJ_RUNS
+    kj68_plat_code_write_begin(b->code, b->code_bytes);
+#endif
+}
+
+'''),
+    (r'''{
+    b->stats.icache_syncs++;
+#if HJ_RUNS
+    kj68_plat_code_write_end(b->code, HJ_CODE_BYTES, (void *)(uintptr_t)start, words * sizeof(*start));
+#else
+    (void)start; (void)words;
+#endif
+}
+
+#if HJ_RUNS
+static void *code_alloc(void)
+{
+    void *code;
+
+''', r'''{
+    b->stats.icache_syncs++;
+#if HJ_RUNS
+    kj68_plat_code_write_end(b->code, b->code_bytes, (void *)(uintptr_t)start, words * sizeof(*start));
+#else
+    (void)start; (void)words;
+#endif
+}
+
+#if HJ_RUNS
+static void *code_alloc(size_t bytes)
+{
+    void *code;
+
+'''),
+    (r'''    if (kj_test_fail_next())
+        return NULL;
+#endif
+    code = kj68_plat_code_alloc(HJ_CODE_BYTES);
+#ifdef KJ68_TEST_SEAMS
+    if (code)
+        kj68_test_exec_live += (long)HJ_CODE_BYTES;
+#endif
+    return code;
+}
+
+static void code_free(void *code)
+{
+    if (!code)
+        return;
+#ifdef KJ68_TEST_SEAMS
+    kj68_test_exec_live -= (long)HJ_CODE_BYTES;
+#endif
+    kj68_plat_code_free(code, HJ_CODE_BYTES);
+}
+#endif
+
+static void fast_clear(struct HJCpu *c)
+{
+    unsigned i;
+
+    for (i = 0; i < HJ_FAST_SIZE; i++)
+    {
+        c->fast[i].pc = HJ_EMPTY_TAG;
+        c->fast[i].entry = 0;
+    }
+}
+
+/* Empties the code memory of the domain; every CPU empties its fast table
+   before it enters translated code again. */
+static void reset_code(struct HJBackend *b)
+{
+    b->code_used = b->glue_words;
+    memset(b->buckets, 0, sizeof(b->buckets));
+    b->nblocks = 0;
+    b->guest_used = 0;
+    b->fast_generation++;
+    b->stats.resets++;
+    kj_count(&b->dom->counters.code_resets, 1);
+}
+''', r'''    if (kj_test_fail_next())
+        return NULL;
+#endif
+    code = kj68_plat_code_alloc(bytes);
+#ifdef KJ68_TEST_SEAMS
+    if (code)
+        kj68_test_exec_live += (long)bytes;
+#endif
+    return code;
+}
+
+static void code_free(void *code, size_t bytes)
+{
+    if (!code)
+        return;
+#ifdef KJ68_TEST_SEAMS
+    kj68_test_exec_live -= (long)bytes;
+#endif
+    kj68_plat_code_free(code, bytes);
+}
+#endif
+
+/* Empties the code memory of the domain. */
+static void reset_code(struct HJBackend *b)
+{
+    b->code_used = b->glue_words;
+    memset(b->buckets, 0, sizeof(b->buckets));
+    b->nblocks = 0;
+    b->guest_used = 0;
+    b->stats.resets++;
+    kj_count(&b->dom->counters.code_resets, 1);
+}
+'''),
+    (r'''    b->g_budget = e->origin + 4u * e->n;
+    emit_mov32(e, R_VAL, HJ_EXIT_BUDGET);
+    put(e, a64_b(words_to(e, b->g_exit)));
+    b->g_miss = e->origin + 4u * e->n;
+    emit_mov32(e, R_VAL, HJ_EXIT_LOOKUP);
+    put(e, a64_b(words_to(e, b->g_exit)));
+
+    /* lookup: w16 = guest PC; one probe of the fast table */
+    b->g_lookup = e->origin + 4u * e->n;
+    put(e, a64_addsub_imm(0, 1, 1, R_BUDGET, R_BUDGET, 1, 0));
+    put(e, a64_bcond(A64_EQ, words_to(e, b->g_budget)));
+    put(e, a64_ldst_uimm(3, 1, R_VAL, R_STATE, ST_FAST));
+    put(e, a64_bitfield(1, 2, R_SCR, R_ADDR, 1, HJ_FAST_BITS));
+    put(e, a64_addsub_reg(1, 0, 0, R_VAL, R_VAL, R_SCR, 0, 4));
+    put(e, a64_ldstp(1, 1, 2, R_SCR, R_VAL, R_VAL, 0));
+    put(e, a64_addsub_reg(1, 1, 1, ZR, R_SCR, R_ADDR, 0, 0));
+    put(e, a64_bcond(A64_NE, words_to(e, b->g_miss)));
+    put(e, a64_br(R_VAL));
+
+    /* slow access: w16 address (kept), w17 value, w25 kind, w27 guest PC */
+    common = e->origin + 4u * e->n;
+''', r'''    b->g_budget = e->origin + 4u * e->n;
+    emit_mov32(e, R_VAL, HJ_EXIT_BUDGET);
+    put(e, a64_b(words_to(e, b->g_exit)));
+
+    /* lookup: w16 = guest PC. The block ended at an address it does not
+       continue at by itself: back to the run loop, which finds or
+       translates the block there. With a slice budget of 1
+       (kj_tr_cpu_create) every block ends its slice here or at its back
+       edge, so the run loop sees each block and counts its instructions. */
+    b->g_lookup = e->origin + 4u * e->n;
+    put(e, a64_addsub_imm(0, 1, 1, R_BUDGET, R_BUDGET, 1, 0));
+    put(e, a64_bcond(A64_EQ, words_to(e, b->g_budget)));
+    emit_mov32(e, R_VAL, HJ_EXIT_LOOKUP);
+    put(e, a64_b(words_to(e, b->g_exit)));
+
+    /* slow access: w16 address (kept), w17 value, w25 kind, w27 guest PC */
+    common = e->origin + 4u * e->n;
+'''),
+    (r'''    }
+}
+
+/* ------------------------------------------------------------------
+   The C side: slow accesses, blocks
+   ------------------------------------------------------------------ */
+''', r'''    }
+}
+
+#if HJ_RUNS
+/* The glue for code memory at origin, into the scratch buffer. FALSE when
+   it does not fit there; its size does not depend on origin. */
+static int glue_emit(struct HJBackend *b, struct HJEmit *e, const uint32_t *origin)
+{
+    memset(e, 0, sizeof(*e));
+    e->buf = b->scratch;
+    e->cap = HJ_SCRATCH_WORDS;
+    e->origin = (uintptr_t)origin;
+    emit_glue(b, e);
+    return !e->bad;
+}
+
+/* The glue that glue_emit() left in the scratch buffer goes to the start
+   of the code memory, which holds nothing else after this. */
+static void glue_publish(struct HJBackend *b, const struct HJEmit *e)
+{
+    uintptr_t entry = b->g_enter;
+
+    b->code_words = b->code_bytes / 4;
+    code_write_begin(b);
+    memcpy(b->code, b->scratch, 4u * e->n);
+    code_write_end(b, b->code, e->n);
+    b->glue_words = b->code_used = e->n;
+    memcpy(&b->enter, &entry, sizeof(entry));
+}
+
+/* The blocks of the table that a lookup still finds. A block whose guest
+   bytes changed leaves its chain when it is looked up again (get_block()),
+   and its place in the table stays used until the next reset. */
+static unsigned linked_blocks(const struct HJBackend *b)
+{
+    const struct HJBlock *blk;
+    unsigned i, n = 0;
+
+    for (i = 0; i < HJ_BUCKETS; i++)
+        for (blk = b->buckets[i]; blk; blk = blk->next)
+            n++;
+    return n;
+}
+
+/* The next size of the code memory, the block table and the guest-byte
+   store, when there is one, at least half of the blocks are still in use,
+   and there is memory for all three; otherwise they stay as they are. A
+   program that changes a little code again and again fills them with
+   blocks nothing finds any more: emptying them is enough for it. The
+   caller empties them next (reset_code()), so nothing they held is
+   carried over, and no translated code is running (translate()). */
+static void grow_code(struct HJBackend *b)
+{
+    size_t code_bytes = b->code_bytes * 2, guest_cap = b->guest_cap * 2;
+    unsigned max_blocks = b->max_blocks * 2;
+    uint32_t *code;
+    struct HJBlock *blocks;
+    UBYTE *guest_bytes;
+    struct HJEmit e;
+
+    if (b->code_bytes >= ((size_t)HJ_CODE_BYTES_START << HJ_GROW_STEPS) || linked_blocks(b) * 2 < b->nblocks)
+        return;
+    code = code_alloc(code_bytes);
+    blocks = kj_alloc(max_blocks * sizeof(*blocks));
+    guest_bytes = kj_alloc(guest_cap);
+    if (!code || !blocks || !guest_bytes)
+    {
+        code_free(code, code_bytes);
+        kj_free(blocks, max_blocks * sizeof(*blocks));
+        kj_free(guest_bytes, guest_cap);
+        return;
+    }
+    code_free(b->code, b->code_bytes);
+    kj_free(b->blocks, b->max_blocks * sizeof(*b->blocks));
+    kj_free(b->guest_bytes, b->guest_cap);
+    b->code = code;
+    b->code_bytes = code_bytes;
+    b->blocks = blocks;
+    b->max_blocks = max_blocks;
+    b->guest_bytes = guest_bytes;
+    b->guest_cap = guest_cap;
+    /* the glue has the size it had in kj_tr_domain_create(), where it fit */
+    glue_emit(b, &e, b->code);
+    glue_publish(b, &e);
+}
+#endif
+
+/* ------------------------------------------------------------------
+   The C side: slow accesses, blocks
+   ------------------------------------------------------------------ */
+'''),
+    (r'''
+static unsigned bucket_of(uint32_t pc) { return (pc >> 1) & (HJ_BUCKETS - 1); }
+
+static void fast_insert(struct HJCpu *c, const struct HJBlock *blk)
+{
+    struct HJFast *f = &c->fast[(blk->pc >> 1) & (HJ_FAST_SIZE - 1)];
+
+    f->pc = blk->pc;
+    f->entry = (uint64_t)(uintptr_t)blk->code;
+}
+
+/* Called only from kj_tr_run(), between blocks: no translated code is
+   running, so the code memory can be emptied here. Not reentrant. */
+static struct HJBlock *translate(struct HJBackend *b, uint32_t pc)
+''', r'''
+static unsigned bucket_of(uint32_t pc) { return (pc >> 1) & (HJ_BUCKETS - 1); }
+
+/* Called only from kj_tr_run(), between blocks: no translated code is
+   running, so the code memory can be emptied here. Not reentrant. */
+static struct HJBlock *translate(struct HJBackend *b, uint32_t pc)
+'''),
+    (r'''
+    for (attempt = 0; attempt < 2; attempt++)
+    {
+        if (b->code_words - b->code_used < HJ_SCRATCH_WORDS || b->nblocks >= HJ_MAX_BLOCKS ||
+            HJ_GUEST_BYTES - b->guest_used < 4u * HJ_MAX_INSNS * 10u)
+            reset_code(b);
+        for (;;)
+        {
+            memset(&t->e, 0, sizeof(t->e));
+''', r'''
+    for (attempt = 0; attempt < 2; attempt++)
+    {
+        if (b->code_words - b->code_used < HJ_SCRATCH_WORDS || b->nblocks >= b->max_blocks ||
+            b->guest_cap - b->guest_used < 4u * HJ_MAX_INSNS * 10u)
+        {
+#if HJ_RUNS
+            grow_code(b);
+#endif
+            reset_code(b);
+        }
+        for (;;)
+        {
+            memset(&t->e, 0, sizeof(t->e));
+'''),
+    (r'''    }
+    if (!blk)
+        blk = translate(b, pc);
+    if (c->fast_generation != b->fast_generation)
+    {
+        fast_clear(c);
+        c->fast_generation = b->fast_generation;
+    }
+    if (blk)
+        fast_insert(c, blk);
+    return blk;
+}
+
+''', r'''    }
+    if (!blk)
+        blk = translate(b, pc);
+    return blk;
+}
+
+'''),
+    (r'''        { 0xb9404675, a64_ldst_uimm(2, 1, 21, 19, 68), "ldr w21, [x19, #68]" },
+        { 0xb9004270, a64_ldst_uimm(2, 0, 16, 19, 64), "str w16, [x19, #64]" },
+        { 0xf9000bf0, a64_ldst_uimm(3, 0, 16, SP, 16), "str x16, [sp, #16]" },
+        { 0xf9403670, a64_ldst_uimm(3, 1, 16, 19, 104), "ldr x16, [x19, #104]" },
+        { 0xb9404a7b, a64_ldst_uimm(2, 1, 27, 19, 72), "ldr w27, [x19, #72]" },
+        { 0xb9004a7a, a64_ldst_uimm(2, 0, 26, 19, 72), "str w26, [x19, #72]" },
+        { 0xa9ba7bfd, a64_ldstp(1, 0, 3, 29, 30, SP, -96), "stp x29, x30, [sp, #-96]!" },
+''', r'''        { 0xb9404675, a64_ldst_uimm(2, 1, 21, 19, 68), "ldr w21, [x19, #68]" },
+        { 0xb9004270, a64_ldst_uimm(2, 0, 16, 19, 64), "str w16, [x19, #64]" },
+        { 0xf9000bf0, a64_ldst_uimm(3, 0, 16, SP, 16), "str x16, [sp, #16]" },
+        { 0xf9403270, a64_ldst_uimm(3, 1, 16, 19, 96), "ldr x16, [x19, #96]" },
+        { 0xb9404a7b, a64_ldst_uimm(2, 1, 27, 19, 72), "ldr w27, [x19, #72]" },
+        { 0xb9004a7a, a64_ldst_uimm(2, 0, 26, 19, 72), "str w26, [x19, #72]" },
+        { 0xa9ba7bfd, a64_ldstp(1, 0, 3, 29, 30, SP, -96), "stp x29, x30, [sp, #-96]!" },
+'''),
+    (r'''#if HJ_RUNS
+static void hj_free_code(struct HJBackend *b)
+{
+    code_free(b->code);
+    kj_free(b->blocks, HJ_MAX_BLOCKS * sizeof(*b->blocks));
+    kj_free(b->guest_bytes, HJ_GUEST_BYTES);
+    kj_free(b->scratch, 4u * HJ_SCRATCH_WORDS);
+    kj_free(b->trans, sizeof(*b->trans));
+    kj_free(b, sizeof(*b));
+''', r'''#if HJ_RUNS
+static void hj_free_code(struct HJBackend *b)
+{
+    code_free(b->code, b->code_bytes);
+    kj_free(b->blocks, b->max_blocks * sizeof(*b->blocks));
+    kj_free(b->guest_bytes, b->guest_cap);
+    kj_free(b->scratch, 4u * HJ_SCRATCH_WORDS);
+    kj_free(b->trans, sizeof(*b->trans));
+    kj_free(b, sizeof(*b));
+'''),
+    (r'''    if (!b)
+        return M68KENG_ERR_NOMEM;
+    b->dom = dom;
+    b->code = code_alloc();
+    b->blocks = kj_alloc(HJ_MAX_BLOCKS * sizeof(*b->blocks));
+    b->guest_bytes = kj_alloc(HJ_GUEST_BYTES);
+    b->scratch = kj_alloc(4u * HJ_SCRATCH_WORDS);
+    b->trans = kj_alloc(sizeof(*b->trans));
+    if (!b->code || !b->blocks || !b->guest_bytes || !b->scratch || !b->trans)
+''', r'''    if (!b)
+        return M68KENG_ERR_NOMEM;
+    b->dom = dom;
+    b->code_bytes = HJ_CODE_BYTES_START;
+    b->max_blocks = HJ_MAX_BLOCKS_START;
+    b->guest_cap = HJ_GUEST_BYTES_START;
+    b->code = code_alloc(b->code_bytes);
+    b->blocks = kj_alloc(b->max_blocks * sizeof(*b->blocks));
+    b->guest_bytes = kj_alloc(b->guest_cap);
+    b->scratch = kj_alloc(4u * HJ_SCRATCH_WORDS);
+    b->trans = kj_alloc(sizeof(*b->trans));
+    if (!b->code || !b->blocks || !b->guest_bytes || !b->scratch || !b->trans)
+'''),
+    (r'''        hj_free_code(b);
+        return M68KENG_ERR_NOMEM;
+    }
+    b->code_words = HJ_CODE_BYTES / 4;
+    memset(&e, 0, sizeof(e));
+    e.buf = b->scratch;
+    e.cap = HJ_SCRATCH_WORDS;
+    e.origin = (uintptr_t)b->code;
+    emit_glue(b, &e);
+    if (e.bad)
+    {
+        /* not reachable with these sizes: the glue fits the scratch buffer */
+        hj_free_code(b);
+        return M68KENG_ERR_NOMEM;
+    }
+    code_write_begin(b);
+    memcpy(b->code, b->scratch, 4u * e.n);
+    code_write_end(b, b->code, e.n);
+    b->glue_words = b->code_used = e.n;
+    b->stats.write_windows = b->stats.icache_syncs = 0;
+    {
+        uintptr_t entry = b->g_enter;
+
+        memcpy(&b->enter, &entry, sizeof(entry));
+    }
+    dom->code = b;
+    return M68KENG_OK;
+#else
+''', r'''        hj_free_code(b);
+        return M68KENG_ERR_NOMEM;
+    }
+    if (!glue_emit(b, &e, b->code))
+    {
+        /* not reachable with these sizes: the glue fits the scratch buffer */
+        hj_free_code(b);
+        return M68KENG_ERR_NOMEM;
+    }
+    glue_publish(b, &e);
+    b->stats.write_windows = b->stats.icache_syncs = 0;
+    dom->code = b;
+    return M68KENG_OK;
+#else
+'''),
+    (r'''
+ULONG kj_tr_code_bytes(const struct M68KEngDomain *dom)
+{
+    return dom->code ? HJ_CODE_BYTES : 0;
+}
+
+/* Registers as cpu_create leaves them: 0, PC 0, SR 0x2700. */
+''', r'''
+ULONG kj_tr_code_bytes(const struct M68KEngDomain *dom)
+{
+    return dom->code ? (ULONG)dom->code->code_bytes : 0;
+}
+
+/* Registers as cpu_create leaves them: 0, PC 0, SR 0x2700. */
+'''),
+    (r'''        return M68KENG_ERR_NOMEM;
+    c->st_bytes = sizeof(struct HJState) + dom->npages;
+    c->st = kj_alloc(c->st_bytes);
+    c->fast = kj_alloc(HJ_FAST_SIZE * sizeof(*c->fast));
+    if (!c->st || !c->fast)
+    {
+        kj_free(c->fast, HJ_FAST_SIZE * sizeof(*c->fast));
+        kj_free(c->st, c->st_bytes);
+        kj_free(c, sizeof(*c));
+        return M68KENG_ERR_NOMEM;
+    }
+''', r'''        return M68KENG_ERR_NOMEM;
+    c->st_bytes = sizeof(struct HJState) + dom->npages;
+    c->st = kj_alloc(c->st_bytes);
+    if (!c->st)
+    {
+        kj_free(c, sizeof(*c));
+        return M68KENG_ERR_NOMEM;
+    }
+'''),
+    (r'''    c->b = dom->code;
+    st->mem = dom->base;
+    st->limit = dom->size - 4;
+    st->fast = c->fast;
+    st->slow = (void *)(uintptr_t)slow_access;
+    st->backend = c;
+    st->slice_budget = 1;      /* one block per entry: the run loop counts */
+    st->sr_high = (M68KENG_SR_AT_CREATE >> 8) & 0x27u;
+    memcpy(st->pages, dom->pages, dom->npages);
+    c->pages_generation = dom->pages_generation;
+    fast_clear(c);
+    c->fast_generation = c->b->fast_generation;
+    owner->tr = c;
+    return M68KENG_OK;
+}
+''', r'''    c->b = dom->code;
+    st->mem = dom->base;
+    st->limit = dom->size - 4;
+    st->slow = (void *)(uintptr_t)slow_access;
+    st->backend = c;
+    st->slice_budget = 1;      /* one block per entry: the run loop counts */
+    st->sr_high = (M68KENG_SR_AT_CREATE >> 8) & 0x27u;
+    memcpy(st->pages, dom->pages, dom->npages);
+    c->pages_generation = dom->pages_generation;
+    owner->tr = c;
+    return M68KENG_OK;
+}
+'''),
+    (r'''
+    if (!c)
+        return;
+    kj_free(c->fast, HJ_FAST_SIZE * sizeof(*c->fast));
+    kj_free(c->st, c->st_bytes);
+    kj_free(c, sizeof(*c));
+    owner->tr = NULL;
+''', r'''
+    if (!c)
+        return;
+    kj_free(c->st, c->st_bytes);
+    kj_free(c, sizeof(*c));
+    owner->tr = NULL;
+'''),
+    (r'''    return M68KENG_OK;
+}
+
+/* As the flush of that library: a new epoch makes every block compare its guest
+   bytes before it runs again, and every CPU empties its fast table. */
+void kj_tr_invalidate(struct M68KEngDomain *dom)
+{
+    struct HJBackend *b = dom->code;
+
+    if (++b->epoch == 0)
+        reset_code(b);
+    b->fast_generation++;
+    b->stats.flushes++;
+}
+
+''', r'''    return M68KENG_OK;
+}
+
+/* A new epoch makes every block compare its guest bytes before it runs
+   again. */
+void kj_tr_invalidate(struct M68KEngDomain *dom)
+{
+    struct HJBackend *b = dom->code;
+
+    if (++b->epoch == 0)
+        reset_code(b);
+    b->stats.flushes++;
+}
+
+'''),
+]
+for was, now in REVIEW_2360:
+    assert text.count(was) == 1, was[:60]
+    text = text.replace(was, now)
+
+# ---- fourth stage: what the second review of AROS pull request 2360 asked for -----------------------
+# DIVS.L reports the overflow of a 32-bit dividend and the long divisions clear C on overflow; x18 is
+# an ordinary temporary, kept by the slow path glue; the comment of the word division. Exact texts of
+# the third stage's output, each found once.
+REVIEW_2360_SECOND = [
+    (r'''   ------------------------------------------------------------------ */
+
+/* Host registers inside translated code. D0-D7 live in w0-w7 and A0-A7 in
+   w8-w15 from the enter trampoline to the exit trampoline. x18, the
+   platform register that Darwin reserves, is never used. */
+#define REG_D(n)  (n)
+#define REG_A(n)  (8 + (n))
+#define R_ADDR    16  /* guest address of an access; the slow path keeps it */
+#define R_VAL     17  /* value loaded, or to be stored */
+#define R_STATE   19
+#define R_MEM     20
+#define R_FLAGS   21  /* X N Z C V in bits 4..0: NZCV in the order of A64 */
+#define R_BUDGET  22
+#define R_SRC     23  /* immediate operand */
+#define R_LIMIT   24  /* mem_size - 4 */
+#define R_SCR     25  /* scratch inside an access; slow path kind */
+#define R_F1      26  /* flag scratch */
+''', r'''   ------------------------------------------------------------------ */
+
+/* Host registers inside translated code. D0-D7 live in w0-w7 and A0-A7 in
+   w8-w15 from the enter trampoline to the exit trampoline. x16, x17 and
+   x18 are caller-saved: C code called from translated code may change
+   them, so the slow path glue keeps x16 and x18 around its call and takes
+   the result in x17. x19 to x28 are callee-saved and the trampolines save
+   them; x23 is saved with x24 and has no use. */
+#define REG_D(n)  (n)
+#define REG_A(n)  (8 + (n))
+#define R_ADDR    16  /* guest address of an access; the slow path keeps it */
+#define R_VAL     17  /* value loaded, or to be stored */
+#define R_SRC     18  /* immediate operand; the slow path keeps it */
+#define R_STATE   19
+#define R_MEM     20
+#define R_FLAGS   21  /* X N Z C V in bits 4..0: NZCV in the order of A64 */
+#define R_BUDGET  22
+#define R_LIMIT   24  /* mem_size - 4 */
+#define R_SCR     25  /* scratch inside an access; slow path kind */
+#define R_F1      26  /* flag scratch */
+'''),
+    (r'''    patch(e, br_direct, e->n);
+}
+
+/* Dn / <ea>.W into remainder:quotient. Widen signed division so that
+   INT32_MIN / -1 is checked as a guest quotient overflow. The manual
+   specifies C clear even on overflow; the pinned Musashi-mimic reference
+   retains it. N/Z are undefined on overflow and kept here. */
+static void emit_divw(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+''', r'''    patch(e, br_direct, e->n);
+}
+
+/* Dn / <ea>.W into remainder:quotient. The signed division is made in 64
+   bits, so that 0x80000000 / -1 shows as a quotient that does not fit in a
+   word, like any other. On overflow V is set and C cleared, and Dn, N and
+   Z stay as they were. */
+static void emit_divw(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+'''),
+    (r'''    patch(e, br_done, e->n);
+}
+
+static void emit_divl(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+''', r'''    patch(e, br_done, e->n);
+}
+
+/* Dr:Dq / <ea>.L, or Dq / <ea>.L, into Dq with the remainder in Dr. Only
+   the unsigned division of 32 bits by 32 cannot overflow; the others are
+   made in 64 bits and their quotient checked. */
+static void emit_divl(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+'''),
+    (r'''    emit_undo_step(t, &in->src, 4);
+    emit_exit_reason(t, in->pc, HJ_EXIT_FAULT);
+    patch(e, br_nz, e->n);
+    if (!quad)
+    {
+        put(e, a64_div(0, is_signed, R_SCR, dq, v));
+        put(e, a64_msub(0, R_F1, R_SCR, v, dq));
+        put(e, a64_mov(dr, R_F1));
+        put(e, a64_mov(dq, R_SCR));
+''', r'''    emit_undo_step(t, &in->src, 4);
+    emit_exit_reason(t, in->pc, HJ_EXIT_FAULT);
+    patch(e, br_nz, e->n);
+    if (!quad && !is_signed)
+    {
+        /* 32 bits by 32 bits, unsigned: the quotient always fits */
+        put(e, a64_div(0, 0, R_SCR, dq, v));
+        put(e, a64_msub(0, R_F1, R_SCR, v, dq));
+        put(e, a64_mov(dr, R_F1));
+        put(e, a64_mov(dq, R_SCR));
+'''),
+    (r'''            emit_flags_logic(e, dq, 4);
+        return;
+    }
+    put(e, a64_mov(R_RES, dq));
+    put(e, a64_bitfield(1, 1, R_RES, dr, 32, 31));
+    if (is_signed)
+        put(e, a64_bitfield(1, 0, R_SRC, v, 0, 31));
+    else
+''', r'''            emit_flags_logic(e, dq, 4);
+        return;
+    }
+    if (quad)
+    {
+        put(e, a64_mov(R_RES, dq));
+        put(e, a64_bitfield(1, 1, R_RES, dr, 32, 31));
+    }
+    else
+        /* a signed dividend of 32 bits, divided in 64 like the long one:
+           0x80000000 / -1 then shows as the quotient that does not fit */
+        put(e, a64_bitfield(1, 0, R_RES, dq, 0, 31));
+    if (is_signed)
+        put(e, a64_bitfield(1, 0, R_SRC, v, 0, 31));
+    else
+'''),
+    (r'''    br_done = e->n;
+    put(e, a64_b(0));
+    patch(e, br_ovf, e->n);
+    if (in->need & HJF_V)
+        put(e, a64_logic_const(1, R_FLAGS, R_FLAGS, HJF_V));
+    patch(e, br_done, e->n);
+''', r'''    br_done = e->n;
+    put(e, a64_b(0));
+    patch(e, br_ovf, e->n);
+    /* overflow, as in the word division: V set and C cleared; the
+       registers, N and Z stay as they were */
+    if (in->need & HJF_C)
+        put(e, a64_logic_const(0, R_FLAGS, R_FLAGS, ~HJF_C));
+    if (in->need & HJF_V)
+        put(e, a64_logic_const(1, R_FLAGS, R_FLAGS, HJF_V));
+    patch(e, br_done, e->n);
+'''),
+    (r'''    put(e, a64_ldstp(1, 0, 3, 29, 30, SP, -32));
+    put(e, a64_addsub_imm(1, 0, 0, 29, SP, 0, 0));
+    put(e, a64_ldst_uimm(3, 0, R_ADDR, SP, 16));
+    glue_regs(e, 0);
+    put(e, a64_mov64(0, R_STATE));
+    put(e, a64_mov(1, R_ADDR));
+''', r'''    put(e, a64_ldstp(1, 0, 3, 29, 30, SP, -32));
+    put(e, a64_addsub_imm(1, 0, 0, 29, SP, 0, 0));
+    put(e, a64_ldst_uimm(3, 0, R_ADDR, SP, 16));
+    put(e, a64_ldst_uimm(3, 0, R_SRC, SP, 24));
+    glue_regs(e, 0);
+    put(e, a64_mov64(0, R_STATE));
+    put(e, a64_mov(1, R_ADDR));
+'''),
+    (r'''    abort_at = e->n;
+    put(e, a64_cbz(0, 1, R_ADDR, 0));
+    put(e, a64_ldst_uimm(3, 1, R_ADDR, SP, 16));
+    put(e, a64_ldstp(1, 1, 1, 29, 30, SP, 32));
+    put(e, A64_RET);
+    patch(e, abort_at, e->n);
+''', r'''    abort_at = e->n;
+    put(e, a64_cbz(0, 1, R_ADDR, 0));
+    put(e, a64_ldst_uimm(3, 1, R_ADDR, SP, 16));
+    put(e, a64_ldst_uimm(3, 1, R_SRC, SP, 24));
+    put(e, a64_ldstp(1, 1, 1, 29, 30, SP, 32));
+    put(e, A64_RET);
+    patch(e, abort_at, e->n);
+'''),
+]
+for was, now in REVIEW_2360_SECOND:
+    assert text.count(was) == 1, was[:60]
+    text = text.replace(was, now)
 text.encode('ascii')
 
 # ---- the reuse map, by top-level definition ------------------------------------------------

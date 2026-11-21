@@ -269,7 +269,9 @@ loaders (`M68KEmu_LoadHunks`, `M68KEmu_LoadHunksFromMemory`,
 any stub it writes after the first `cpu_create`. Guest stores into code
 already translated, without one of those calls, are not detected in version
 1.0: the instruction cache behaves as enabled. A program that disables it
-and relies on fresh stores is outside version 1.0.
+and relies on fresh stores is outside version 1.0. So a program that
+changes its own code and does not flush the cache, as some programs
+written for the 68000 do, works on the interpreter only.
 
 ## 9. Teardown order
 
