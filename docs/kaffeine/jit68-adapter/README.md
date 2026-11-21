@@ -12,11 +12,12 @@ a patch for `rom/m68kemu` of AROS mainline that lets `m68kemu.library` run
 first runs on AROS AArch64 under QEMU.
 
 State on 21 November 2026: the patch is written and has run on AROS AArch64
-under QEMU. Nineteen cases with six small 68k programs, with the
+under QEMU. Twenty-three cases with eight small 68k programs, with the
 interpreter alone and with the engine under it, gave the expected results;
 one of the programs has a process of its own, a software interrupt and a
-vertical blank server, one has divisions the engine declines, and one is a
-BOOPSI class whose dispatcher intuition calls back. It has not run an application and has not run on
+vertical blank server, one has divisions the engine declines, one is a
+BOOPSI class whose dispatcher intuition calls back, and two use a CIA
+timer. It has not run an application and has not run on
 hardware. It is proposed to AROS mainline, together with the engine
 library, as [pull request 2357](https://github.com/aros-development-team/AROS/pull/2357).
 
@@ -188,6 +189,12 @@ which assemble them from hand-encoded instructions:
   makes intuition call the dispatcher back once, on a CPU of its own. The
   dispatcher counts the method, runs a loop of 5000 instructions, answers
   two methods itself and passes two to its superclass.
+- `ciawait` and `ciabusy` are the two CIA timer programs that AROS's own
+  native test, `developer/debug/test/m68kemu/test_m68kemu.c`, holds as byte
+  arrays; `tests/extract_cia.py` writes them as files, byte for byte. A
+  CIA-B timer A vector at 100 Hz adds to a counter while the program waits
+  in `Delay()` for half a second (that test expects 35 to 65), and while it
+  spins until the counter reaches 20 (20 to 30). The result is the count.
 - `hunk7` is `moveq #7,d0; rts`.
 
 | program | `M68KEMU_CPU` | engine library | result | what the library said |
@@ -214,9 +221,15 @@ which assemble them from hand-encoded instructions:
 | `kjhook` | unset | present | 12 | nothing; the dispatcher was called four times, once for each method |
 | `kjhook` | `jit` | present | 12 | the engine ran 20144 instructions in 33 runs, the interpreter ran 45; four calls, the same values |
 
+| `ciawait` | unset | present | 50 | nothing |
+| `ciawait` | `jit` | present | 50 | the engine ran 81 instructions in 57 runs, the interpreter ran 69 |
+| `ciabusy` | unset | present | 20 | nothing |
+| `ciabusy` | `jit` | present | 20 | the engine ran 2047058 instructions in 2023 runs, the interpreter ran 210 |
+
 The first seventeen cases finished in one run, each with
-`m68kemu.library 1.2` reported by `Version`. The two `kjhook` cases are a
-later run, with the two libraries built from the branch proposed to AROS.
+`m68kemu.library 1.2` reported by `Version`. The `kjhook` and the CIA cases
+are two later runs, with the two libraries built from the branch proposed
+to AROS.
 
 That shows:
 
@@ -240,6 +253,10 @@ That shows:
   the dispatcher of `kjhook` four times, and the 20000 instructions of its
   loops ran on the engine. The counters had been worked out from the
   program before the run, 20144 and 45, and the run gave exactly those.
+- CIA timer interrupts work under the engine, in both ways the library
+  delivers them: on a nested CPU while the program waits, and as the level
+  6 interrupt between engine slices while it runs. The counts are the same
+  with and without the engine and inside the ranges of AROS's test.
 - `jit` without the library and an invalid value refuse the run before any
   68k instruction; `auto` without the library falls back and says why.
 
@@ -281,8 +298,11 @@ changed the result of a case that had run.
 
 ## Not done
 
-- A CIA timer interrupt under the engine, and hooks other than a BOOPSI
-  dispatcher. The code paths exist; no case ran them.
+- Hooks other than a BOOPSI dispatcher (a layers hook, for one). No case
+  ran one.
+- AROS's own `test_m68kemu` to its end. On the test guest it stops at a
+  sub-test that needs a font, with and without the engine, at the same
+  line; its two CIA programs were run on their own instead.
 - An application.
 - Hardware. Every run was under QEMU.
 - A refused run returns -1 with `ERROR_INVALID_RESIDENT_LIBRARY`, but in
