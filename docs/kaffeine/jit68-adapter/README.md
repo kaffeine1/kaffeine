@@ -18,8 +18,9 @@ one of the programs has a process of its own, a software interrupt and a
 vertical blank server, one has divisions the engine declines, one is a
 BOOPSI class whose dispatcher intuition calls back, and two use a CIA
 timer. It has not run an application and has not run on
-hardware. It is proposed to AROS mainline, together with the engine
-library, as [pull request 2357](https://github.com/aros-development-team/AROS/pull/2357).
+hardware. It is proposed to AROS mainline as
+[pull request 2359](https://github.com/aros-development-team/AROS/pull/2359), and the engine library as
+[pull request 2360](https://github.com/aros-development-team/AROS/pull/2360).
 
 ## What it does
 
@@ -233,6 +234,17 @@ to AROS. All twenty-three ran once more, with the library built from that
 branch after the corrections for its static analysis (below): the same
 result codes, lines and counters, except the numbers that follow a timer.
 
+AROS's own native test, `test_m68kemu`, passes to its end with and without
+the engine: twelve sub-tests, among them a RawDoFmt hook that is called 8
+times, `IntuiTextLength()` in two fonts, the two CIA timer programs,
+`Cause()`, a Workbench start, window flags and `CreateProc()` of a hunk.
+Its output is the same in the two runs, and with the engine each of its
+twelve 68k programs is named with its counters. The test opens arial 15
+and the test guest has no `Fonts`, so the first runs stopped there, with
+and without the engine. `diskfont.library` lists a font from its `.font`
+contents file: the guest now gets `arial/15` of the AROS tree and a
+contents file for it, which `tests/mk_arialfont.py` writes.
+
 That shows:
 
 - Not selected, the adapter changes nothing that these programs can see.
@@ -300,11 +312,8 @@ changed the result of a case that had run.
 
 ## Not done
 
-- Hooks other than a BOOPSI dispatcher (a layers hook, for one). No case
-  ran one.
-- AROS's own `test_m68kemu` to its end. On the test guest it stops at a
-  sub-test that needs a font, with and without the engine, at the same
-  line; its two CIA programs were run on their own instead.
+- Hooks other than a BOOPSI dispatcher and the RawDoFmt hook of AROS's
+  test (a layers hook, for one). No case ran one.
 - An application.
 - Hardware. Every run was under QEMU.
 - A refused run returns -1 with `ERROR_INVALID_RESIDENT_LIBRARY`, but in
@@ -313,17 +322,22 @@ changed the result of a case that had run.
   That is in dos, outside this patch; a fix for it is proposed to AROS as
   [pull request 2353](https://github.com/aros-development-team/AROS/pull/2353).
   The two have not been run together.
-- Acceptance by AROS. The adapter and the engine library are proposed as
-  [pull request 2357](https://github.com/aros-development-team/AROS/pull/2357).
-  In that branch the engine is in `workbench/libs/kaffeine-jit68` with a
-  build rule for AArch64 targets, the interface header is there with its
-  specification beside it, and `rom/m68kemu` includes it from there instead
-  of holding a copy; otherwise the adapter is the patch of this page. The
-  two libraries were built with the commands of those build rules and ran
-  the seventeen cases again with the same results (the timed loop at 200
-  and 33 ticks), and the probe of the engine library passed. The full AROS
-  build has not built the branch.
-- The static analysis of that pull request listed fifteen points, none in
+- Acceptance by AROS. The proposal is three pull requests:
+  [2358](https://github.com/aros-development-team/AROS/pull/2358) makes the host tests of `m68kemu` link again,
+  [2359](https://github.com/aros-development-team/AROS/pull/2359) is the adapter and
+  [2360](https://github.com/aros-development-team/AROS/pull/2360) the engine library. They replace the earlier
+  [pull request 2357](https://github.com/aros-development-team/AROS/pull/2357), which had the adapter and the engine in one
+  piece. In 2359 the interface is part of `rom/m68kemu` under neutral names
+  (`m68kemu_engine.h`, `ENGINE.md`, constants `M68KENG_*`), `m68kemu` names
+  the engine library in one place, and its host tests run the engine slice
+  with two small test engines. In 2360 the engine is in
+  `workbench/libs/kaffeine-jit68` with a build rule for AArch64 targets,
+  and what it asks of the system is in a file of its own. Otherwise the
+  adapter is the patch of this page. The libraries built from those
+  branches with the commands of the build rules ran every case of this page
+  again with the same results, and AROS's own test and the probe of the
+  engine library passed. The full AROS build has not built the branches.
+- The static analysis of pull request 2357 listed fifteen points, none in
   the sources of the engine. They are answered there and, for the two test
   programs, here: three variables are declared where they are used, the
   eleven runs of the host checks whose exit nothing read are now checked to

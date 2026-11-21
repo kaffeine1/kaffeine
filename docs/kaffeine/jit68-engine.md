@@ -211,7 +211,7 @@ file holds that function and the two C library functions the engine calls
 that a library module does not get. The four engine files are compiled
 unchanged. A script builds the library outside an AROS tree with the tools
 and the SDK of an AROS build. In the branch proposed to AROS as
-[pull request 2357](https://github.com/aros-development-team/AROS/pull/2357)
+[pull request 2360](https://github.com/aros-development-team/AROS/pull/2360)
 it has a build rule, for AArch64 targets only.
 
 On 20 November 2026 the library was built for AROS AArch64 with the cross
@@ -254,7 +254,9 @@ its own trap handler, RTE and `Supervisor()`, a program with a process of
 its own, a software interrupt and a vertical blank server, a program
 with divisions the engine declines, a BOOPSI class whose dispatcher
 intuition calls back, the two CIA timer programs of AROS's own native
-test, the refusal of `jit` without the library, and the fallback of `auto`. In one timed loop of twenty million
+test, the refusal of `jit` without the library, and the fallback of `auto`.
+AROS's own native test, `test_m68kemu`, passes to its end with the
+interpreter and with the engine. In one timed loop of twenty million
 instructions the engine ran all but 19 of them, and the loop took 30 ticks
 of 1/50 s against about 160 on the interpreter; that is a measurement on an
 emulated machine. The [adapter page](jit68-adapter/README.md) has the
@@ -281,12 +283,15 @@ not been tried: applications and hardware.
 1. Finish the review of what the legacy library does outside the JIT,
    compared with `m68kemu.library`. What it finds decides what has to move
    before the engine is connected.
-2. Get AROS's own `test_m68kemu` to run to its end on the test guest, with
-   and without the engine; it stops at a sub-test that needs a font there.
-3. Repeat with applications, starting from IBrowse and Amigram, the two
+2. Repeat with applications, starting from IBrowse and Amigram, the two
    programs of the checks of 14 November 2026.
-4. Follow the review of AROS pull request 2357, which proposes the engine
-   library and the adapter to mainline.
+3. Follow the review of AROS pull requests 2358, 2359 and 2360, which
+   propose a fix of the host tests of `m68kemu`, the adapter and the engine
+   library to mainline.
+4. Give the engine an FPU, and after it an MMU. Neither the engine nor the
+   interpreter of `m68kemu.library` has one today: a program runs as on a
+   68LC040 with its MMU off. Both need a new minor version of the
+   interface, which only reserves a capability bit for each.
 
 ## Where the source is
 
