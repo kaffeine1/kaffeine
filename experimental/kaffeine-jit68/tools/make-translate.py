@@ -1895,6 +1895,180 @@ void kj_tr_invalidate(struct M68KEngDomain *dom)
 for was, now in REVIEW_2360:
     assert text.count(was) == 1, was[:60]
     text = text.replace(was, now)
+
+# ---- fourth stage: what the second review of AROS pull request 2360 asked for -----------------------
+# DIVS.L reports the overflow of a 32-bit dividend and the long divisions clear C on overflow; x18 is
+# an ordinary temporary, kept by the slow path glue; the comment of the word division. Exact texts of
+# the third stage's output, each found once.
+REVIEW_2360_SECOND = [
+    (r'''   ------------------------------------------------------------------ */
+
+/* Host registers inside translated code. D0-D7 live in w0-w7 and A0-A7 in
+   w8-w15 from the enter trampoline to the exit trampoline. x18, the
+   platform register that Darwin reserves, is never used. */
+#define REG_D(n)  (n)
+#define REG_A(n)  (8 + (n))
+#define R_ADDR    16  /* guest address of an access; the slow path keeps it */
+#define R_VAL     17  /* value loaded, or to be stored */
+#define R_STATE   19
+#define R_MEM     20
+#define R_FLAGS   21  /* X N Z C V in bits 4..0: NZCV in the order of A64 */
+#define R_BUDGET  22
+#define R_SRC     23  /* immediate operand */
+#define R_LIMIT   24  /* mem_size - 4 */
+#define R_SCR     25  /* scratch inside an access; slow path kind */
+#define R_F1      26  /* flag scratch */
+''', r'''   ------------------------------------------------------------------ */
+
+/* Host registers inside translated code. D0-D7 live in w0-w7 and A0-A7 in
+   w8-w15 from the enter trampoline to the exit trampoline. x16, x17 and
+   x18 are caller-saved: C code called from translated code may change
+   them, so the slow path glue keeps x16 and x18 around its call and takes
+   the result in x17. x19 to x28 are callee-saved and the trampolines save
+   them; x23 is saved with x24 and has no use. */
+#define REG_D(n)  (n)
+#define REG_A(n)  (8 + (n))
+#define R_ADDR    16  /* guest address of an access; the slow path keeps it */
+#define R_VAL     17  /* value loaded, or to be stored */
+#define R_SRC     18  /* immediate operand; the slow path keeps it */
+#define R_STATE   19
+#define R_MEM     20
+#define R_FLAGS   21  /* X N Z C V in bits 4..0: NZCV in the order of A64 */
+#define R_BUDGET  22
+#define R_LIMIT   24  /* mem_size - 4 */
+#define R_SCR     25  /* scratch inside an access; slow path kind */
+#define R_F1      26  /* flag scratch */
+'''),
+    (r'''    patch(e, br_direct, e->n);
+}
+
+/* Dn / <ea>.W into remainder:quotient. Widen signed division so that
+   INT32_MIN / -1 is checked as a guest quotient overflow. The manual
+   specifies C clear even on overflow; the pinned Musashi-mimic reference
+   retains it. N/Z are undefined on overflow and kept here. */
+static void emit_divw(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+''', r'''    patch(e, br_direct, e->n);
+}
+
+/* Dn / <ea>.W into remainder:quotient. The signed division is made in 64
+   bits, so that 0x80000000 / -1 shows as a quotient that does not fit in a
+   word, like any other. On overflow V is set and C cleared, and Dn, N and
+   Z stay as they were. */
+static void emit_divw(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+'''),
+    (r'''    patch(e, br_done, e->n);
+}
+
+static void emit_divl(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+''', r'''    patch(e, br_done, e->n);
+}
+
+/* Dr:Dq / <ea>.L, or Dq / <ea>.L, into Dq with the remainder in Dr. Only
+   the unsigned division of 32 bits by 32 cannot overflow; the others are
+   made in 64 bits and their quotient checked. */
+static void emit_divl(struct HJTrans *t, const struct HJInsn *in)
+{
+    struct HJEmit *e = &t->e;
+'''),
+    (r'''    emit_undo_step(t, &in->src, 4);
+    emit_exit_reason(t, in->pc, HJ_EXIT_FAULT);
+    patch(e, br_nz, e->n);
+    if (!quad)
+    {
+        put(e, a64_div(0, is_signed, R_SCR, dq, v));
+        put(e, a64_msub(0, R_F1, R_SCR, v, dq));
+        put(e, a64_mov(dr, R_F1));
+        put(e, a64_mov(dq, R_SCR));
+''', r'''    emit_undo_step(t, &in->src, 4);
+    emit_exit_reason(t, in->pc, HJ_EXIT_FAULT);
+    patch(e, br_nz, e->n);
+    if (!quad && !is_signed)
+    {
+        /* 32 bits by 32 bits, unsigned: the quotient always fits */
+        put(e, a64_div(0, 0, R_SCR, dq, v));
+        put(e, a64_msub(0, R_F1, R_SCR, v, dq));
+        put(e, a64_mov(dr, R_F1));
+        put(e, a64_mov(dq, R_SCR));
+'''),
+    (r'''            emit_flags_logic(e, dq, 4);
+        return;
+    }
+    put(e, a64_mov(R_RES, dq));
+    put(e, a64_bitfield(1, 1, R_RES, dr, 32, 31));
+    if (is_signed)
+        put(e, a64_bitfield(1, 0, R_SRC, v, 0, 31));
+    else
+''', r'''            emit_flags_logic(e, dq, 4);
+        return;
+    }
+    if (quad)
+    {
+        put(e, a64_mov(R_RES, dq));
+        put(e, a64_bitfield(1, 1, R_RES, dr, 32, 31));
+    }
+    else
+        /* a signed dividend of 32 bits, divided in 64 like the long one:
+           0x80000000 / -1 then shows as the quotient that does not fit */
+        put(e, a64_bitfield(1, 0, R_RES, dq, 0, 31));
+    if (is_signed)
+        put(e, a64_bitfield(1, 0, R_SRC, v, 0, 31));
+    else
+'''),
+    (r'''    br_done = e->n;
+    put(e, a64_b(0));
+    patch(e, br_ovf, e->n);
+    if (in->need & HJF_V)
+        put(e, a64_logic_const(1, R_FLAGS, R_FLAGS, HJF_V));
+    patch(e, br_done, e->n);
+''', r'''    br_done = e->n;
+    put(e, a64_b(0));
+    patch(e, br_ovf, e->n);
+    /* overflow, as in the word division: V set and C cleared; the
+       registers, N and Z stay as they were */
+    if (in->need & HJF_C)
+        put(e, a64_logic_const(0, R_FLAGS, R_FLAGS, ~HJF_C));
+    if (in->need & HJF_V)
+        put(e, a64_logic_const(1, R_FLAGS, R_FLAGS, HJF_V));
+    patch(e, br_done, e->n);
+'''),
+    (r'''    put(e, a64_ldstp(1, 0, 3, 29, 30, SP, -32));
+    put(e, a64_addsub_imm(1, 0, 0, 29, SP, 0, 0));
+    put(e, a64_ldst_uimm(3, 0, R_ADDR, SP, 16));
+    glue_regs(e, 0);
+    put(e, a64_mov64(0, R_STATE));
+    put(e, a64_mov(1, R_ADDR));
+''', r'''    put(e, a64_ldstp(1, 0, 3, 29, 30, SP, -32));
+    put(e, a64_addsub_imm(1, 0, 0, 29, SP, 0, 0));
+    put(e, a64_ldst_uimm(3, 0, R_ADDR, SP, 16));
+    put(e, a64_ldst_uimm(3, 0, R_SRC, SP, 24));
+    glue_regs(e, 0);
+    put(e, a64_mov64(0, R_STATE));
+    put(e, a64_mov(1, R_ADDR));
+'''),
+    (r'''    abort_at = e->n;
+    put(e, a64_cbz(0, 1, R_ADDR, 0));
+    put(e, a64_ldst_uimm(3, 1, R_ADDR, SP, 16));
+    put(e, a64_ldstp(1, 1, 1, 29, 30, SP, 32));
+    put(e, A64_RET);
+    patch(e, abort_at, e->n);
+''', r'''    abort_at = e->n;
+    put(e, a64_cbz(0, 1, R_ADDR, 0));
+    put(e, a64_ldst_uimm(3, 1, R_ADDR, SP, 16));
+    put(e, a64_ldst_uimm(3, 1, R_SRC, SP, 24));
+    put(e, a64_ldstp(1, 1, 1, 29, 30, SP, 32));
+    put(e, A64_RET);
+    patch(e, abort_at, e->n);
+'''),
+]
+for was, now in REVIEW_2360_SECOND:
+    assert text.count(was) == 1, was[:60]
+    text = text.replace(was, now)
 text.encode('ascii')
 
 # ---- the reuse map, by top-level definition ------------------------------------------------

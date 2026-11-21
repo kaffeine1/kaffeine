@@ -168,7 +168,7 @@ other instructions.
 ## Host checks
 
 A test program drives the engine only through the interface, on an AArch64
-host (macOS or Linux). It has 27 groups of checks in 13 categories:
+host (macOS or Linux). It has 28 groups of checks in 13 categories:
 discovery; sizes and versions; allocation failures; lifecycle and leaks;
 registers; A-line
 opcodes; fetch and the host's return addresses, with the map change; the
@@ -195,10 +195,16 @@ configuration, with the same output. On 21 November 2026, with the two
 changes the review of AROS pull request 2360 asked for (no fast table; code
 memory, a block table and guest bytes that start small and double), the
 checks ran again on the same machine: 27 groups and 46010 checks with 0
-failures in each configuration.
+failures in each configuration. A second review found one defect, the
+overflow of DIVS.L with a dividend of 32 bits, and asked for x18 to be an
+ordinary temporary and for a comparison with Moira. With those in, the
+checks are 28 groups and 71636 checks with 0 failures in each
+configuration, and a second program agrees with Moira on two million
+random instructions, one at a time, with the flags of the divisions taken
+from the manual, where Moira departs from it.
 
 That shows that the engine compiles without warnings with that compiler,
-and that it passes the cases of those 27 groups in those two configurations
+and that it passes the cases of those 28 groups in those two configurations
 on that Mac. It does not show that the engine follows the interface in every
 case, a host that executes a declined division, a build without the test
 seams, Linux or another compiler, anything on AROS or with an AROS
@@ -274,8 +280,8 @@ not been tried: applications and hardware.
 | --- | --- |
 | Interface version 1 | Written; reviewed as source |
 | Engine and translator | Written; reviewed as source; published in `experimental/kaffeine-jit68`; compiled for the host checks and as an AROS AArch64 library |
-| Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own; again on 20 November 2026 with the published Makefile; on 21 November 2026, with the two changes of the AROS review, 27 groups, 46010 checks, 0 failures |
-| Engine library for AROS AArch64 | Built outside an AROS tree, 20 November 2026; a native probe through the interface passes under QEMU: 20 checks, 0 failures. On 21 November 2026 a real build of an AROS tree for raspi-aarch64 built it, as `m68kjit.library`, at the head of AROS pull request 2360, and the probe of now passed under QEMU with 22 checks |
+| Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own; again on 20 November 2026 with the published Makefile; on 21 November 2026, with the two changes of the AROS review, 27 groups, 46010 checks, 0 failures; after its second review 28 groups, 71636 checks, 0 failures, and no difference from Moira on two million random instructions |
+| Engine library for AROS AArch64 | Built outside an AROS tree, 20 November 2026; a native probe through the interface passes under QEMU: 20 checks, 0 failures. On 21 November 2026 a real build of an AROS tree for raspi-aarch64 built it, as `m68kjit.library`, at the head of AROS pull request 2360, and the probe of now passed under QEMU with 23 checks |
 | Review of the behavior outside the JIT | In progress; its results are published once they are checked |
 | Host side in `m68kemu.library` (the adapter): selection, the engine under the interpreter, fallback | Written as a patch for AROS master; its design and its source read by a second reader; see the [adapter page](jit68-adapter/README.md) |
 | `m68kemu.library` with the adapter, built for AROS AArch64 | Built outside an AROS tree, 20 November 2026; twenty-three cases from the Shell pass under QEMU, with the interpreter and with the engine, one of them with a process, a software interrupt and a vertical blank server. `Run`, hooks called by native libraries and CIA timers not tried |

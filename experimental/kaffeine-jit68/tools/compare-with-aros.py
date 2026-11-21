@@ -36,6 +36,7 @@ PAIRS = [
     ('aros/kj68_platform.c', LIB + 'm68kjit_platform.c'),
     ('aros/kj68probe.c', PROBE + 'm68kjitprobe.c'),
     ('host/kj68_host_tests.c', HOST + 'm68kjit_host_tests.c'),
+    ('host/kj68_moira_compare.cpp', HOST + 'm68kjit_moira_compare.cpp'),
     ('host/kj68_platform_host.c', HOST + 'm68kjit_platform_host.c'),
     ('host/include/exec/types.h', HOST + 'include/exec/types.h'),
 ]

@@ -345,7 +345,12 @@ changed the result of a case that had run.
   files of that build the cases of this page ran again: the same results,
   and where a count does not depend on timing the same counts of
   instructions. AROS's own test passed with and without the engine, and
-  the probe of the engine library passed with its 22 checks.
+  the probe of the engine library passed with its 23 checks. A second
+  review went through the whole engine and found one defect, the overflow
+  of DIVS.L with a dividend of 32 bits, which is fixed; it asked for x18 to
+  be an ordinary temporary and for a host comparison with Moira, and both
+  are in. The cases of this page ran once more with that build: the same
+  results.
 - The static analysis of pull request 2357 listed fifteen points, none in
   the sources of the engine. They are answered there and, for the two test
   programs, here: three variables are declared where they are used, the

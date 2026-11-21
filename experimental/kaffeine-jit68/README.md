@@ -38,9 +38,10 @@ the state of each step, are on the
 | [`engine/kj68_translate.c`](engine/kj68_translate.c) | The AArch64 translator, generated from the translator of the legacy library (see below) |
 | [`engine/kj68_intern.h`](engine/kj68_intern.h) | The private interface between the two engine files, and the test seams |
 | [`engine/kj68_platform.h`](engine/kj68_platform.h) | What the engine asks of the system it runs on: memory, memory for code, a dead end |
-| [`host/kj68_host_tests.c`](host/kj68_host_tests.c) | The host checks: 27 groups, through the interface, with the table of operations, the test seams and the self test of the encoder from `kj68_intern.h` |
+| [`host/kj68_host_tests.c`](host/kj68_host_tests.c) | The host checks: 28 groups, through the interface, with the table of operations, the test seams and the self test of the encoder from `kj68_intern.h` |
 | [`host/kj68_platform_host.c`](host/kj68_platform_host.c) | The answers of a macOS or Linux host to `kj68_platform.h` |
 | [`host/include/exec/types.h`](host/include/exec/types.h) | The AROS exec types, for the host build only |
+| [`host/kj68_moira_compare.cpp`](host/kj68_moira_compare.cpp) | The engine against Moira, one random instruction at a time |
 | [`tools/make-translate.py`](tools/make-translate.py) | The generator of `engine/kj68_translate.c` |
 | [`tools/compare-with-aros.py`](tools/compare-with-aros.py) | Compares these sources with an AROS tree that has the engine, under the names it has there |
 | [`Makefile`](Makefile) | A host build of the checks |
@@ -96,8 +97,42 @@ translations of the same code, which must grow nothing. `make check` on
 the same machine: 27 groups, 46010 checks, 0 failed, at `-O1` with the
 sanitizers and at `-O2`.
 
+A second review of that pull request, the same day, went through the whole
+engine and found one defect: DIVS.L with a dividend of 32 bits did not
+report the overflow of 0x80000000 / -1. It is fixed here too: the signed
+division is made in 64 bits and its quotient checked, and a long division
+that overflows clears C. The review asked for two more things, and both
+are in these sources:
+
+- x18 is an ordinary temporary. In the AROS ABI it is a caller-saved
+  register like x16 and x17, so the slow path glue keeps it around its C
+  call. Darwin does not keep x18 across a context switch (on the Mac of
+  these runs a value left there changed 2451 times in 8 seconds of a
+  preempted loop), so on a Mac the Makefile builds the translator from a
+  copy with that one temporary in x23.
+- A host program, [`host/kj68_moira_compare.cpp`](host/kj68_moira_compare.cpp),
+  runs one instruction at a time on the engine and on Moira, set up as
+  `m68kemu.library` sets it up, and compares the registers, the PC, the
+  status register and all of memory. Opcode, extension words, registers,
+  flags and memory are random.
+
+A new group of checks, `long-division`, runs 6400 long divisions against an
+oracle worked out in the checks. `make check` on the same machine: 28
+groups, 71636 checks, 0 failed, in both configurations; and the comparison,
+two million cases: 1196645 the same, 325637 declined by the engine with
+nothing changed, 477558 exceptions or stops that the engine did not execute
+either, 160 not usable, 0 differ. In AROS's copy of these sources, ten
+million cases with each of five other seeds: 0 differ.
+
+The comparison found something in Moira, as this repository and AROS build
+it (`MOIRA_MIMIC_MUSASHI`): after DIVU.W and DIVS.W it sets Z when the
+quotient is not zero, on the overflow of any division it leaves C as it
+was, and it does not report the overflow of 0x80000000 / -1. The engine
+follows the manual, so for the divisions the comparison takes the expected
+flags from the manual, worked out from the quotient Moira gives.
+
 That shows that this source compiles without warnings with that compiler,
-and that it passes the cases of those 27 groups in those two configurations
+and that it passes the cases of those 28 groups in those two configurations
 on that Mac, among them `div-host-read`: a division whose divisor would be
 read through the host is declined before any host call (the
 [engine page](../../docs/kaffeine/jit68-engine.md) says how). It does not
@@ -177,6 +212,11 @@ equal to the translator in `engine/`. Counts in this form: 102 definitions
 unchanged, 28 changed, 37 removed, 2 moved from the legacy header and 31
 added.
 
+The changes of the second review are a fourth stage: 8 replacements, each
+checked to apply exactly once. Run as above on 21 November 2026, the
+generator ended with status 0 and `cmp` found its output equal to the
+translator in `engine/`. The counts are those of the third stage.
+
 ## The AROS library and its probe
 
 The files in [`aros`](aros) make the engine a library for AROS AArch64 and
@@ -202,8 +242,10 @@ test it there without `m68kemu.library`.
   and a word written in the range of the callbacks; changed code before
   and after `invalidate`; a division by zero and ILLEGAL, which the engine
   reports and does not execute. Then it reads the engine's counters. Since
-  the review of AROS pull request 2360 it also runs 2500 blocks in a row,
-  more than the engine's block table starts with, and has 22 checks.
+  the reviews of AROS pull request 2360 it also runs 2500 blocks in a row,
+  more than the engine's block table starts with, and an addition to a word
+  in the range of its callbacks, which change x16, x17 and x18 as the ABI
+  lets them. It has 23 checks.
 
 On 20 November 2026 both were built with the cross compiler (gcc 10.5),
 `genmodule` and SDK of a build of AROS master `b6dcaeea` for
@@ -231,9 +273,10 @@ files with stand-in headers, prints the same lines.
 
 On 21 November 2026 the probe as it is now ran on that system under QEMU,
 built by a real build of an AROS tree at the head of AROS pull request 2360
-(where it is `m68kjitprobe`): 22 checks with 0 failures. Its 2500 blocks in
+(where it is `m68kjitprobe`): 23 checks with 0 failures. Its 2500 blocks in
 a row made the engine take 2 MiB of code memory in place of the 1 MiB it
-starts with, and empty its code memory once.
+starts with, and empty its code memory once; and its addition through
+callbacks that change x16, x17 and x18 gave the right sum.
 
 That shows that the engine translates and runs 68k code on AROS AArch64
 under QEMU, through its library and the interface. It does not show
