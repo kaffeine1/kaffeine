@@ -12,10 +12,11 @@ a patch for `rom/m68kemu` of AROS mainline that lets `m68kemu.library` run
 first runs on AROS AArch64 under QEMU.
 
 State on 21 November 2026: the patch is written and has run on AROS AArch64
-under QEMU. Seventeen cases with five small 68k programs, with the
+under QEMU. Nineteen cases with six small 68k programs, with the
 interpreter alone and with the engine under it, gave the expected results;
 one of the programs has a process of its own, a software interrupt and a
-vertical blank server, and one has divisions the engine declines. It has not run an application and has not run on
+vertical blank server, one has divisions the engine declines, and one is a
+BOOPSI class whose dispatcher intuition calls back. It has not run an application and has not run on
 hardware. It is proposed to AROS mainline, together with the engine
 library, as [pull request 2357](https://github.com/aros-development-team/AROS/pull/2357).
 
@@ -181,6 +182,12 @@ which assemble them from hand-encoded instructions:
   whose divisor is in the program's memory, and a signed one on the same
   register through an absolute address. The engine declines a division
   whose divisor it would have to read through the library.
+- `kjhook` is a BOOPSI class written in 68k code. It makes a class under
+  rootclass with `MakeClass()`, writes its own dispatcher into it, and calls
+  `NewObjectA()`, `GetAttr()`, `SetAttrsA()` and `DisposeObject()`: each
+  makes intuition call the dispatcher back once, on a CPU of its own. The
+  dispatcher counts the method, runs a loop of 5000 instructions, answers
+  two methods itself and passes two to its superclass.
 - `hunk7` is `moveq #7,d0; rts`.
 
 | program | `M68KEMU_CPU` | engine library | result | what the library said |
@@ -204,8 +211,12 @@ which assemble them from hand-encoded instructions:
 | `kjdiv` | unset | present | 12 | nothing |
 | `kjdiv` | `jit` | present | 12 | the engine ran 13 instructions in 3 runs, the interpreter ran 3 |
 
-All seventeen cases finished in one run, each with `m68kemu.library 1.2`
-reported by `Version`.
+| `kjhook` | unset | present | 12 | nothing; the dispatcher was called four times, once for each method |
+| `kjhook` | `jit` | present | 12 | the engine ran 20144 instructions in 33 runs, the interpreter ran 45; four calls, the same values |
+
+The first seventeen cases finished in one run, each with
+`m68kemu.library 1.2` reported by `Version`. The two `kjhook` cases are a
+later run, with the two libraries built from the branch proposed to AROS.
 
 That shows:
 
@@ -225,6 +236,10 @@ That shows:
   run goes on: of the 16 instructions of `kjdiv`, the interpreter ran the
   first one and the two divisions on the custom register, and the engine
   the other 13, the third division among them.
+- A hook that a native library calls runs on the engine: intuition called
+  the dispatcher of `kjhook` four times, and the 20000 instructions of its
+  loops ran on the engine. The counters had been worked out from the
+  program before the run, 20144 and 45, and the run gave exactly those.
 - `jit` without the library and an invalid value refuse the run before any
   68k instruction; `auto` without the library falls back and says why.
 
@@ -266,9 +281,8 @@ changed the result of a case that had run.
 
 ## Not done
 
-- A hook that a native library calls (a BOOPSI dispatcher, a layers
-  hook) and a CIA timer interrupt, under the engine. The code paths exist;
-  no case ran them.
+- A CIA timer interrupt under the engine, and hooks other than a BOOPSI
+  dispatcher. The code paths exist; no case ran them.
 - An application.
 - Hardware. Every run was under QEMU.
 - A refused run returns -1 with `ERROR_INVALID_RESIDENT_LIBRARY`, but in
