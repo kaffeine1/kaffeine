@@ -233,6 +233,17 @@ to AROS. All twenty-three ran once more, with the library built from that
 branch after the corrections for its static analysis (below): the same
 result codes, lines and counters, except the numbers that follow a timer.
 
+AROS's own native test, `test_m68kemu`, passes to its end with and without
+the engine: twelve sub-tests, among them a RawDoFmt hook that is called 8
+times, `IntuiTextLength()` in two fonts, the two CIA timer programs,
+`Cause()`, a Workbench start, window flags and `CreateProc()` of a hunk.
+Its output is the same in the two runs, and with the engine each of its
+twelve 68k programs is named with its counters. The test opens arial 15
+and the test guest has no `Fonts`, so the first runs stopped there, with
+and without the engine. `diskfont.library` lists a font from its `.font`
+contents file: the guest now gets `arial/15` of the AROS tree and a
+contents file for it, which `tests/mk_arialfont.py` writes.
+
 That shows:
 
 - Not selected, the adapter changes nothing that these programs can see.
@@ -300,11 +311,8 @@ changed the result of a case that had run.
 
 ## Not done
 
-- Hooks other than a BOOPSI dispatcher (a layers hook, for one). No case
-  ran one.
-- AROS's own `test_m68kemu` to its end. On the test guest it stops at a
-  sub-test that needs a font, with and without the engine, at the same
-  line; its two CIA programs were run on their own instead.
+- Hooks other than a BOOPSI dispatcher and the RawDoFmt hook of AROS's
+  test (a layers hook, for one). No case ran one.
 - An application.
 - Hardware. Every run was under QEMU.
 - A refused run returns -1 with `ERROR_INVALID_RESIDENT_LIBRARY`, but in
