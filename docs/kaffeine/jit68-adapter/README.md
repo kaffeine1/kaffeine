@@ -11,7 +11,7 @@ a patch for `rom/m68kemu` of AROS mainline that lets `m68kemu.library` run
 68k code on the optional `kaffeine-jit68.library`, and the record of its
 first runs on AROS AArch64 under QEMU.
 
-State on 20 November 2026: the patch is written and has run on AROS AArch64
+State on 21 November 2026: the patch is written and has run on AROS AArch64
 under QEMU. Sixteen cases with five small 68k programs, with the
 interpreter alone and with the engine under it, gave the expected results;
 one of the programs has a process of its own, a software interrupt and a
@@ -69,7 +69,7 @@ All of these, at the top of the loop:
 
 - nothing is pending in the interpreter core (not stopped, no trace, no
   interrupt to check);
-- no interrupt is raised and not yet taken;
+- no interrupt level is asserted, and none is raised and not yet taken;
 - the status register is inside the model of interface 1.0 (supervisor, no
   trace, interrupt stack);
 - the PC is even, at or above 0x1000 and inside the program's memory. Below
@@ -138,13 +138,13 @@ procedure gives the build's own `m68kemu.library` byte for byte, and the
 objects of the files the patch does not touch came out identical to the
 build's objects. The compiler gave no new warning.
 
-Result: `m68kemu.library 1.2 (20.11.2026)`, 14087952 bytes, SHA-256
-`c26e176f8425ccf4e3414e6ab274dc8f6eb33e00d7631d5121bc66adca8cad62`. The
+Result: `m68kemu.library 1.2 (20.11.2026)`, 14087992 bytes, SHA-256
+`5f06438dcc98a261043b98683c35f992e816fafbc4f60b4f6659b4e02da29e01`. The
 patch file is the source of exactly this library.
 
 ## Native runs
 
-On 20 November 2026, under QEMU 11.0.0, machine `raspi3b`, 1 GiB, TCG, on
+On 21 November 2026, under QEMU 11.0.0, machine `raspi3b`, 1 GiB, TCG, on
 a boot image of the same AROS build with `Libs/m68kemu.library` replaced by
 the patched one and
 [`kaffeine-jit68.library`](../../../experimental/kaffeine-jit68/README.md)
@@ -194,16 +194,16 @@ which assemble them from hand-encoded instructions:
 | `hunk7` | `jit` | present | 7 | the engine ran 1 instruction, the interpreter ran 1 |
 | `kjmix` | unset | present | 12 | nothing |
 | `kjmix` | `jit` | present | 12 | the engine ran 6179 instructions in 11 runs, the interpreter ran 9 |
-| `kjtime` | unset | present | 12 | nothing; the loop took 155 ticks of 1/50 s |
+| `kjtime` | unset | present | 12 | nothing; the loop took 158 ticks of 1/50 s |
 | `kjtime` | `jit` | present | 12 | the engine ran 20000024 instructions in 19519 runs, the interpreter ran 19; the loop took 30 ticks |
-| `kjtask` | unset | present | 12 | nothing; the software interrupt ran once, the process stored its sum, the server saw 158 vertical blanks |
+| `kjtask` | unset | present | 12 | nothing; the software interrupt ran once, the process stored its sum, the server saw 163 vertical blanks |
 | `kjtask` | `jit` | present | 12 | the engine ran 20500117 instructions in 20041 runs, the interpreter ran 330; the software interrupt ran once, the process stored the same sum, the server saw 30 vertical blanks |
 
 | `kjdiv` | unset | present | 12 | nothing |
 | `kjdiv` | `jit` | present | 12 | the engine ran 13 instructions in 3 runs, the interpreter ran 3 |
 
-All sixteen cases finished, each with `m68kemu.library 1.2` reported by
-`Version`. The two `kjdiv` cases are a fourth run, on 21 November, with the same library.
+All sixteen cases finished in one run, each with `m68kemu.library 1.2`
+reported by `Version`.
 
 That shows:
 
@@ -231,13 +231,23 @@ emulated machine under TCG on a busy host. They say that this loop was
 about five times faster with the engine there, and nothing about
 applications.
 
-The table is the third run of that day. The second had the first twelve
-rows with the build before this one, which did not yet set the error code
-of a refused run: the same results, with the timed loop at 147 and 30
-ticks. The first, of eight cases, used a `kjsum` that returned 42; the
-startup script stops at a result of 21 or more, so the cases of that
-program could not write their result. Their output and their lines agree
-with the table.
+The table is the fifth run. The four before it, on 20 and 21 November
+with earlier builds of the patch, gave the same results and the same
+engine counters for the cases they had: twelve cases, then fourteen, then
+the two of `kjdiv`; the timed loop took 147 and 155 ticks on the
+interpreter and 30 with the engine each time. The first run, of eight
+cases, used a `kjsum` that returned 42; the startup script stops at a
+result of 21 or more, so the cases of that program could not write their
+result. Their output and their lines agree with the table.
+
+Between the fourth and the fifth run the design was read against the
+AROS and Moira sources by a second reader, who had the design and the
+sources but not this code. Checked against the code, the review found no
+defect in what had run. Four of its points are in the patch since then:
+no slice while an interrupt level is asserted, the status register
+written back before the other registers, a second invalidation after the
+two pieces of 68k code the library loader writes, and the instruction
+count that the library's watchdog reads.
 
 ## Not done
 
@@ -254,4 +264,5 @@ with the table.
   The two have not been run together.
 - A build rule in the AROS tree for the engine library, and a submission of
   the adapter to AROS mainline.
-- An independent review of this patch.
+- A review of the code of this patch by someone else. The review above
+  was of the design.

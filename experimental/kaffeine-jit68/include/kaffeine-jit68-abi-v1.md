@@ -324,7 +324,8 @@ tries an engine slice before it interprets an instruction:
 
 - The engine takes over only at a plain instruction boundary: nothing
   pending in the interpreter core (stopped, trace, an interrupt to check),
-  no interrupt raised and not yet taken, SR inside the model of section 5,
+  no interrupt level asserted or raised and not yet taken, SR inside the
+  model of section 5,
   PC even, at or above 0x1000 and inside memory. Below 0x1000 are the
   vectors and the host's own stubs.
 - D0-D7, A0-A7, SR and PC go to the engine with `set_reg`, it runs with a
