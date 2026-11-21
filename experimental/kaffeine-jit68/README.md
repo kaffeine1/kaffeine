@@ -13,12 +13,11 @@ native probe of that library; a script builds both outside an AROS tree.
 In the branch proposed to AROS as
 [pull request 2360](https://github.com/aros-development-team/AROS/pull/2360)
 the engine, the probe and these checks have their places in the AROS tree
-and the library a build rule. There the interface header is
-`rom/m68kemu/m68kemu_engine.h`, with the names `M68KENG_*` and `M68KEng*`
-for what is `KJ68_*` and `KJ68*` here, and the code that depends on the
-system is in a file of its own. The engine there is this one with those
-names, without a clock that nothing read, and with the self test of the
-encoder compiled only for the host checks. The side of `m68kemu.library`
+and the library a build rule; the interface is in `rom/m68kemu` there
+([pull request 2359](https://github.com/aros-development-team/AROS/pull/2359)).
+The sources here are the files of those branches with an author line added:
+[`tools/compare-with-aros.py`](tools/compare-with-aros.py) compares them
+with an AROS tree. The side of `m68kemu.library`
 that loads the engine is a patch for AROS mainline, on the
 [adapter page](../../docs/kaffeine/jit68-adapter/README.md), where the two
 libraries have run together under QEMU. What the engine is for, and
@@ -29,17 +28,21 @@ the state of each step, are on the
 
 | Path | What it is |
 | --- | --- |
-| [`include/kaffeine-jit68-abi-v1.h`](include/kaffeine-jit68-abi-v1.h) | The interface, version 1.0: every name the host and the engine share |
-| [`include/kaffeine-jit68-abi-v1.md`](include/kaffeine-jit68-abi-v1.md) | Its specification; where a comment in the header is shorter, the specification governs |
+| [`include/m68kemu_engine.h`](include/m68kemu_engine.h) | The interface between `m68kemu.library` and an engine, version 1.0: the file of that name in `rom/m68kemu` of the AROS branch |
+| [`include/ENGINE.md`](include/ENGINE.md) | Its specification, from the same place; "this directory" in it is `rom/m68kemu` |
 | [`engine/kj68_engine.c`](engine/kj68_engine.c) | The nine operations of the interface, the memory map and the counters |
 | [`engine/kj68_translate.c`](engine/kj68_translate.c) | The AArch64 translator, generated from the translator of the legacy library (see below) |
 | [`engine/kj68_intern.h`](engine/kj68_intern.h) | The private interface between the two engine files, and the test seams |
-| [`host/kj68_host_tests.c`](host/kj68_host_tests.c) | The host checks: 26 groups, through the interface only |
+| [`engine/kj68_platform.h`](engine/kj68_platform.h) | What the engine asks of the system it runs on: memory, memory for code, a dead end |
+| [`host/kj68_host_tests.c`](host/kj68_host_tests.c) | The host checks: 26 groups, through the interface, with the table of operations, the test seams and the self test of the encoder from `kj68_intern.h` |
+| [`host/kj68_platform_host.c`](host/kj68_platform_host.c) | The answers of a macOS or Linux host to `kj68_platform.h` |
 | [`host/include/exec/types.h`](host/include/exec/types.h) | The AROS exec types, for the host build only |
 | [`tools/make-translate.py`](tools/make-translate.py) | The generator of `engine/kj68_translate.c` |
+| [`tools/compare-with-aros.py`](tools/compare-with-aros.py) | Compares these sources with an AROS tree that has the branches proposed to AROS |
 | [`Makefile`](Makefile) | A host build of the checks |
 | [`aros/kaffeine-jit68.conf`](aros/kaffeine-jit68.conf) | The library's configuration: its one function, `KJ68_GetEngine`, at LVO -30 |
-| [`aros/kj68_library.c`](aros/kj68_library.c) | That function, and two C library functions the engine calls that a library module does not get |
+| [`aros/kj68_library.c`](aros/kj68_library.c) | That function |
+| [`aros/kj68_platform.c`](aros/kj68_platform.c) | The answers of AROS to `kj68_platform.h` |
 | [`aros/kj68probe.c`](aros/kj68probe.c) | A native probe of the library through the interface alone |
 | [`aros/build-outside-tree.sh`](aros/build-outside-tree.sh) | Builds the library and the probe with the tools and the SDK of an AROS build |
 
@@ -66,10 +69,15 @@ The count was first expected as 40860: counting the checks of the new group
 by hand, I had left out the leak check that ends every group. The sanitizer
 run was therefore recorded as not meeting its expectation, although none of
 its checks failed, and the `-O2` run was made afterwards against the
-corrected count. The six files the runs compiled are the ones in this
-directory, byte for byte: `include/kaffeine-jit68-abi-v1.h`,
-`engine/kj68_engine.c`, `engine/kj68_intern.h`, `engine/kj68_translate.c`,
-`host/kj68_host_tests.c` and `host/include/exec/types.h`.
+corrected count. The six files those runs compiled were the ones of this
+directory then. The sources have changed since.
+
+On 21 November 2026 the sources took the form proposed to AROS: the names
+of `m68kemu_engine.h`, the code that depends on the system behind
+`kj68_platform.h`, the self test of the encoder compiled for the checks
+only, and no clock, which fed a counter nothing read. `make check` then ran
+again on the same machine: 40861 checks, 0 failed, at `-O1` with the
+sanitizers and at `-O2`.
 
 That shows that this source compiles without warnings with that compiler,
 and that it passes the cases of those 26 groups in those two configurations
@@ -135,8 +143,15 @@ it), written as checked line ranges like the others. On 20 November 2026
 the steps above were run as they are, with Python 3.14: the generator ended
 with status 0, and `cmp` found its output byte for byte equal to the
 translator in `engine/`, the one the host checks compiled. Its counts in
-this form: 110 definitions unchanged, 24 changed, 33 removed, 2 moved from
+that form: 110 definitions unchanged, 24 changed, 33 removed, 2 moved from
 the legacy header and 27 added.
+
+On 21 November 2026 the generator got a second stage for the form proposed
+to AROS: the names of the interface as `m68kemu.library` has it, and
+thirteen replacements, each checked to apply exactly once. Run as above, it
+ended with status 0 and `cmp` found its output equal to the translator in
+`engine/`. Counts in this form: 103 definitions unchanged, 30 changed, 34
+removed, 2 moved from the legacy header and 27 added.
 
 ## The AROS library and its probe
 
@@ -145,11 +160,10 @@ test it there without `m68kemu.library`.
 
 - **The library.** `kaffeine-jit68.library` 1.0 has one function,
   `KJ68_GetEngine`, at LVO -30, which returns the engine's table of
-  operations for an interface major. The four engine files are compiled
-  unchanged. `kj68_library.c` adds the function and the two C library
-  functions the engine calls that the static C library of a module lacks:
-  `abort()`, here a dead end alert, and `clock_gettime()`, which here
-  reports that it has no clock, so the counter of translation time stays 0.
+  operations for an interface major. The engine files are compiled
+  unchanged. `kj68_library.c` has the function, and `kj68_platform.c` what
+  the engine asks of AROS: memory, memory for code with the cache call that
+  publishes it, and a dead end alert.
 - **The build.** `build-outside-tree.sh` runs `genmodule`, compiles with
   the flags of a plain C disk library of the AROS build, links with the
   static C library and strips. It is not an AROS build rule; the branch
@@ -170,6 +184,13 @@ On 20 November 2026 both were built with the cross compiler (gcc 10.5),
 raspi-aarch64. Both engine files compile there with `-Wall -Wextra` and no
 warning. The library is a 64-bit AArch64 ELF object of 107960 bytes without
 undefined symbols.
+
+On 21 November 2026, with the sources in the form proposed to AROS, the
+script built the library again with the same tools: 78808 bytes, and the
+same file, byte for byte, as the library the AROS branch builds with its own
+rule, which is the one of the native cases of pull request 2360. The probe
+the script builds is not that file: the script links and strips it another
+way.
 
 The probe then ran once on that AROS system under QEMU 11.0.0 (machine
 `raspi3b`, one processor in use), booted from an SD image that holds the

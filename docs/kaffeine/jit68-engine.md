@@ -37,9 +37,9 @@ QEMU. Nothing of it has run with `m68kemu.library`.
 ## The interface, version 1
 
 The interface is a
-[C header](../../experimental/kaffeine-jit68/include/kaffeine-jit68-abi-v1.h)
+[C header](../../experimental/kaffeine-jit68/include/m68kemu_engine.h)
 and a
-[written specification](../../experimental/kaffeine-jit68/include/kaffeine-jit68-abi-v1.md).
+[written specification](../../experimental/kaffeine-jit68/include/ENGINE.md).
 What matters for its behavior:
 
 - **Discovery.** `m68kemu.library` opens `kaffeine-jit68.library` and asks
@@ -207,9 +207,9 @@ the compiler options and how the count of checks was settled.
 
 The engine is now also an AROS library. A configuration file gives
 `kaffeine-jit68.library` its one function at LVO -30, and a small source
-file holds that function and the two C library functions the engine calls
-that a library module does not get. The four engine files are compiled
-unchanged. A script builds the library outside an AROS tree with the tools
+file holds that function. Another has what the engine asks of AROS: memory,
+memory for code, a dead end. The engine files are compiled unchanged. A
+script builds the library outside an AROS tree with the tools
 and the SDK of an AROS build. In the branch proposed to AROS as
 [pull request 2360](https://github.com/aros-development-team/AROS/pull/2360)
 it has a build rule, for AArch64 targets only.

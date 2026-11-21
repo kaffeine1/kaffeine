@@ -27,7 +27,9 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 
-#include "kaffeine-jit68-abi-v1.h"
+#include "m68kemu_engine.h"
+
+#define KJ68_LIBNAME "kaffeine-jit68.library"
 
 #define GUEST_SIZE 0x10000UL
 #define HOST_LO    0x8000UL
@@ -89,7 +91,7 @@ static void put_words(UBYTE *mem, ULONG addr, const UWORD *words, ULONG count)
     }
 }
 
-static ULONG reg(const struct KJ68EngineOps *ops, struct KJ68CPU *cpu, ULONG index)
+static ULONG reg(const struct M68KEngOps *ops, struct M68KEngCPU *cpu, ULONG index)
 {
     ULONG value = 0xDEADBEEF;
 
@@ -98,15 +100,15 @@ static ULONG reg(const struct KJ68EngineOps *ops, struct KJ68CPU *cpu, ULONG ind
 }
 
 /* One run from pc with a budget; the exit is left in ex. */
-static LONG run_from(const struct KJ68EngineOps *ops, struct KJ68CPU *cpu, ULONG pc, ULONG budget, struct KJ68Exit *ex)
+static LONG run_from(const struct M68KEngOps *ops, struct M68KEngCPU *cpu, ULONG pc, ULONG budget, struct M68KEngExit *ex)
 {
     ex->size_of = sizeof(*ex);
     ex->reason = 0;
-    ops->set_reg(cpu, KJ68_REG_PC, pc);
+    ops->set_reg(cpu, M68KENG_REG_PC, pc);
     return ops->run(cpu, budget, ex);
 }
 
-static void programs(const struct KJ68EngineOps *ops, struct KJ68Domain *domain, struct KJ68CPU *cpu, UBYTE *mem)
+static void programs(const struct M68KEngOps *ops, struct M68KEngDomain *domain, struct M68KEngCPU *cpu, UBYTE *mem)
 {
     /* moveq #42,d0; addq.l #1,d0; A-line */
     static const UWORD arith[] = { 0x702A, 0x5280, 0xA000 };
@@ -120,33 +122,33 @@ static void programs(const struct KJ68EngineOps *ops, struct KJ68Domain *domain,
     /* moveq #10,d0; moveq #0,d1; divu.w d1,d0 */
     static const UWORD divzero[] = { 0x700A, 0x7200, 0x80C1 };
     static const UWORD illegal[] = { 0x4AFC };
-    struct KJ68Exit ex;
-    struct KJ68Stats st;
+    struct M68KEngExit ex;
+    struct M68KEngStats st;
     ULONG total, turns;
     LONG rc;
 
     put_words(mem, 0x1000, arith, 3);
     rc = run_from(ops, cpu, 0x1000, 1000, &ex);
-    check(rc == KJ68_OK && ex.reason == KJ68_STOP_ALINE && ex.pc == 0x1004 && ex.opcode == 0xA000 && ex.retired == 2 &&
-          reg(ops, cpu, KJ68_REG_D0) == 43 && reg(ops, cpu, KJ68_REG_PC) == 0x1004,
+    check(rc == M68KENG_OK && ex.reason == M68KENG_STOP_ALINE && ex.pc == 0x1004 && ex.opcode == 0xA000 && ex.retired == 2 &&
+          reg(ops, cpu, M68KENG_REG_D0) == 43 && reg(ops, cpu, M68KENG_REG_PC) == 0x1004,
           "moveq and addq give 43 in D0 and the run ends at the A-line opcode, 2 instructions retired");
     Printf("     reason %ld, pc %lx, opcode %lx, retired %ld, D0 %ld\n", (LONG)ex.reason, (LONG)ex.pc, (LONG)ex.opcode,
-           (LONG)ex.retired, (LONG)reg(ops, cpu, KJ68_REG_D0));
+           (LONG)ex.retired, (LONG)reg(ops, cpu, M68KENG_REG_D0));
 
     put_words(mem, 0x1100, loop, 7);
     rc = run_from(ops, cpu, 0x1100, 100000, &ex);
-    check(rc == KJ68_OK && ex.reason == KJ68_STOP_ALINE && ex.pc == 0x110C && ex.retired == 2002 &&
-          reg(ops, cpu, KJ68_REG_D0) == 1000 && (reg(ops, cpu, KJ68_REG_D0 + 1) & 0xFFFF) == 0xFFFF,
+    check(rc == M68KENG_OK && ex.reason == M68KENG_STOP_ALINE && ex.pc == 0x110C && ex.retired == 2002 &&
+          reg(ops, cpu, M68KENG_REG_D0) == 1000 && (reg(ops, cpu, M68KENG_REG_D0 + 1) & 0xFFFF) == 0xFFFF,
           "a DBRA loop of 1000 turns gives 1000 in D0, 2002 instructions retired in one run");
     Printf("     reason %ld, pc %lx, retired %ld, D0 %ld\n", (LONG)ex.reason, (LONG)ex.pc, (LONG)ex.retired,
-           (LONG)reg(ops, cpu, KJ68_REG_D0));
+           (LONG)reg(ops, cpu, M68KENG_REG_D0));
 
     /* the same loop in runs of 100 instructions: each run may retire up to
        100 + max_block_insns - 1, and the sum is the same */
     total = 0;
     turns = 0;
     rc = run_from(ops, cpu, 0x1100, 100, &ex);
-    while (rc == KJ68_OK && ex.reason == KJ68_STOP_BUDGET && turns < 100)
+    while (rc == M68KENG_OK && ex.reason == M68KENG_STOP_BUDGET && turns < 100)
     {
         total += ex.retired;
         turns++;
@@ -154,8 +156,8 @@ static void programs(const struct KJ68EngineOps *ops, struct KJ68Domain *domain,
         rc = ops->run(cpu, 100, &ex);
     }
     total += ex.retired;
-    check(rc == KJ68_OK && ex.reason == KJ68_STOP_ALINE && total == 2002 && turns >= 1 &&
-          reg(ops, cpu, KJ68_REG_D0) == 1000,
+    check(rc == M68KENG_OK && ex.reason == M68KENG_STOP_ALINE && total == 2002 && turns >= 1 &&
+          reg(ops, cpu, M68KENG_REG_D0) == 1000,
           "the same loop in runs of 100 instructions: resumed until the A-line opcode, 2002 retired in all");
     Printf("     resumed %ld times, retired %ld in all\n", (LONG)turns, (LONG)total);
 
@@ -165,21 +167,21 @@ static void programs(const struct KJ68EngineOps *ops, struct KJ68Domain *domain,
     mem[STACK + 1] = 0xDE;
     mem[STACK + 2] = 0xAD;
     mem[STACK + 3] = 0x00;
-    ops->set_reg(cpu, KJ68_REG_A7, STACK);
+    ops->set_reg(cpu, M68KENG_REG_A7, STACK);
     rc = run_from(ops, cpu, 0x1200, 1000, &ex);
-    check(rc == KJ68_OK && ex.reason == KJ68_STOP_PC_OUTSIDE && ex.pc == SENTINEL && ex.address == SENTINEL &&
-          ex.retired == 1 && reg(ops, cpu, KJ68_REG_A7) == STACK + 4,
+    check(rc == M68KENG_OK && ex.reason == M68KENG_STOP_PC_OUTSIDE && ex.pc == SENTINEL && ex.address == SENTINEL &&
+          ex.retired == 1 && reg(ops, cpu, M68KENG_REG_A7) == STACK + 4,
           "RTS to an address outside memory ends the run there, with the stack popped");
     Printf("     reason %ld, pc %lx, address %lx, A7 %lx\n", (LONG)ex.reason, (LONG)ex.pc, (LONG)ex.address,
-           (LONG)reg(ops, cpu, KJ68_REG_A7));
+           (LONG)reg(ops, cpu, M68KENG_REG_A7));
 
     /* a read and a write in the range of the callbacks */
     put_words(mem, 0x1300, ranged, 7);
     reads = 0;
     writes = 0;
     rc = run_from(ops, cpu, 0x1300, 1000, &ex);
-    check(rc == KJ68_OK && ex.reason == KJ68_STOP_ALINE && reads == 1 && read_addr == 0x8000 && read_width == 2 &&
-          (reg(ops, cpu, KJ68_REG_D0) & 0xFFFF) == 0x1234,
+    check(rc == M68KENG_OK && ex.reason == M68KENG_STOP_ALINE && reads == 1 && read_addr == 0x8000 && read_width == 2 &&
+          (reg(ops, cpu, M68KENG_REG_D0) & 0xFFFF) == 0x1234,
           "a word read in the host range comes from the callback, once");
     check(writes == 1 && write_addr == 0x8002 && write_width == 2 && (write_value & 0xFFFF) == 0x1234 &&
           mem[0x8002] == 0xEE && mem[0x8003] == 0xEE,
@@ -190,30 +192,30 @@ static void programs(const struct KJ68EngineOps *ops, struct KJ68Domain *domain,
     /* changed code: the new bytes run once the host has said so */
     put_words(mem, 0x2000, one, 2);
     rc = run_from(ops, cpu, 0x2000, 1000, &ex);
-    check(rc == KJ68_OK && ex.reason == KJ68_STOP_ALINE && reg(ops, cpu, KJ68_REG_D0) == 1, "code at 2000 gives 1");
+    check(rc == M68KENG_OK && ex.reason == M68KENG_STOP_ALINE && reg(ops, cpu, M68KENG_REG_D0) == 1, "code at 2000 gives 1");
     put_words(mem, 0x2000, two, 2);
     rc = ops->invalidate(domain, 0x2000, 4);
-    check(rc == KJ68_OK, "invalidate of the changed bytes is accepted");
+    check(rc == M68KENG_OK, "invalidate of the changed bytes is accepted");
     rc = run_from(ops, cpu, 0x2000, 1000, &ex);
-    check(rc == KJ68_OK && ex.reason == KJ68_STOP_ALINE && reg(ops, cpu, KJ68_REG_D0) == 2,
+    check(rc == M68KENG_OK && ex.reason == M68KENG_STOP_ALINE && reg(ops, cpu, M68KENG_REG_D0) == 2,
           "after invalidate the changed code gives 2");
 
     /* reported, not executed */
     put_words(mem, 0x2100, divzero, 3);
     rc = run_from(ops, cpu, 0x2100, 1000, &ex);
-    check(rc == KJ68_OK && ex.reason == KJ68_STOP_EXCEPTION && ex.vector == 5 && ex.pc == 0x2104 && ex.retired == 2 &&
-          reg(ops, cpu, KJ68_REG_D0) == 10,
+    check(rc == M68KENG_OK && ex.reason == M68KENG_STOP_EXCEPTION && ex.vector == 5 && ex.pc == 0x2104 && ex.retired == 2 &&
+          reg(ops, cpu, M68KENG_REG_D0) == 10,
           "a division by zero is reported as vector 5 at the division, with D0 unchanged");
     Printf("     reason %ld, vector %ld, pc %lx, D0 %ld\n", (LONG)ex.reason, (LONG)ex.vector, (LONG)ex.pc,
-           (LONG)reg(ops, cpu, KJ68_REG_D0));
+           (LONG)reg(ops, cpu, M68KENG_REG_D0));
     put_words(mem, 0x2200, illegal, 1);
     rc = run_from(ops, cpu, 0x2200, 1000, &ex);
-    check(rc == KJ68_OK && ex.reason == KJ68_STOP_EXCEPTION && ex.vector == 4 && ex.pc == 0x2200 && ex.retired == 0,
+    check(rc == M68KENG_OK && ex.reason == M68KENG_STOP_EXCEPTION && ex.vector == 4 && ex.pc == 0x2200 && ex.retired == 0,
           "ILLEGAL is reported as vector 4 and not executed");
 
     st.size_of = sizeof(st);
     rc = ops->get_stats(domain, &st);
-    check(rc == KJ68_OK && st.cpus == 1 && st.blocks_translated > 0 && st.insns_translated > 0 && st.code_bytes > 0 &&
+    check(rc == M68KENG_OK && st.cpus == 1 && st.blocks_translated > 0 && st.insns_translated > 0 && st.code_bytes > 0 &&
           st.invalidations >= 1 && st.retired >= 2002 + 2002,
           "the counters show translated blocks, executable code and the instructions retired");
     Printf("     blocks %ld, instructions translated %ld, runs %ld, invalidations %ld, code bytes %ld, retired %ld\n",
@@ -224,14 +226,15 @@ static void programs(const struct KJ68EngineOps *ops, struct KJ68Domain *domain,
 int main(void)
 {
     struct Library *base;
-    const struct KJ68EngineOps *ops;
-    struct KJ68HostServices host;
-    struct KJ68MemoryMap map;
-    struct KJ68Domain *domain = NULL;
-    struct KJ68CPU *cpu = NULL;
+    const struct M68KEngOps *ops;
+    struct M68KEngHost host;
+    struct M68KEngMap map;
+    struct M68KEngDomain *domain = NULL;
+    struct M68KEngCPU *cpu = NULL;
     UBYTE *mem;
+    BOOL nohost = FALSE;
 
-    base = OpenLibrary(KJ68_LIBNAME, KJ68_LIBVERSION);
+    base = OpenLibrary(KJ68_LIBNAME, 1);
     check(base != NULL, "kaffeine-jit68.library opens");
     if (!base)
     {
@@ -240,11 +243,11 @@ int main(void)
     }
     Printf("     version %ld.%ld\n", (LONG)base->lib_Version, (LONG)base->lib_Revision);
 
-    ops = AROS_LC1(APTR, KJ68_GetEngine, AROS_LCA(ULONG, KJ68_ABI_MAJOR + 1, D0), struct Library *, base, 5, KJ68);
+    ops = AROS_LC1(APTR, KJ68_GetEngine, AROS_LCA(ULONG, M68KENG_ABI_MAJOR + 1, D0), struct Library *, base, 5, KJ68);
     check(ops == NULL, "no engine for interface major 2");
-    ops = AROS_LC1(APTR, KJ68_GetEngine, AROS_LCA(ULONG, KJ68_ABI_MAJOR, D0), struct Library *, base, 5, KJ68);
-    check(ops != NULL && ops->size_of >= KJ68_V1_SIZE_ENGINEOPS && ops->abi_major == KJ68_ABI_MAJOR &&
-          (ops->caps & KJ68_CAP_BASE) && ops->max_block_insns >= 1 && ops->max_block_insns <= KJ68_MAX_BLOCK_INSNS &&
+    ops = AROS_LC1(APTR, KJ68_GetEngine, AROS_LCA(ULONG, M68KENG_ABI_MAJOR, D0), struct Library *, base, 5, KJ68);
+    check(ops != NULL && ops->size_of >= M68KENG_V1_SIZE_OPS && ops->abi_major == M68KENG_ABI_MAJOR &&
+          (ops->caps & M68KENG_CAP_BASE) && ops->max_block_insns >= 1 && ops->max_block_insns <= M68KENG_MAX_BLOCK_INSNS &&
           ops->name != NULL,
           "the engine of interface major 1 is there, with sizes, version and capabilities as the interface asks");
 
@@ -261,8 +264,8 @@ int main(void)
             mem[i] = 0xEE;
 
         host.size_of = sizeof(host);
-        host.abi_major = KJ68_ABI_MAJOR;
-        host.abi_minor = KJ68_ABI_MINOR;
+        host.abi_major = M68KENG_ABI_MAJOR;
+        host.abi_minor = M68KENG_ABI_MINOR;
         host.read = host_read;
         host.write = host_write;
         host.log = NULL;
@@ -273,25 +276,34 @@ int main(void)
         map.num_ranges = 1;
         map.ranges[0].lo = HOST_LO;
         map.ranges[0].hi = HOST_HI;
-        map.ranges[0].flags = KJ68_RANGE_READ_HOST | KJ68_RANGE_WRITE_HOST;
+        map.ranges[0].flags = M68KENG_RANGE_READ_HOST | M68KENG_RANGE_WRITE_HOST;
 
-        rc = ops->domain_create(&host, NULL, &map, KJ68_CAP_BASE, &domain);
-        check(rc == KJ68_OK && domain != NULL, "a domain over that memory");
-        if (rc != KJ68_OK)
-            Printf("     domain_create gives %ld\n", rc);
+        rc = ops->domain_create(&host, NULL, &map, M68KENG_CAP_BASE, &domain);
+        if (rc == M68KENG_ERR_NOHOST)
+        {
+            /* a hosted AROS: the engine is there and runs no code */
+            Printf("     the engine cannot run code on this machine: its programs are not run\n");
+            nohost = TRUE;
+        }
+        else
+        {
+            check(rc == M68KENG_OK && domain != NULL, "a domain over that memory");
+            if (rc != M68KENG_OK)
+                Printf("     domain_create gives %ld\n", rc);
+        }
         if (domain)
         {
             rc = ops->cpu_create(domain, NULL, &cpu);
-            check(rc == KJ68_OK && cpu != NULL && reg(ops, cpu, KJ68_REG_SR) == KJ68_SR_AT_CREATE &&
-                  reg(ops, cpu, KJ68_REG_PC) == 0 && reg(ops, cpu, KJ68_REG_D0) == 0,
+            check(rc == M68KENG_OK && cpu != NULL && reg(ops, cpu, M68KENG_REG_SR) == M68KENG_SR_AT_CREATE &&
+                  reg(ops, cpu, M68KENG_REG_PC) == 0 && reg(ops, cpu, M68KENG_REG_D0) == 0,
                   "a CPU, with its registers as the interface says they start");
             if (cpu)
             {
-                ops->set_reg(cpu, KJ68_REG_A7, STACK);
+                ops->set_reg(cpu, M68KENG_REG_A7, STACK);
                 programs(ops, domain, cpu, mem);
-                check(ops->cpu_destroy(cpu) == KJ68_OK, "the CPU is destroyed");
+                check(ops->cpu_destroy(cpu) == M68KENG_OK, "the CPU is destroyed");
             }
-            check(ops->domain_destroy(domain) == KJ68_OK, "the domain is destroyed");
+            check(ops->domain_destroy(domain) == M68KENG_OK, "the domain is destroyed");
         }
     }
     if (mem)
@@ -300,5 +312,5 @@ int main(void)
 
     Printf("kj68probe: %ld checks, %ld failures\n", (LONG)checks, (LONG)failures);
     Flush(Output());
-    return failures ? RETURN_FAIL : RETURN_OK;
+    return failures ? RETURN_FAIL : nohost ? RETURN_WARN : RETURN_OK;
 }

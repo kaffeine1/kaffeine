@@ -9,13 +9,14 @@ CC    ?= cc
 BUILD ?= build
 
 COMMON  = -std=c99 -Wall -Wextra -Wno-unused-parameter -Werror -g
-DEFS    = -DKJ68_TEST_SEAMS -I host/include -I include -I engine
+# the host can run the code the translator writes: an AArch64 Mac or Linux
+DEFS    = -DKJ68_TEST_SEAMS -DKJ68_PLAT_RUNS=1 -I host/include -I include -I engine
 SAN     = -fsanitize=address,undefined -fno-sanitize-recover=undefined
 ASANFL  = $(COMMON) -O1 -fno-omit-frame-pointer $(SAN) $(DEFS)
 O2FL    = $(COMMON) -O2 $(DEFS)
 
-HEADERS = include/kaffeine-jit68-abi-v1.h engine/kj68_intern.h host/include/exec/types.h
-NAMES   = kj68_engine kj68_translate kj68_host_tests
+HEADERS = include/m68kemu_engine.h engine/kj68_intern.h engine/kj68_platform.h host/include/exec/types.h
+NAMES   = kj68_engine kj68_translate kj68_platform_host kj68_host_tests
 
 vpath %.c engine host
 

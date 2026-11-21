@@ -2,51 +2,29 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
     Author: Michele Dipace (@kaffeine1)
 
-    kaffeine-jit68 engine: the AArch64 translator of the legacy
-    kaffeine.library (rom/kaffeine/kaffeine_jit.c, sha256 65b150bb), adapted
-    to interface version 1 (kaffeine-jit68-abi-v1.h): guest memory through
-    the host's map, exits to the host where the legacy library dispatched,
-    translations shared by the CPUs of a domain. The instruction decoding
-    and emission are those of the legacy file. It contains no Emu68 code.
+    kaffeine-jit68 engine: the AArch64 translator. It comes from the
+    translator of kaffeine.library, the earlier library of the Kaffeine
+    project (https://github.com/kaffeine1/kaffeine,
+    rom/kaffeine/kaffeine_jit.c), adapted to the interface of
+    m68kemu_engine.h: guest memory through the host's map, exits to the host
+    where that library dispatched, translations shared by the CPUs of a
+    domain. The instruction decoding and emission are those of that file.
+    tools/make-translate.py writes this file from that one. It contains no
+    Emu68 code.
 */
-#if defined(__APPLE__)
-#define _DARWIN_C_SOURCE 1
-#else
-#define _DEFAULT_SOURCE 1
-#define _POSIX_C_SOURCE 200809L
-#endif
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <time.h>
+#ifdef KJ68_TEST_SEAMS
+#include <stdio.h>              /* the encoder self test of the host checks */
+#endif
 #include "kj68_intern.h"
+#include "kj68_platform.h"
 
-#if defined(__AROS__)
-#include <aros/config.h>
-#define HJ_AROS_STANDALONE (AROS_FLAVOUR == AROS_FLAVOUR_STANDALONE)
-#else
-#define HJ_AROS_STANDALONE 0
-#endif
-
-/* Hosted AROS has a different executable-memory contract. The AROS path
-   below is only for the standalone flavour used by native AArch64. */
-#if defined(__aarch64__) && (HJ_AROS_STANDALONE || \
-    (!defined(__AROS__) && (defined(__APPLE__) || defined(__linux__))))
+/* translated code runs on AArch64, where the platform can run it */
+#if defined(__aarch64__) && KJ68_PLAT_RUNS
 #define HJ_RUNS 1
-#if defined(__AROS__)
-#include <exec/execbase.h>
-#include <exec/memory.h>
-#include <proto/exec.h>
-#else
-#include <sys/mman.h>
-#if defined(__APPLE__)
-#include <pthread.h>
-#include <libkern/OSCacheControl.h>
-#endif
-#endif
 #else
 #define HJ_RUNS 0
 #endif
@@ -280,7 +258,7 @@ static uint32_t a64_logic_const(int opc, int rd, int rn, uint32_t value)
     uint32_t field = 0;
 
     if (a64_bitmask(value, 0, &field) != 0)
-        abort();
+        kj68_plat_dead_end();
     return a64_logic_imm(0, opc, rd, rn, field);
 }
 
@@ -482,7 +460,6 @@ struct HJStats
     unsigned long blocks;        /* blocks translated */
     unsigned long guest_insns;   /* 68k instructions in them */
     unsigned long host_words;    /* AArch64 words emitted for them */
-    unsigned long translate_ns;  /* decoding, emission, copy and cache sync */
     unsigned long write_windows; /* code publication windows */
     unsigned long icache_syncs;  /* host instruction cache maintenance */
     unsigned long enters;        /* calls from C into translated code */
@@ -501,7 +478,7 @@ _Static_assert(HJ_MAX_INSNS == KJ68_BLOCK_INSNS, "max_block_insns");
    on a domain at a time, so none of it needs a lock. */
 struct HJBackend
 {
-    struct KJ68Domain *dom;
+    struct M68KEngDomain *dom;
     uint32_t *code;
     size_t code_words, code_used, glue_words;
     uintptr_t g_enter, g_exit, g_lookup, g_budget, g_miss, g_slow[SLOW_KINDS];
@@ -524,7 +501,7 @@ struct HJCpu
 {
     struct HJState *st;
     size_t st_bytes;
-    struct KJ68CPU *owner;
+    struct M68KEngCPU *owner;
     struct HJBackend *b;
     struct HJFast *fast;
     uint32_t fast_generation, pages_generation;
@@ -604,7 +581,7 @@ struct HJInsn
 
 struct HJDec
 {
-    const struct KJ68Domain *dom;
+    const struct M68KEngDomain *dom;
     uint32_t at;
     int bad;
     uint32_t bad_at;
@@ -612,14 +589,14 @@ struct HJDec
 
 /* Instruction fetch is always direct: from guest memory and never from a
    READ_HOST range (contract, section 4). */
-static int kj_fetchable(const struct KJ68Domain *dom, uint32_t at)
+static int kj_fetchable(const struct M68KEngDomain *dom, uint32_t at)
 {
     ULONG i;
 
     if (at > dom->size - 2)
         return 0;
     for (i = 0; i < dom->num_ranges; i++)
-        if ((dom->ranges[i].flags & KJ68_RANGE_READ_HOST) &&
+        if ((dom->ranges[i].flags & M68KENG_RANGE_READ_HOST) &&
             at + 2 > dom->ranges[i].lo && at < dom->ranges[i].hi)
             return 0;
     return 1;
@@ -872,7 +849,7 @@ static int decode_misc(struct HJDec *d, uint16_t op, struct HJInsn *in)
     return fault_insn(in, "opcode outside the subset");
 }
 
-static int decode_insn(const struct KJ68Domain *dom, uint32_t pc, struct HJInsn *in)
+static int decode_insn(const struct M68KEngDomain *dom, uint32_t pc, struct HJInsn *in)
 {
     struct HJDec d = { dom, pc, 0, 0 };
     uint16_t op;
@@ -1209,7 +1186,7 @@ static int decode_insn(const struct KJ68Domain *dom, uint32_t pc, struct HJInsn 
 /* Library execution cannot silently discard a stack-bank switch, trace
    or privilege exception. Keep full SR writes outside this first model;
    CCR-only instructions and native flag updates remain supported. */
-static void decode_backend(const struct KJ68Domain *dom, uint32_t pc,
+static void decode_backend(const struct M68KEngDomain *dom, uint32_t pc,
                            struct HJInsn *in, int library_mode)
 {
     decode_insn(dom, pc, in);
@@ -2920,7 +2897,7 @@ static void emit_insn(struct HJTrans *t, const struct HJInsn *in)
 /* Decode and emit a block of at most 'max' instructions at pc into t->e.
    Returns the number of 68k instructions, sets *end, and gives in starts
    the offset from pc of each instruction. */
-static unsigned translate_into(const struct KJ68Domain *dom, struct HJTrans *t, uint32_t pc,
+static unsigned translate_into(const struct M68KEngDomain *dom, struct HJTrans *t, uint32_t pc,
                                unsigned max, uint32_t *end, uint16_t *starts)
 {
     struct HJInsn insns[HJ_MAX_INSNS];
@@ -2959,42 +2936,19 @@ static unsigned translate_into(const struct KJ68Domain *dom, struct HJTrans *t, 
 static void code_write_begin(struct HJBackend *b)
 {
     b->stats.write_windows++;
-#if HJ_RUNS && defined(__APPLE__)
-    pthread_jit_write_protect_np(0);
-#elif HJ_RUNS && defined(__AROS__)
-    /* Native AROS AArch64 ordinary RAM is writable and executable.
-       Publication still needs its explicit data/instruction cache API. */
-    (void)b;
-#elif HJ_RUNS
-    mprotect(b->code, HJ_CODE_BYTES, PROT_READ | PROT_WRITE);
-#else
-    (void)b;
+#if HJ_RUNS
+    kj68_plat_code_write_begin(b->code, HJ_CODE_BYTES);
 #endif
 }
 
 static void code_write_end(struct HJBackend *b, const uint32_t *start, size_t words)
 {
     b->stats.icache_syncs++;
-#if HJ_RUNS && defined(__APPLE__)
-    pthread_jit_write_protect_np(1);
-    sys_icache_invalidate((void *)(uintptr_t)start, words * 4);
-#elif HJ_RUNS && defined(__AROS__)
-    CacheClearE((APTR)start, words * sizeof(*start), CACRF_ClearD | CACRF_ClearI);
-#elif HJ_RUNS
-    mprotect(b->code, HJ_CODE_BYTES, PROT_READ | PROT_EXEC);
-    __builtin___clear_cache((char *)(uintptr_t)start, (char *)(uintptr_t)(start + words));
+#if HJ_RUNS
+    kj68_plat_code_write_end(b->code, HJ_CODE_BYTES, (void *)(uintptr_t)start, words * sizeof(*start));
 #else
-    (void)b; (void)start; (void)words;
+    (void)start; (void)words;
 #endif
-}
-
-static uint64_t now_ns(void)
-{
-    struct timespec ts;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-        return 0;
-    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
 #if HJ_RUNS
@@ -3006,18 +2960,7 @@ static void *code_alloc(void)
     if (kj_test_fail_next())
         return NULL;
 #endif
-#if defined(__AROS__)
-    code = AllocMem(HJ_CODE_BYTES, MEMF_PUBLIC | MEMF_EXECUTABLE);
-#else
-#if defined(__APPLE__)
-    code = mmap(NULL, HJ_CODE_BYTES, PROT_READ | PROT_WRITE | PROT_EXEC,
-                MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
-#else
-    code = mmap(NULL, HJ_CODE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-#endif
-    if (code == MAP_FAILED)
-        code = NULL;
-#endif
+    code = kj68_plat_code_alloc(HJ_CODE_BYTES);
 #ifdef KJ68_TEST_SEAMS
     if (code)
         kj68_test_exec_live += (long)HJ_CODE_BYTES;
@@ -3032,11 +2975,7 @@ static void code_free(void *code)
 #ifdef KJ68_TEST_SEAMS
     kj68_test_exec_live -= (long)HJ_CODE_BYTES;
 #endif
-#if defined(__AROS__)
-    FreeMem(code, HJ_CODE_BYTES);
-#else
-    munmap(code, HJ_CODE_BYTES);
-#endif
+    kj68_plat_code_free(code, HJ_CODE_BYTES);
 }
 #endif
 
@@ -3162,7 +3101,7 @@ static void emit_glue(struct HJBackend *b, struct HJEmit *e)
 
 /* An access is direct when it lies inside guest memory and touches no
    range that sends this kind of access to the host (contract, section 4). */
-static int kj_direct(const struct KJ68Domain *dom, uint32_t addr, uint32_t width, ULONG flag)
+static int kj_direct(const struct M68KEngDomain *dom, uint32_t addr, uint32_t width, ULONG flag)
 {
     ULONG i;
 
@@ -3179,12 +3118,12 @@ static int kj_direct(const struct KJ68Domain *dom, uint32_t addr, uint32_t width
    of 1 stops the run at once: no other host access is made in it. */
 static uint32_t kj_read(struct HJCpu *c, uint32_t addr, uint32_t width, uint32_t pc)
 {
-    const struct KJ68Domain *dom = c->owner->domain;
+    const struct M68KEngDomain *dom = c->owner->domain;
     ULONG value = 0;
 
     if (c->st->abort)
         return 0;
-    if (kj_direct(dom, addr, width, KJ68_RANGE_READ_HOST))
+    if (kj_direct(dom, addr, width, M68KENG_RANGE_READ_HOST))
         return width == 1 ? dom->base[addr] : (uint32_t)(dom->base[addr] << 8 | dom->base[addr + 1]);
     if (dom->host->read(dom->host_domain, c->owner->host_cpu, addr, width, pc, &value))
     {
@@ -3196,11 +3135,11 @@ static uint32_t kj_read(struct HJCpu *c, uint32_t addr, uint32_t width, uint32_t
 
 static void kj_write(struct HJCpu *c, uint32_t addr, uint32_t width, uint32_t value, uint32_t pc)
 {
-    const struct KJ68Domain *dom = c->owner->domain;
+    const struct M68KEngDomain *dom = c->owner->domain;
 
     if (c->st->abort)
         return;
-    if (kj_direct(dom, addr, width, KJ68_RANGE_WRITE_HOST))
+    if (kj_direct(dom, addr, width, M68KENG_RANGE_WRITE_HOST))
     {
         if (width == 1)
             dom->base[addr] = (UBYTE)value;
@@ -3225,10 +3164,10 @@ static uint32_t slow_access(struct HJState *st, uint32_t addr, uint32_t value, u
     if (kind == SLOW_P16 || kind == SLOW_P32)
     {
         /* a divisor probe: no access and no host call */
-        const struct KJ68Domain *dom = c->owner->domain;
+        const struct M68KEngDomain *dom = c->owner->domain;
 
-        c->declined = !kj_direct(dom, addr, 2, KJ68_RANGE_READ_HOST) ||
-                      (kind == SLOW_P32 && !kj_direct(dom, addr + 2, 2, KJ68_RANGE_READ_HOST));
+        c->declined = !kj_direct(dom, addr, 2, M68KENG_RANGE_READ_HOST) ||
+                      (kind == SLOW_P32 && !kj_direct(dom, addr + 2, 2, M68KENG_RANGE_READ_HOST));
         return (uint32_t)c->declined;
     }
     c->b->stats.slow_accesses++;
@@ -3263,7 +3202,6 @@ static void fast_insert(struct HJCpu *c, const struct HJBlock *blk)
 static struct HJBlock *translate(struct HJBackend *b, uint32_t pc)
 {
     struct HJTrans *t = b->trans;
-    uint64_t t0 = now_ns();
     unsigned max = HJ_MAX_INSNS, n = 0, attempt;
     uint32_t end = pc;
     uint16_t starts[HJ_MAX_INSNS];
@@ -3322,7 +3260,6 @@ static struct HJBlock *translate(struct HJBackend *b, uint32_t pc)
     b->stats.blocks++;
     b->stats.guest_insns += n;
     b->stats.host_words += t->e.n;
-    b->stats.translate_ns += (unsigned long)(now_ns() - t0);
     kj_count(&b->dom->counters.blocks, 1);
     kj_count(&b->dom->counters.insns, n);
     return blk;
@@ -3367,10 +3304,12 @@ static struct HJBlock *get_block(struct HJCpu *c, uint32_t pc)
    Public functions
    ------------------------------------------------------------------ */
 
-/* Words that clang assembled from the same text (Apple clang 21,
-   -arch arm64): every encoder and alias above, with negative offsets,
-   shifted operands, bitmask immediates and branches both ways. */
-int HJ_EncoderSelfTest(char *message, unsigned long size)
+#ifdef KJ68_TEST_SEAMS
+/* For the host checks. Words that clang assembled from the same text
+   (Apple clang 21, -arch arm64): every encoder and alias above, with
+   negative offsets, shifted operands, bitmask immediates and branches both
+   ways. */
+static int HJ_EncoderSelfTest(char *message, unsigned long size)
 {
     const struct { uint32_t want, got; const char *text; } enc[] =
     {
@@ -3532,22 +3471,19 @@ int HJ_EncoderSelfTest(char *message, unsigned long size)
     return (int)bad;
 }
 
-int HJ_Available(void)
+static const char *HJ_ExecMemoryKind(void)
 {
-    return HJ_RUNS;
-}
-
-const char *HJ_ExecMemoryKind(void)
-{
-#if HJ_RUNS && defined(__APPLE__)
-    return "MAP_JIT";
-#elif HJ_RUNS && defined(__AROS__)
-    return "AROS AllocMem/CacheClearE";
-#elif HJ_RUNS
-    return "mprotect";
+#if HJ_RUNS
+    return kj68_plat_code_method();
 #else
     return "none";
 #endif
+}
+#endif
+
+static int HJ_Available(void)
+{
+    return HJ_RUNS;
 }
 
 /* ------------------------------------------------------------------
@@ -3559,6 +3495,7 @@ int kj_tr_runs(void)
     return HJ_Available();
 }
 
+#ifdef KJ68_TEST_SEAMS
 const char *kj_tr_exec_memory_kind(void)
 {
     return HJ_ExecMemoryKind();
@@ -3568,6 +3505,7 @@ int kj_tr_encoder_self_test(char *message, unsigned long size)
 {
     return HJ_EncoderSelfTest(message, size);
 }
+#endif
 
 #if HJ_RUNS
 static void hj_free_code(struct HJBackend *b)
@@ -3583,7 +3521,7 @@ static void hj_free_code(struct HJBackend *b)
 
 /* The code memory, block table, guest-byte store and the glue of a domain,
    shared by its CPUs. */
-LONG kj_tr_domain_create(struct KJ68Domain *dom)
+LONG kj_tr_domain_create(struct M68KEngDomain *dom)
 {
 #if HJ_RUNS
     struct HJBackend *b;
@@ -3591,7 +3529,7 @@ LONG kj_tr_domain_create(struct KJ68Domain *dom)
 
     b = kj_alloc(sizeof(*b));
     if (!b)
-        return KJ68_ERR_NOMEM;
+        return M68KENG_ERR_NOMEM;
     b->dom = dom;
     b->code = code_alloc();
     b->blocks = kj_alloc(HJ_MAX_BLOCKS * sizeof(*b->blocks));
@@ -3601,7 +3539,7 @@ LONG kj_tr_domain_create(struct KJ68Domain *dom)
     if (!b->code || !b->blocks || !b->guest_bytes || !b->scratch || !b->trans)
     {
         hj_free_code(b);
-        return KJ68_ERR_NOMEM;
+        return M68KENG_ERR_NOMEM;
     }
     b->code_words = HJ_CODE_BYTES / 4;
     memset(&e, 0, sizeof(e));
@@ -3613,7 +3551,7 @@ LONG kj_tr_domain_create(struct KJ68Domain *dom)
     {
         /* not reachable with these sizes: the glue fits the scratch buffer */
         hj_free_code(b);
-        return KJ68_ERR_NOMEM;
+        return M68KENG_ERR_NOMEM;
     }
     code_write_begin(b);
     memcpy(b->code, b->scratch, 4u * e.n);
@@ -3626,16 +3564,16 @@ LONG kj_tr_domain_create(struct KJ68Domain *dom)
         memcpy(&b->enter, &entry, sizeof(entry));
     }
     dom->code = b;
-    return KJ68_OK;
+    return M68KENG_OK;
 #else
     (void)dom;
     (void)slow_access;
     (void)emit_glue;
-    return KJ68_ERR_NOHOST;
+    return M68KENG_ERR_NOHOST;
 #endif
 }
 
-void kj_tr_domain_destroy(struct KJ68Domain *dom)
+void kj_tr_domain_destroy(struct M68KEngDomain *dom)
 {
 #if HJ_RUNS
     if (dom->code)
@@ -3644,20 +3582,20 @@ void kj_tr_domain_destroy(struct KJ68Domain *dom)
     dom->code = NULL;
 }
 
-ULONG kj_tr_code_bytes(const struct KJ68Domain *dom)
+ULONG kj_tr_code_bytes(const struct M68KEngDomain *dom)
 {
     return dom->code ? HJ_CODE_BYTES : 0;
 }
 
 /* Registers as cpu_create leaves them: 0, PC 0, SR 0x2700. */
-LONG kj_tr_cpu_create(struct KJ68CPU *owner)
+LONG kj_tr_cpu_create(struct M68KEngCPU *owner)
 {
-    struct KJ68Domain *dom = owner->domain;
+    struct M68KEngDomain *dom = owner->domain;
     struct HJCpu *c = kj_alloc(sizeof(*c));
     struct HJState *st;
 
     if (!c)
-        return KJ68_ERR_NOMEM;
+        return M68KENG_ERR_NOMEM;
     c->st_bytes = sizeof(struct HJState) + dom->npages;
     c->st = kj_alloc(c->st_bytes);
     c->fast = kj_alloc(HJ_FAST_SIZE * sizeof(*c->fast));
@@ -3666,7 +3604,7 @@ LONG kj_tr_cpu_create(struct KJ68CPU *owner)
         kj_free(c->fast, HJ_FAST_SIZE * sizeof(*c->fast));
         kj_free(c->st, c->st_bytes);
         kj_free(c, sizeof(*c));
-        return KJ68_ERR_NOMEM;
+        return M68KENG_ERR_NOMEM;
     }
     st = c->st;
     c->owner = owner;
@@ -3677,16 +3615,16 @@ LONG kj_tr_cpu_create(struct KJ68CPU *owner)
     st->slow = (void *)(uintptr_t)slow_access;
     st->backend = c;
     st->slice_budget = 1;      /* one block per entry: the run loop counts */
-    st->sr_high = (KJ68_SR_AT_CREATE >> 8) & 0x27u;
+    st->sr_high = (M68KENG_SR_AT_CREATE >> 8) & 0x27u;
     memcpy(st->pages, dom->pages, dom->npages);
     c->pages_generation = dom->pages_generation;
     fast_clear(c);
     c->fast_generation = c->b->fast_generation;
     owner->tr = c;
-    return KJ68_OK;
+    return M68KENG_OK;
 }
 
-void kj_tr_cpu_destroy(struct KJ68CPU *owner)
+void kj_tr_cpu_destroy(struct M68KEngCPU *owner)
 {
     struct HJCpu *c = owner->tr;
 
@@ -3698,7 +3636,7 @@ void kj_tr_cpu_destroy(struct KJ68CPU *owner)
     owner->tr = NULL;
 }
 
-ULONG kj_tr_get_reg(const struct KJ68CPU *owner, ULONG reg)
+ULONG kj_tr_get_reg(const struct M68KEngCPU *owner, ULONG reg)
 {
     const struct HJState *st = owner->tr->st;
 
@@ -3706,13 +3644,13 @@ ULONG kj_tr_get_reg(const struct KJ68CPU *owner, ULONG reg)
         return st->d[reg];
     if (reg < 16)
         return st->a[reg - 8];
-    if (reg == KJ68_REG_PC)
+    if (reg == M68KENG_REG_PC)
         return st->pc;
-    return (ULONG)((st->sr_high << 8 | swap_cv(st->flags)) & KJ68_SR_DEFINED);
+    return (ULONG)((st->sr_high << 8 | swap_cv(st->flags)) & M68KENG_SR_DEFINED);
 }
 
 /* Version 1.0 has one mode: S set, T and M clear. */
-LONG kj_tr_set_reg(struct KJ68CPU *owner, ULONG reg, ULONG value)
+LONG kj_tr_set_reg(struct M68KEngCPU *owner, ULONG reg, ULONG value)
 {
     struct HJState *st = owner->tr->st;
 
@@ -3720,21 +3658,21 @@ LONG kj_tr_set_reg(struct KJ68CPU *owner, ULONG reg, ULONG value)
         st->d[reg] = value;
     else if (reg < 16)
         st->a[reg - 8] = value;
-    else if (reg == KJ68_REG_PC)
+    else if (reg == M68KENG_REG_PC)
         st->pc = value;
     else
     {
-        if ((value & KJ68_SR_MODEL_MASK) != KJ68_SR_MODEL_VALUE)
-            return KJ68_ERR_UNSUPPORTED;
+        if ((value & M68KENG_SR_MODEL_MASK) != M68KENG_SR_MODEL_VALUE)
+            return M68KENG_ERR_UNSUPPORTED;
         st->sr_high = (value >> 8) & 0x27u;
         st->flags = swap_cv(value & 0x1Fu);
     }
-    return KJ68_OK;
+    return M68KENG_OK;
 }
 
-/* As the legacy flush: a new epoch makes every block compare its guest
+/* As the flush of that library: a new epoch makes every block compare its guest
    bytes before it runs again, and every CPU empties its fast table. */
-void kj_tr_invalidate(struct KJ68Domain *dom)
+void kj_tr_invalidate(struct M68KEngDomain *dom)
 {
     struct HJBackend *b = dom->code;
 
@@ -3749,7 +3687,7 @@ void kj_tr_invalidate(struct KJ68Domain *dom)
    range, or a fetch that failed may now succeed. The code memory of the
    domain is emptied, with no revalidation by guest bytes, so every CPU of
    the domain translates again under the new map. Counted as a code reset. */
-void kj_tr_map_changed(struct KJ68Domain *dom)
+void kj_tr_map_changed(struct M68KEngDomain *dom)
 {
     reset_code(dom->code);
 }
@@ -3764,23 +3702,23 @@ static ULONG count_before(const struct HJBlock *blk, uint32_t pc)
     return n;
 }
 
-static void kj_exit(struct KJ68Exit *x, ULONG reason, uint32_t pc, ULONG retired)
+static void kj_exit(struct M68KEngExit *x, ULONG reason, uint32_t pc, ULONG retired)
 {
     x->reason = reason;
     x->pc = pc;
     x->retired = retired;
 }
 
-static void kj_text(struct KJ68Exit *x, const char *s)
+static void kj_text(struct M68KEngExit *x, const char *s)
 {
     size_t i;
 
-    for (i = 0; s[i] && i + 1 < KJ68_TEXT_SIZE; i++)
+    for (i = 0; s[i] && i + 1 < M68KENG_TEXT_SIZE; i++)
         x->text[i] = s[i];
     x->text[i] = 0;
 }
 
-static ULONG kj_opcode(const struct KJ68Domain *dom, uint32_t pc)
+static ULONG kj_opcode(const struct M68KEngDomain *dom, uint32_t pc)
 {
     return kj_fetchable(dom, pc) ? (ULONG)(dom->base[pc] << 8 | dom->base[pc + 1]) : 0;
 }
@@ -3796,7 +3734,7 @@ static int kj_040_integer_fline(uint16_t op)
 /* A fault exit: the instruction at pc was not executed. An exception is
    reported only where it is certain; anything else is UNSUPPORTED, which
    the contract always allows. */
-static void kj_classify(const struct KJ68Domain *dom, struct KJ68Exit *x, uint32_t pc, ULONG retired)
+static void kj_classify(const struct M68KEngDomain *dom, struct M68KEngExit *x, uint32_t pc, ULONG retired)
 {
     struct HJInsn in;
     uint16_t op = (uint16_t)kj_opcode(dom, pc);
@@ -3804,11 +3742,11 @@ static void kj_classify(const struct KJ68Domain *dom, struct KJ68Exit *x, uint32
     decode_backend(dom, pc, &in, 1);
     if (in.kind == K_FAULT && in.why && strcmp(in.why, "fetch outside guest memory") == 0)
     {
-        kj_exit(x, KJ68_STOP_PC_OUTSIDE, pc, retired);
+        kj_exit(x, M68KENG_STOP_PC_OUTSIDE, pc, retired);
         x->address = in.bad_at;
         return;
     }
-    kj_exit(x, KJ68_STOP_EXCEPTION, pc, retired);
+    kj_exit(x, M68KENG_STOP_EXCEPTION, pc, retired);
     x->opcode = op;
     if (in.kind == K_DIVW || in.kind == K_DIVL)
     {
@@ -3832,7 +3770,7 @@ static void kj_classify(const struct KJ68Domain *dom, struct KJ68Exit *x, uint32
     }
     else
     {
-        x->reason = KJ68_STOP_UNSUPPORTED;
+        x->reason = M68KENG_STOP_UNSUPPORTED;
         kj_text(x, in.why ? in.why : "unexpected fault exit");
     }
 }
@@ -3841,11 +3779,11 @@ static void kj_classify(const struct KJ68Domain *dom, struct KJ68Exit *x, uint32
    of retired instructions is exact: a whole block when it ends through the
    lookup or the budget, the instructions before the exit PC otherwise. No
    block starts once budget instructions have retired. */
-void kj_tr_run(struct KJ68CPU *owner, ULONG budget, struct KJ68Exit *x)
+void kj_tr_run(struct M68KEngCPU *owner, ULONG budget, struct M68KEngExit *x)
 {
     struct HJCpu *c = owner->tr;
     struct HJBackend *b = c->b;
-    const struct KJ68Domain *dom = owner->domain;
+    const struct M68KEngDomain *dom = owner->domain;
     struct HJState *st = c->st;
     ULONG retired = 0;
 
@@ -3866,21 +3804,21 @@ void kj_tr_run(struct KJ68CPU *owner, ULONG budget, struct KJ68Exit *x)
 
         if (pc & 1)
         {
-            kj_exit(x, KJ68_STOP_EXCEPTION, pc, retired);
+            kj_exit(x, M68KENG_STOP_EXCEPTION, pc, retired);
             x->vector = 3;
             kj_text(x, "odd PC");
             return;
         }
         if (!kj_fetchable(dom, pc))
         {
-            kj_exit(x, KJ68_STOP_PC_OUTSIDE, pc, retired);
+            kj_exit(x, M68KENG_STOP_PC_OUTSIDE, pc, retired);
             x->address = pc;
             return;
         }
         blk = get_block(c, pc);
         if (!blk)
         {
-            kj_exit(x, KJ68_STOP_FAULT, pc, retired);
+            kj_exit(x, M68KENG_STOP_FAULT, pc, retired);
             kj_text(x, "translation failed");
             return;
         }
@@ -3893,7 +3831,7 @@ void kj_tr_run(struct KJ68CPU *owner, ULONG budget, struct KJ68Exit *x)
             retired += blk->ninsns;
             if (retired >= budget)
             {
-                kj_exit(x, KJ68_STOP_BUDGET, st->pc, retired);
+                kj_exit(x, M68KENG_STOP_BUDGET, st->pc, retired);
                 return;
             }
             continue;
@@ -3901,13 +3839,13 @@ void kj_tr_run(struct KJ68CPU *owner, ULONG budget, struct KJ68Exit *x)
         retired += count_before(blk, st->pc);
         if (reason == HJ_EXIT_LINEA)
         {
-            kj_exit(x, KJ68_STOP_ALINE, st->pc, retired);
+            kj_exit(x, M68KENG_STOP_ALINE, st->pc, retired);
             x->opcode = kj_opcode(dom, st->pc);
             return;
         }
         if (reason == HJ_EXIT_ABORT)
         {
-            kj_exit(x, KJ68_STOP_HOST, st->pc, retired);
+            kj_exit(x, M68KENG_STOP_HOST, st->pc, retired);
             kj_text(x, "a host access asked to stop");
             return;
         }
@@ -3916,7 +3854,7 @@ void kj_tr_run(struct KJ68CPU *owner, ULONG budget, struct KJ68Exit *x)
             /* a divisor probe ended the block at the division: nothing of
                it done and no host call made (contract, section 6) */
             c->declined = 0;
-            kj_exit(x, KJ68_STOP_UNSUPPORTED, st->pc, retired);
+            kj_exit(x, M68KENG_STOP_UNSUPPORTED, st->pc, retired);
             x->opcode = kj_opcode(dom, st->pc);
             kj_text(x, "divisor read through the host");
             return;
