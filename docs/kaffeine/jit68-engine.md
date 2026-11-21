@@ -75,12 +75,11 @@ What matters for its behavior:
 - **Changed code.** After the host loads code, or a program clears the
   instruction cache, the host calls `invalidate`; translated code whose 68k
   bytes have changed does not run again.
-- **Selection.** On the host side, which is not written yet, the variable
-  `M68KEMU_CPU` chooses the backend for a whole run: unset or `interpreter`
-  is the interpreter as today; `jit` is the engine, and a run that cannot
-  use it fails before its first instruction; `auto` uses the engine when
-  every check passes and the interpreter otherwise. A diagnostic line names
-  the backend actually used.
+- **Selection.** On the host side the variable `M68KEMU_CPU` chooses for a
+  whole run: unset or `interpreter` is the interpreter as today; `jit` is
+  the engine under the interpreter, and a run that cannot have it fails
+  before its first instruction; `auto` uses the engine when it is there and
+  works, and the interpreter otherwise. A line names what runs the program.
 - **Scope.** Version 1 is for AROS AArch64 with one processor. It claims no
   multiprocessor support, no MMU, no FPU, no complete 68040 and no switch of
   backend during a run.
@@ -160,9 +159,11 @@ translates and are declined without reading a pointer. Checks:
 `div-host-read`.
 
 A declined division has to be executed by the host itself, once, and then
-the run can go on after it. The host side in `m68kemu.library` that would
-do that is not written, so this path is checked only through the
-interface, not with a host that completes it.
+the run can go on after it. The adapter in `m68kemu.library` gives it to
+the interpreter, as every instruction the engine does not execute. A
+native case has run it: a program with two divisions on a custom chip
+register gave the interpreter's results with the engine, which ran the
+other instructions.
 
 ## Host checks
 
@@ -209,7 +210,9 @@ The engine is now also an AROS library. A configuration file gives
 file holds that function and the two C library functions the engine calls
 that a library module does not get. The four engine files are compiled
 unchanged. A script builds the library outside an AROS tree with the tools
-and the SDK of an AROS build; there is no AROS build rule for it yet.
+and the SDK of an AROS build. In the branch proposed to AROS as
+[pull request 2357](https://github.com/aros-development-team/AROS/pull/2357)
+it has a build rule, for AArch64 targets only.
 
 On 20 November 2026 the library was built for AROS AArch64 with the cross
 compiler of a build of AROS master `b6dcaeea` for raspi-aarch64, and a
@@ -231,6 +234,33 @@ object or domain at a time, or a speed. The
 [README of the source](../../experimental/kaffeine-jit68/README.md) gives
 the build and the numbers.
 
+## Under m68kemu.library: the adapter
+
+The host side is written as a patch for `rom/m68kemu` of AROS master. It
+does not replace the interpreter with the engine: it runs the engine under
+the interpreter. Every CPU of a run is still an interpreter CPU, which
+keeps the registers the library thunks use and takes every exception,
+interrupt and library call. With `M68KEMU_CPU=jit` or `auto` each execution
+loop of the library tries an engine slice first, and whatever instruction
+the engine stops at without executing it is one step of the interpreter.
+Library calls, `Supervisor()`, RTE, guest exception handlers and interrupts
+are therefore the existing code, not a second copy of it.
+
+On 20 and 21 November 2026 the patched library ran on AROS AArch64 under QEMU with
+the engine library beside it: twenty-three cases with eight small 68k programs
+started from the Shell, with the interpreter alone and with the engine. All
+gave the expected results, among them, under the engine, a program with
+its own trap handler, RTE and `Supervisor()`, a program with a process of
+its own, a software interrupt and a vertical blank server, a program
+with divisions the engine declines, a BOOPSI class whose dispatcher
+intuition calls back, the two CIA timer programs of AROS's own native
+test, the refusal of `jit` without the library, and the fallback of `auto`. In one timed loop of twenty million
+instructions the engine ran all but 19 of them, and the loop took 30 ticks
+of 1/50 s against about 160 on the interpreter; that is a measurement on an
+emulated machine. The [adapter page](jit68-adapter/README.md) has the
+design, the patch, the test programs and every result, and says what has
+not been tried: applications and hardware.
+
 ## State
 
 | Step | State |
@@ -240,24 +270,23 @@ the build and the numbers.
 | Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own; again on 20 November 2026 with the published Makefile |
 | Engine library for AROS AArch64 | Built outside an AROS tree, 20 November 2026; a native probe through the interface passes under QEMU: 20 checks, 0 failures |
 | Review of the behavior outside the JIT | In progress; its results are published once they are checked |
-| Host side in `m68kemu.library`: selection, A-line completion, execution of a declined division, fallback | Not written |
-| `m68kemu.library` with the host side, built for AROS AArch64; Shell and `Run` in QEMU | Not done |
+| Host side in `m68kemu.library` (the adapter): selection, the engine under the interpreter, fallback | Written as a patch for AROS master; its design and its source read by a second reader; see the [adapter page](jit68-adapter/README.md) |
+| `m68kemu.library` with the adapter, built for AROS AArch64 | Built outside an AROS tree, 20 November 2026; twenty-three cases from the Shell pass under QEMU, with the interpreter and with the engine, one of them with a process, a software interrupt and a vertical blank server. `Run`, hooks called by native libraries and CIA timers not tried |
 | Applications | None run with this engine |
 | Multiprocessor systems | Not qualified; version 1 claims one processor |
-| Performance | Not measured |
+| Performance | One loop timed under QEMU: 147 to 165 ticks on the interpreter, 29 or 30 with the engine. Nothing else measured |
 
 ## Next steps
 
 1. Finish the review of what the legacy library does outside the JIT,
    compared with `m68kemu.library`. What it finds decides what has to move
    before the engine is connected.
-2. Write the host side in `m68kemu.library`, with the interpreter as the
-   default; it also executes the divisions the engine declines.
-3. Build `m68kemu.library` with the host side for AROS AArch64, beside the
-   engine library, and run programs from the Shell and with `Run` in QEMU,
-   with the interpreter and with the engine.
-4. Repeat with applications, starting from IBrowse and Amigram, the two
+2. Get AROS's own `test_m68kemu` to run to its end on the test guest, with
+   and without the engine; it stops at a sub-test that needs a font there.
+3. Repeat with applications, starting from IBrowse and Amigram, the two
    programs of the checks of 14 November 2026.
+4. Follow the review of AROS pull request 2357, which proposes the engine
+   library and the adapter to mainline.
 
 ## Where the source is
 

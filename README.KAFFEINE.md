@@ -16,8 +16,11 @@ copy of the whole library. Version 1 of the interface between the two
 libraries and the source of the engine are in
 [`experimental/kaffeine-jit68`](experimental/kaffeine-jit68/README.md); the
 engine has passed its host checks on an AArch64 Mac, and a probe of the
-engine library has run on AROS AArch64 under QEMU; `m68kemu.library` does
-not use the engine yet. The [engine page](docs/kaffeine/jit68-engine.md)
+engine library has run on AROS AArch64 under QEMU. A patch for
+`m68kemu.library` lets it use the engine under its interpreter, and the two
+have run small 68k programs together under QEMU
+([adapter page](docs/kaffeine/jit68-adapter/README.md)); no application has
+run this way yet. The [engine page](docs/kaffeine/jit68-engine.md)
 describes them.
 
 That move is in progress, and this page says so wherever it matters. The
@@ -142,8 +145,10 @@ interpreter and the reference for extending the execution engine. In
 `m68kemu.library` of AROS mainline Moira is the interpreter and stays the
 default; the JIT is to be offered to it as a separate optional library,
 `kaffeine-jit68.library`, whose engine has passed its host checks and a
-probe of its library on AROS under QEMU, and which `m68kemu.library` does
-not use yet ([engine page](docs/kaffeine/jit68-engine.md)).
+probe of its library on AROS under QEMU, and which a patched
+`m68kemu.library` has used for small test programs there
+([engine page](docs/kaffeine/jit68-engine.md),
+[adapter page](docs/kaffeine/jit68-adapter/README.md)).
 
 In the legacy library, the [experimental JIT backend](docs/kaffeine/jit-backend.md)
 is selected with `Set KAFFEINE_CPU jit`. It uses independent guest-task CPUs,
@@ -313,6 +318,7 @@ the agreed scope.
 - [Project manifesto](docs/kaffeine/MANIFESTO.md) and [Italian original](docs/kaffeine/MANIFESTO.it.md).
 - [Status of the transition to `m68kemu.library`](docs/kaffeine/TRANSITION.md).
 - [The 68k JIT as a separate engine, `kaffeine-jit68.library`](docs/kaffeine/jit68-engine.md).
+- [The engine under `m68kemu.library`: the adapter, its patch and its native runs](docs/kaffeine/jit68-adapter/README.md).
 - [Source of the separate engine, its interface and its host checks](experimental/kaffeine-jit68/README.md).
 - [Licenses and component provenance](docs/kaffeine/LICENSING.md).
 - [CPU backend contract of the legacy library](rom/kaffeine/BACKENDS.md).
