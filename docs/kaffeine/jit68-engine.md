@@ -210,7 +210,9 @@ The engine is now also an AROS library. A configuration file gives
 file holds that function and the two C library functions the engine calls
 that a library module does not get. The four engine files are compiled
 unchanged. A script builds the library outside an AROS tree with the tools
-and the SDK of an AROS build; there is no AROS build rule for it yet.
+and the SDK of an AROS build. In the branch proposed to AROS as
+[pull request 2357](https://github.com/aros-development-team/AROS/pull/2357)
+it has a build rule, for AArch64 targets only.
 
 On 20 November 2026 the library was built for AROS AArch64 with the cross
 compiler of a build of AROS master `b6dcaeea` for raspi-aarch64, and a
@@ -282,8 +284,8 @@ and hardware.
 2. Run the adapter with hooks called by native libraries and CIA timers.
 3. Repeat with applications, starting from IBrowse and Amigram, the two
    programs of the checks of 14 November 2026.
-4. Give the engine library a build rule in the AROS tree, and propose the
-   adapter to AROS mainline.
+4. Follow the review of AROS pull request 2357, which proposes the engine
+   library and the adapter to mainline.
 
 ## Where the source is
 

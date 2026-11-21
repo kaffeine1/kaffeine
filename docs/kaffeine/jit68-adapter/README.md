@@ -16,7 +16,8 @@ under QEMU. Seventeen cases with five small 68k programs, with the
 interpreter alone and with the engine under it, gave the expected results;
 one of the programs has a process of its own, a software interrupt and a
 vertical blank server, and one has divisions the engine declines. It has not run an application and has not run on
-hardware. It is not submitted to AROS mainline.
+hardware. It is proposed to AROS mainline, together with the engine
+library, as [pull request 2357](https://github.com/aros-development-team/AROS/pull/2357).
 
 ## What it does
 
@@ -276,11 +277,15 @@ changed the result of a case that had run.
   That is in dos, outside this patch; a fix for it is proposed to AROS as
   [pull request 2353](https://github.com/aros-development-team/AROS/pull/2353).
   The two have not been run together.
-- A build rule in the AROS tree for the engine library, and a submission of
-  the adapter to AROS mainline.
+- Acceptance by AROS. The adapter and the engine library are proposed as
+  [pull request 2357](https://github.com/aros-development-team/AROS/pull/2357).
+  In that branch the engine is in `workbench/libs/kaffeine-jit68` with a
+  build rule for AArch64 targets, the interface header is there with its
+  specification beside it, and `rom/m68kemu` includes it from there instead
+  of holding a copy; otherwise the adapter is the patch of this page. The
+  two libraries were built with the commands of those build rules and ran
+  the seventeen cases again with the same results (the timed loop at 200
+  and 33 ticks), and the probe of the engine library passed. The full AROS
+  build has not built the branch.
 - A review by a maintainer of AROS, or by anyone who ran the code. The
   two reviews above were readings of the design and of the source.
-- For AROS mainline: the interface header names its specification as a
-  file beside it, which the patch does not add, and the library and the
-  header carry this project's name. Both need a decision before a
-  submission.

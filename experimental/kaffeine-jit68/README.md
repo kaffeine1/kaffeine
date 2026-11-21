@@ -9,8 +9,11 @@ This directory holds the source of the optional 68k JIT engine for AROS's
 `m68kemu.library`, version 1 of the interface between the two, and the host
 checks of the engine. It is experimental. The directory [`aros`](aros) holds
 what makes the engine an AROS library, `kaffeine-jit68.library`, and a
-native probe of that library; a script builds both outside an AROS tree,
-and no `mmakefile.src` exists for them yet. The side of `m68kemu.library`
+native probe of that library; a script builds both outside an AROS tree.
+In the branch proposed to AROS as
+[pull request 2357](https://github.com/aros-development-team/AROS/pull/2357)
+the engine, the probe and these checks have their places in the AROS tree
+and the library a build rule. The side of `m68kemu.library`
 that loads the engine is a patch for AROS mainline, on the
 [adapter page](../../docs/kaffeine/jit68-adapter/README.md), where the two
 libraries have run together under QEMU. What the engine is for, and
@@ -144,8 +147,9 @@ test it there without `m68kemu.library`.
   reports that it has no clock, so the counter of translation time stays 0.
 - **The build.** `build-outside-tree.sh` runs `genmodule`, compiles with
   the flags of a plain C disk library of the AROS build, links with the
-  static C library and strips. It is not an AROS build rule: no
-  `mmakefile.src` exists, and the library is not part of any AROS build.
+  static C library and strips. It is not an AROS build rule; the branch
+  proposed to AROS as pull request 2357 has one, and the library is not part
+  of any AROS build yet.
 - **The probe.** `kj68probe` opens the library, checks that interface
   major 2 is refused, takes the engine of major 1, makes a domain over
   64 KiB of its own memory with one address range that goes to its
