@@ -229,7 +229,9 @@ which assemble them from hand-encoded instructions:
 The first seventeen cases finished in one run, each with
 `m68kemu.library 1.2` reported by `Version`. The `kjhook` and the CIA cases
 are two later runs, with the two libraries built from the branch proposed
-to AROS.
+to AROS. All twenty-three ran once more, with the library built from that
+branch after the corrections for its static analysis (below): the same
+result codes, lines and counters, except the numbers that follow a timer.
 
 That shows:
 
@@ -321,5 +323,17 @@ changed the result of a case that had run.
   the seventeen cases again with the same results (the timed loop at 200
   and 33 ticks), and the probe of the engine library passed. The full AROS
   build has not built the branch.
+- The static analysis of that pull request listed fifteen points, none in
+  the sources of the engine. They are answered there and, for the two test
+  programs, here: three variables are declared where they are used, the
+  eleven runs of the host checks whose exit nothing read are now checked to
+  have ended at their A-line, and two texts are compared without
+  `strlen()`. In `rom/m68kemu` the branch counts two lengths without
+  `strlen()` and uses a C++ cast in one place; the patch of this page is
+  left as the source of the library of the first seventeen cases and does
+  not have those three lines. No behaviour changes. The host checks give
+  the same count, the probe compiles to the same file, and the library
+  built from the branch ran every case again (164 and 34 ticks for the
+  timed loop).
 - A review by a maintainer of AROS, or by anyone who ran the code. The
   two reviews above were readings of the design and of the source.
