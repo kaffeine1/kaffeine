@@ -211,7 +211,7 @@ file holds that function and the two C library functions the engine calls
 that a library module does not get. The four engine files are compiled
 unchanged. A script builds the library outside an AROS tree with the tools
 and the SDK of an AROS build. In the branch proposed to AROS as
-[pull request 2357](https://github.com/aros-development-team/AROS/pull/2357)
+[pull request 2360](https://github.com/aros-development-team/AROS/pull/2360)
 it has a build rule, for AArch64 targets only.
 
 On 20 November 2026 the library was built for AROS AArch64 with the cross
@@ -285,8 +285,9 @@ not been tried: applications and hardware.
    before the engine is connected.
 2. Repeat with applications, starting from IBrowse and Amigram, the two
    programs of the checks of 14 November 2026.
-3. Follow the review of AROS pull request 2357, which proposes the engine
-   library and the adapter to mainline.
+3. Follow the review of AROS pull requests 2358, 2359 and 2360, which
+   propose a fix of the host tests of `m68kemu`, the adapter and the engine
+   library to mainline.
 4. Give the engine an FPU, and after it an MMU. Neither the engine nor the
    interpreter of `m68kemu.library` has one today: a program runs as on a
    68LC040 with its MMU off. Both need a new minor version of the

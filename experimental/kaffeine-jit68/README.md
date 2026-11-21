@@ -11,9 +11,14 @@ checks of the engine. It is experimental. The directory [`aros`](aros) holds
 what makes the engine an AROS library, `kaffeine-jit68.library`, and a
 native probe of that library; a script builds both outside an AROS tree.
 In the branch proposed to AROS as
-[pull request 2357](https://github.com/aros-development-team/AROS/pull/2357)
+[pull request 2360](https://github.com/aros-development-team/AROS/pull/2360)
 the engine, the probe and these checks have their places in the AROS tree
-and the library a build rule. The side of `m68kemu.library`
+and the library a build rule. There the interface header is
+`rom/m68kemu/m68kemu_engine.h`, with the names `M68KENG_*` and `M68KEng*`
+for what is `KJ68_*` and `KJ68*` here, and the code that depends on the
+system is in a file of its own. The engine there is this one with those
+names, without a clock that nothing read, and with the self test of the
+encoder compiled only for the host checks. The side of `m68kemu.library`
 that loads the engine is a patch for AROS mainline, on the
 [adapter page](../../docs/kaffeine/jit68-adapter/README.md), where the two
 libraries have run together under QEMU. What the engine is for, and
@@ -148,7 +153,7 @@ test it there without `m68kemu.library`.
 - **The build.** `build-outside-tree.sh` runs `genmodule`, compiles with
   the flags of a plain C disk library of the AROS build, links with the
   static C library and strips. It is not an AROS build rule; the branch
-  proposed to AROS as pull request 2357 has one, and the library is not part
+  proposed to AROS as pull request 2360 has one, and the library is not part
   of any AROS build yet.
 - **The probe.** `kj68probe` opens the library, checks that interface
   major 2 is refused, takes the engine of major 1, makes a domain over
