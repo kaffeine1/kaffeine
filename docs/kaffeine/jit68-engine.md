@@ -245,7 +245,7 @@ Library calls, `Supervisor()`, RTE, guest exception handlers and interrupts
 are therefore the existing code, not a second copy of it.
 
 On 20 and 21 November 2026 the patched library ran on AROS AArch64 under QEMU with
-the engine library beside it: sixteen cases with five small 68k programs
+the engine library beside it: seventeen cases with five small 68k programs
 started from the Shell, with the interpreter alone and with the engine. All
 gave the expected results, among them, under the engine, a program with
 its own trap handler, RTE and `Supervisor()`, a program with a process of
@@ -253,7 +253,7 @@ its own, a software interrupt and a vertical blank server, a program
 with divisions the engine declines, the refusal of `jit` without the
 library, and the fallback of `auto`. In one timed loop of twenty million
 instructions the engine ran all but 19 of them, and the loop took 30 ticks
-of 1/50 s against 158 on the interpreter; that is one measurement on an
+of 1/50 s against about 160 on the interpreter; that is a measurement on an
 emulated machine. The [adapter page](jit68-adapter/README.md) has the
 design, the patch, the test programs and every result, and says what has
 not been tried: hooks called by native libraries, CIA timers, applications
@@ -268,19 +268,18 @@ and hardware.
 | Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own; again on 20 November 2026 with the published Makefile |
 | Engine library for AROS AArch64 | Built outside an AROS tree, 20 November 2026; a native probe through the interface passes under QEMU: 20 checks, 0 failures |
 | Review of the behavior outside the JIT | In progress; its results are published once they are checked |
-| Host side in `m68kemu.library` (the adapter): selection, the engine under the interpreter, fallback | Written as a patch for AROS master; its design reviewed by a second reader, its code not; see the [adapter page](jit68-adapter/README.md) |
-| `m68kemu.library` with the adapter, built for AROS AArch64 | Built outside an AROS tree, 20 November 2026; sixteen cases from the Shell pass under QEMU, with the interpreter and with the engine, one of them with a process, a software interrupt and a vertical blank server. `Run`, hooks called by native libraries and CIA timers not tried |
+| Host side in `m68kemu.library` (the adapter): selection, the engine under the interpreter, fallback | Written as a patch for AROS master; its design and its source read by a second reader; see the [adapter page](jit68-adapter/README.md) |
+| `m68kemu.library` with the adapter, built for AROS AArch64 | Built outside an AROS tree, 20 November 2026; seventeen cases from the Shell pass under QEMU, with the interpreter and with the engine, one of them with a process, a software interrupt and a vertical blank server. `Run`, hooks called by native libraries and CIA timers not tried |
 | Applications | None run with this engine |
 | Multiprocessor systems | Not qualified; version 1 claims one processor |
-| Performance | One loop timed under QEMU: 158 ticks on the interpreter, 30 with the engine. Nothing else measured |
+| Performance | One loop timed under QEMU: 147 to 165 ticks on the interpreter, 29 or 30 with the engine. Nothing else measured |
 
 ## Next steps
 
 1. Finish the review of what the legacy library does outside the JIT,
    compared with `m68kemu.library`. What it finds decides what has to move
    before the engine is connected.
-2. Have the adapter reviewed, and run it with hooks called by native
-   libraries and CIA timers.
+2. Run the adapter with hooks called by native libraries and CIA timers.
 3. Repeat with applications, starting from IBrowse and Amigram, the two
    programs of the checks of 14 November 2026.
 4. Give the engine library a build rule in the AROS tree, and propose the

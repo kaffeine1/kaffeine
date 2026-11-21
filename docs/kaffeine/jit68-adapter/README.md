@@ -12,7 +12,7 @@ a patch for `rom/m68kemu` of AROS mainline that lets `m68kemu.library` run
 first runs on AROS AArch64 under QEMU.
 
 State on 21 November 2026: the patch is written and has run on AROS AArch64
-under QEMU. Sixteen cases with five small 68k programs, with the
+under QEMU. Seventeen cases with five small 68k programs, with the
 interpreter alone and with the engine under it, gave the expected results;
 one of the programs has a process of its own, a software interrupt and a
 vertical blank server, and one has divisions the engine declines. It has not run an application and has not run on
@@ -56,7 +56,7 @@ is loaded (local variable first, then global):
 | `interpreter` | the interpreter; one line says so |
 | `jit` | the engine under the interpreter, or no run at all: without the library, without a usable engine table, or when the engine cannot take the program's memory or make its CPU, the call returns -1 with a message and the error code `ERROR_INVALID_RESIDENT_LIBRARY` |
 | `auto` | the engine when all of that works, otherwise the interpreter, with the reason in the line |
-| anything else | -1 with a message |
+| anything else, or a value of 31 characters or more | -1 with a message |
 
 With the variable set, one line in the system log and the debug output
 says what runs the program. After a run with the engine a second line
@@ -138,8 +138,8 @@ procedure gives the build's own `m68kemu.library` byte for byte, and the
 objects of the files the patch does not touch came out identical to the
 build's objects. The compiler gave no new warning.
 
-Result: `m68kemu.library 1.2 (20.11.2026)`, 14087992 bytes, SHA-256
-`5f06438dcc98a261043b98683c35f992e816fafbc4f60b4f6659b4e02da29e01`. The
+Result: `m68kemu.library 1.2 (20.11.2026)`, 14088984 bytes, SHA-256
+`45ead9b6cf15511434da5f5ddf17f3d6208247ac20e1030d0123fa5cec4a1719`. The
 patch file is the source of exactly this library.
 
 ## Native runs
@@ -191,18 +191,19 @@ which assemble them from hand-encoded instructions:
 | `kjsum` | `jit` | absent | -1 | "`M68KEMU_CPU` is jit and kaffeine-jit68.library is not there; the program is not run" |
 | `kjsum` | `auto` | absent | 12 | runs on the interpreter, "kaffeine-jit68.library is not there" |
 | `kjsum` | `turbo` | present | -1 | "it can be interpreter, jit or auto; the program is not run" |
+| `kjsum` | `jit`, thirty spaces and `x` | present | -1 | "is too long: it can be interpreter, jit or auto; the program is not run" |
 | `hunk7` | `jit` | present | 7 | the engine ran 1 instruction, the interpreter ran 1 |
 | `kjmix` | unset | present | 12 | nothing |
 | `kjmix` | `jit` | present | 12 | the engine ran 6179 instructions in 11 runs, the interpreter ran 9 |
-| `kjtime` | unset | present | 12 | nothing; the loop took 158 ticks of 1/50 s |
-| `kjtime` | `jit` | present | 12 | the engine ran 20000024 instructions in 19519 runs, the interpreter ran 19; the loop took 30 ticks |
-| `kjtask` | unset | present | 12 | nothing; the software interrupt ran once, the process stored its sum, the server saw 163 vertical blanks |
-| `kjtask` | `jit` | present | 12 | the engine ran 20500117 instructions in 20041 runs, the interpreter ran 330; the software interrupt ran once, the process stored the same sum, the server saw 30 vertical blanks |
+| `kjtime` | unset | present | 12 | nothing; the loop took 165 ticks of 1/50 s |
+| `kjtime` | `jit` | present | 12 | the engine ran 20000024 instructions in 19519 runs, the interpreter ran 19; the loop took 29 ticks |
+| `kjtask` | unset | present | 12 | nothing; the software interrupt ran once, the process stored its sum, the server saw 191 vertical blanks |
+| `kjtask` | `jit` | present | 12 | the engine ran 20500121 instructions in 20043 runs, the interpreter ran 350; the software interrupt ran once, the process stored the same sum, the server saw 32 vertical blanks |
 
 | `kjdiv` | unset | present | 12 | nothing |
 | `kjdiv` | `jit` | present | 12 | the engine ran 13 instructions in 3 runs, the interpreter ran 3 |
 
-All sixteen cases finished in one run, each with `m68kemu.library 1.2`
+All seventeen cases finished in one run, each with `m68kemu.library 1.2`
 reported by `Version`.
 
 That shows:
@@ -218,7 +219,7 @@ That shows:
   own), a process of the program (another CPU of the same engine domain,
   half a million instructions on the engine) and the vertical blank
   interrupt (raised between engine slices, taken by the interpreter, its
-  server run 30 times in the shorter loop) work.
+  server run 32 times in the shorter loop) work.
 - A division the engine declines is executed by the interpreter and the
   run goes on: of the 16 instructions of `kjdiv`, the interpreter ran the
   first one and the two divisions on the custom register, and the engine
@@ -231,11 +232,12 @@ emulated machine under TCG on a busy host. They say that this loop was
 about five times faster with the engine there, and nothing about
 applications.
 
-The table is the fifth run. The four before it, on 20 and 21 November
-with earlier builds of the patch, gave the same results and the same
-engine counters for the cases they had: twelve cases, then fourteen, then
-the two of `kjdiv`; the timed loop took 147 and 155 ticks on the
-interpreter and 30 with the engine each time. The first run, of eight
+The table is the sixth run. The five before it, on 20 and 21 November
+with earlier builds of the patch, gave the same results for the cases
+they had: twelve cases, then fourteen, then the two of `kjdiv`, then
+sixteen. The engine counters were the same each time, except those of
+`kjtask`, which follow the number of vertical blanks. The timed loop took
+between 147 and 165 ticks on the interpreter and 29 or 30 with the engine. The first run, of eight
 cases, used a `kjsum` that returned 42; the startup script stops at a
 result of 21 or more, so the cases of that program could not write their
 result. Their output and their lines agree with the table.
@@ -248,6 +250,18 @@ no slice while an interrupt level is asserted, the status register
 written back before the other registers, a second invalidation after the
 two pieces of 68k code the library loader writes, and the instruction
 count that the library's watchdog reads.
+
+Between the fifth and the sixth run the same reader read the code as
+published, again without running anything. Six of its points held when
+checked against the code, with several smaller ones, and all are in the
+patch: an engine `run()` that fails stops the program without one more
+interpreter instruction; an engine table without a name or without one of
+its functions is refused; a refusal found only when the program's engine
+CPU is made sets the error code too; without the variable the caller's
+`IoErr()` is left as it was; a value of the variable too long for the
+buffer is refused instead of cut, which the new case shows; and the
+loaders invalidate after they have written code, not before. None of them
+changed the result of a case that had run.
 
 ## Not done
 
@@ -264,5 +278,9 @@ count that the library's watchdog reads.
   The two have not been run together.
 - A build rule in the AROS tree for the engine library, and a submission of
   the adapter to AROS mainline.
-- A review of the code of this patch by someone else. The review above
-  was of the design.
+- A review by a maintainer of AROS, or by anyone who ran the code. The
+  two reviews above were readings of the design and of the source.
+- For AROS mainline: the interface header names its specification as a
+  file beside it, which the patch does not add, and the library and the
+  header carry this project's name. Both need a decision before a
+  submission.

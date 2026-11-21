@@ -336,7 +336,9 @@ tries an engine slice before it interprets an instruction:
 - The instruction a run stopped at without executing it is one step of the
   interpreter. An A-line opcode is a library call through the existing
   dispatcher, with its exception frame and its RTE. `STOP_EXCEPTION`,
-  `STOP_UNSUPPORTED` and `STOP_PC_OUTSIDE` are handled the same way. So
+  `STOP_UNSUPPORTED` and `STOP_PC_OUTSIDE` are handled the same way: the
+  interpreter does what it does without an engine, which for an odd PC is
+  to execute from it, not to raise vector 3. So
   `Supervisor()`, RTE, exceptions with a guest handler, MOVEC, CINV, CPUSH,
   MOVE16 and the vertical blank and CIA interrupts are the interpreter's
   code, unchanged.
@@ -364,7 +366,7 @@ first, then global):
 | `interpreter` | the interpreter; one line says so |
 | `jit` | the engine under the interpreter. If the library is absent, `KJ68_GetEngine` gives no table of interface 1.0, `domain_create` fails or the engine CPU of the program cannot be made, the call returns -1 with a diagnostic and no guest instruction runs |
 | `auto` | as `jit` when all of that works, otherwise the interpreter, with the reason in the line |
-| anything else | the call returns -1 with a diagnostic |
+| anything else, or a value too long for the host's buffer | the call returns -1 with a diagnostic |
 
 With the variable set, one line per run says what runs the program: the
 engine's `name` and interface version, or the interpreter and why. After a

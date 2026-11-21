@@ -1,6 +1,6 @@
-From b9a9b01be8f91a92edef8b835d8152f4990f9bd2 Mon Sep 17 00:00:00 2001
+From 75b2cd0e8463a51469309021c36bb13a6de0ab59 Mon Sep 17 00:00:00 2001
 From: Michele Dipace <kaffeine1@users.noreply.github.com>
-Date: Sat, 21 Nov 2026 01:31:34 +0100
+Date: Sat, 21 Nov 2026 03:20:13 +0100
 Subject: [PATCH] m68kemu: an optional engine under the interpreter, selected
  by M68KEMU_CPU
 
@@ -29,17 +29,17 @@ Without M68KEMU_CPU nothing of this runs.
   M68KEmu_DestroyContext.
 - m68kemu.conf: 1.2.
 ---
- rom/m68kemu/kaffeine-jit68-abi-v1.h | 209 +++++++++++++++++++++
+ rom/m68kemu/kaffeine-jit68-abi-v1.h | 209 ++++++++++++++++++++
  rom/m68kemu/m68kemu.conf            |   2 +-
- rom/m68kemu/m68kemu_intern.h        |  33 ++++
- rom/m68kemu/m68kemu_jit.c           | 260 ++++++++++++++++++++++++++
- rom/m68kemu/m68kemu_m68klib.c       |   2 +
- rom/m68kemu/m68kemu_memory.c        |   5 +
- rom/m68kemu/m68kemu_moira.cpp       | 273 +++++++++++++++++++++++++++-
- rom/m68kemu/m68kemu_run.c           |  11 +-
+ rom/m68kemu/m68kemu_intern.h        |  36 ++++
+ rom/m68kemu/m68kemu_jit.c           | 290 ++++++++++++++++++++++++++++
+ rom/m68kemu/m68kemu_m68klib.c       |   1 +
+ rom/m68kemu/m68kemu_memory.c        |   8 +
+ rom/m68kemu/m68kemu_moira.cpp       | 275 +++++++++++++++++++++++++-
+ rom/m68kemu/m68kemu_run.c           |  17 +-
  rom/m68kemu/m68kemu_thunks.c        |   2 +
  rom/m68kemu/mmakefile.src           |   1 +
- 10 files changed, 793 insertions(+), 5 deletions(-)
+ 10 files changed, 836 insertions(+), 5 deletions(-)
  create mode 100644 rom/m68kemu/kaffeine-jit68-abi-v1.h
  create mode 100644 rom/m68kemu/m68kemu_jit.c
 
@@ -270,7 +270,7 @@ index a8fea82716..5b6f9fb0aa 100644
  libbasetype struct M68KEmuLibBase
  options noexpunge
 diff --git a/rom/m68kemu/m68kemu_intern.h b/rom/m68kemu/m68kemu_intern.h
-index fbd683299c..0ffbea80ef 100644
+index fbd683299c..e5d2a1d60d 100644
 --- a/rom/m68kemu/m68kemu_intern.h
 +++ b/rom/m68kemu/m68kemu_intern.h
 @@ -12,6 +12,8 @@
@@ -282,7 +282,7 @@ index fbd683299c..0ffbea80ef 100644
  struct M68KEmuLibBase
  {
      struct Library          lib;
-@@ -303,6 +305,27 @@ struct M68KEmuContext
+@@ -303,6 +305,29 @@ struct M68KEmuContext
      UWORD   beam_v;     /* vertical position 0-312 */
      UBYTE   beam_h;     /* horizontal position 0-226 */
      UBYTE   beam_lof;   /* long frame flag (toggled each frame) */
@@ -298,6 +298,8 @@ index fbd683299c..0ffbea80ef 100644
 +    BOOL    jit_fault;              /* the engine failed: the result of the run is 20 */
 +    BOOL    jit_map_ok;             /* the map tells the engine all the host has to see */
 +    BOOL    jit_cpu_said;           /* "no engine CPU for a task" was reported */
++    BOOL    jit_refused;            /* jit, and the program's own engine CPU could not be made: no run */
++    BOOL    jit_kept;               /* the engine did not let its domain go: nothing it points into is freed */
 +    LONG    jit_status;             /* what domain_create answered */
 +    const char *jit_why;            /* auto: why the interpreter runs the program */
 +    struct Library *jit_base;
@@ -310,7 +312,7 @@ index fbd683299c..0ffbea80ef 100644
  };
  
  
-@@ -347,6 +370,16 @@ void  M68KEmu_FreeNestCpus(struct M68KEmuContext *ctx, struct M68KTaskState *ts)
+@@ -347,6 +372,17 @@ void  M68KEmu_FreeNestCpus(struct M68KEmuContext *ctx, struct M68KTaskState *ts)
  void  M68KEmu_StopCpu(struct M68KEmuContext *ctx, void *cpu);
  void  m68k_restore_windowptr(struct M68KEmuContext *ctx);
  void  m68k_dump_callring(struct M68KEmuContext *ctx);
@@ -321,6 +323,7 @@ index fbd683299c..0ffbea80ef 100644
 +BOOL  m68k_jit_map(struct M68KEmuContext *ctx);
 +void  m68k_jit_report(struct M68KEmuContext *ctx);
 +void  m68k_jit_say(struct M68KEmuContext *ctx, const char *fmt, ...);
++const char *m68k_jit_name(struct M68KEmuContext *ctx);  /* the program, short enough for a line */
 +/* m68kemu_moira.cpp: the engine's accesses to the ranges the host has to see */
 +ULONG M68KEmu_JitRead(APTR host_domain, APTR host_cpu, ULONG addr, ULONG width, ULONG pc, ULONG *value);
 +ULONG M68KEmu_JitWrite(APTR host_domain, APTR host_cpu, ULONG addr, ULONG width, ULONG value, ULONG pc);
@@ -329,10 +332,10 @@ index fbd683299c..0ffbea80ef 100644
  struct M68KTaskState *m68k_ts_find(struct M68KEmuContext *ctx, struct Task *task);   /* NULL: not a task of the program */
 diff --git a/rom/m68kemu/m68kemu_jit.c b/rom/m68kemu/m68kemu_jit.c
 new file mode 100644
-index 0000000000..67ac7891f2
+index 0000000000..e3a75ab257
 --- /dev/null
 +++ b/rom/m68kemu/m68kemu_jit.c
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,290 @@
 +/*
 +    Copyright (C) 2026, The AROS Development Team. All rights reserved.
 +
@@ -377,7 +380,7 @@ index 0000000000..67ac7891f2
 +{
 +    struct M68KEmuContext *ctx = (struct M68KEmuContext *)host_domain;
 +
-+    if (ctx->trace_calls)
++    if (ctx->trace_calls && text)
 +        bug("[m68kemu] engine: %s\n", (const char *)text);
 +}
 +
@@ -468,8 +471,11 @@ index 0000000000..67ac7891f2
 +    ops = jit_engine(ctx->jit_base);
 +    if (!ops)
 +        return KJ68_LIBNAME " has no engine for interface 1";
++    /* the minor of interface 1.0 is 0: every minor is at least that */
 +    if (ops->size_of < KJ68_V1_SIZE_ENGINEOPS || ops->abi_major != KJ68_ABI_MAJOR ||
-+        !(ops->caps & KJ68_CAP_BASE) || !ops->max_block_insns || ops->max_block_insns > KJ68_MAX_BLOCK_INSNS)
++        !(ops->caps & KJ68_CAP_BASE) || !ops->max_block_insns || ops->max_block_insns > KJ68_MAX_BLOCK_INSNS ||
++        !ops->name || !ops->domain_create || !ops->domain_destroy || !ops->invalidate || !ops->cpu_create ||
++        !ops->cpu_destroy || !ops->get_reg || !ops->set_reg || !ops->run || !ops->get_stats)
 +        return "the engine's table is not one of interface 1.0";
 +
 +    ctx->jit_host.size_of = sizeof(ctx->jit_host);
@@ -494,15 +500,21 @@ index 0000000000..67ac7891f2
 +   the interpreter, as without this file; "interpreter" says so; "jit" is
 +   the engine or no run at all; "auto" is the engine when it is there and
 +   works. -1 when the program is not to run. */
-+LONG m68k_jit_select(struct M68KEmuContext *ctx)
++static LONG jit_select(struct M68KEmuContext *ctx)
 +{
-+    char v[16];
++    char v[32];
 +    const char *why;
 +    LONG n = GetVar((CONST_STRPTR)"M68KEMU_CPU", (STRPTR)v, sizeof(v), 0);
 +
 +    if (n <= 0)
 +        return 0;
 +    v[sizeof(v) - 1] = 0;
++    /* a value that fills the buffer may have been cut: none of the three is that long */
++    if (n >= (LONG)sizeof(v) - 1)
++    {
++        m68k_jit_say(ctx, "M68KEMU_CPU starts \"%s\" and is too long: it can be interpreter, jit or auto; the program is not run", v);
++        return -1;
++    }
 +    n = (LONG)strlen(v);
 +    while (n > 0 && (v[n - 1] == '\n' || v[n - 1] == '\r' || v[n - 1] == ' '))
 +        v[--n] = 0;
@@ -540,6 +552,26 @@ index 0000000000..67ac7891f2
 +    return 0;
 +}
 +
++/* Without the variable the caller sees nothing of this, its IoErr() included */
++LONG m68k_jit_select(struct M68KEmuContext *ctx)
++{
++    LONG err = IoErr(), r = jit_select(ctx);
++
++    if (r == 0)
++        SetIoErr(err);
++    return r;
++}
++
++/* the program's name for a line: the end of it when it is a long path */
++const char *m68k_jit_name(struct M68KEmuContext *ctx)
++{
++    ULONG len = strlen(ctx->program_name);
++
++    if (!len)
++        return "68k program";
++    return ctx->program_name + (len > 48 ? len - 48 : 0);
++}
++
 +/* The program wrote code, or the host did for it (a loader, a jump table, a
 +   stub, a cache call of the program): what the engine translated is void.
 +   Called by the task that holds the program's lock, or before any CPU. */
@@ -562,7 +594,7 @@ index 0000000000..67ac7891f2
 +        return;
 +    m68k_jit_say(ctx, "%s: the engine ran %lu instructions in %lu runs (translated: %lu blocks, %lu instructions; "
 +                      "%lu invalidations, %lu code resets); the interpreter ran %lu",
-+        ctx->program_name[0] ? ctx->program_name : "68k program",
++        m68k_jit_name(ctx),
 +        (unsigned long)s.retired, (unsigned long)s.runs, (unsigned long)s.blocks_translated,
 +        (unsigned long)s.insns_translated, (unsigned long)s.invalidations, (unsigned long)s.code_resets,
 +        (unsigned long)ctx->jit_interp);
@@ -583,6 +615,7 @@ index 0000000000..67ac7891f2
 +               holds, and so does the library */
 +            m68k_jit_say(ctx, "the engine kept its domain (status %ld)", (long)st);
 +            ctx->jit_base = NULL;
++            ctx->jit_kept = TRUE;
 +        }
 +    }
 +    ctx->jit_ops = NULL;
@@ -594,27 +627,19 @@ index 0000000000..67ac7891f2
 +    }
 +}
 diff --git a/rom/m68kemu/m68kemu_m68klib.c b/rom/m68kemu/m68kemu_m68klib.c
-index e7ed2e51a7..b429c92e14 100644
+index e7ed2e51a7..be8d2f0012 100644
 --- a/rom/m68kemu/m68kemu_m68klib.c
 +++ b/rom/m68kemu/m68kemu_m68klib.c
-@@ -68,6 +68,7 @@ static void m68k_init_struct(struct M68KEmuContext *ctx, ULONG tab, ULONG mem)
- 
- ULONG M68KEmu_LoadM68KLibrary(struct M68KEmuContext *ctx, const char *name, ULONG version)
- {
-+    m68k_jit_invalidate(ctx);       /* 68k code is written here: what an engine translated is void */
-     char path[256];
-     BPTR fh;
-     LONG fileSize;
-@@ -283,6 +284,7 @@ ULONG M68KEmu_LoadM68KLibrary(struct M68KEmuContext *ctx, const char *name, ULON
+@@ -283,6 +283,7 @@ ULONG M68KEmu_LoadM68KLibrary(struct M68KEmuContext *ctx, const char *name, ULON
          m68k_write32(ctx, t + 4, initFunc);
          m68k_write32(ctx, t + 16, version);
          m68k_write32(ctx, r + 4, base);
-+        m68k_jit_invalidate(ctx);       /* the two pieces of 68k code above */
++        m68k_jit_invalidate(ctx);       /* the jump table and the two pieces of 68k code above */
          ts = m68k_ts(ctx);
          if (initFunc)
              ts->tail_pc = t;
 diff --git a/rom/m68kemu/m68kemu_memory.c b/rom/m68kemu/m68kemu_memory.c
-index 1683eddcd0..7b98a4805b 100644
+index 1683eddcd0..c5bf49f036 100644
 --- a/rom/m68kemu/m68kemu_memory.c
 +++ b/rom/m68kemu/m68kemu_memory.c
 @@ -133,6 +133,8 @@ void M68KEmu_DestroyContext(struct M68KEmuContext *ctx)
@@ -626,32 +651,42 @@ index 1683eddcd0..7b98a4805b 100644
      /* notifications the program left running would signal a port that is gone */
      for (UWORD i = 0; i < ctx->num_notify; i++)
      {
-@@ -428,6 +430,7 @@ void M68KEmu_HeapFree(struct M68KEmuContext *ctx, ULONG addr, ULONG size)
-    kept (GSLI_68KRELOCS) is applied again for the containment addresses. */
- ULONG M68KEmu_LoadHunks(struct M68KEmuContext *ctx, BPTR segList)
- {
-+    m68k_jit_invalidate(ctx);       /* 68k code is written here: what an engine translated is void */
-     BPTR seg;
-     ULONG entry_point = 0;
-     ULONG nseg = 0, i;
-@@ -551,6 +554,7 @@ ULONG M68KEmu_SetupLibBase(struct M68KEmuContext *ctx, UWORD lib_id,
-                             const struct M68KThunkEntry *thunks, ULONG num_thunks,
-                             const struct M68KThunkEntry *gen_thunks, ULONG num_gen_thunks)
- {
-+    m68k_jit_invalidate(ctx);       /* 68k code is written here: what an engine translated is void */
-     ULONG vectors_size, total_size, region_offset, base_addr;
-     UWORD i;
+@@ -164,6 +166,9 @@ void M68KEmu_DestroyContext(struct M68KEmuContext *ctx)
+     for (int i = 0; i < 32; i++)
+         if (ctx->own_rps[i])
+             FreeVec(ctx->own_rps[i]);
++    /* an engine that kept its domain still points into the memory and the map */
++    if (ctx->jit_kept)
++        return;
+     if (ctx->mem) FreeMem(ctx->mem, ctx->mem_size);
+     FreeMem(ctx, sizeof(struct M68KEmuContext));
+ }
+@@ -543,6 +548,7 @@ ULONG M68KEmu_LoadHunks(struct M68KEmuContext *ctx, BPTR segList)
+     }
  
-@@ -674,6 +678,7 @@ static ULONG rd32(UBYTE **p)
+     FreeVec(host);
++    m68k_jit_invalidate(ctx);       /* 68k code was written: what an engine translated there is void */
+     return entry_point;
+ }
  
- ULONG M68KEmu_LoadHunksFromMemory(struct M68KEmuContext *ctx, UBYTE *data, LONG size)
- {
-+    m68k_jit_invalidate(ctx);       /* 68k code is written here: what an engine translated is void */
-     UBYTE *p = data;
-     UBYTE *end = data + size;
-     ULONG magic, num_hunks, first, last;
+@@ -647,6 +653,7 @@ ULONG M68KEmu_SetupLibBase(struct M68KEmuContext *ctx, UWORD lib_id,
+     ctx->num_libs++;
+     m68k_publish_base(ctx, base_addr, name);
+ 
++    m68k_jit_invalidate(ctx);       /* 68k code was written: what an engine translated there is void */
+     return base_addr;
+ }
+ 
+@@ -869,6 +876,7 @@ ULONG M68KEmu_LoadHunksFromMemory(struct M68KEmuContext *ctx, UBYTE *data, LONG
+     FreeMem(hunk_sizes, num_hunks * sizeof(ULONG));
+     FreeMem(hunk_addrs, num_hunks * sizeof(ULONG));
+     FreeMem(hunk_reqs, num_hunks * sizeof(ULONG));
++    m68k_jit_invalidate(ctx);       /* 68k code was written: what an engine translated there is void */
+     return entry_point;
+ 
+ fail:
 diff --git a/rom/m68kemu/m68kemu_moira.cpp b/rom/m68kemu/m68kemu_moira.cpp
-index 935720ca3f..3f4e79d1c8 100644
+index 935720ca3f..f073808041 100644
 --- a/rom/m68kemu/m68kemu_moira.cpp
 +++ b/rom/m68kemu/m68kemu_moira.cpp
 @@ -19,6 +19,9 @@ using namespace moira;
@@ -664,7 +699,7 @@ index 935720ca3f..3f4e79d1c8 100644
  /* generated calls whose result points into a buffer or string the program
     passed: the result is that address in the program's memory */
  static bool returns_arg_pointer(const char *lib, ULONG lvo)
-@@ -46,6 +49,164 @@ public:
+@@ -46,6 +49,168 @@ public:
  
      explicit AROSMoira(struct M68KEmuContext *c) : ctx(c), ts(m68k_ts(c)) {}
  
@@ -682,7 +717,9 @@ index 935720ca3f..3f4e79d1c8 100644
 +    bool jit_none = false;          /* it could not be made: this CPU stays with the interpreter */
 +    bool jit_hold = false;          /* the instruction at PC is the interpreter's */
 +
-+    ~AROSMoira() { jitDrop(); }
++    ~AROSMoira() override { jitDrop(); }
++    AROSMoira(const AROSMoira &) = delete;          /* the engine CPU has one owner */
++    AROSMoira &operator=(const AROSMoira &) = delete;
 +
 +    /* by the task that holds the program's lock, as every engine call */
 +    void jitDrop()
@@ -721,7 +758,7 @@ index 935720ca3f..3f4e79d1c8 100644
 +    void jitFault(const char *what, u32 pc, u32 opcode, const char *text)
 +    {
 +        m68k_jit_say(ctx, "%s: the engine %s at PC %08lx (opcode %04lx%s%s), program stopped",
-+            ctx->program_name[0] ? ctx->program_name : "68k program", what,
++            m68k_jit_name(ctx), what,
 +            (unsigned long)pc, (unsigned long)opcode, text[0] ? ": " : "", text);
 +        ctx->jit_fault = TRUE;
 +        m68k_program_stop(ctx, TRUE);
@@ -774,7 +811,7 @@ index 935720ca3f..3f4e79d1c8 100644
 +            {
 +                ctx->jit_cpu_said = TRUE;
 +                m68k_jit_say(ctx, "%s: the engine has no CPU for one of its tasks or calls: the interpreter runs it",
-+                    ctx->program_name[0] ? ctx->program_name : "68k program");
++                    m68k_jit_name(ctx));
 +            }
 +            return jitNo();
 +        }
@@ -796,7 +833,7 @@ index 935720ca3f..3f4e79d1c8 100644
 +            /* nothing ran and nothing changed; the host did something the
 +               interface does not allow */
 +            jitFault("refused to run", pc, m68k_read16(ctx, pc), "");
-+            return jitNo();
++            return true;                    /* the program is stopped: nothing more of it runs */
 +        }
 +
 +        /* the status register first: it decides which stack pointer A7 is */
@@ -812,16 +849,18 @@ index 935720ca3f..3f4e79d1c8 100644
 +            ops->get_reg(jcpu, KJ68_REG_A0 + i, &v);
 +            setA(i, (u32)v);
 +        }
-+        ops->get_reg(jcpu, KJ68_REG_PC, &v);
-+        jitSetPC((u32)v);
 +        retired = ex.retired;
-+
 +        if (ex.reason == KJ68_STOP_HOST || ex.reason == KJ68_STOP_FAULT)
 +        {
++            /* the end of the program: its PC is not fetched from again */
 +            ex.text[KJ68_TEXT_SIZE - 1] = 0;
-+            jitFault(ex.reason == KJ68_STOP_FAULT ? "failed" : "stopped on a host access", ex.pc, ex.opcode, ex.text);
++            jitFault(ex.reason == KJ68_STOP_FAULT ? "failed" : "stopped on a host access", ex.pc,
++                     m68k_read16(ctx, ex.pc), ex.text);
++            return true;
 +        }
-+        else if (ex.reason != KJ68_STOP_BUDGET || !ex.retired)
++        ops->get_reg(jcpu, KJ68_REG_PC, &v);
++        jitSetPC((u32)v);
++        if (ex.reason != KJ68_STOP_BUDGET || !ex.retired)
 +            jit_hold = true;                /* A-line, declined, exception, no fetch: Moira's */
 +        return true;
 +    }
@@ -829,7 +868,7 @@ index 935720ca3f..3f4e79d1c8 100644
      /* ── Custom chip register emulation ──────────────────────────── */
  
      /* Advance beam position by 'ticks' color clocks (PAL: 313 lines × 227 clocks) */
-@@ -168,7 +329,10 @@ public:
+@@ -168,7 +333,10 @@ public:
              op = m68k_read16(ctx, pc -= 2);
  
          if ((op & 0xFF00) == 0xF400)                /* CINV, CPUSH */
@@ -840,7 +879,7 @@ index 935720ca3f..3f4e79d1c8 100644
          else if ((op & 0xFFF8) == 0xF620)           /* MOVE16 (Ax)+,(Ay)+ */
          {
              u16 ext = m68k_read16(ctx, pc + 2);
-@@ -534,6 +698,12 @@ public:
+@@ -534,6 +702,12 @@ public:
  
                  m68k_sync_windowptr(ctx);
  
@@ -853,7 +892,7 @@ index 935720ca3f..3f4e79d1c8 100644
                  /* Search thunk table */
                  for (ULONG j = 0; j < lib->num_thunks; j++)
                  {
-@@ -680,6 +850,32 @@ public:
+@@ -680,6 +854,32 @@ public:
  
  extern "C" {
  
@@ -886,7 +925,15 @@ index 935720ca3f..3f4e79d1c8 100644
  ULONG M68KEmu_GetD(void *cpu, int n) { return static_cast<AROSMoira *>(cpu)->getD(n); }
  ULONG M68KEmu_GetA(void *cpu, int n) { return static_cast<AROSMoira *>(cpu)->getA(n); }
  
-@@ -750,6 +946,12 @@ ULONG M68KEmu_Call68k(struct M68KEmuContext *ctx, void *outer_cpu, ULONG entry,
+@@ -725,6 +925,7 @@ ULONG M68KEmu_Call68k(struct M68KEmuContext *ctx, void *outer_cpu, ULONG entry,
+     c.reset();
+     c.setSR(0x2000);
+     c.nested_done = false;
++    c.jit_hold = false;
+     for (int i = 0; i < 8; i++)
+         c.setD(i, regs[i]);
+     for (int i = 0; i < 7; i++)
+@@ -750,6 +951,12 @@ ULONG M68KEmu_Call68k(struct M68KEmuContext *ctx, void *outer_cpu, ULONG entry,
              return 0;
          }
          ctx->pc_ring[ctx->pc_ring_pos++ & 511] = pc;
@@ -899,7 +946,7 @@ index 935720ca3f..3f4e79d1c8 100644
          c.execute();
      }
      ts->nest_depth--;
-@@ -799,6 +1001,18 @@ ULONG M68KEmu_RunTask(struct M68KEmuContext *ctx, ULONG entry, ULONG stacktop, c
+@@ -799,6 +1006,18 @@ ULONG M68KEmu_RunTask(struct M68KEmuContext *ctx, ULONG entry, ULONG stacktop, c
              m68k_program_stop(ctx, TRUE);
              break;
          }
@@ -918,7 +965,7 @@ index 935720ca3f..3f4e79d1c8 100644
          c.execute();
          if ((++n & 0xFFFF) == 0)
              m68k_gil_yield(ctx);
-@@ -931,11 +1145,41 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
+@@ -931,11 +1150,41 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
      ctx->low_guard = TRUE;
      m68k_gil_obtain(ctx);
  
@@ -927,7 +974,7 @@ index 935720ca3f..3f4e79d1c8 100644
 +    bool jit_refused = false;
 +    if (ctx->jit_mode)
 +    {
-+        const char *name = ctx->program_name[0] ? ctx->program_name : "68k program";
++        const char *name = m68k_jit_name(ctx);
 +        const char *mode = ctx->jit_mode == M68KJIT_JIT ? "jit" : ctx->jit_mode == M68KJIT_AUTO ? "auto" : "interpreter";
 +
 +        if (ctx->jit_run && !cpu.jitAttach())
@@ -938,6 +985,7 @@ index 935720ca3f..3f4e79d1c8 100644
 +            {
 +                m68k_jit_say(ctx, "%s: M68KEMU_CPU is jit and %s; the program is not run", name, ctx->jit_why);
 +                ctx->running = FALSE;
++                ctx->jit_refused = TRUE;            /* RunHunk and RunFile give the error code */
 +                jit_refused = true;
 +            }
 +        }
@@ -955,12 +1003,11 @@ index 935720ca3f..3f4e79d1c8 100644
          (unsigned)ctx->m68k_argsize, (unsigned)ctx->m68k_sysbase);
      {
          unsigned long icount = 0;
-+        bool jit_poll = false;              /* an engine slice ran: the polls below are due */
-+        ULONG jit_since = 0;
++        bool jit_poll = false;              /* an engine slice went past a multiple of 1024: the polls below are due */
          while (ctx->running)
          {
              ULONG pc = cpu.getPC0();
-@@ -953,7 +1197,7 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
+@@ -953,7 +1202,7 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
                                  (unsigned)cpu.getSR(), (unsigned)cpu.getA(7));
                      }
                  }
@@ -969,7 +1016,7 @@ index 935720ca3f..3f4e79d1c8 100644
                  {
                      if (!(cpu.getSR() & 0x2000) && ctx->irq_stack_top)
                          cpu.setISP(ctx->irq_stack_top);
-@@ -972,7 +1216,7 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
+@@ -972,7 +1221,7 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
                      ctx->cia_irq = FALSE;
                  }
              }
@@ -978,7 +1025,7 @@ index 935720ca3f..3f4e79d1c8 100644
              {
                  ULONG code, data;
                  if (m68k_cia_due(ctx, &code, &data))
-@@ -1027,6 +1271,25 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
+@@ -1027,6 +1276,22 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
                  m68k_program_stop(ctx, TRUE);
                  break;
              }
@@ -991,11 +1038,8 @@ index 935720ca3f..3f4e79d1c8 100644
 +                    unsigned long before = icount;
 +                    icount += done;
 +                    ctx->icount_lo = (ULONG)icount;
-+                    if ((jit_since += done) >= 1024)
-+                    {
++                    if ((before >> 10) != (icount >> 10))
 +                        jit_poll = true;
-+                        jit_since = 0;
-+                    }
 +                    if ((before >> 16) != (icount >> 16))
 +                        m68k_gil_yield(ctx);
 +                    continue;
@@ -1004,7 +1048,7 @@ index 935720ca3f..3f4e79d1c8 100644
              ctx->icount_lo = (ULONG)icount;
              cpu.execute();
              if ((icount & 0xFFFF) == 0)
-@@ -1046,6 +1309,12 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
+@@ -1046,6 +1311,12 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
      }
  
      ctx->exit_code = (LONG)cpu.getD(0);
@@ -1018,42 +1062,64 @@ index 935720ca3f..3f4e79d1c8 100644
      m68k_gil_release(ctx);
      if (ctx->trace_end)
 diff --git a/rom/m68kemu/m68kemu_run.c b/rom/m68kemu/m68kemu_run.c
-index 999449e69e..9622a4c6a7 100644
+index 999449e69e..52c66d44f3 100644
 --- a/rom/m68kemu/m68kemu_run.c
 +++ b/rom/m68kemu/m68kemu_run.c
-@@ -236,7 +236,9 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+@@ -209,6 +209,7 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+     struct Message *wb = NULL;
+     ULONG entry;
+     LONG result = -1;
++    BOOL refused;
+ 
+     /* started from Workbench: its startup message is taken before the
+        first DOS call of this process, as the native startup code does */
+@@ -236,7 +237,9 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
          }
      }
  
 -    entry = M68KEmu_LoadHunks(ctx, segList);
 +    /* M68KEMU_CPU: the interpreter, or an engine under it (m68kemu_jit.c) */
-+    BOOL refused = m68k_jit_select(ctx) < 0;
++    refused = m68k_jit_select(ctx) < 0;
 +    entry = refused ? 0 : M68KEmu_LoadHunks(ctx, segList);
      if (ctx->trace_calls) bug("[m68kemu] TRACE build " __DATE__ " " __TIME__ " RunHunk seglist %p stack %u args %u -> entry %08x\n",
          BADDR(segList), (unsigned)stackSize, (unsigned)argSize, (unsigned)entry);
      if (entry)
-@@ -253,6 +255,8 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+@@ -252,7 +255,11 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+                                    stackSize, name[0] ? name : NULL, BNULL, M68KEmuBase);
      }
      m68k_wbstartup_done(ctx);
++    if (ctx->jit_refused)                               /* found when the program's CPU was made */
++        refused = TRUE;
      m68k_context_release(ctx);
 +    if (refused)
 +        SetIoErr(ERROR_INVALID_RESIDENT_LIBRARY);       /* M68KEMU_CPU asked for what is not there */
      return result;
  
      AROS_LIBFUNC_EXIT
-@@ -296,7 +300,8 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+@@ -278,6 +285,7 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+     UBYTE *fileData;
+     ULONG entry;
+     LONG result = -1;
++    BOOL refused;
+ 
+     fh = Open(fileName, MODE_OLDFILE);
+     if (!fh) return -1;
+@@ -296,7 +304,8 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
      ctx = M68KEmu_CreateContextWithStack(M68KEmuBase, stackSize);
      if (!ctx) { FreeMem(fileData, fileSize); return -1; }
  
 -    entry = M68KEmu_LoadHunksFromMemory(ctx, fileData, fileSize);
-+    BOOL refused = m68k_jit_select(ctx) < 0;
++    refused = m68k_jit_select(ctx) < 0;
 +    entry = refused ? 0 : M68KEmu_LoadHunksFromMemory(ctx, fileData, fileSize);
      FreeMem(fileData, fileSize);
  
      if (entry)
-@@ -309,6 +314,8 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+@@ -308,7 +317,11 @@ static LONG setup_and_execute(struct M68KEmuContext *ctx, ULONG entry,
+                                    stackSize, fileName, homeDir, M68KEmuBase);
      }
  
++    if (ctx->jit_refused)
++        refused = TRUE;
      m68k_context_release(ctx);
 +    if (refused)
 +        SetIoErr(ERROR_INVALID_RESIDENT_LIBRARY);
