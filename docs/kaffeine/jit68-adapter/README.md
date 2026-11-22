@@ -5,20 +5,25 @@ Author: Michele Dipace (@kaffeine1)
 
 # The engine under m68kemu.library: the adapter
 
-This directory holds the host side of the
-[kaffeine-jit68 interface](../../../experimental/kaffeine-jit68/include/ENGINE.md):
-a patch for `rom/m68kemu` of AROS mainline that lets `m68kemu.library` run
-68k code on the optional `kaffeine-jit68.library`, and the record of its
-first runs on AROS AArch64 under QEMU.
+This directory preserves the local adapter patch and its first AROS AArch64/QEMU
+runs. That patch loads the locally named `kaffeine-jit68.library` through the
+[engine interface](../../../experimental/kaffeine-jit68/include/ENGINE.md).
+The adapter merged into AROS in
+[PR #2359](https://github.com/aros-development-team/AROS/pull/2359) opens the
+neutral `m68kjit.library` proposed in the still-open
+[PR #2360](https://github.com/aros-development-team/AROS/pull/2360). The test
+strings below belong to the local patch and should be read under that name.
+The [technical case study](../jit-case-study.md) separates those runs from
+the selected real AROS build reported in the upstream PR.
 
-State on 21 November 2026: the patch is written and has run on AROS AArch64
+Local run on 21 November 2026: the patch ran on AROS AArch64
 under QEMU. Twenty-three cases with eight small 68k programs, with the
 interpreter alone and with the engine under it, gave the expected results;
 one of the programs has a process of its own, a software interrupt and a
 vertical blank server, one has divisions the engine declines, one is a
 BOOPSI class whose dispatcher intuition calls back, and two use a CIA
 timer. It has not run an application and has not run on
-hardware. AROS mainline has it since 21 November 2026
+hardware. The corresponding adapter was merged upstream on 21 November 2026
 ([pull request 2359](https://github.com/aros-development-team/AROS/pull/2359)); the engine library is proposed as
 [pull request 2360](https://github.com/aros-development-team/AROS/pull/2360).
 
