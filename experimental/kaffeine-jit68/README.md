@@ -15,7 +15,9 @@ In AROS the interface is in `rom/m68kemu`
 merged on 21 November 2026). The engine, the probe and these checks are
 proposed as
 [pull request 2360](https://github.com/aros-development-team/AROS/pull/2360),
-where they have their places in the tree and the library a build rule.
+where they have their places in the tree and the library a build rule. The
+[technical case study](../../docs/kaffeine/jit-case-study.md) presents the
+architecture, reported tests and current limits.
 AROS takes no component under a project's name, so there the library is
 `m68kjit.library`, and every name that abbreviates `kaffeine-jit68` is
 changed with it. The sources here are the files of that branch with the
@@ -231,8 +233,8 @@ test it there without `m68kemu.library`.
 - **The build.** `build-outside-tree.sh` runs `genmodule`, compiles with
   the flags of a plain C disk library of the AROS build, links with the
   static C library and strips. It is not an AROS build rule; the branch
-  proposed to AROS as pull request 2360 has one, and the library is not part
-  of any AROS build yet.
+  proposed to AROS as pull request 2360 has one. A build of that branch produced the engine, but it is not part of AROS
+  mainline while the PR remains open.
 - **The probe.** `kj68probe` opens the library, checks that interface
   major 2 is refused, takes the engine of major 1, makes a domain over
   64 KiB of its own memory with one address range that goes to its
