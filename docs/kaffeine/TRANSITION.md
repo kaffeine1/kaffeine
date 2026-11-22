@@ -7,14 +7,37 @@ Author: Michele Dipace (@kaffeine1)
 
 [Manifesto](MANIFESTO.md) | [Current implementation](../../README.KAFFEINE.md)
 
-Last updated: 20 November 2026.
+Last updated: 22 November 2026.
 
 This page records where the work stands while it moves from a renamed copy
 of the 68k compatibility library onto the library of AROS mainline. It is
 updated when something actually moves. Nothing on it is a plan presented as
 a result.
 
-## The decision
+## Current upstream status, 22 November 2026
+
+- The optional-engine interface and interpreter integration in
+  [AROS PR #2359](https://github.com/aros-development-team/AROS/pull/2359)
+  merged on 21 November. Moira remains the default.
+- The AArch64 engine is named `m68kjit.library` in the still-open
+  [AROS PR #2360](https://github.com/aros-development-team/AROS/pull/2360).
+  The corresponding source here retains the local `kaffeine-jit68` name.
+  Reported host checks pass and selected AROS targets build. A native
+  probe exercises the engine alone; small 68k programs pass with the
+  proposed pair under QEMU. No application with that pair or physical-
+  hardware result is claimed. See the
+  [technical case study](jit-case-study.md).
+- Earlier fixes to `m68kemu.library` have also merged, including
+  [native structure offsets](https://github.com/aros-development-team/AROS/pull/2341)
+  and [loader checks](https://github.com/aros-development-team/AROS/pull/2342).
+  The community preview and most application runs still describe the
+  legacy `kaffeine.library`.
+
+The detailed sections below preserve the 20 November transition checkpoint.
+Statements there about work being local or not yet proposed describe that
+checkpoint, not the current state of the linked AROS pull requests.
+
+## Decision recorded by 20 November 2026
 
 - The 68k compatibility library is AROS's `m68kemu.library`, in
   `rom/m68kemu`. Its name, its module, its two public functions `RunHunk` and
@@ -48,7 +71,7 @@ a result.
   compatibility of `m68kemu.library`, nothing of it exists, and nothing here
   claims support for it.
 
-## What exists today, and under which name
+## Historical checkpoint: what existed by 20 November 2026
 
 | What | Identity | State |
 | --- | --- | --- |
@@ -61,7 +84,7 @@ a result.
 | `m68kemu.library` of AROS mainline on AROS AArch64 | `m68kemu.library` 1.1, built with the AROS build system from AROS master `b6dcaeea`, for raspi-aarch64, with the two files of AROS pull request #2331 that the target needs to boot; the library itself is not patched; Moira | On 20 November 2026 it opened on that AROS system under QEMU 11.0.0, once nine libraries it asks for at start had been built and installed, and ran a 40-byte 68k hunk to its end: return code 7 when started from the Shell, and 42 as the result of a process made from the hunk's seglist. That is the interpreter, on one trivial program. It says nothing about a real program, and the structure layouts of point 1 below are not corrected in that build. |
 | `kaffeine-jit68.library`, the 68k JIT as a separate optional library | Interface version 1 and engine source in `experimental/kaffeine-jit68` | Written and reviewed as source: the interface, an engine whose translator is generated from the legacy one, and host checks in 28 groups (26 before the reviews of AROS pull request 2360). On 17 November 2026 they passed on an AArch64 Mac: 40861 checks with 0 failures at `-O1` with sanitizers and, in a separate run of the same source, at `-O2`, with the same output. A division whose divisor the host would read is declined before any host call. On 20 November 2026 the engine was built as a library for AROS AArch64, and a native probe that uses that library alone passed on AROS under QEMU: 20 checks with 0 failures. The side of `m68kemu.library` that selects and loads the engine is written as a patch for AROS master: the engine runs under the interpreter, which completes every instruction the engine does not execute. On the same day the patched library and the engine ran twenty-three cases with eight small 68k programs from the Shell under QEMU, with the expected results, one of the programs with a process of its own, a software interrupt and a vertical blank server; no application has run this way, and nothing on hardware. Both are proposed to AROS: the side of `m68kemu.library` as [pull request 2359](https://github.com/aros-development-team/AROS/pull/2359) and the engine library as [pull request 2360](https://github.com/aros-development-team/AROS/pull/2360). See the [engine page](jit68-engine.md) and the [adapter page](jit68-adapter/README.md). Apart from those host checks, that probe and those cases, the JIT that has run is the one compiled into the legacy library and into the standalone probes, which load no emulator library. |
 
-## What moves, in this order
+## Work planned at the 20 November checkpoint
 
 1. **Native structure layouts for each target.** The emulator copies fields
    between 68k structures and native ones by a table of native offsets.
