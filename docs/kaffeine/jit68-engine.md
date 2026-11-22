@@ -7,17 +7,25 @@ Author: Michele Dipace (@kaffeine1)
 
 [Transition status](TRANSITION.md) | [Manifesto](MANIFESTO.md) | [Current implementation](../../README.KAFFEINE.md)
 
-Last updated: 20 November 2026.
+Last updated: 22 November 2026.
 
 This page records the 68k JIT in the form it is meant to have: an optional
 engine library beside AROS's `m68kemu.library`. It says what is written,
 what has been reviewed, what has run and what has not. A review of source
 is not a run. The source is in
 [`experimental/kaffeine-jit68`](../../experimental/kaffeine-jit68/README.md).
-As of the date above, its host checks pass in both of their
-configurations, each run on its own; the engine has been built as a
-library for AROS AArch64, and a probe of that library has run on AROS under
-QEMU. Nothing of it has run with `m68kemu.library`.
+As of 22 November 2026, the optional-engine interface is merged in
+[AROS PR #2359](https://github.com/aros-development-team/AROS/pull/2359).
+The AArch64 engine is proposed in the still-open
+[PR #2360](https://github.com/aros-development-team/AROS/pull/2360), under
+the neutral name `m68kjit.library`. Its reported host checks pass in two
+configurations; a selected AROS build and native probe pass under QEMU,
+and small 68k programs and `test_m68kemu` run with the proposed pair.
+No real application has run with that pair, and no physical-hardware or
+multiprocessor result is claimed. The
+[technical case study](jit-case-study.md) summarizes the current evidence.
+The local source and historical runs below retain the
+`kaffeine-jit68.library` name where that was the file actually tested.
 
 ## Two libraries
 
@@ -25,7 +33,8 @@ QEMU. Nothing of it has run with `m68kemu.library`.
   compatibility library. Its interpreter, Moira, stays the default.
   `RunHunk` and `RunFile` keep their entry points, arguments and results,
   and without the engine the library behaves as it does today.
-- `kaffeine-jit68.library` is to hold the optional engine and nothing else.
+- The local `kaffeine-jit68.library`, proposed upstream as
+  `m68kjit.library`, holds the optional engine and nothing else.
   It translates 68k code into AArch64 code and runs it on guest memory that
   `m68kemu.library` owns. Library calls, nested 68k calls, child tasks,
   interrupts, the custom chip and CIA pages and the program lock stay in
@@ -42,7 +51,7 @@ and a
 [written specification](../../experimental/kaffeine-jit68/include/ENGINE.md).
 What matters for its behavior:
 
-- **Discovery.** `m68kemu.library` opens `kaffeine-jit68.library` and asks
+- **Discovery.** The local adapter opens `kaffeine-jit68.library`; AROS mainline opens `m68kjit.library`. Both ask
   its one function for an engine of interface version 1. Each versioned
   record of the interface (the engine's table of operations, the host's
   services, the memory map, and the buffers for exit reasons and counters)
@@ -238,10 +247,10 @@ passed. The engine's counters reported translated blocks and executable
 memory, which on AROS comes from `AllocMem(MEMF_EXECUTABLE)` and is
 published with `CacheClearE`.
 
-That shows that the engine translates and runs 68k code on AROS AArch64
-under QEMU through its library. It does not show the engine with
-`m68kemu.library`, a 68k program, physical hardware, more than one CPU
-object or domain at a time, or a speed. The
+That 20 November probe shows translation through the engine library on
+AROS AArch64 under QEMU. Taken alone, it does not show integration with
+`m68kemu.library`, a full 68k program, physical hardware, multiple CPUs,
+or a speed. Later integration results are recorded below. The
 [README of the source](../../experimental/kaffeine-jit68/README.md) gives
 the build and the numbers.
 
@@ -278,27 +287,25 @@ not been tried: applications and hardware.
 
 | Step | State |
 | --- | --- |
-| Interface version 1 | Written; reviewed as source |
+| Interface version 1 | Merged upstream in [AROS PR #2359](https://github.com/aros-development-team/AROS/pull/2359) on 21 November 2026; Moira remains the default |
 | Engine and translator | Written; reviewed as source; published in `experimental/kaffeine-jit68`; compiled for the host checks and as an AROS AArch64 library |
-| Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own; again on 20 November 2026 with the published Makefile; on 21 November 2026, with the two changes of the AROS review, 27 groups, 46010 checks, 0 failures; after its second review 28 groups, 71636 checks, 0 failures, and no difference from Moira on two million random instructions |
-| Engine library for AROS AArch64 | Built outside an AROS tree, 20 November 2026; a native probe through the interface passes under QEMU: 20 checks, 0 failures. On 21 November 2026 a real build of an AROS tree for raspi-aarch64 built it, as `m68kjit.library`, at the head of AROS pull request 2360, and the probe of now passed under QEMU with 23 checks |
+| Host checks of the engine | Pass on an AArch64 Mac, 17 November 2026: 26 groups, 40861 checks, 0 failures, at `-O1` with sanitizers and at `-O2`, each configuration in a run of its own; again on 20 November 2026 with the published Makefile; on 21 November 2026, with the two changes of the AROS review, 27 groups, 46010 checks, 0 failures; after its second review 28 groups, 71636 checks, 0 failures, and no reported differences in two million randomized instruction comparisons after the documented division normalization; declined cases were not executed |
+| Engine library for AROS AArch64 | Built outside an AROS tree, 20 November 2026; a native probe through the interface passes under QEMU: 20 checks, 0 failures. On 21 November 2026 a real build of an AROS tree for raspi-aarch64 built it, as `m68kjit.library`, at the head of AROS pull request 2360, and its probe then passed under QEMU with 23 checks |
 | Review of the behavior outside the JIT | In progress; its results are published once they are checked |
-| Host side in `m68kemu.library` (the adapter): selection, the engine under the interpreter, fallback | Written as a patch for AROS master; its design and its source read by a second reader; see the [adapter page](jit68-adapter/README.md) |
-| `m68kemu.library` with the adapter, built for AROS AArch64 | Built outside an AROS tree, 20 November 2026; twenty-three cases from the Shell pass under QEMU, with the interpreter and with the engine, one of them with a process, a software interrupt and a vertical blank server. `Run`, hooks called by native libraries and CIA timers not tried |
+| Host side in `m68kemu.library` | Merged upstream in PR #2359; the tests with the engine use the branch of still-open PR #2360 |
+| `m68kemu.library` with the engine under QEMU | The first outside-tree build passed 23 cases on 20 November. The selected real AROS build at the head of PR #2360 passed the native probe (23 checks), `test_m68kemu` with all 14 sub-tests, and small 68k programs with the interpreter and engine; no application or physical-hardware run |
 | Applications | None run with this engine |
 | Multiprocessor systems | Not qualified; version 1 claims one processor |
-| Performance | One loop timed under QEMU: 147 to 165 ticks on the interpreter, 29 or 30 with the engine. Nothing else measured |
+| Performance | One 20-million-instruction loop under QEMU took 165 ticks of 1/50 s with Moira and 17 with the engine in the reported run; other runs ranged from 147–200 and 17–34 ticks respectively. No application or physical-hardware benchmark |
 
 ## Next steps
 
-1. Finish the review of what the legacy library does outside the JIT,
-   compared with `m68kemu.library`. What it finds decides what has to move
-   before the engine is connected.
-2. Repeat with applications, starting from IBrowse and Amigram, the two
-   programs of the checks of 14 November 2026.
-3. Follow the review of AROS pull request 2360, the engine library. Pull
-   requests 2358 (a fix of the host tests of `m68kemu`) and 2359 (the
-   adapter) are merged.
+1. Follow the review of [AROS PR #2360](https://github.com/aros-development-team/AROS/pull/2360);
+   the interface in #2359 and host-test repair in #2358 are merged.
+2. Test real 68k applications with the proposed upstream pair, starting
+   from IBrowse and Amigram, while recording the exact library builds.
+3. Build and measure on physical AArch64 hardware, with a reproducible
+   interpreter baseline and application-level correctness checks.
 4. Give the engine an FPU, and after it an MMU. Neither the engine nor the
    interpreter of `m68kemu.library` has one today: a program runs as on a
    68LC040 with its MMU off. Both need a new minor version of the
