@@ -6,41 +6,24 @@ home for software from the Amiga ecosystem. AROS is the native operating
 system. The compatibility bridge should preserve verified API behavior,
 objects and formats as CPU engines and host hardware evolve.
 
-The 68k compatibility library is AROS's `m68kemu.library`. Kaffeine is the
-name of the JIT engine. The 68k JIT is meant to be a separate optional
-library, `kaffeine-jit68.library`, which `m68kemu.library` can use as its CPU
-backend beside the interpreter it already has. I am moving this work back
-onto the library of AROS mainline, as small corrections to `rom/m68kemu` and
-the JIT as that separate engine library, instead of maintaining a renamed
-copy of the whole library. Version 1 of the interface between the two
-libraries and the source of the engine are in
-[`experimental/kaffeine-jit68`](experimental/kaffeine-jit68/README.md); the
-engine has passed its host checks on an AArch64 Mac, and a probe of the
-engine library has run on AROS AArch64 under QEMU. A patch for
-`m68kemu.library` lets it use the engine under its interpreter, and the two
-have run small 68k programs together under QEMU
-([adapter page](docs/kaffeine/jit68-adapter/README.md)); no application has
-run this way yet. The [engine page](docs/kaffeine/jit68-engine.md)
-describes them.
+The 68k compatibility library is AROS's `m68kemu.library`; Kaffeine is
+the experimental JIT work. AROS merged the
+[optional-engine interface](https://github.com/aros-development-team/AROS/pull/2359),
+which keeps Moira as the default interpreter. The separate AArch64 engine
+is `m68kjit.library` in its
+[open upstream PR](https://github.com/aros-development-team/AROS/pull/2360).
+The corresponding source in this repository retains the historical
+`kaffeine-jit68` name. Host checks and small native test programs have
+passed under QEMU with the proposed engine; applications with that upstream
+pair and physical hardware have not been tested. See the
+[technical case study](docs/kaffeine/jit-case-study.md), the
+[engine page](docs/kaffeine/jit68-engine.md) and the
+[transition record](docs/kaffeine/TRANSITION.md).
 
-That move is in progress, and this page says so wherever it matters. The
-results below were obtained with the earlier form of the work, and each
-keeps the identity it has. The programs that ran inside AROS ran through a
-library named `kaffeine.library`, built from `rom/kaffeine` of this
-repository, which derives from AROS's `m68kemu.library` at AROS
-`ae45f4644f80de542fb6af320c5d5fb5a1bc9925`. I call it the legacy library
-here. Host tests compile sources of that tree with simulated native APIs and
-load no emulator library; the standalone JIT probes run the translator
-without one; the native AmigaOS reference runs use no emulator at all. None
-of them is a result of `m68kemu.library` of current AROS mainline. The
-change sets now being prepared for `rom/m68kemu` have not been proposed to
-AROS yet, and apart from the host checks of the separate engine, the only
-JIT that has run is the one compiled into the legacy library and into the
-standalone probes. The
-[transition status](docs/kaffeine/TRANSITION.md) says what has moved and
-what has not. The long-term roadmap is a direction, separate from the
-verified behavior below.
-
+The results below mostly concern the earlier `kaffeine.library`, built
+from `rom/kaffeine` of this repository. Its application demonstrations
+do not establish compatibility for the proposed upstream engine. Host
+tests and standalone translation probes identify their own environments.
 
 ## How it works
 
@@ -141,14 +124,12 @@ unsupported within the current contracts.
 
 The legacy library selects its CPU through `struct KaffeineCPUOps`
 ([BACKENDS.md](rom/kaffeine/BACKENDS.md)). Moira is the operational 68k
-interpreter and the reference for extending the execution engine. In
-`m68kemu.library` of AROS mainline Moira is the interpreter and stays the
-default; the JIT is to be offered to it as a separate optional library,
-`kaffeine-jit68.library`, whose engine has passed its host checks and a
-probe of its library on AROS under QEMU, and which a patched
-`m68kemu.library` has used for small test programs there
-([engine page](docs/kaffeine/jit68-engine.md),
-[adapter page](docs/kaffeine/jit68-adapter/README.md)).
+interpreter and the reference for extending the execution engine. In AROS mainline Moira remains the default interpreter. The optional
+engine interface is merged; the `m68kjit.library` engine is proposed in
+[PR #2360](https://github.com/aros-development-team/AROS/pull/2360).
+Its host checks and small AROS/QEMU programs are documented on the
+[engine page](docs/kaffeine/jit68-engine.md) and in the
+[case study](docs/kaffeine/jit-case-study.md).
 
 In the legacy library, the [experimental JIT backend](docs/kaffeine/jit-backend.md)
 is selected with `Set KAFFEINE_CPU jit`. It uses independent guest-task CPUs,
@@ -289,7 +270,7 @@ uses observable application outcomes:
 
 0. Move the work onto `m68kemu.library` of AROS mainline: the common
    corrections first, each as a focused contribution, then the JIT as the
-   separate optional `kaffeine-jit68.library`. See the
+   separate optional `m68kjit.library` in AROS. See the
    [transition status](docs/kaffeine/TRANSITION.md).
 1. Complete useful 68k application operations on AROS ARM64, prioritizing
    Personal Paint's editor, tools, load/save, cleanup and desktop use.
@@ -317,7 +298,8 @@ the agreed scope.
 - [Personal Paint demonstration, screenshots and saved output](docs/kaffeine/personal-paint-demo.md).
 - [Project manifesto](docs/kaffeine/MANIFESTO.md) and [Italian original](docs/kaffeine/MANIFESTO.it.md).
 - [Status of the transition to `m68kemu.library`](docs/kaffeine/TRANSITION.md).
-- [The 68k JIT as a separate engine, `kaffeine-jit68.library`](docs/kaffeine/jit68-engine.md).
+- [The 68k JIT as a separate engine, `m68kjit.library` in AROS](docs/kaffeine/jit68-engine.md).
+- [Technical case study: the 68k-to-AArch64 JIT](docs/kaffeine/jit-case-study.md).
 - [The engine under `m68kemu.library`: the adapter, its patch and its native runs](docs/kaffeine/jit68-adapter/README.md).
 - [Source of the separate engine, its interface and its host checks](experimental/kaffeine-jit68/README.md).
 - [Licenses and component provenance](docs/kaffeine/LICENSING.md).
