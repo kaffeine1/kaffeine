@@ -1,22 +1,16 @@
 # Kaffeine: a 68k JIT engine for AROS
 
-Kaffeine is a JIT engine for 68k Amiga software on AROS. The 68k
-compatibility library is AROS's own `m68kemu.library`, with the interpreter
-it already has. The JIT is meant to become a separate optional library
-beside it, `kaffeine-jit68.library`, which `m68kemu.library` can use as its
-CPU backend. Its interface and engine source are in
-[`experimental/kaffeine-jit68`](experimental/kaffeine-jit68/README.md); the
-engine has passed its host checks, a probe of the engine library has run
-on AROS AArch64 under QEMU, and with a patch for `m68kemu.library` the two
-libraries have run small 68k programs together there
-([engine status](docs/kaffeine/jit68-engine.md),
-[adapter](docs/kaffeine/jit68-adapter/README.md)). Apart from those checks,
-that probe and those programs, the JIT that has run is in the legacy `kaffeine.library`
-and in standalone probes. This repository
-holds that work, and the corrections `m68kemu.library` needs for 68k
-software on AROS ARM64. The aim behind it is to keep
-Amiga software usable across platforms and hardware generations on the AROS
-desktop, without a separately managed emulator or virtual machine.
+Kaffeine is Michele Dipace's experimental 68k-to-AArch64 JIT work for AROS.
+AROS's `m68kemu.library` owns 68k compatibility and keeps Moira as the
+default interpreter. The [optional-engine interface](https://github.com/aros-development-team/AROS/pull/2359)
+is merged upstream. The separate AArch64 engine, named `m68kjit.library`
+in AROS, is [under review](https://github.com/aros-development-team/AROS/pull/2360).
+Host checks and small 68k programs under AROS AArch64/QEMU have passed in
+the proposed branch; real applications with that upstream pair and physical
+hardware remain untested. Read the [technical case study](docs/kaffeine/jit-case-study.md)
+for the architecture, evidence and limits. The source in this repository
+retains its historical `kaffeine-jit68` name
+([source and host checks](experimental/kaffeine-jit68/README.md)).
 
 **ARM64 is the first host. The 68k is the guest.** Other hosts and guest
 environments are long-term directions for AROS, with their own CPU, ABI and
@@ -24,13 +18,13 @@ platform requirements. They are not promised here. A JIT for PowerPC code,
 `kaffeine-ppc.library`, is a separate future goal that depends on whether it
 proves feasible; nothing of it exists.
 
-The corrections are moving back onto `m68kemu.library` of AROS mainline, and
-the JIT is to follow beside it as its own library. The preview
-and most of the demonstrations below were made with an earlier renamed copy
-of that library, `kaffeine.library`; one ran on a locally patched
-`m68kemu.library`. Each names the library, the backend and the sources it
-used. The [transition status](docs/kaffeine/TRANSITION.md) says where things
-stand.
+Several common fixes have moved into AROS mainline, while the engine PR
+remains open. The [community preview](https://github.com/kaffeine1/kaffeine/releases/tag/preview-arm64-001)
+and most application demonstrations below use the earlier renamed
+`kaffeine.library`, not the proposed `m68kjit.library` with upstream
+`m68kemu.library`. Each result names the library, backend and sources it
+used. The [transition record](docs/kaffeine/TRANSITION.md) separates those
+histories.
 
 Read the [project manifesto](docs/kaffeine/MANIFESTO.md)
 ([original Italian](docs/kaffeine/MANIFESTO.it.md)) for the vision,
