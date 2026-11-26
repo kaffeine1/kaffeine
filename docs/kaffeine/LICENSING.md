@@ -1,11 +1,28 @@
 # Licenses and provenance of kaffeine
 
-> **Status, 15 November 2026.** This page belongs to the legacy tree: `rom/kaffeine` and the library built from it, `kaffeine.library`. Its names and commands are those of that tree, and each result on it was obtained with what the page itself names: that library, a backend of it, or a host fixture that loads no emulator library. The 68k compatibility library is AROS's `m68kemu.library`, Kaffeine names the JIT engine only, and this work is moving onto `m68kemu.library` of AROS mainline. See the [transition status](TRANSITION.md).
+The M0 audit on this page covers the legacy `rom/kaffeine` tree and its
+`kaffeine.library`. See the [transition record](TRANSITION.md) for the
+work on AROS mainline.
 
 This guide summarises the audit of the M0 base and suggests precautions
 for the rest of the project. The license texts and the notices of the
 individual files are authoritative; the guide grants no additional rights
 and does not certify the compliance of a future distribution.
+
+## Kaffeine JIT provenance
+
+Michele Dipace wrote the original Kaffeine 68k-to-AArch64 translator,
+first integrated in [commit `9f9868d`](https://github.com/kaffeine1/kaffeine/commit/9f9868df8522d0b1c09ac2547d89043da0434284).
+He adapted it to the AROS execution engine interface and contributed it
+under the AROS Public License. AROS integrated the engine as
+`m68kjit.library` in [PR #2360](https://github.com/aros-development-team/AROS/pull/2360).
+
+Record original JIT work in Kaffeine first. Use `Copyright (C) <year> Michele Dipace`
+in new source files authored by Michele, with the year of the contribution.
+Keep the existing copyright, license and contributor notices on inherited
+or adapted code. When porting a change to current AROS mainline, follow the
+AROS header convention and record the relevant Kaffeine commit and the
+authorship of the contribution in the commit message.
 
 ## Components and reviewed revisions
 

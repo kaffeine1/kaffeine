@@ -1,16 +1,20 @@
 # Kaffeine: a 68k JIT engine for AROS
 
-Kaffeine is Michele Dipace's experimental 68k-to-AArch64 JIT work for AROS.
+Michele Dipace ([@kaffeine1](https://github.com/kaffeine1)) originally
+developed the 68k-to-AArch64 JIT translator for Kaffeine's earlier
+`kaffeine.library` ([original integration commit](https://github.com/kaffeine1/kaffeine/commit/9f9868df8522d0b1c09ac2547d89043da0434284)).
+He adapted that translator for AROS as `m68kjit.library`, merged into AROS
+mainline on 24 November 2026 in [PR #2360](https://github.com/aros-development-team/AROS/pull/2360)
+([merge commit](https://github.com/aros-development-team/AROS/commit/6dd961775f6dbd26ba2e3ef599208953160a0b62)).
+
 AROS's `m68kemu.library` owns 68k compatibility and keeps Moira as the
-default interpreter. The [optional-engine interface](https://github.com/aros-development-team/AROS/pull/2359)
-is merged upstream. The separate AArch64 engine, named `m68kjit.library`
-in AROS, is [under review](https://github.com/aros-development-team/AROS/pull/2360).
-Host checks and small 68k programs under AROS AArch64/QEMU have passed in
-the proposed branch; real applications with that upstream pair and physical
-hardware remain untested. Read the [technical case study](docs/kaffeine/jit-case-study.md)
-for the architecture, evidence and limits. The source in this repository
-retains its historical `kaffeine-jit68` name
-([source and host checks](experimental/kaffeine-jit68/README.md)).
+default interpreter. It can use the JIT on AArch64 through the
+[optional engine interface](https://github.com/aros-development-team/AROS/pull/2359).
+This repository keeps the historical `kaffeine-jit68` name for its
+[standalone engine source and host checks](experimental/kaffeine-jit68/README.md).
+See the [technical case study](docs/kaffeine/jit-case-study.md) for the
+architecture and validation, and [Licenses and provenance](docs/kaffeine/LICENSING.md#kaffeine-jit-provenance)
+for attribution and contribution guidance.
 
 **ARM64 is the first host. The 68k is the guest.** Other hosts and guest
 environments are long-term directions for AROS, with their own CPU, ABI and
@@ -18,13 +22,11 @@ platform requirements. They are not promised here. A JIT for PowerPC code,
 `kaffeine-ppc.library`, is a separate future goal that depends on whether it
 proves feasible; nothing of it exists.
 
-Several common fixes have moved into AROS mainline, while the engine PR
-remains open. The [community preview](https://github.com/kaffeine1/kaffeine/releases/tag/preview-arm64-001)
-and most application demonstrations below use the earlier renamed
-`kaffeine.library`, not the proposed `m68kjit.library` with upstream
-`m68kemu.library`. Each result names the library, backend and sources it
-used. The [transition record](docs/kaffeine/TRANSITION.md) separates those
-histories.
+The [community preview](https://github.com/kaffeine1/kaffeine/releases/tag/preview-arm64-001)
+and most application demonstrations below use the earlier
+`kaffeine.library`. Each result names the library, backend and sources it
+used. See the [transition record](docs/kaffeine/TRANSITION.md) for the
+relationship between the legacy previews and the AROS mainline work.
 
 Read the [project manifesto](docs/kaffeine/MANIFESTO.md)
 ([original Italian](docs/kaffeine/MANIFESTO.it.md)) for the vision,
@@ -199,11 +201,10 @@ mine that are not submitted upstream yet. It did not use
 - [Licenses and provenance](docs/kaffeine/LICENSING.md).
 
 The project builds on AROS and its `m68kemu.library`. Most published results
-were made with an earlier renamed copy of that library, `kaffeine.library` in
-`rom/kaffeine`, each as its own page says; the corrections are moving back
-onto `m68kemu.library` itself, with the JIT to follow as a separate optional
-library ([status](docs/kaffeine/TRANSITION.md)). Emu68 remains a design reference;
-its code is not included. Application software retains its own licenses.
+were made with the legacy `kaffeine.library` in `rom/kaffeine`. AROS
+mainline now includes `m68kjit.library` as a separate optional engine.
+Emu68 remains a design reference. Application software retains its own
+licenses.
 
 ## Upstream AROS documentation
 
