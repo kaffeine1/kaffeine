@@ -12,12 +12,11 @@ what makes the engine an AROS library, `kaffeine-jit68.library`, and a
 native probe of that library; a script builds both outside an AROS tree.
 In AROS the interface is in `rom/m68kemu`
 ([pull request 2359](https://github.com/aros-development-team/AROS/pull/2359),
-merged on 21 November 2026). The engine, the probe and these checks are
-proposed as
-[pull request 2360](https://github.com/aros-development-team/AROS/pull/2360),
-where they have their places in the tree and the library a build rule. The
-[technical case study](../../docs/kaffeine/jit-case-study.md) presents the
-architecture, reported tests and current limits.
+merged on 21 November 2026). AROS integrated the engine, the probe and
+these checks through
+[pull request 2360](https://github.com/aros-development-team/AROS/pull/2360)
+on 24 November 2026. The [technical case study](../../docs/kaffeine/jit-case-study.md)
+presents the architecture, reported tests and current limits.
 AROS takes no component under a project's name, so there the library is
 `m68kjit.library`, and every name that abbreviates `kaffeine-jit68` is
 changed with it. The sources here are the files of that branch with the

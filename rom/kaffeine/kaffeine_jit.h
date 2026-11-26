@@ -1,5 +1,6 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
+    Copyright (C) 2026 Michele Dipace (original translator contributions).
     Author: Michele Dipace (@kaffeine1)
 
     Experimental AArch64 block translator behind struct KaffeineCPUOps.
